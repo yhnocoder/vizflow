@@ -20,7 +20,3 @@ export function resolveElement(el: string | HTMLElement, caller: string): HTMLEl
   if (found === null) throw new Error(`${caller}: no element matches '${el}'`);
   return found;
 }
-
-export interface Mounted {
-  dispose(): void;
-}

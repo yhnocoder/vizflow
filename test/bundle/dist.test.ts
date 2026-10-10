@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
 import packageJson from '../../package.json';
 import { buildDistToTemp } from './build';
@@ -49,6 +49,22 @@ function bundledLibraries(entry: string): Library[] {
   return (Object.keys(libraries) as Library[]).filter((library) => libraries[library].some((marker) => code.includes(marker)));
 }
 
+function typeGraph(entry: string): string[] {
+  const seen = new Set<string>();
+  const pending = [entry];
+  while (pending.length > 0) {
+    const file = pending.pop()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const [, path] of readFileSync(file, 'utf8').matchAll(/from '(\.[^']+)'/g)) {
+      const base = normalize(join(dirname(file), path));
+      const next = [`${base}.d.ts`, join(base, 'index.d.ts')].find((candidate) => existsSync(candidate));
+      if (next !== undefined) pending.push(next);
+    }
+  }
+  return [...seen];
+}
+
 const exportsMap = packageJson.exports as Record<string, { types: string; import: string }>;
 
 describe('build output', () => {
@@ -87,6 +103,13 @@ describe('build output', () => {
     for (const [entry, { types, import: module }] of Object.entries(exportsMap)) {
       expect(existsSync(join(workspace, module)), `${entry} module`).toBe(true);
       expect(existsSync(join(workspace, types)), `${entry} types`).toBe(true);
+    }
+  });
+
+  test('public type declarations do not import the bundled libraries', () => {
+    for (const [entry, { types }] of Object.entries(exportsMap)) {
+      const importing = typeGraph(join(workspace, types)).filter((file) => /from '(three|solid-js|katex|@fontsource)/.test(readFileSync(file, 'utf8')));
+      expect(importing, entry).toEqual([]);
     }
   });
 

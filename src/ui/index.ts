@@ -12,4 +12,4 @@ if (!document.getElementById(styleId)) {
 
 export { mountSteps } from './steps';
 export { mountPanels, type PanelItem, type LossOptions, type MatrixSource, type MatrixHighlight, type TokenColumn } from './panels';
-export type { Mounted } from './mount';
+export type { Mounted } from './mounted';

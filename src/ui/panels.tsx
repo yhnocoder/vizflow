@@ -4,7 +4,8 @@ import { Node, type Graph } from '../autograd';
 import { renderText } from '../formula';
 import { allVisible, compileTemplate, type StepState, type Steps } from '../steps';
 import { formatNumber, formatShape, type Tensor } from '../tensor';
-import { resolveElement, trackGraph, trackSteps, type Mounted } from './mount';
+import { resolveElement, trackGraph, trackSteps } from './mount';
+import type { Mounted } from './mounted';
 
 export interface LossOptions {
   sgd?: { params: Node[]; lr: number; label?: string };

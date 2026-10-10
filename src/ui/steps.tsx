@@ -2,7 +2,8 @@ import { For, Show, createMemo, onCleanup, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
 import type { Steps } from '../steps';
-import { resolveElement, trackSteps, type Mounted } from './mount';
+import { resolveElement, trackSteps } from './mount';
+import type { Mounted } from './mounted';
 
 function StepsView(props: { steps: Steps }) {
   const steps = props.steps;
