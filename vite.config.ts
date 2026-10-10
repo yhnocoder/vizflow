@@ -16,6 +16,7 @@ const entries = {
   scene3d: src('scene3d/index.ts'),
   formula: src('formula/index.ts'),
   theme: src('theme/index.ts'),
+  element: src('element/index.ts'),
 };
 
 const fontCssId = /[\\/]node_modules[\\/](?:katex[\\/]dist|@fontsource[\\/][^\\/]+)[\\/][^\\/?]+\.css\?raw$/;

@@ -14,7 +14,7 @@ vizflow 有两种引用方式。
 npm install @yhnocoder/vizflow
 ```
 
-包分成七个入口：`core`、`explain`、`steps`、`ui`、`scene3d`、`formula`、`theme`。页面按包名导入需要的入口，例如：
+包分成八个入口：`core`、`explain`、`steps`、`ui`、`scene3d`、`formula`、`theme`、`element`。页面按包名导入需要的入口，例如：
 
 ```js
 import { graph } from '@yhnocoder/vizflow/core';
@@ -23,7 +23,19 @@ import { createSteps } from '@yhnocoder/vizflow/steps';
 
 包名导入对应 `dist/module/` 下的产物。three.js、Solid、KaTeX 和字体包是 vizflow 的依赖，由构建工具解析，不打包进 vizflow，页面自己引用 three.js 时两边用同一份。字体通过 CSS 文件引入，由构建工具输出。有限差分检查在开发服务器下默认打开，生产构建里默认关闭。只导入 `core` 的页面不会加载 three.js、Solid 和 KaTeX。
 
-`examples/vite-project/` 是一个完整的 Vite + TypeScript 项目，步骤见其中的 `README.md`。
+`element` 入口定义 `<vizflow-page>` 元素。页面只放这个元素，把计算图、步骤、面板和场景设为它的属性，元素按示例页面的布局画出 3D 场景、步骤条和面板：
+
+```js
+import '@yhnocoder/vizflow/element';
+
+const page = document.querySelector('vizflow-page');
+page.graph = g;
+page.steps = { forward: [ ... ], backward: 'auto' };
+page.panels = [ ... ];
+page.scene = { layout: [ ... ] };
+```
+
+`examples/vite-project/` 是一个用这个元素写成的 Vite + TypeScript 项目，步骤见其中的 `README.md`。
 
 ### 不用构建工具的静态站
 
@@ -34,6 +46,7 @@ import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dis
 import { createSteps } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/steps.js';
 import { mountSteps, mountPanels } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/ui.js';
 import { mountScene, board, stack } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/scene3d.js';
+import 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/element.js';
 ```
 
 同一个页面的所有入口必须来自同一个位置和同一个版本。各入口共用内部模块，混用两个版本或两个来源时，页面里会有两份运算注册表，一份里创建的节点另一份无法识别。

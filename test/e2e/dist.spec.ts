@@ -32,6 +32,45 @@ document.body.dataset.ready = 'true';
 </html>
 `;
 
+const elementHtml = `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<vizflow-page></vizflow-page>
+<script type="module">
+import { graph } from './dist/core.js';
+import { board } from './dist/scene3d.js';
+import './dist/element.js';
+const g = graph();
+const h = g.input('h', [1, 2], [0.5, -1]);
+const W = g.param('W', [3, 2], [[1, 0], [0, 1], [1, 1]]);
+const t = g.label('t', [0], { tokens: ['a', 'b', 'c'] });
+const z = g.matmul(h, W.T, { name: 'z' });
+const logp = g.log_softmax(z, -1, { name: 'log p' });
+const loss = g.nll_loss(logp, t, { name: 'loss' });
+const page = document.querySelector('vizflow-page');
+page.graph = g;
+page.steps = {
+  forward: [
+    { show: [h, W.T, z], title: 'lm_head', text: String.raw\`
+      $z = hW^{\\top}$，
+      目标是 {{t:token}}。
+    \` },
+    { show: [logp, loss], title: 'loss', text: String.raw\`$$\\ell = {{loss:3}}$$\` },
+  ],
+};
+page.scene = { layout: [board(h, W.T, z)] };
+page.panels = ['loss', { tokens: t, columns: [z] }];
+page.createdSteps.go(1);
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
+`;
+
 const faces = [
   '400 16px "Source Serif 4"',
   'italic 400 16px "Source Serif 4"',
@@ -51,6 +90,7 @@ test.beforeAll(async () => {
   test.setTimeout(180_000);
   workspace = buildDistToTemp().workspace;
   await writeFile(join(workspace, 'index.html'), fixtureHtml);
+  await writeFile(join(workspace, 'element.html'), elementHtml);
   server = createServer(async (request, response) => {
     const path = normalize(decodeURIComponent(new URL(request.url ?? '/', 'http://localhost').pathname));
     try {
@@ -111,4 +151,27 @@ test('fonts referenced by the built theme and formula entries load from dist/fon
       'KaTeX_Math-Italic.woff2',
     ]),
   );
+});
+
+test('the standalone element entry renders a page without a build step', async ({ page }) => {
+  const errors: string[] = [];
+  const fontStatuses: number[] = [];
+  page.on('console', (message) => {
+    if (message.type() === 'error') errors.push(message.text());
+  });
+  page.on('pageerror', (error) => errors.push(error.message));
+  page.on('response', (response) => {
+    if (response.url().endsWith('.woff2')) fontStatuses.push(response.status());
+  });
+  await page.goto(`${origin}/element.html`);
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  await expect(page.locator('vizflow-page .vf-stage .vf-scene canvas')).toHaveCount(1);
+  await expect(page.locator('vizflow-page .vf-st[aria-current="step"]')).toHaveText('lm_head');
+  await expect(page.locator('vizflow-page .vf-caption-body > p')).toHaveCount(1);
+  await expect(page.locator('vizflow-page .vf-caption-body > p')).toContainText(/，目标是 a。$/);
+  await expect(page.locator('vizflow-page .vf-side .vf-loss-value')).toHaveCount(1);
+  await page.evaluate(() => document.fonts.ready);
+  expect(fontStatuses.length).toBeGreaterThan(0);
+  expect(fontStatuses.filter((status) => status !== 200)).toEqual([]);
+  expect(errors).toEqual([]);
 });

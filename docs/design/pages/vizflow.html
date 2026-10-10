@@ -134,12 +134,13 @@ mountPanels('#side', g, [
   { code: PYTORCH, title: 'PyTorch' },
 ], { steps });</code></pre>
 <p>页面里写的只有这些。反向的五个步骤（$\ell$ 与 $\log\mathbf{p}$、LSE、$\mathbf{z}$、$W^{\top}$、$\mathbf{h}$）、每条边的悬停卡片、每个张量的层名卡片，都由库根据计算图推导。</p>
+<p>同样的页面也可以不写容器和挂载调用，只放一个 <code>&lt;vizflow-page&gt;</code> 元素，把计算图、步骤、面板和场景配置设为它的属性，见「页面元素」一节。</p>
 <p>页面用 ES module 加载，不能通过 <code>file://</code> 直接打开，本地预览时需要启动一个 http server。</p>
 
 <h2>模块怎么划分，各入口加载什么</h2>
 <p>模块按用途拆开，因为很多场合只需要其中一部分。只需要数值时，例如在笔记里放一张梯度表或者写测试，只引入 <code>core</code>，three.js、Solid、KaTeX 都不会加载。只想在文章里嵌一个带滑块的 softmax 小部件时，引入 <code>core</code> 和 <code>ui</code>，不需要 3D。完整的一页才用到全部模块。</p>
 <figure>
-<svg class="diagram" viewBox="0 0 640 300" role="img" aria-label="vizflow 模块依赖图">
+<svg class="diagram" viewBox="0 0 780 300" role="img" aria-label="vizflow 模块依赖图">
   <defs>
     <marker id="dep-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z"></path>
@@ -156,6 +157,11 @@ mountPanels('#side', g, [
   <line x1="130" y1="42" x2="180" y2="42" marker-end="url(#dep-arrow)"></line>
   <line x1="300" y1="42" x2="350" y2="42" marker-end="url(#dep-arrow)"></line>
   <line x1="470" y1="42" x2="510" y2="42" marker-end="url(#dep-arrow)"></line>
+  <rect x="660" y="20" width="110" height="260" rx="8"></rect>
+  <text x="715" y="155" text-anchor="middle">element</text>
+  <line x1="630" y1="42" x2="660" y2="42" marker-end="url(#dep-arrow)"></line>
+  <line x1="550" y1="136" x2="660" y2="136" marker-end="url(#dep-arrow)"></line>
+  <path d="M300 164 L330 206 L660 206" marker-end="url(#dep-arrow)"></path>
   <text class="note" x="155" y="84" text-anchor="middle">core 入口</text>
 
   <rect x="180" y="128" width="120" height="44" rx="8"></rect>
@@ -182,9 +188,9 @@ mountPanels('#side', g, [
   <line x1="440" y1="236" x2="280" y2="172" marker-end="url(#dep-arrow)"></line>
   <line x1="500" y1="236" x2="500" y2="172" marker-end="url(#dep-arrow)"></line>
 </svg>
-<figcaption>箭头从被依赖的模块指向使用它的模块。ui 与 scene3d 互不引用；formula 与 theme 不依赖其他模块。模块旁的灰字是该模块引入的第三方依赖。</figcaption>
+<figcaption>箭头从被依赖的模块指向使用它的模块。ui 与 scene3d 互不引用；formula 与 theme 不依赖其他模块；element 只组合 steps、ui 与 scene3d。模块旁的灰字是该模块引入的第三方依赖。</figcaption>
 </figure>
-<p>依赖方向是单向的：<code>tensor ← autograd ← explain ← steps</code>；<code>ui</code> 依赖 <code>autograd</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>scene3d</code> 依赖 <code>autograd</code>、<code>explain</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>。模块之间只通过各自目录的 <code>index.ts</code> 引用。</p>
+<p>依赖方向是单向的：<code>tensor ← autograd ← explain ← steps</code>；<code>ui</code> 依赖 <code>autograd</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>scene3d</code> 依赖 <code>autograd</code>、<code>explain</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>element</code> 依赖 <code>steps</code>、<code>ui</code>、<code>scene3d</code>。模块之间只通过各自目录的 <code>index.ts</code> 引用。</p>
 <table>
   <thead>
     <tr><th>入口</th><th>内容</th><th>加载的第三方依赖</th></tr>
@@ -197,10 +203,11 @@ mountPanels('#side', g, [
     <tr><td><code>@yhnocoder/vizflow/theme</code></td><td>颜色变量、字体、页面布局类</td><td>Source Serif 4、Geist、Geist Mono 字体文件</td></tr>
     <tr><td><code>@yhnocoder/vizflow/ui</code></td><td>步骤条、讲解正文、面板、悬停卡片</td><td>Solid、KaTeX</td></tr>
     <tr><td><code>@yhnocoder/vizflow/scene3d</code></td><td>3D 渲染、布局模板、相机、标签、编辑模式</td><td>three.js、KaTeX</td></tr>
+    <tr><td><code>@yhnocoder/vizflow/element</code></td><td>自定义元素 <code>&lt;vizflow-page&gt;</code>，按示例页面的布局挂载步骤条、面板和 3D 场景</td><td>Solid、three.js、KaTeX（经 ui 与 scene3d）</td></tr>
   </tbody>
 </table>
 <p>模块之间不直接调用，都围绕同一个计算图协作。计算图是唯一的数据来源：输入变化后它重算前向和反向，然后发出更新通知；3D 场景、面板和讲解正文各自订阅通知、读取需要的数值，彼此不知道对方是否存在。<code>steps</code> 只输出一个状态对象，说明当前方向、第几步、每个节点是否出现和是否高亮。<code>scene3d</code> 读取这个状态决定颜色和透明度；页面没有创建 steps 时，<code>scene3d</code> 使用「全部显示」的默认状态。</p>
-<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme、ui、scene3d 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
+<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme、ui、scene3d、element 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
 
 <h2>计算图怎么建，输入变化后怎么更新</h2>
 <h3>建图</h3>
@@ -459,7 +466,7 @@ allVisible(g: Graph): StepState</code></pre>
   <li>整块是一个 <code>$$...$$</code> 公式时原样保留；以块级标签 <code>p</code>、<code>div</code>、<code>ul</code>、<code>ol</code>、<code>pre</code>、<code>table</code>、<code>h1</code> 到 <code>h6</code>、<code>blockquote</code> 开头的块不再包段落，其中 <code>pre</code> 块保留换行；其余的块包进 <code>&lt;p&gt;</code>。</li>
   <li>公式里的换行原样交给 KaTeX，KaTeX 把它当作空白。模板 <code>{{...}}</code> 解析前去掉全部空白，里面可以换行。</li>
 </ul>
-<p>整理放在 <code>renderText</code> 而不是 <code>createSteps</code>，因为面板的 <code>text</code>、<code>note</code> 与卡片说明都经过 <code>renderText</code>，放在这里所有文字只有一套规则。没有换行时不整理，是为了让已有的单行文字渲染结果不变。<code>String.raw</code> 里 <code>${</code> 是插值的开头，公式以模板开头时写成 <code>$ {{x}}$</code>。</p>
+<p>整理放在 <code>renderText</code> 里，因为面板的 <code>text</code>、<code>note</code> 与卡片说明都经过 <code>renderText</code>，放在这里所有文字只有一套规则。没有换行时不整理，是为了让已有的单行文字渲染结果不变。<code>String.raw</code> 里 <code>${</code> 是插值的开头，公式以模板开头时写成 <code>$ {{x}}$</code>。</p>
 <p>模板可以写在公式里，例如 <code>$z_{ {{t+1}} } = {{z[t]}}$</code>。模板紧贴 LaTeX 花括号时要留一个空格；出现 <code>{{{</code> 或 <code>}}}</code> 时报错。</p>
 <ul>
   <li>解析前去掉模板内的空白，名字按图中的节点名做最长前缀匹配，因此名字可以含点：<code>{{W.T.grad[0, t]}}</code> 是节点 <code>W.T</code> 的梯度。label 的名字作为下标时取它的整数值，<code>t[b]</code> 取第 b 行。</li>
@@ -662,7 +669,7 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 
 <h2>面板与页面布局</h2>
 <h3>挂载</h3>
-<p>每个带界面的模块只提供 <code>mount(容器, ...)</code> 形式的入口，只在页面给出的容器里渲染，铺满容器，并在容器尺寸变化时重排。模块不决定页面布局，页面可以把它们放在任何位置。每个 mount 返回带 <code>dispose()</code> 的句柄，用于释放监听和 WebGL 资源。scene3d 的 <code>dispose()</code> 还会主动释放 WebGL 上下文，页面反复挂载和释放场景时不会耗尽浏览器允许的上下文数量。</p>
+<p>每个带界面的模块只提供 <code>mount(容器, ...)</code> 形式的入口，只在页面给出的容器里渲染，铺满容器，并在容器尺寸变化时重排。模块不决定页面布局，页面可以把它们放在任何位置。只有 <code>element</code> 入口按固定的布局组合这几个 mount，见「页面元素」。每个 mount 返回带 <code>dispose()</code> 的句柄，用于释放监听和 WebGL 资源。scene3d 的 <code>dispose()</code> 还会主动释放 WebGL 上下文，页面反复挂载和释放场景时不会耗尽浏览器允许的上下文数量。</p>
 <pre><code class="language-ts">mountSteps(el: string | HTMLElement, steps: Steps): Mounted
 mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { steps?: Steps }): Mounted
 interface Mounted { dispose(): void }</code></pre>
@@ -698,6 +705,31 @@ interface Mounted { dispose(): void }</code></pre>
   </tbody>
 </table>
 <p><code>ui</code> 内部用 Solid：计算图一更新，面板、步骤条、正文和卡片里许多零散的位置需要各自刷新，Solid 的细粒度响应式让每处只在自己读到的值变化时更新。Solid 只是内部实现，页面通过 <code>mount</code> 调用，不需要编译 JSX，手写 HTML 的静态站可以直接使用。3D 场景用 three.js 命令式编写，不经过 Solid。</p>
+
+<h3>页面元素</h3>
+<p><code>element</code> 入口定义自定义元素 <code>&lt;vizflow-page&gt;</code>。页面只放这个元素，再把数据设为它的 JavaScript 属性，元素按示例页面的布局创建容器并调用 <code>createSteps</code>、<code>mountScene</code>、<code>mountSteps</code>、<code>mountPanels</code>。它是这几个 mount 函数的一层薄包装，不增加新的行为，所以以后要给 React 等框架写包装时，可以照同样的方式只调用 mount 函数。</p>
+<pre><code class="language-ts">type VizflowPageScene = Omit&lt;SceneOptions, 'steps' | 'edit'&gt;;
+
+class VizflowPage extends HTMLElement {
+  graph: Graph | undefined;
+  steps: StepsSpec | undefined;
+  panels: PanelItem[] | undefined;
+  scene: VizflowPageScene | undefined;
+  edit: boolean;
+  readonly createdSteps: Steps | undefined;
+}
+
+interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
+<ul>
+  <li><code>graph</code> 是计算图，<code>steps</code> 是 <code>createSteps</code> 的第二个参数，<code>panels</code> 是 <code>mountPanels</code> 的面板列表，<code>scene</code> 是 <code>mountScene</code> 的选项（不含 <code>steps</code> 与 <code>edit</code>，元素自己传入），<code>edit</code> 对应场景的编辑模式，默认 <code>false</code>。</li>
+  <li>元素在文档中且 <code>graph</code> 与 <code>steps</code> 都已设置时挂载。<code>panels</code> 不设置时不画面板，<code>scene</code> 不设置时不画 3D 场景。</li>
+  <li>设置属性后，元素在当前任务的微任务里重新挂载一次：先释放已有的场景、步骤条、面板和 Steps，再按全部属性重新创建。页面连续设置几个属性只挂载一次。读取 <code>createdSteps</code> 时，如果还有待处理的挂载，先同步完成挂载再返回，所以页面设置完属性后可以立即调用 <code>page.createdSteps.go(3)</code>。</li>
+  <li><code>createdSteps</code> 是元素创建的 <code>Steps</code>，只读；未挂载时为 <code>undefined</code>。每次重新挂载都换成新的对象。</li>
+  <li>元素从文档移除时（<code>disconnectedCallback</code>）释放全部内容，包括 WebGL 上下文和计算图上的订阅；再次加入文档时重新挂载。</li>
+  <li>元素用 light DOM，不用 shadow root。theme、KaTeX、ui 与 scene3d 的样式注入在 document 里，shadow root 内的节点用不到这些样式。元素只移除自己创建的布局节点。</li>
+  <li><code>customElements.define</code> 只在 <code>vizflow-page</code> 尚未定义时调用，同一页面加载两次入口不会报错。属性在元素定义之前就已设置时，元素升级后照常读取。</li>
+</ul>
+<p>元素里的布局与 lm_head 示例页相同：有面板时外层是 <code>.vf-split</code>，没有面板时是 <code>.vf-stack</code>；左栏 <code>.vf-main</code> 是纵向排列、间距 14px 的 flex 容器，依次放画布 <code>.vf-stage</code> 和步骤条 <code>.vf-steps</code>；面板放在 <code>aside.vf-side</code>。<code>.vf-stage</code> 高度为 <code>var(--vf-stage-height)</code>，最小高度 400px，视口宽度 980px 以下为 360px，圆角 14px，带 <code>--line</code> 色边框和 <code>--surface</code> 底色。这些样式由 <code>element</code> 入口注入，只作用于 <code>vizflow-page</code> 内部。标题、导语等页面自己的内容写在元素外面。</p>
 
 <h3>页面布局</h3>
 <p><code>theme</code> 提供几种现成的页面布局类，尺寸通过 CSS 变量调整：<code>--vf-side-width</code> 是面板宽度，默认 360px；<code>--vf-gap</code> 是间距，默认 20px；<code>--vf-stage-height</code> 是画布高度，默认 <code>min(68vh, 640px)</code>，视口宽度 980px 以下为 <code>62vh</code>。</p>
@@ -783,6 +815,7 @@ onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
     <tr><td><code>dist/*.js</code></td><td>不用构建工具的静态站，通过 jsDelivr 引用或复制 <code>dist/</code></td><td>打包进产物</td><td>输出到 <code>dist/fonts/</code>，代码按自身地址请求</td><td>关闭</td></tr>
   </tbody>
 </table>
+<p><code>element</code> 入口在两份产物里都有：用构建工具时写 <code>import '@yhnocoder/vizflow/element'</code>，不用构建工具时引用 <code>dist/element.js</code>。</p>
 <p>两份产物的类型声明都是 <code>dist/types/</code>，<code>exports</code> 的 <code>types</code> 指向它，公开的类型声明不引用 three.js、Solid、KaTeX。</p>
 <h3>构建工具产物</h3>
 <p>构建工具产物不打包第三方库，所以 three.js、Solid、KaTeX 和三个 <code>@fontsource</code> 字体包列在 <code>package.json</code> 的 <code>dependencies</code>，安装 vizflow 时一起安装。页面自己也引用 three.js 时，构建工具把两边的 import 解析到同一份 three.js，页面里只有一个实例，不会出现 three.js 的「Multiple instances」警告；打包进产物时页面会有两份。</p>
@@ -795,8 +828,8 @@ onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
 <p>版本号遵循 semver，静态站固定引用某个版本。产物可以复制进静态站，也可以通过 jsDelivr 按版本号和文件路径引用。jsDelivr 按文件路径取文件，不经过 <code>exports</code>，所以 <code>exports</code> 指向构建工具产物不影响这种写法：</p>
 <pre><code class="language-js">import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/core.js';</code></pre>
 <h3>sideEffects 与测试</h3>
-<p>注入样式的模块（<code>theme</code> 及其字体模块、<code>ui</code>、<code>formula</code> 的 KaTeX 样式模块、<code>scene3d</code>）和两份产物的 <code>.js</code> 文件在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
-<p>读取构建产物的测试确认：直接引用的产物里，<code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js；构建工具产物里任何入口都不打包这三个库，它们只以 import 出现，CSS 引用的每个字体文件都存在；每个入口都有对应的 <code>.d.ts</code>。仓库里的 <code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，测试把它安装、构建，再用 <code>vite preview</code> 和 <code>vite</code> 开发服务器各打开一次，确认场景画出、没有控制台错误、字体请求全部返回 200、只有一个 three.js 实例，并且检查在开发服务器下打开、在生产构建里关闭。</p>
+<p>注入样式或注册自定义元素的模块（<code>theme</code> 及其字体模块、<code>ui</code>、<code>formula</code> 的 KaTeX 样式模块、<code>scene3d</code>、<code>element</code>）和两份产物的 <code>.js</code> 文件在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
+<p>读取构建产物的测试确认：直接引用的产物里，<code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js；构建工具产物里任何入口都不打包这三个库，它们只以 import 出现，CSS 引用的每个字体文件都存在；每个入口都有对应的 <code>.d.ts</code>。仓库里的 <code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，测试把它安装、构建，再用 <code>vite preview</code> 和 <code>vite</code> 开发服务器各打开一次，确认场景画出、没有控制台错误、字体请求全部返回 200、只有一个 three.js 实例，并且检查在开发服务器下打开、在生产构建里关闭。这个项目用 <code>&lt;vizflow-page&gt;</code> 元素写成；另一个浏览器测试直接引用 <code>dist/element.js</code>，确认不经过构建也能用这个元素画出页面。</p>
 <p>仓库里的写作说明 <code>docs/guide.md</code> 写 API 用法、两个完整示例页面的代码和常见注意事项。作者和 Claude 在编写新页面之前先读它，生成的代码就基于同一套 API。</p>
 
 <h2>第一阶段做什么</h2>

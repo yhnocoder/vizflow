@@ -15,6 +15,7 @@
     "./src/formula/katex-style.module.ts",
     "./src/scene3d/index.ts",
     "./src/scene3d/edit.ts",
+    "./src/element/index.ts",
     "./dist/*.js",
     "./dist/module/*.js"
   ],
@@ -46,6 +47,10 @@
     "./theme": {
       "types": "./dist/types/theme/index.d.ts",
       "import": "./dist/module/theme.js"
+    },
+    "./element": {
+      "types": "./dist/types/element/index.d.ts",
+      "import": "./dist/module/element.js"
     }
   },
   "scripts": {

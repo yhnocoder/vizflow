@@ -1,8 +1,8 @@
 import { graph } from '@yhnocoder/vizflow/core';
-import { createSteps } from '@yhnocoder/vizflow/steps';
-import { mountScene, board, stack } from '@yhnocoder/vizflow/scene3d';
-import { mountSteps, mountPanels } from '@yhnocoder/vizflow/ui';
+import type { StepsSpec } from '@yhnocoder/vizflow/steps';
+import { board, stack } from '@yhnocoder/vizflow/scene3d';
 import { renderText } from '@yhnocoder/vizflow/formula';
+import '@yhnocoder/vizflow/element';
 import { REVISION } from 'three';
 
 renderText(String.raw`接着上一页往前推一步：从最后一层隐状态 $\mathbf{h}$ 经过 lm_head 得到 logits，再按 PyTorch 的实际做法用 log_softmax 和 nll_loss 算出损失。上下文是 <span class="ctx">The cat sat on the</span>，词表只画 5 个 token。`, document.getElementById('lede')!);
@@ -26,7 +26,7 @@ const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
 const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
-const steps = createSteps(g, {
+const steps: StepsSpec = {
   overview: {
     title: '整张图',
     text: String.raw`
@@ -110,7 +110,7 @@ const steps = createSteps(g, {
         ` },
     },
   },
-});
+};
 
 const PYTORCH = `# h: (1, d)
 # 来自 model.norm（RMSNorm）
@@ -123,16 +123,17 @@ loss = F.nll_loss(logp, t)
 # 等价于一行：
 loss = F.cross_entropy(logits, t)`;
 
-mountSteps('#steps', steps);
-const scene = mountScene('#stage', g, {
-  steps,
+const page = document.querySelector('vizflow-page')!;
+page.graph = g;
+page.steps = steps;
+page.scene = {
   layout: [
     board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
     stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
-});
-mountPanels('#side', g, [
+};
+page.panels = [
   { loss: {
       sgd: { params: [W], lr: 0.5, label: '更新一步 W' },
       random: { nodes: [h], range: [-2, 2] },
@@ -146,8 +147,8 @@ mountPanels('#side', g, [
     note: '框出的是目标 token 那一列。lm_head.weight 在 PyTorch 里存成 (V, d)，它的 .grad 是这里的转置 gᵀh。「更新一步」只改 W：目标列朝 h 的方向移动，其余列往反方向移动。' },
   { code: PYTORCH, title: '对应的 PyTorch',
     note: 'Qwen3-8B 里 d = 4096、V = 151936，lm_head 单独一份权重；Qwen3-0.6B 的 lm_head 和 embed_tokens 共享同一个矩阵。' },
-], { steps });
+];
 
-Object.assign(window, { vizflow: { g, steps, scene, nodes: { h, W, t, z, L, logp, loss } } });
+Object.assign(window, { vizflow: { g, page, nodes: { h, W, t, z, L, logp, loss } } });
 document.body.dataset.three = REVISION;
 document.body.dataset.ready = 'true';

@@ -95,13 +95,24 @@ describe('build output', () => {
     expect(graphCode('scene3d.js')).toContain('vf-theme-style');
   });
 
+  test('both builds of the element entry register vizflow-page and inject its style', () => {
+    for (const directory of [dist, moduleDirectory()]) {
+      const code = graphCode('element.js', directory);
+      expect(code, directory).toContain('customElements.define("vizflow-page"');
+      expect(code, directory).toContain('vf-element-style');
+      expect(code, directory).toContain('vf-ui-style');
+      expect(code, directory).toContain('vf-scene3d-style');
+    }
+    expect(readFileSync(join(workspace, exportsMap['./element'].types), 'utf8')).toContain("'vizflow-page': VizflowPage");
+  });
+
   test('the KaTeX symbol leftthreetimes is not taken for three.js', () => {
     expect(graphCode('formula.js')).toContain('leftthreetimes');
     expect(bundledLibraries('formula.js')).not.toContain('three');
   });
 
   test('every package entry has its module build file, standalone file and type declarations', () => {
-    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './explain', './formula', './scene3d', './steps', './theme', './ui']);
+    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './element', './explain', './formula', './scene3d', './steps', './theme', './ui']);
     for (const [entry, { types, import: module }] of Object.entries(exportsMap)) {
       expect(module, entry).toBe(`./dist/module/${entry.slice(2)}.js`);
       expect(existsSync(join(workspace, module)), `${entry} module`).toBe(true);
@@ -137,7 +148,7 @@ function packageImports(entry: string): string[] {
 
 describe('module build output', () => {
   test('no entry bundles three.js, Solid or KaTeX', () => {
-    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js']) {
+    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js']) {
       expect(bundledLibraries(entry, moduleDirectory()), entry).toEqual([]);
     }
   });

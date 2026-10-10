@@ -10,9 +10,9 @@
 
 ## 1. 安装与引用
 
-### 1.1 七个入口
+### 1.1 八个入口
 
-npm 包名是 `@yhnocoder/vizflow`。包按用途拆成七个入口，页面只引入需要的几个：
+npm 包名是 `@yhnocoder/vizflow`。包按用途拆成八个入口，页面只引入需要的几个：
 
 | 入口 | 内容 | 什么时候引入 |
 |---|---|---|
@@ -23,6 +23,7 @@ npm 包名是 `@yhnocoder/vizflow`。包按用途拆成七个入口，页面只�
 | `@yhnocoder/vizflow/formula` | 公式渲染（KaTeX） | 页面自己的文字里要渲染公式时（`renderText`） |
 | `@yhnocoder/vizflow/theme` | 颜色变量、字体、布局类 | 只用 core 或 steps 又需要样式时 |
 | `@yhnocoder/vizflow/explain` | 连线、局部导数、卡片内容 | 给自定义运算注册讲解时 |
+| `@yhnocoder/vizflow/element` | `<vizflow-page>` 元素，按示例页面的布局放好 3D 场景、步骤条和面板 | 不想自己写容器和挂载调用时，见 1.6 |
 
 `ui` 与 `scene3d` 自动引入 `theme` 和 `formula`，用到它们的页面不需要再引入 `theme`。`steps` 自动引入 `explain`。只引入 `core` 时不会加载 three.js、Solid 和 KaTeX。
 
@@ -63,6 +64,7 @@ import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dis
 import { createSteps } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/steps.js';
 import { mountSteps, mountPanels } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/ui.js';
 import { mountScene, board, stack, node } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/scene3d.js';
+import 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/element.js';
 ```
 
 这份产物把 three.js、Solid、KaTeX 打包在内，字体从 `dist/fonts/` 加载，复制时保留这个目录。有限差分检查默认关闭。
@@ -130,6 +132,50 @@ const g = graph({ ... });
 ```
 
 这时脚本不引入 `scene3d`，页面不会加载 three.js。
+
+### 1.6 用 `<vizflow-page>` 元素写页面
+
+`element` 入口定义了自定义元素 `<vizflow-page>`。页面只放这个元素，不写 `#stage`、`#steps`、`#side` 这些容器，也不调用 mount 函数，把数据设为元素的属性即可，布局与 1.5 的骨架相同：
+
+```html
+<main class="vf-page">
+  <h1>页面标题</h1>
+  <vizflow-page></vizflow-page>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { board, stack } from '@yhnocoder/vizflow/scene3d';
+import '@yhnocoder/vizflow/element';
+
+const g = graph({ ... });
+// 建图，见第 2 节
+
+const page = document.querySelector('vizflow-page');
+page.graph = g;
+page.steps = { overview: { ... }, forward: [ ... ], backward: 'auto' };
+page.panels = [{ loss: { ... } }, { sliders: h }];
+page.scene = { layout: [board(h, W.T, z), stack(z, L, logp, loss)], hint: '...' };
+page.createdSteps.go(1);
+</script>
+```
+
+| 属性 | 内容 |
+|---|---|
+| `graph` | 计算图，必填 |
+| `steps` | `createSteps` 的第二个参数（第 3 节），必填 |
+| `panels` | `mountPanels` 的面板列表（第 5 节），不设置时没有面板，布局改为单列 |
+| `scene` | `mountScene` 的选项（第 6 节），不写 `steps` 和 `edit`；不设置时没有 3D 场景 |
+| `edit` | `true` 时打开场景的编辑模式（6.5），默认 `false` |
+| `createdSteps` | 只读，元素创建的 `Steps`，用来调用 `go`、`next`、`setFocus`、`subscribe` |
+
+- `graph` 和 `steps` 都设置后元素才挂载。连续设置几个属性只挂载一次；挂载后再设置任何属性，元素释放旧内容，按新属性重新挂载，`createdSteps` 换成新对象。
+- 设置完属性后可以立即读取 `createdSteps`，读取时元素先完成挂载。
+- 元素从页面移除时释放 3D 场景、步骤条、面板和订阅；重新放回页面时重新挂载。
+- 元素不用 shadow root，theme 的布局类和变量照常作用。标题、导语等页面自己的内容写在元素外面，元素里面只放它自己创建的内容。
+- 不用构建工具时，把 `@yhnocoder/vizflow/element` 换成 `dist/element.js` 的地址（见 1.3），其余写法相同。
+- TypeScript 里 `document.querySelector('vizflow-page')` 的类型是 `VizflowPage`，属性有完整的类型。
+
+完整的例子：`examples/element-lmhead.html` 是不用构建工具的写法，`examples/vite-project/` 是用 Vite 和 TypeScript 的写法，两者内容都与 lm_head 页相同。
 
 ## 2. 建图
 
