@@ -68,6 +68,15 @@ describe('build output', () => {
     expect(bundledLibraries('formula.js')).toEqual(['katex']);
   });
 
+  test('ui, formula and scene3d keep the modules that inject their styles', () => {
+    expect(graphCode('ui.js')).toContain('vf-theme-style');
+    expect(graphCode('ui.js')).toContain('vf-ui-style');
+    expect(graphCode('ui.js')).toContain('vf-katex-style');
+    expect(graphCode('formula.js')).toContain('vf-katex-style');
+    expect(graphCode('theme.js')).toContain('vf-theme-style');
+    expect(graphCode('scene3d.js')).toContain('vf-theme-style');
+  });
+
   test('the KaTeX symbol leftthreetimes is not taken for three.js', () => {
     expect(graphCode('formula.js')).toContain('leftthreetimes');
     expect(bundledLibraries('formula.js')).not.toContain('three');

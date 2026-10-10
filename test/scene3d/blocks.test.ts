@@ -40,6 +40,9 @@ describe('PlateMesh axis', () => {
     plate.update(state, [0], [-1, 0, 1], 1);
     expect(position().count).toBe(8);
     expect([3, 5, 7].map((i) => position().getY(i))).toEqual([-1, 0, 1]);
+    expect(plate.axis!.visible).toBe(true);
+    plate.update({ revealed: false, active: false, backward: true }, [0], [-1, 0, 1], 1);
+    expect(plate.axis!.visible).toBe(false);
     plate.dispose();
   });
 });

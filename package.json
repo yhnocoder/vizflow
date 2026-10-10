@@ -6,7 +6,13 @@
     "dist"
   ],
   "sideEffects": [
-    "*.css"
+    "*.css",
+    "./src/theme/index.ts",
+    "./src/ui/index.ts",
+    "./src/formula/katex.ts",
+    "./src/scene3d/index.ts",
+    "./src/scene3d/edit.ts",
+    "./dist/*.js"
   ],
   "exports": {
     "./core": {

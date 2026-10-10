@@ -30,7 +30,6 @@ const FRAME_REVEALED = 0.95;
 const FRAME_HIDDEN = 0.15;
 const FRAME_LIFT = 0.005;
 const AXIS_REVEALED = 0.6;
-const AXIS_HIDDEN = 0.2;
 const AXIS_TICK = 0.12;
 const NODE_OUTLINE_REVEALED = 0.9;
 const NODE_OUTLINE_HIDDEN = 0.3;
@@ -274,7 +273,8 @@ export class PlateMesh {
         this.axis.geometry.dispose();
         this.axis.geometry = new BufferGeometry().setFromPoints(points);
       }
-      this.axisMaterial.opacity = revealed ? AXIS_REVEALED : AXIS_HIDDEN;
+      this.axisMaterial.opacity = AXIS_REVEALED;
+      this.axis.visible = revealed;
     }
   }
 
