@@ -25,7 +25,15 @@ export async function labelRects(page: Page, selector = '.vf-lb'): Promise<(Rect
       .filter((el) => !el.classList.contains('vf-off'))
       .map((el) => {
         const r = el.getBoundingClientRect();
-        return { x: r.left, y: r.top, w: r.width, h: r.height, text: el.textContent ?? '' };
+        let left = r.left;
+        let right = r.right;
+        for (const inner of el.querySelectorAll('*')) {
+          const b = inner.getBoundingClientRect();
+          if (b.width === 0) continue;
+          left = Math.min(left, b.left);
+          right = Math.max(right, b.right);
+        }
+        return { x: left, y: r.top, w: right - left, h: r.height, text: el.textContent ?? '' };
       }),
   );
 }

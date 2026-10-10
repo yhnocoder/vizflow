@@ -81,7 +81,6 @@ export const EDGE_HOVER_DISTANCE = 6;
 export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显示不出来。下方的分步讲解和右侧数值仍然可用。';
 
 const CAMERA_DISTANCE = 60;
-const NARROW_WIDTH = 600;
 const SIDE_LABEL_GAP = 0.15;
 const AMBIENT_INTENSITY = 0.72;
 const DIRECTIONAL_INTENSITY = 0.42;
@@ -219,7 +218,6 @@ class SceneController implements EditHost {
   private pinned: { node: Node; el: HTMLElement } | undefined;
   private downAt: [number, number] | undefined;
   private disposed = false;
-  private narrow = false;
 
   constructor(
     readonly root: HTMLDivElement,
@@ -313,6 +311,7 @@ class SceneController implements EditHost {
   setDirection(direction: Vec3): void {
     this.direction.set(...direction).normalize();
     this.limitAzimuth();
+    this.refresh();
     this.resetView();
   }
 
@@ -472,12 +471,12 @@ class SceneController implements EditHost {
 
   private refresh(): void {
     if (this.disposed) return;
-    this.narrow = this.width <= NARROW_WIDTH;
     this.state = this.currentState();
     this.resolve();
     const now = performance.now();
     const dir = this.state.dir;
     const backward = dir === 'backward';
+    const right = new Vector3(0, 1, 0).cross(this.direction).normalize();
     for (const renderable of this.renderables) {
       const { block } = renderable;
       const node = block.node;
@@ -516,13 +515,18 @@ class SceneController implements EditHost {
         renderable.nodeLabels.forEach((label, i) => {
           const element = block.elements[i];
           const elemTex = this.explainer.elemTex({ node, index: element.index });
-          const value = formatNumber(values[i], { tex: true });
-          texOf(label, backward ? `\\partial\\ell/\\partial ${elemTex} = ${value}` : `${elemTex} = ${value}`);
-          const side = block.title.anchor === 'right' && this.narrow;
+          const forwardTex = `${elemTex} = ${formatNumber(node.value.data[i], { tex: true })}`;
+          const backwardTex = `\\partial\\ell/\\partial ${elemTex} = ${formatNumber(node.grad === null ? 0 : node.grad.data[i], { tex: true })}`;
+          const [shownTex, otherTex] = backward ? [backwardTex, forwardTex] : [forwardTex, backwardTex];
+          texOf(label, shownTex);
+          label.setAlternate(otherTex, () => render(otherTex));
+          const side = block.title.anchor === 'right' || block.title.anchor === 'left';
           const mesh = renderable.nodes!;
-          const toward = block.batched ? -1 : 1;
-          label.pos = side ? [element.x + toward * (mesh.radius + SIDE_LABEL_GAP), element.y + mesh.height / 2, element.z] : [element.x, element.y + mesh.height / 2 + 0.45, element.z];
-          label.anchor = !side ? 'top-center' : block.batched ? 'right-middle' : 'left-middle';
+          const toward = block.title.anchor === 'left' ? -1 : 1;
+          const halfWidth = block.shape === 'disc' ? mesh.radius : (block.footprint[0] / 2) * Math.abs(right.x) + (block.footprint[1] / 2) * Math.abs(right.z);
+          const reach = toward * (halfWidth + SIDE_LABEL_GAP);
+          label.pos = side ? [element.x + reach * right.x, element.y + mesh.height / 2, element.z + reach * right.z] : [element.x, element.y + mesh.height / 2 + 0.45, element.z];
+          label.anchor = !side ? 'top-center' : toward < 0 ? 'right-middle' : 'left-middle';
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
           label.offset = this.options.labels?.[node.name];
@@ -749,7 +753,6 @@ class SceneController implements EditHost {
     this.width = Math.max(1, this.root.clientWidth);
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
-    if (this.narrow !== this.width <= NARROW_WIDTH) this.refresh();
     this.frameAll();
     this.labelsDirty = true;
   }
@@ -822,12 +825,11 @@ class SceneController implements EditHost {
     const geometry = { x: span(items, 1, (i) => i.x, () => 0, () => 0), y: span(items, 1, (i) => i.y, () => 0, () => 0) };
     for (const label of this.labels.labels) {
       if (label.pos === undefined) continue;
-      if (label.size === undefined) label.size = [label.el.offsetWidth, label.el.offsetHeight];
-      const [w, h] = label.size;
+      const [w, h] = label.frameSize();
       if (w === 0 && h === 0) continue;
       const [ax, ay] = anchorOffset(label.anchor);
       tmpVector.set(...label.pos).applyMatrix4(view);
-      const flippable = label.kind === 'node' && label.offset === undefined;
+      const flippable = label.kind === 'node' && label.anchor === 'top-center' && label.offset === undefined;
       const [dx, dy] = label.offset ?? [0, 0];
       items.push({
         x: tmpVector.x,

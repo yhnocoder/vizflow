@@ -162,7 +162,7 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'loss').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 2 * SCALAR_NODE_RISE, 12);
     expect(blockOf(blocks, 'y').title.anchor).toBe('right');
     expect(blockOf(blocks, 'log y').title.anchor).toBe('right');
-    expect(blockOf(blocks, 'loss').title.anchor).toBe('above');
+    expect(blockOf(blocks, 'loss').title.anchor).toBe('right');
   });
 
   it('moves each planar layer and the side node back by the back option', () => {
@@ -200,6 +200,7 @@ describe('stack layout', () => {
     t.set([[1], [2]]);
     for (const name of ['y', 'log y', 'l_b']) expect(columns(name)).toEqual([xs[1], xs[2]]);
     expect(blockOf(resolveLayout(layout, ctx).blocks, 'l_b').extent.map((p) => p[0])).toEqual(xs);
+    for (const name of ['y', 'log y', 'l_b', 'loss']) expect(blockOf(resolveLayout(layout, ctx).blocks, name).title.anchor).toBe('left');
   });
 
   it('skips nodes that are not visible and reads scales from options', () => {

@@ -472,7 +472,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
         return layer.xs[Math.max(0, Math.min(layer.cols - 1, col))];
       };
       const extent = layer.xs.map((x): Vec3 => [x, y, zOf(0)]);
-      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, isLoss(n) ? 'above' : 'right');
+      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, layer.rows > 1 ? 'left' : 'right');
       last = { y, xs: [(layer.xs[0] + layer.xs[layer.cols - 1]) / 2], zs: block.elements.map((e) => e.z), rowXs: block.elements.map((e) => e.x), spanXs: layer.xs };
     } else {
       const base = last ?? { y: ay, xs: [ax], zs: [az] };
@@ -483,7 +483,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const zOf = (r: number) => (rows === base.zs.length ? base.zs[r] : (base.zs[0] + base.zs[base.zs.length - 1]) / 2);
       const spanXs = rowXs === undefined ? undefined : base.spanXs;
       const extent = (spanXs ?? []).map((x): Vec3 => [x, y, zOf(0)]);
-      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, isLoss(n) ? 'above' : 'right');
+      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, base.zs.length > 1 ? 'left' : 'right');
       last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs };
     }
     const offset = options.offsets?.[n.name];

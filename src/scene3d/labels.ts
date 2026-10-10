@@ -45,6 +45,8 @@ export class Label {
   base: [number, number] = [0, 0];
   placed: [number, number] = [0, 0];
   private content = '';
+  private alternate: { key: string; build: () => Node } | undefined = undefined;
+  private alternateSize: [number, number] | undefined = undefined;
 
   constructor(readonly kind: LabelKind, extraClass: string) {
     this.el = document.createElement('div');
@@ -70,6 +72,37 @@ export class Label {
     this.size = undefined;
   }
 
+  setAlternate(key: string, build: () => Node): void {
+    if (this.alternate?.key === key) return;
+    this.alternate = { key, build };
+    this.alternateSize = undefined;
+  }
+
+  measure(): [number, number] {
+    if (this.size === undefined) this.size = [this.el.offsetWidth, this.el.offsetHeight];
+    return this.size;
+  }
+
+  frameSize(): [number, number] {
+    const [w, h] = this.measure();
+    if (this.alternate === undefined || this.el.parentElement === null) return [w, h];
+    if (this.alternateSize === undefined) {
+      const probe = this.el.cloneNode(false) as HTMLDivElement;
+      probe.classList.add('vf-off');
+      probe.style.transform = '';
+      probe.append(this.alternate.build());
+      this.el.parentElement.append(probe);
+      this.alternateSize = [probe.offsetWidth, probe.offsetHeight];
+      probe.remove();
+    }
+    return [Math.max(w, this.alternateSize[0]), Math.max(h, this.alternateSize[1])];
+  }
+
+  forgetSizes(): void {
+    this.size = undefined;
+    this.alternateSize = undefined;
+  }
+
   setFlag(className: string, on: boolean): void {
     if (this.el.classList.contains(className) === on) return;
     this.el.classList.toggle(className, on);
@@ -88,7 +121,7 @@ export class LabelLayer {
     this.root.className = 'vf-labels';
     parent.appendChild(this.root);
     document.fonts?.ready.then(() => {
-      for (const label of this.labels) label.size = undefined;
+      for (const label of this.labels) label.forgetSizes();
       onRemeasure();
     });
   }
@@ -107,9 +140,7 @@ export class LabelLayer {
       label.el.classList.toggle('vf-off', off);
       if (!off) shown.push(label);
     }
-    for (const label of shown) {
-      if (label.size === undefined) label.size = [label.el.offsetWidth, label.el.offsetHeight];
-    }
+    for (const label of shown) label.measure();
     const bounds = { x: LABEL_SAFE_MARGIN, y: LABEL_SAFE_MARGIN, w: width - 2 * LABEL_SAFE_MARGIN, h: height - 2 * LABEL_SAFE_MARGIN };
     const placements: Placement[] = shown.map((label) => {
       projected.set(...label.pos!).project(camera);
@@ -124,7 +155,7 @@ export class LabelLayer {
         box.y += label.offset[1];
         return { box, movable: false, hideOnOverlap: false, priority: label.priority };
       }
-      if (label.kind === 'node') {
+      if (label.kind === 'node' && label.anchor === 'top-center') {
         if (box.x + w > bounds.x + bounds.w) box.x = px - w;
         else if (box.x < bounds.x) box.x = px;
       }
