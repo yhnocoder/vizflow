@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import solid from 'vite-plugin-solid';
@@ -17,17 +18,44 @@ const entries = {
   theme: src('theme/index.ts'),
 };
 
-const katexWoff2Only: Plugin = {
-  name: 'vizflow-katex-woff2-only',
-  enforce: 'pre',
-  transform(code, id) {
-    if (!/[\\/]katex[\\/]dist[\\/][^\\/?]+\.css(\?|$)/.test(id)) return null;
-    return { code: code.replace(/,\s*url\([^)]+\.(?:woff|ttf)\)\s*format\("(?:woff|truetype)"\)/g, ''), map: null };
-  },
-};
+const fontCssId = /[\\/]node_modules[\\/](?:katex[\\/]dist|@fontsource[\\/][^\\/]+)[\\/][^\\/?]+\.css\?raw$/;
+const fontRequest = /\/fonts\/([^/?]+\.woff2)(?:\?|$)/;
+
+function bundledFonts(): Plugin {
+  const fonts = new Map<string, string>();
+  return {
+    name: 'vizflow-bundled-fonts',
+    transform(_code, id) {
+      if (!fontCssId.test(id)) return null;
+      const cssFile = id.slice(0, id.indexOf('?'));
+      for (const [, url] of readFileSync(cssFile, 'utf8').matchAll(/url\(\s*['"]?([^'")]+\.woff2)['"]?\s*\)/g)) {
+        const fontFile = resolve(dirname(cssFile), url);
+        const name = basename(fontFile);
+        const known = fonts.get(name);
+        if (known !== undefined && known !== fontFile) this.error(`font ${name} is provided by both ${known} and ${fontFile}`);
+        fonts.set(name, fontFile);
+      }
+      return null;
+    },
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        const name = fontRequest.exec(request.url ?? '')?.[1];
+        const fontFile = name === undefined ? undefined : fonts.get(name);
+        if (fontFile === undefined) return next();
+        response.setHeader('content-type', 'font/woff2');
+        response.end(readFileSync(fontFile));
+      });
+    },
+    generateBundle() {
+      for (const [name, fontFile] of fonts) {
+        this.emitFile({ type: 'asset', fileName: `fonts/${name}`, source: readFileSync(fontFile) });
+      }
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [katexWoff2Only, solid(), dts({ include: ['src'], outDirs: 'dist/types', entryRoot: 'src' })],
+  plugins: [bundledFonts(), solid(), dts({ include: ['src'], outDirs: 'dist/types', entryRoot: 'src' })],
   resolve: {
     alias: Object.entries(entries).map(([name, path]) => ({
       find: `@yhnocoder/vizflow/${name}`,

@@ -41,6 +41,9 @@ for (const scheme of ['light', 'dark'] as const) {
     expect(variables).toEqual(tokens[scheme]);
 
     expect(requests.filter((url) => /fonts\.(googleapis|gstatic)\.com/.test(url))).toEqual([]);
+    const fontFiles = requests.filter((url) => url.endsWith('.woff2')).map((url) => url.slice(url.lastIndexOf('/') + 1));
+    expect(fontFiles).toEqual(expect.arrayContaining(['geist-latin-400-normal.woff2', 'geist-mono-latin-500-normal.woff2', 'source-serif-4-latin-400-italic.woff2']));
+    expect(requests.some((url) => url.startsWith('data:'))).toBe(false);
     expect(await page.locator('#vf-theme-style').count()).toBe(1);
 
     await page.screenshot({ path: `test-results/theme-${scheme}.png`, fullPage: true });
@@ -58,6 +61,25 @@ test('data-theme overrides the system color scheme', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
   expect(await readBg()).toBe('#262624');
+});
+
+test('system dark mode and data-theme="dark" define identical tokens', async ({ page }) => {
+  const names = ['--bg', '--surface', '--ink', '--fg', '--muted', '--line', '--line-strong', '--pos', '--neg', 'color-scheme'];
+  const readTokens = () =>
+    page.evaluate((list) => {
+      const style = getComputedStyle(document.documentElement);
+      return Object.fromEntries(list.map((name) => [name, style.getPropertyValue(name).trim()]));
+    }, names);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.goto('/examples/theme.html');
+  await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
+  const systemDark = await readTokens();
+  await page.emulateMedia({ colorScheme: 'light' });
+  const systemLight = await readTokens();
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+  const forcedDark = await readTokens();
+  for (const name of names) expect(forcedDark[name], name).toBe(systemDark[name]);
+  expect(systemDark['--bg']).not.toBe(systemLight['--bg']);
 });
 
 test('split layout becomes one column below 980px', async ({ page }) => {

@@ -63,6 +63,34 @@ describe('render', () => {
     expect(formula.textContent).toBe('display[\\frac{a}{b}]');
   });
 
+  it('shows the raw TeX with vf-tex-error when an async adapter rejects', async () => {
+    let reject: (reason: Error) => void = () => {};
+    setAdapter({
+      render: () =>
+        new Promise<void>((_resolve, rejectRender) => {
+          reject = rejectRender;
+        }),
+    });
+    const formula = showLesson(document.body);
+    expect(formula.classList.contains('vf-tex-error')).toBe(false);
+    reject(new Error('adapter failed'));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(formula.classList.contains('vf-tex-error')).toBe(true);
+    expect(formula.textContent).toBe('\\frac{a}{b}');
+  });
+
+  it('shows the raw TeX with vf-tex-error when an adapter throws synchronously', () => {
+    setAdapter({
+      render(_tex, _display, target) {
+        target.textContent = 'partial';
+        throw new Error('adapter failed');
+      },
+    });
+    const formula = render('x');
+    expect(formula.classList.contains('vf-tex-error')).toBe(true);
+    expect(formula.textContent).toBe('x');
+  });
+
   it('runs the same caller code with the KaTeX adapter', () => {
     const formula = showLesson(document.body);
     expect(formula.isConnected).toBe(true);
