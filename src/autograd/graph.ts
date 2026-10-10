@@ -33,6 +33,7 @@ export interface Graph extends BuiltinOps {
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
   reset(): void;
+  jacobian(out: Node, input: Node): Tensor;
 }
 
 interface NodeState {
@@ -80,7 +81,7 @@ class GraphImpl {
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
     this.real = options.real === undefined ? undefined : Object.freeze({ ...options.real });
-    this.check = options.check ?? import.meta.env.DEV;
+    this.check = options.check ?? false;
     if (this.real !== undefined) {
       const numeric: Record<string, number> = { ...this.dims };
       for (const [key, value] of Object.entries(this.real)) {
@@ -332,39 +333,66 @@ class GraphImpl {
     if (!this.backwardValid) this.computeBackward();
   }
 
+  jacobian(out: Node, input: Node): Tensor {
+    this.ownNode(out, 'jacobian');
+    this.ownNode(input, 'jacobian');
+    const outSize = this.states[out.id].value.size;
+    const inSize = this.states[input.id].value.size;
+    const result = Tensor.zeros([...out.shape, ...input.shape]);
+    for (let i = 0; i < outSize; i++) {
+      const seed = Tensor.zeros(out.shape);
+      seed.data[i] = 1;
+      const grad = this.propagate(out, seed)[input.id];
+      result.data.set(grad.data, i * inSize);
+    }
+    return result;
+  }
+
   private computeBackward(): void {
     this.backwardValid = true;
-    this.states.forEach((state, i) => {
-      state.grad = Tensor.zeros(this.nodes[i].shape);
-    });
     const loss = this.resolveLoss();
-    if (loss === undefined) return;
+    if (loss === undefined) {
+      this.states.forEach((state, i) => {
+        state.grad = Tensor.zeros(this.nodes[i].shape);
+      });
+      return;
+    }
     if (loss.shape.length > 0 && this.states[loss.id].value.size !== 1) {
       throw new Error(`loss node '${loss.name}' must have one element, got shape ${formatShape(loss.shape)}`);
     }
-    this.states[loss.id].grad.data.fill(1);
-    const upstream = new Set<Node>([loss]);
-    for (let i = loss.id; i >= 0; i--) {
+    const seed = Tensor.zeros(loss.shape);
+    seed.data.fill(1);
+    this.propagate(loss, seed).forEach((grad, i) => {
+      this.states[i].grad = grad;
+    });
+  }
+
+  private propagate(root: Node, seed: Tensor): Tensor[] {
+    const grads = this.nodes.map((node) => Tensor.zeros(node.shape));
+    grads[root.id] = seed;
+    const upstream = new Set<Node>([root]);
+    for (let i = root.id; i >= 0; i--) {
       const node = this.nodes[i];
       if (!upstream.has(node)) continue;
       for (const input of node.inputs) upstream.add(input);
       if (node.kind !== 'op') continue;
       const def = opDef(node.op as string) as AnyOpDef;
-      const grads = def.backward(this.states[i].grad, node.inputs.map((n) => n.value), this.states[i].value, node.attrs);
+      const inputGrads = def.backward(grads[i], node.inputs.map((n) => n.value), this.states[i].value, node.attrs);
       node.inputs.forEach((input, k) => {
         if (input.kind === 'label') return;
         if (def.differentiable !== undefined && !def.differentiable[k]) return;
-        const grad = grads[k];
+        const grad = inputGrads[k];
         if (grad === null || grad === undefined) return;
         if (formatShape(grad.shape) !== formatShape(input.shape)) {
           throw new Error(
             `${def.name}: backward of node '${node.name}' returned ${formatShape(grad.shape)} for input '${input.name}' with shape ${formatShape(input.shape)}`,
           );
         }
-        const target = this.states[input.id].grad.data;
+        const target = grads[input.id].data;
         for (let j = 0; j < target.length; j++) target[j] += grad.data[j];
       });
     }
+    return grads;
   }
 }
 

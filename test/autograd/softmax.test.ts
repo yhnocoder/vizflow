@@ -72,3 +72,30 @@ describe('softmax with cross entropy, batch', () => {
     expect(t.index(1, 0)).toBe(1);
   });
 });
+
+describe('jacobian', () => {
+  it('gives diag(p) - p p^T for the softmax probabilities', () => {
+    const g = graph();
+    const x = g.input('x', [5], X[0]);
+    const u = g.exp(x, { name: 'u' });
+    const p = g.div(u, g.sum(u, -1, { keepdim: true }), { name: 'p' });
+    const pRef = softmaxRow(X[0]);
+    const J = g.jacobian(p, x);
+    expect(J.shape).toEqual([5, 5]);
+    closeTo(J.toNested(), pRef.map((pi, i) => pRef.map((pj, j) => (i === j ? pi : 0) - pi * pj)));
+  });
+
+  it('follows the current input values and leaves the loss gradient unchanged', () => {
+    const g = graph();
+    const x = g.input('x', [5], X[0]);
+    const t = g.label('t', [1]);
+    const p = g.softmax(x, -1, { name: 'p' });
+    g.neg(g.log(g.gather(p, -1, t)), { name: 'l' });
+    const before = x.grad!.toNested();
+    x.set(X[1]);
+    const pRef = softmaxRow(X[1]);
+    closeTo(g.jacobian(p, x).toNested(), pRef.map((pi, i) => pRef.map((pj, j) => (i === j ? pi : 0) - pi * pj)));
+    closeTo(x.grad!.toNested(), pRef.map((v, i) => v - (i === 1 ? 1 : 0)));
+    expect(before).not.toEqual(x.grad!.toNested());
+  });
+});
