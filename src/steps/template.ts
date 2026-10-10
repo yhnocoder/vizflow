@@ -218,3 +218,7 @@ export function compileText(g: Graph, text: string): (focus: number) => string {
   if (plain) parts.push({ kind: 'text', text: plain });
   return (focus) => parts.map((p) => (p.kind === 'text' ? p.text : evaluate(p.template, focus, p.math))).join('');
 }
+
+export function renderTemplate(g: Graph, text: string, focus: number): string {
+  return compileText(g, text)(focus);
+}

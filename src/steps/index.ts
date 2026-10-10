@@ -9,3 +9,4 @@ export {
   type BackwardOverride,
   type BackwardSpec,
 } from './steps';
+export { renderTemplate } from './template';

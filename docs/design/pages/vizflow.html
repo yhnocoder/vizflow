@@ -422,7 +422,7 @@ allVisible(g: Graph): StepState</code></pre>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
 
 <h3>正文模板</h3>
-<p>步骤正文是作者写的 HTML 字符串，其中 <code>$...$</code> 与 <code>$$...$$</code> 是公式，双花括号 <code>{{...}}</code> 里的是数值模板。模板用双花括号，与 LaTeX 的单花括号区分，<code>\mathbf{h}</code>、<code>W^{\top}_{k,t}</code> 不是模板。作者写 <code>{{z[t]}}</code>，页面就显示当前值，并在输入变化时更新，正文里代入的数字始终与图上的状态一致。<code>steps.text()</code> 只替换模板，公式由 <code>ui</code> 通过 <code>formula</code> 渲染。</p>
+<p>步骤正文是作者写的 HTML 字符串，其中 <code>$...$</code> 与 <code>$$...$$</code> 是公式，双花括号 <code>{{...}}</code> 里的是数值模板。模板用双花括号，与 LaTeX 的单花括号区分，<code>\mathbf{h}</code>、<code>W^{\top}_{k,t}</code> 不是模板。作者写 <code>{{z[t]}}</code>，页面就显示当前值，并在输入变化时更新，正文里代入的数字始终与图上的状态一致。<code>steps.text()</code> 只替换模板，公式由 <code>ui</code> 通过 <code>formula</code> 渲染。<code>steps</code> 同时导出 <code>renderTemplate(g, text, focus)</code>，对任意一段文字按同样的规则求值，损失面板的说明行用它。</p>
 <pre><code class="language-text">模板   := '{{' 表达式 (':' 格式)? '}}'
 表达式 := 引用 (('+' | '-') 整数)?
 引用   := 'b' | 名字 ('.grad')? ('[' 下标 (',' 下标)* ']')?
@@ -621,10 +621,11 @@ interface Mounted { dispose(): void }</code></pre>
       sgd?: { params: Node[]; lr: number; label?: string };
       random?: { nodes: Node[]; range: [number, number]; label?: string };
       reset?: boolean;
+      text?: string;
     } }
   | { sliders: Node; min?: number; max?: number; step?: number; title?: string }
   | { tokens: Node; columns?: (Node | { node: Node; grad?: boolean; title?: string })[]; title?: string; sliders?: Node; min?: number; max?: number }
-  | { matrix: Node | ((g: Graph) =&gt; Tensor); grad?: boolean; title?: string; highlight?: Node }
+  | { matrix: Node | ((g: Graph, state: StepState) =&gt; Tensor); grad?: boolean; title?: string; highlight?: Node }
   | { code: string; title?: string; note?: string }
   | { note: string; title?: string };</code></pre>
 <table>
@@ -632,10 +633,10 @@ interface Mounted { dispose(): void }</code></pre>
     <tr><th>面板</th><th>内容</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>loss</code></td><td>损失读数与损失曲线。<code>sgd</code> 加一个「更新一步」按钮，对 <code>params</code> 中的每个节点执行一次 $\theta \leftarrow \theta - \eta\,\nabla_\theta \ell$，$\eta$ 为 <code>lr</code>，曲线记录每一步的损失。<code>random</code> 加一个按钮，把 <code>nodes</code> 的值在 <code>range</code> 内随机取值；<code>reset</code> 为 <code>true</code> 时加一个调用 <code>g.reset()</code> 的按钮。</td></tr>
+    <tr><td><code>loss</code></td><td>损失读数与损失曲线。<code>sgd</code> 加一个「更新一步」按钮，对 <code>params</code> 中的每个节点执行一次 $\theta \leftarrow \theta - \eta\,\nabla_\theta \ell$，$\eta$ 为 <code>lr</code>，曲线记录每一步的损失。<code>random</code> 加一个按钮，把 <code>nodes</code> 的值在 <code>range</code> 内随机取值；<code>reset</code> 为 <code>true</code> 时加一个调用 <code>g.reset()</code> 的按钮。<code>text</code> 是读数下方的一行说明，写法与步骤正文的模板相同，例如 <code>目标 "{{t:token}}"，log p = {{log p[t]}}</code>。除「更新一步」以外的任何输入变化都会清空曲线。</td></tr>
     <tr><td><code>sliders</code></td><td>一个输入节点的每个元素一个滑块。</td></tr>
     <tr><td><code>tokens</code></td><td>token 与目标类表，每行一个类别，单选设为目标类。<code>columns</code> 列出要并排显示的节点值或梯度；给了 <code>sliders</code> 时每行再带一个滑块，用于 softmax 页按类别调 logits。</td></tr>
-    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列。也可以传入一个从图上取值的函数，函数的参数是计算图与当前的 steps 状态（没有挂载 steps 时 focus 为 0），例如 softmax 页用 <code>{ matrix: (g, state) =&gt; g.jacobian(p, x, { row: state.focus }) }</code> 显示当前样本的 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
+    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列；矩阵由函数给出且是方阵时（例如 Jacobian），改为框出目标类所在的行。也可以传入一个从图上取值的函数，函数的参数是计算图与当前的 steps 状态（没有挂载 steps 时 focus 为 0），例如 softmax 页用 <code>{ matrix: (g, state) =&gt; g.jacobian(p, x, { row: state.focus }) }</code> 显示当前样本的 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
     <tr><td><code>code</code></td><td>代码卡片，例如对应的 PyTorch 代码。</td></tr>
     <tr><td><code>note</code></td><td>一段说明文字。</td></tr>
   </tbody>

@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Softmax 小部件</title>
+<link rel="icon" href="data:,">
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; }
+.lede { color: var(--muted); max-width: 64ch; margin: 0 0 20px; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>Softmax 与交叉熵</h1>
+  <p class="lede">拖动 logits 的滑块或换一个目标类，损失、概率、梯度和讲解里的数值一起更新。这个页面只引入 core、steps 与 ui，不加载 3D。</p>
+  <div class="vf-split">
+    <div id="steps"></div>
+    <aside id="side"></aside>
+  </div>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
+
+const g = graph({ dims: { V: 5 } });
+const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
+const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
+const p = g.softmax(x, -1, { name: 'p' });
+const logp = g.log(p, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+
+const steps = createSteps(g, {
+  overview: {
+    title: '整张图',
+    text: '<p>logits 经过 softmax 得到概率，交叉熵取出目标类 {{t:token}} 的概率再取负对数。点上面的步骤，或用键盘 ← →。</p>'
+      + '$$\\ell = -\\log\\frac{e^{x_t}}{\\sum_j e^{x_j}} = {{loss:3}}$$',
+  },
+  forward: [
+    { show: x, label: 'x', title: 'logits',
+      text: '<p>模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t = {{t+1}}$。</p>'
+        + '$$x_{ {{t+1}} } = {{x[t]:2}}$$' },
+    { show: p, label: 'p', title: 'softmax',
+      text: '<p>每个分量取指数后除以总和，得到和为 1 的概率。</p>'
+        + '$$p_{ {{t+1}} } = \\frac{e^{x_{ {{t+1}} }}}{\\sum_j e^{x_j}} = {{p[t]:3}}$$' },
+    { show: logp, label: 'log p', title: '取对数',
+      text: '$$\\log p_{ {{t+1}} } = {{log p[t]:3}}$$' },
+    { show: loss, label: 'ℓ', title: '取目标类，取负号',
+      text: '<p>交叉熵只看目标类的概率，概率越接近 1，损失越接近 0。</p>'
+        + '$$\\ell = -\\log p_{ {{t+1}} } = {{loss:3}}$$' },
+  ],
+});
+
+mountSteps('#steps', steps);
+mountPanels('#side', g, [
+  { loss: {
+      sgd: { params: [x], lr: 1, label: '梯度下降一步' },
+      random: { nodes: [x], range: [-3, 3] },
+      reset: true,
+      text: '目标 "{{t:token}}"，p = {{p[t]:3}}',
+  } },
+  { tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true }], title: 'logits 与目标类' },
+  { matrix: (graph) => graph.jacobian(p, x), highlight: t, title: 'Softmax 的 Jacobian' },
+  { note: '$J_{ij} = \\partial p_i / \\partial x_j = p_i\\delta_{ij} - p_ip_j$，对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t$ 行。' },
+  { code: 'p = F.softmax(x, dim=-1)\nloss = F.nll_loss(p.log(), t)  # 等价于 F.cross_entropy(x, t)', title: '对应的 PyTorch' },
+], { steps });
+
+window.vizflow = { g, steps };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
