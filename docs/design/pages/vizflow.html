@@ -611,7 +611,7 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 <pre><code class="language-ts">mountSteps(el: string | HTMLElement, steps: Steps): Mounted
 mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { steps?: Steps }): Mounted
 interface Mounted { dispose(): void }</code></pre>
-<p><code>mountSteps</code> 画出步骤条（前向、反向两组按钮）、左右按钮和讲解正文；键盘的左右方向键切换步骤。焦点在输入框或步骤条以外的按钮上，或按着 Alt、Ctrl、Meta 时不响应；焦点在步骤条自己的按钮上时照常切换。同一页有多个步骤条时，只有最近一次点击或聚焦落在其中的那个响应方向键。</p>
+<p><code>mountSteps</code> 画出步骤条（前向、反向两组按钮）、左右按钮和讲解正文；键盘的左右方向键切换步骤。焦点在输入框或步骤条以外的按钮上，或按着 Alt、Ctrl、Meta 时不响应；焦点在步骤条自己的按钮上时照常切换。同一页有多个步骤条时，只有最近一次点击或聚焦落在其中的那个响应方向键，点击步骤条以外的地方不改变这一选择。</p>
 
 <h3>面板</h3>
 <p>面板拆成单独的小部件，页面只挂载需要的几个，可以放在侧栏、画布下方或正文里。第一版只组合这些现成的面板，不支持在页面里编写新的面板。</p>

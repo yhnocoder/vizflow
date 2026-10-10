@@ -416,7 +416,7 @@ describe('mountSteps', () => {
     expect([first.current, second.current]).toEqual([1, 1]);
     document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
     press(document, 'ArrowRight');
-    expect([first.current, second.current]).toEqual([1, 1]);
+    expect([first.current, second.current]).toEqual([2, 1]);
   });
 
   it('redraws the caption once per frame after graph changes', async () => {

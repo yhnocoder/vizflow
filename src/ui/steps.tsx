@@ -38,7 +38,9 @@ function StepsView(props: { steps: Steps }) {
   let root!: HTMLDivElement;
   let engaged = false;
   const onInteract = (event: Event) => {
-    engaged = event.target instanceof globalThis.Node && root.contains(event.target);
+    const target = event.target;
+    if (!(target instanceof Element) || !target.closest('.vf-stepper')) return;
+    engaged = root.contains(target);
   };
   const onKey = (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
