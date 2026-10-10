@@ -1,10 +1,10 @@
-# <Project>
+# vizflow
 
 ## 目标
 
-<Description>
+vizflow（包名 `@yhnocoder/vizflow`）是一个 TypeScript 库，用来编写可交互的 3D 计算图页面，讲解大模型中运算的前向与反向。页面用声明式的 API 描述张量、运算、布局和讲解，反向传播、连线、悬停卡片由库根据运算定义自动推导。
 
-文档从 `docs/design/index.html` 开始读，计划与进度见 GitHub issue #<IssueId>。
+文档从 `docs/design/index.html` 开始读，写作说明见 `docs/guide.md`。第一版没有建立 dashboard issue，建立后在这里写明编号。
 
 ## 协作方式
 
@@ -27,7 +27,7 @@ Design 使用 HTML 文档，主要由用户描述需求和预期，放在 `docs/
 
 ### 计划
 
-当前计划与进度写在 #<IssueId>（label 为 `dashboard`）的正文里：
+当前计划与进度写在 dashboard issue（label 为 `dashboard`）的正文里：
 
 - 顺序：计划分几段，每段做什么，前一段为什么是后一段的前提。
 - Task 列表：每个 Task 的 issue 编号、一句话内容、验收者、依赖与状态。完成的 Task 写明合并它的 PR。
@@ -95,9 +95,8 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 文件组织：
 
 - `docs/design/index.html` 是索引页，列出所有文档。
-- `docs/design/style.css` 是所有页面共用的样式。组件的写法和效果见 `pages/_template.html`，完整文档的写法参考 `examples/`。新文档复制 `pages/_template.html` 开始，保留 `<head>`（字体、MathJax、Prism 的引入），按需使用组件，删掉不用的内容。
+- `docs/design/style.css` 是所有页面共用的样式。组件的写法和效果见 `pages/_template.html`。新文档复制 `pages/_template.html` 开始，保留 `<head>`（字体、MathJax、Prism 的引入），按需使用组件，删掉不用的内容。
 - 项目的设计文档放在 `docs/design/pages/`。
-- `docs/design/examples/` 是示例，新项目开始时整个目录删除，并删除 index 里对应的卡片。
 - 改动 `docs/design/` 后运行 `uv run scripts/check_design.py`，它对每个页面截取桌面、375px、深色三种截图，并报告控制台错误、资源加载失败、公式渲染错误、窄屏横向溢出和断开的相对链接。脚本只能发现机械性错误，布局是否符合设计仍然需要看截图。
 
 

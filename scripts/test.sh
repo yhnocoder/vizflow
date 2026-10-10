@@ -7,3 +7,5 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   echo "shellcheck not found, skipped"
 fi
+npx tsc --noEmit
+npx vitest run

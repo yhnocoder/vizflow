@@ -1,0 +1,67 @@
+{
+  "name": "@yhnocoder/vizflow",
+  "version": "0.1.0",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "sideEffects": [
+    "*.css"
+  ],
+  "exports": {
+    "./core": {
+      "types": "./dist/types/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./explain": {
+      "types": "./dist/types/explain/index.d.ts",
+      "import": "./dist/explain.js"
+    },
+    "./steps": {
+      "types": "./dist/types/steps/index.d.ts",
+      "import": "./dist/steps.js"
+    },
+    "./ui": {
+      "types": "./dist/types/ui/index.d.ts",
+      "import": "./dist/ui.js"
+    },
+    "./scene3d": {
+      "types": "./dist/types/scene3d/index.d.ts",
+      "import": "./dist/scene3d.js"
+    },
+    "./formula": {
+      "types": "./dist/types/formula/index.d.ts",
+      "import": "./dist/formula.js"
+    },
+    "./theme": {
+      "types": "./dist/types/theme/index.d.ts",
+      "import": "./dist/theme.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "@types/node": "^22.20.5",
+    "@types/three": "^0.186.0",
+    "jsdom": "^30.1.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vite-plugin-dts": "^5.1.2",
+    "vite-plugin-solid": "^2.11.14",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@fontsource/geist": "^5.3.0",
+    "@fontsource/geist-mono": "^5.3.0",
+    "@fontsource/source-serif-4": "^5.3.0",
+    "katex": "^0.19.0",
+    "solid-js": "^1.9.17",
+    "three": "^0.186.1"
+  }
+}
