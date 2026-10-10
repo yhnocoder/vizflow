@@ -415,24 +415,26 @@ allVisible(g: Graph): StepState</code></pre>
   <li><code>merge</code> 中的每组节点并入组内最早出现的那一步。softmax 批量页用 <code>{ auto: true, merge: [[lb, y]] }</code> 把 $\ell$、$\ell_b$、$y$ 放进同一步。</li>
   <li>反向第 $k$ 步：revealed 为第 1 到 $k$ 步节点的并集，active 为第 $k$ 步的节点。</li>
 </ol>
+<p>图里没有损失节点时（例如只演示 softmax 的小部件），自动反向生成 0 步；这时给了 <code>merge</code> 或 <code>override</code> 会抛错。</p>
 <p>自动步骤的默认标题为 <code>∂ℓ/∂节点名</code>（合并的步骤用其中第一个非损失节点），按钮文字默认 <code>∂节点名</code>，默认正文是该节点反向层名卡片的公式。<code>override</code> 按反向步骤的下标覆盖标题、正文或按钮文字。</p>
 <p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边画成虚线，读者可以直接看出哪些路径上没有梯度。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
-<p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
+<p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
 
 <h3>正文模板</h3>
 <p>步骤正文是作者写的 HTML 字符串，其中 <code>$...$</code> 与 <code>$$...$$</code> 是公式，双花括号 <code>{{...}}</code> 里的是数值模板。模板用双花括号，与 LaTeX 的单花括号区分，<code>\mathbf{h}</code>、<code>W^{\top}_{k,t}</code> 不是模板。作者写 <code>{{z[t]}}</code>，页面就显示当前值，并在输入变化时更新，正文里代入的数字始终与图上的状态一致。<code>steps.text()</code> 只替换模板，公式由 <code>ui</code> 通过 <code>formula</code> 渲染。</p>
 <pre><code class="language-text">模板   := '{{' 表达式 (':' 格式)? '}}'
 表达式 := 引用 (('+' | '-') 整数)?
-引用   := 名字 ('.grad')? ('[' 下标 (',' 下标)* ']')?
+引用   := 'b' | 名字 ('.grad')? ('[' 下标 (',' 下标)* ']')?
 下标   := 整数 | 'b' | 名字 | 名字 '[' 'b' ']'
 格式   := 整数 | 'token'</code></pre>
 <p>模板可以写在公式里，例如 <code>$z_{ {{t+1}} } = {{z[t]}}$</code>。模板紧贴 LaTeX 花括号时要留一个空格；出现 <code>{{{</code> 或 <code>}}}</code> 时报错。</p>
 <ul>
-  <li>名字按 <code>g.node(name)</code> 查找，忽略空白。label 的名字作为下标时取它的整数值，<code>t[b]</code> 取第 b 行。<code>b</code> 是 <code>steps.focus</code>。</li>
+  <li>解析前去掉模板内的空白，名字按图中的节点名做最长前缀匹配，因此名字可以含点：<code>{{W.T.grad[0, t]}}</code> 是节点 <code>W.T</code> 的梯度。label 的名字作为下标时取它的整数值，<code>t[b]</code> 取第 b 行。</li>
+  <li><code>b</code> 是 <code>steps.focus</code>，可以单独使用，例如 <code>样本 {{b+1}}</code>。<code>b</code> 是保留名：图里有名为 <code>b</code> 的节点（例如偏置）而模板用到 <code>b</code> 时，创建 steps 时抛错，要求改名。原因是两种含义无法从模板里区分。</li>
   <li>下标从 0 开始。显示从 1 开始的序号时写 <code>{{t+1}}</code>。</li>
   <li>格式为整数时表示小数位数，例如 <code>{{loss:3}}</code>；<code>{{t:token}}</code> 输出 <code>tokens[t]</code>。</li>
-  <li>标量节点可以省略下标；shape 为 $(1,n)$ 的节点只写一个下标时视为 <code>[0, i]</code>。</li>
+  <li>标量节点可以省略下标；shape 为 $(1,n)$ 的节点只写一个下标时视为 <code>[0, i]</code>，$(n,1)$ 视为 <code>[i, 0]</code>；label 按整数输出。</li>
   <li>公式内的数用 <code>formatNumber(v, { tex: true })</code>，公式外用 U+2212 负号。</li>
   <li>不能解析的模板在创建 steps 时抛出带模板原文的错误。模板只能读取节点的值与梯度，不执行任意 JavaScript。</li>
 </ul>
@@ -442,7 +444,7 @@ allVisible(g: Graph): StepState</code></pre>
 <p><b>层名卡片</b>在悬停层名时出现。</p>
 <ul>
   <li>前向：标题为节点名；公式为 <code>tex = 前向模板</code>，例如 $\mathbf{z} = \mathbf{h}W^{\top}$；下面依次列出 shape、真实模型（给了 <code>real</code> 时，写作 <code>Qwen3-8B：(1, 151936)</code>）、当前值。当前值超过 8 个元素时只列前 8 个，后面加省略号。</li>
-  <li>反向：标题为 <code>∂ℓ/∂节点名</code>；公式是链式法则展开，对节点 $X$ 的每个消费者 $Y$ 写一项，只有一个消费者时不写求和：</li>
+  <li>反向：标题为 <code>∂ℓ/∂节点名</code>；公式是链式法则展开，对节点 $X$ 的每个消费者 $Y$ 写一项（只计结构上通向损失的运算，旁支和损失之后的节点不列，它们的项恒为 0），只有一个消费者时不写求和：</li>
 </ul>
 \begin{equation}
 \frac{\partial\ell}{\partial X} = \sum_{Y} \Big(\frac{\partial Y}{\partial X}\Big)^{\top} \frac{\partial\ell}{\partial Y} \label{eq:chain}
