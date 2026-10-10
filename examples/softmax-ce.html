@@ -63,6 +63,7 @@ const TARGETS = [0, 1, 2];
 const B = LOGITS.length;
 const CAMERA = { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] };
 const FORWARD_SCALES = { forward: 0.3 };
+const LEVEL = 3.9;
 const PYTORCH_SINGLE = 'u = x.exp()\nS = u.sum(-1, keepdim=True)\np = u / S\ny = p.gather(-1, t)\nloss = -y.log()\n# 合起来等价于\nloss = F.cross_entropy(x, t.squeeze(0))';
 const PYTORCH_BATCH = 'U = X.exp()\ns = U.sum(-1, keepdim=True)\nP = U / s\ny = P.gather(-1, t)\nl_b = -y.log()\nloss = l_b.mean()\n# 合起来等价于\nloss = F.cross_entropy(X, t.squeeze(-1))';
 
@@ -132,6 +133,8 @@ function single() {
     nodes: { x, t, u, S, p, y, logy, loss },
     hint: '拖动旋转 · 滚轮缩放 · 点柱子换目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
     layout: [stack(x, u, S, p, y, logy, loss, {
+      level: LEVEL,
+      back: 1.7,
       scales: { x: { ...FORWARD_SCALES, backward: 1.6 }, u: { forward: 0.11, backward: 4 }, p: { forward: 2.4, backward: 0.5 } },
     })],
     loss: {
@@ -217,6 +220,8 @@ function batch() {
     nodes: { X, t, U, S, P, y, logy, lb, loss },
     hint: '拖动旋转 · 点柱子选样本并设目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
     layout: [stack(X, U, S, P, y, logy, lb, loss, {
+      level: LEVEL,
+      back: 2.2,
       scales: { X: { ...FORWARD_SCALES, backward: 4.8 }, U: { forward: 0.11, backward: 12 }, P: { forward: 2.4, backward: 1.5 } },
     })],
     loss: {

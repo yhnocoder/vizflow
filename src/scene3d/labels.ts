@@ -13,6 +13,12 @@ const ANCHORS: Record<string, [number, number]> = {
 
 export type AnchorName = keyof typeof ANCHORS;
 
+export const LABEL_SAFE_MARGIN = 12;
+
+export function anchorOffset(anchor: AnchorName): [number, number] {
+  return ANCHORS[anchor];
+}
+
 const DEFAULT_ANCHOR: Record<LabelKind, AnchorName> = {
   val: 'top-center',
   tick: 'right-middle',
@@ -101,14 +107,20 @@ export class LabelLayer {
     for (const label of shown) {
       if (label.size === undefined) label.size = [label.el.offsetWidth, label.el.offsetHeight];
     }
+    const bounds = { x: LABEL_SAFE_MARGIN, y: LABEL_SAFE_MARGIN, w: width - 2 * LABEL_SAFE_MARGIN, h: height - 2 * LABEL_SAFE_MARGIN };
     const placements: Placement[] = shown.map((label) => {
       projected.set(...label.pos!).project(camera);
       const px = ((projected.x + 1) / 2) * width;
       const py = ((1 - projected.y) / 2) * height;
       const [ax, ay] = ANCHORS[label.anchor];
       const [w, h] = label.size!;
+      const box = { x: px + ax * w, y: py + ay * h, w, h };
+      if (label.kind === 'node') {
+        if (box.x + w > bounds.x + bounds.w) box.x = px - w;
+        else if (box.x < bounds.x) box.x = px;
+      }
       return {
-        box: { x: px + ax * w, y: py + ay * h, w, h },
+        box,
         movable: label.movable,
         hideOnOverlap: label.hideOnOverlap,
         priority: label.priority,
@@ -124,7 +136,7 @@ export class LabelLayer {
         if (other.x < box.x + box.w && box.x < other.x + other.w) box.y = Math.max(box.y, other.y + other.h);
       }
     });
-    const adjustments = avoidOverlaps(placements);
+    const adjustments = avoidOverlaps(placements, bounds);
     shown.forEach((label, i) => {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];

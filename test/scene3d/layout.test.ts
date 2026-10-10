@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { graph } from '../../src/core';
 import '../../src/explain';
 import {
+  AXIS_OFFSET,
   BATCH_ROW_SPACING,
   BOARD_COLUMN_SPACING,
+  SCALAR_NODE_RISE,
   SELECT_NODE_RISE,
   SIDE_NODE_OFFSET,
   STACK_BACK_OFFSET,
@@ -113,7 +115,7 @@ describe('stack layout', () => {
     expect(plane.elements.map((e) => e.x)).toEqual(blockOf(blocks, 'z').elements.map((e) => e.x));
     expect(plane.elements[0].y).toBe(STACK_LEVEL);
     expect(plane.elements[0].z).toBeCloseTo(2.9 - STACK_BACK_OFFSET, 12);
-    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - 1.4, z: 2.9 - STACK_BACK_OFFSET - 0.5 });
+    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - AXIS_OFFSET, z: 2.9 - STACK_BACK_OFFSET - 0.5 });
     expect(plane.classLabels[2].text).toBe('c');
     const box = blockOf(blocks, 'loss');
     expect(box.shape).toBe('box');
@@ -147,9 +149,23 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'p').elements[0].y).toBe(3);
     expect(blockOf(blocks, 'y')).toMatchObject({ shape: 'disc' });
     expect(blockOf(blocks, 'y').elements[0]).toMatchObject({ x: 1 - BOARD_COLUMN_SPACING, y: 3 + SELECT_NODE_RISE });
-    expect(blockOf(blocks, 'log y').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 1.5, 12);
+    expect(blockOf(blocks, 'log y').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + SCALAR_NODE_RISE, 12);
     expect(blockOf(blocks, 'loss')).toMatchObject({ shape: 'box' });
-    expect(blockOf(blocks, 'loss').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 3, 12);
+    expect(blockOf(blocks, 'loss').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 2 * SCALAR_NODE_RISE, 12);
+  });
+
+  it('moves each planar layer and the side node back by the back option', () => {
+    const g = graph({ dims: { V: 3 } });
+    const x = g.input('x', ['V'], [1, 2, 3]);
+    const u = g.exp(x, { name: 'u' });
+    const S = g.sum(u, -1, { keepdim: true, name: 'S' });
+    const p = g.div(u, S, { name: 'p' });
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const { blocks } = resolveLayout([stack(x, u, S, p, { at: [0, 0, 2.6], back: 1.7 })], ctx);
+    expect(blockOf(blocks, 'x').elements[0].z).toBe(2.6);
+    expect(blockOf(blocks, 'u').elements[0].z).toBeCloseTo(0.9, 12);
+    expect(blockOf(blocks, 'S').elements[0].z).toBeCloseTo(0.05, 12);
+    expect(blockOf(blocks, 'p').elements[0].z).toBeCloseTo(-0.8, 12);
   });
 
   it('keeps each batch row of a select chain on its own target column and centers the collapsed loss', () => {

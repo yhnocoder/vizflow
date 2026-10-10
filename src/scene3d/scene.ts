@@ -22,13 +22,12 @@ import type { Graph, Node } from '../autograd';
 import { type Explainer, type FlowEdge, explain, explainOf } from '../explain';
 import { render } from '../formula';
 import { type StepState, type Steps, allVisible } from '../steps';
-import { formatNumber, offsetOf } from '../tensor';
-import { defaultDigits } from '../tensor/format';
+import { defaultDigits, formatNumber, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
 import { edgeCardElement, nodeCardElement, placePop, placeTip } from './cards';
 import { barColor, nodeColor, outlineOpacity } from './colors';
-import { type Label, LabelLayer } from './labels';
+import { LABEL_SAFE_MARGIN, type Label, LabelLayer, anchorOffset } from './labels';
 import {
   type Block,
   type BoardGeometry,
@@ -74,7 +73,7 @@ export const DEFAULT_POLAR: [number, number] = [0.3, 1.45];
 export const DEFAULT_ZOOM: [number, number] = [0.6, 3];
 export const DAMPING = 0.1;
 export const PIXEL_RATIO_CAP = 2;
-export const FRAME_MARGIN = 0.08;
+const FRAME_SEARCH_STEPS = 30;
 export const EDGE_HOVER_DISTANCE = 6;
 export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显示不出来。下方的分步讲解和右侧数值仍然可用。';
 
@@ -125,6 +124,25 @@ interface DrawnEdge {
 }
 
 const tmpVector = new Vector3();
+
+interface FrameItem {
+  x: number;
+  y: number;
+  left: number;
+  right: number;
+  up: number;
+  down: number;
+}
+
+function span(items: FrameItem[], k: number, at: (i: FrameItem) => number, before: (i: FrameItem) => number, after: (i: FrameItem) => number): { lo: number; hi: number; size: number } {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const item of items) {
+    lo = Math.min(lo, at(item) * k - before(item));
+    hi = Math.max(hi, at(item) * k + after(item));
+  }
+  return { lo, hi, size: hi - lo };
+}
 
 function tangentLength(a: Vec3, b: Vec3): number {
   return Math.max(Math.abs(b[1] - a[1]) * CURVE_TANGENT, CURVE_MIN_TANGENT);
@@ -212,6 +230,7 @@ class SceneController {
     renderer.outputColorSpace = SRGBColorSpace;
     root.appendChild(renderer.domElement);
     this.labels = new LabelLayer(root, () => {
+      this.frameAll();
       this.labelsDirty = true;
       this.requestFrame();
     });
@@ -255,10 +274,10 @@ class SceneController {
     this.highlightMaterial = new MeshBasicMaterial({ color: new Color(...this.theme.ink) });
 
     this.buildBlocks();
+    this.refresh();
     this.resize();
     this.placeCamera();
     this.controls.saveState();
-    this.refresh();
 
     this.unsubscribe.push(g.subscribe(() => this.refresh()));
     if (options.steps !== undefined) this.unsubscribe.push(options.steps.subscribe(() => this.refresh()));
@@ -728,28 +747,54 @@ class SceneController {
     const center = this.center();
     const eye = center.clone().addScaledVector(this.direction, CAMERA_DISTANCE);
     const view = new Matrix4().lookAt(eye, center, this.camera.up).setPosition(eye).invert();
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-    for (const p of this.framingPoints()) {
+    const marginX = LABEL_SAFE_MARGIN;
+    const marginY = LABEL_SAFE_MARGIN;
+    const items: FrameItem[] = this.framingPoints().map((p) => {
       tmpVector.set(...p).applyMatrix4(view);
-      minX = Math.min(minX, tmpVector.x);
-      maxX = Math.max(maxX, tmpVector.x);
-      minY = Math.min(minY, tmpVector.y);
-      maxY = Math.max(maxY, tmpVector.y);
+      return { x: tmpVector.x, y: tmpVector.y, left: marginX, right: marginX, up: marginY, down: marginY };
+    });
+    const geometry = { x: span(items, 1, (i) => i.x, () => 0, () => 0), y: span(items, 1, (i) => i.y, () => 0, () => 0) };
+    for (const label of this.labels.labels) {
+      if (label.pos === undefined) continue;
+      if (label.size === undefined) label.size = [label.el.offsetWidth, label.el.offsetHeight];
+      const [w, h] = label.size;
+      if (w === 0 && h === 0) continue;
+      const [ax, ay] = anchorOffset(label.anchor);
+      tmpVector.set(...label.pos).applyMatrix4(view);
+      const flippable = label.kind === 'node';
+      items.push({
+        x: tmpVector.x,
+        y: tmpVector.y,
+        left: LABEL_SAFE_MARGIN + (flippable ? w : -ax * w),
+        right: LABEL_SAFE_MARGIN + (flippable ? 0 : (ax + 1) * w),
+        up: LABEL_SAFE_MARGIN - ay * h,
+        down: (ay + 1) * h + LABEL_SAFE_MARGIN,
+      });
     }
-    const marginX = FRAME_MARGIN * this.width;
-    const marginY = FRAME_MARGIN * this.height;
     const reserve = this.chromeBottom();
-    const availableW = this.width - 2 * marginX;
-    const availableH = Math.max(this.height - 2 * marginY - reserve, this.height / 2);
-    const unit = Math.max((maxX - minX) / availableW, (maxY - minY) / availableH);
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
+    const availableH = Math.max(this.height - reserve, this.height / 2);
+    const spanX = (k: number) => span(items, k, (i) => i.x, (i) => i.left, (i) => i.right);
+    const spanY = (k: number) => span(items, k, (i) => -i.y, (i) => i.up, (i) => i.down);
+    const fits = (k: number) => spanX(k).size <= this.width && spanY(k).size <= availableH;
+    let k = Math.min((this.width - 2 * marginX) / geometry.x.size, (availableH - 2 * marginY) / geometry.y.size);
+    if (!fits(k) && fits(0)) {
+      let lo = 0;
+      let hi = k;
+      for (let i = 0; i < FRAME_SEARCH_STEPS; i++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) lo = mid;
+        else hi = mid;
+      }
+      k = lo;
+    }
+    const unit = 1 / k;
+    const sx = spanX(k);
+    const sy = spanY(k);
+    const cx = ((sx.lo + sx.hi) / 2) * unit;
+    const cy = -((sy.lo + sy.hi) / 2) * unit;
     this.camera.left = cx - (this.width * unit) / 2;
     this.camera.right = cx + (this.width * unit) / 2;
-    this.camera.top = cy + (this.height - marginY - availableH / 2) * unit;
+    this.camera.top = cy + (reserve + availableH / 2) * unit;
     this.camera.bottom = this.camera.top - this.height * unit;
     this.camera.updateProjectionMatrix();
   }

@@ -18,6 +18,7 @@ export interface TemplateOptions {
 
 export interface StackOptions extends TemplateOptions {
   level?: number;
+  back?: number;
 }
 
 export type LayoutItem =
@@ -52,11 +53,11 @@ export const BATCH_ROW_SPACING = 1.4;
 export const STACK_LEVEL = 5.2;
 export const STACK_BACK_OFFSET = 0.7;
 export const SIDE_NODE_OFFSET = 2.6;
-export const SELECT_NODE_RISE = 1.6;
-export const SCALAR_NODE_RISE = 1.5;
+export const SELECT_NODE_RISE = 2.6;
+export const SCALAR_NODE_RISE = 1.1;
 export const LINE_HEIGHT = 0.03;
 export const PLATE_THICKNESS = 0.04;
-export const AXIS_OFFSET = 1.4;
+export const AXIS_OFFSET = 2.0;
 export const PLATE_SIDE_MARGIN = 0.75;
 export const ROW_LABEL_MARGIN = 0.15;
 
@@ -325,6 +326,8 @@ function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: Layout
   const [rows, cols] = rowsCols(n.shape);
   const s = options.scale ?? 1;
   const axisX = xs[0] - AXIS_OFFSET * s;
+  const front = Math.max(...zs);
+  const back = Math.min(...zs);
   const block: Block = {
     node: n,
     role: 'planar',
@@ -334,10 +337,10 @@ function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: Layout
     batched: rows > 1,
     elements: elementsOf(n, (r, c) => [xs[c], y, zs[r]]),
     footprint: FOOTPRINTS.bar,
-    plate: { x: (xs[0] + xs[cols - 1]) / 2, y, z: (zs[0] + zs[rows - 1]) / 2, w: xs[cols - 1] - xs[0] + 2 * PLATE_SIDE_MARGIN, d: 1.0 + (zs[rows - 1] - zs[0]) },
-    axis: { x: axisX, z: zs[0] - 0.5 },
+    plate: { x: (xs[0] + xs[cols - 1]) / 2, y, z: (zs[0] + zs[rows - 1]) / 2, w: xs[cols - 1] - xs[0] + 2 * PLATE_SIDE_MARGIN, d: 1.0 + (front - back) },
+    axis: { x: axisX, z: back - 0.5 },
     title: { x: axisX - 0.95, y: y + 0.35, z: zs[0], anchor: 'left' },
-    classLabels: labelsFor(n, ctx, cols, (c) => [xs[c], y + 0.2, zs[rows - 1] + 0.7], 'below'),
+    classLabels: labelsFor(n, ctx, cols, (c) => [xs[c], y + 0.2, front + 0.7], 'below'),
     rowLabels: [],
     frameHalf: ctx.aligned.has(n) ? [0.45, 0.45] : undefined,
     frameRows: zs.map((z) => ({ z, y })),
@@ -383,6 +386,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
   const [ax, ay, az] = options.at ?? [0, 0, 0];
   const s = options.scale ?? 1;
   const level = (options.level ?? STACK_LEVEL) * s;
+  const back = (options.back ?? STACK_BACK_OFFSET) * s;
   const colGap = (options.gap ?? BOARD_COLUMN_SPACING) * s;
   const blocks: Block[] = [];
   let planar: Layer | undefined;
@@ -404,8 +408,8 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const base = planar ?? last;
       const y = base === undefined ? ay : (planar === undefined ? base.y : planar.y + level);
       const xs = base !== undefined && base.xs.length === cols ? base.xs : Array.from({ length: cols }, (_, c) => ax + (c - (cols - 1) / 2) * colGap);
-      const back = planar === undefined ? 0 : STACK_BACK_OFFSET * s;
-      const zs = base !== undefined && base.zs.length === rows ? base.zs.map((z) => z - back) : Array.from({ length: rows }, (_, r) => az + r * BATCH_ROW_SPACING * s);
+      const shift = planar === undefined ? 0 : back;
+      const zs = base !== undefined && base.zs.length === rows ? base.zs.map((z) => z - shift) : Array.from({ length: rows }, (_, r) => az - r * BATCH_ROW_SPACING * s);
       block = planarBlock(n, y, xs, zs, ctx, options);
       planar = layerOf(block);
       last = planar;
@@ -413,7 +417,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const layer = layerOf(source);
       const x = layer.xs[layer.cols - 1] + SIDE_NODE_OFFSET * s;
       const y = layer.y + level / 2;
-      const zs = layer.zs.map((z) => z - (STACK_BACK_OFFSET / 2) * s);
+      const zs = layer.zs.map((z) => z - back / 2);
       block = scalarBlock(n, 'disc', (r) => [x, y, zs[Math.min(r, layer.rows - 1)]], options);
       last = { y, xs: [x], zs };
     } else if (source !== undefined && source.cols > 1 && pattern === 'select') {

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
+import { expectLabelsApartAndInside } from './labels';
 
 const DEFAULT_LOSS = 0.5027410756235495;
 const SETTLE_MS = 400;
@@ -53,6 +54,7 @@ test('every step renders without console errors', async ({ page }, info) => {
     await goStep(page, i);
     await expect(page.locator('.vf-st[aria-current="step"]')).toHaveCount(1);
     await expect(page.locator('.vf-caption .vf-tex-error')).toHaveCount(0);
+    await expectLabelsApartAndInside(page, `step ${i} at 1280px`);
     await page.screenshot({ path: info.outputPath(`step-${i}-${STEP_NAMES[i]}.png`) });
   }
   expect(errors).toEqual([]);
@@ -116,12 +118,21 @@ for (const step of [0, FORWARD_2, BACKWARD_3]) {
     await page.setViewportSize({ width: 1280, height: 900 });
     const errors = await open(page);
     await goStep(page, step);
+    await expectLabelsApartAndInside(page, `step ${step} at 1280px`);
     await shot(page, info, `${name}-1280`);
 
     await page.setViewportSize({ width: 375, height: 812 });
     await page.waitForTimeout(SETTLE_MS);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
+    await expectLabelsApartAndInside(page, `step ${step} at 375px`);
+    const formulas = await page.locator('.vf-caption .katex-display').evaluateAll((els) =>
+      els.map((el) => ({ overflow: getComputedStyle(el).overflowX, right: el.getBoundingClientRect().right, card: el.closest('.vf-stepper')!.getBoundingClientRect().right })),
+    );
+    for (const f of formulas) {
+      expect(f.overflow).toBe('auto');
+      expect(f.right).toBeLessThanOrEqual(f.card);
+    }
     await shot(page, info, `${name}-375`);
 
     await page.setViewportSize({ width: 1280, height: 900 });

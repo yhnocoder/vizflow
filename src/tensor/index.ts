@@ -13,4 +13,4 @@ export {
   formatShape,
 } from './shape';
 export { broadcastShapes, broadcastIndex, unbroadcast } from './broadcast';
-export { formatNumber } from './format';
+export { formatNumber, defaultDigits } from './format';

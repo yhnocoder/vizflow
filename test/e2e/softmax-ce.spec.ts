@@ -1,4 +1,5 @@
 import { type Page, expect, test } from '@playwright/test';
+import { expectLabelsApartAndInside } from './labels';
 
 type Mode = 'single' | 'batch';
 
@@ -94,6 +95,7 @@ for (const scheme of ['light', 'dark'] as const) {
         for (let i = 0; i < count; i++) {
           await goStep(page, mode, i);
           await expect(page.locator('.vf-st[aria-current="step"]')).toHaveCount(1);
+          await expectLabelsApartAndInside(page, `${mode} step ${i} at ${width}px`);
           if (i === 0 || i === FORWARD_STEP || i === BACKWARD_STEP) {
             const name = i === 0 ? 'overview' : i === FORWARD_STEP ? 'forward' : 'backward';
             await page.screenshot({ path: `${SCREENSHOT_DIR}/${mode}-${name}-${tag}.png`, fullPage: true });

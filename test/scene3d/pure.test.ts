@@ -157,6 +157,24 @@ describe('label avoidance', () => {
     ]);
     expect(result[1]).toEqual({ dx: 0, dy: 0, hidden: false });
   });
+
+  it('keeps labels inside the bounds: moves movable ones in and hides fixed ones outside', () => {
+    const bounds = box(12, 12, 200, 100);
+    const result = avoidOverlaps([
+      { box: box(190, 50), movable: true, hideOnOverlap: false, priority: 4 },
+      { box: box(195, 20), movable: false, hideOnOverlap: true, priority: 1 },
+      { box: box(50, 50), movable: false, hideOnOverlap: true, priority: 1 },
+    ], bounds);
+    expect(result[0].hidden).toBe(false);
+    expect(190 + result[0].dx + 40).toBeLessThanOrEqual(212);
+    expect(result[1].hidden).toBe(true);
+    expect(result[2].hidden).toBe(false);
+  });
+
+  it('clamps a movable label into the bounds when no free offset exists', () => {
+    const result = avoidOverlaps([{ box: box(300, -40), movable: true, hideOnOverlap: false, priority: 3 }], box(0, 0, 100, 100));
+    expect(result[0]).toEqual({ dx: -240, dy: 40, hidden: false });
+  });
 });
 
 describe('edge style', () => {

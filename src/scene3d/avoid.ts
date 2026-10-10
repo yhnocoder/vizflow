@@ -36,11 +36,22 @@ function shifted(box: Box, dx: number, dy: number): Box {
   return { x: box.x + dx, y: box.y + dy, w: box.w, h: box.h };
 }
 
-export function avoidOverlaps(items: Placement[]): Adjustment[] {
+function inside(box: Box, bounds: Box | undefined): boolean {
+  return bounds === undefined || (box.x >= bounds.x && box.y >= bounds.y && box.x + box.w <= bounds.x + bounds.w && box.y + box.h <= bounds.y + bounds.h);
+}
+
+function clamped(box: Box, bounds: Box | undefined): [number, number] {
+  if (bounds === undefined) return [0, 0];
+  const x = Math.max(bounds.x, Math.min(box.x, bounds.x + bounds.w - box.w));
+  const y = Math.max(bounds.y, Math.min(box.y, bounds.y + bounds.h - box.h));
+  return [x - box.x, y - box.y];
+}
+
+export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
   const order = items.map((_, i) => i).sort((a, b) => items[b].priority - items[a].priority || a - b);
-  const placed: { box: Box }[] = []; 
+  const placed: { box: Box }[] = [];
   const result: Adjustment[] = items.map(() => ({ dx: 0, dy: 0, hidden: false }));
-  const free = (box: Box) => placed.every((other) => !intersects(box, other.box));
+  const free = (box: Box) => inside(box, bounds) && placed.every((other) => !intersects(box, other.box));
   for (const i of order) {
     const item = items[i];
     if (item.movable) {
@@ -55,7 +66,7 @@ export function avoidOverlaps(items: Placement[]): Adjustment[] {
           }
         }
       }
-      const [dx, dy] = found ?? [0, 0];
+      const [dx, dy] = found ?? clamped(item.box, bounds);
       result[i] = { dx, dy, hidden: false };
       placed.push({ box: shifted(item.box, dx, dy) });
     } else if (item.hideOnOverlap) {

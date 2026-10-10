@@ -1,11 +1,6 @@
+import { join } from 'node:path';
 import { type Page, expect, test } from '@playwright/test';
-
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
+import { intersects, labelRects, stageRect } from './labels';
 
 const FORWARD_2 = 2;
 const BACKWARD_2 = 7;
@@ -27,38 +22,24 @@ async function openScene(page: Page, query = ''): Promise<string[]> {
   return errors;
 }
 
+async function shot(page: Page, file: string, name: string): Promise<void> {
+  await page.screenshot({ path: file });
+  const dir = process.env.VIZFLOW_SHOT_DIR;
+  if (dir) await page.screenshot({ path: join(dir, `${name}.png`) });
+}
+
 async function goStep(page: Page, index: number): Promise<void> {
   await page.evaluate((i) => (window as unknown as { steps: { go(i: number): void } }).steps.go(i), index);
   await page.waitForTimeout(SETTLE_MS);
 }
 
-async function stageRect(page: Page): Promise<Rect> {
-  return page.locator('.vf-scene').evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    return { x: r.left, y: r.top, w: r.width, h: r.height };
-  });
-}
-
-async function labelRects(page: Page, selector: string): Promise<Rect[]> {
-  return page.locator(selector).evaluateAll((elements) =>
-    elements
-      .filter((el) => !el.classList.contains('vf-off'))
-      .map((el) => {
-        const r = el.getBoundingClientRect();
-        return { x: r.left, y: r.top, w: r.width, h: r.height };
-      }),
-  );
-}
-
-const intersects = (a: Rect, b: Rect) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-
 test('renders the lm_head scene and screenshots forward step 2 and backward step 3', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   const errors = await openScene(page);
   await goStep(page, FORWARD_2);
-  await page.screenshot({ path: 'test-results/scene-forward-2.png' });
+  await shot(page, 'test-results/scene-forward-2.png', 'desktop-forward-2');
   await goStep(page, BACKWARD_3);
-  await page.screenshot({ path: 'test-results/scene-backward-3.png' });
+  await shot(page, 'test-results/scene-backward-3.png', 'desktop-backward-3');
   expect(errors).toEqual([]);
   expect(await page.locator('.vf-lb.vf-val:not(.vf-off)').count()).toBeGreaterThan(0);
 });
@@ -108,7 +89,7 @@ test('hovering a z → LSE edge in a backward step shows the edge card with expl
   }, edgeId);
   expect(shown).toEqual(expected);
   expect(await pop.locator('.vf-lab').allTextContents()).toEqual(['局部导数', '上游梯度', '沿这条边传回']);
-  await page.screenshot({ path: 'test-results/scene-edge-card.png' });
+  await shot(page, 'test-results/scene-edge-card.png', 'card-edge-z-to-LSE');
 });
 
 test('clicking another logits bar changes the target and the loss', async ({ page }) => {
@@ -124,7 +105,7 @@ test('clicking another logits bar changes the target and the loss', async ({ pag
   await page.mouse.move(box.x + box.width / 2, box.y + box.height + 10);
   await expect(page.locator('.vf-tip')).toBeVisible();
   await expect(page.locator('.vf-tip')).toContainText('点击设为目标 token');
-  await page.screenshot({ path: 'test-results/scene-tip.png' });
+  await shot(page, 'test-results/scene-tip.png', 'tooltip-hover-z2');
   await page.mouse.down();
   await page.mouse.up();
   expect(await readTarget()).toBe(1);
@@ -139,7 +120,7 @@ test('hovering a block title shows the node card', async ({ page }) => {
   await expect(pop).toBeVisible();
   await expect(pop.locator('.vf-pop-title')).toHaveText('z');
   await expect(pop.locator('dt').first()).toHaveText('shape');
-  await page.screenshot({ path: 'test-results/scene-node-card.png' });
+  await shot(page, 'test-results/scene-node-card.png', 'card-node-z');
 });
 
 test('movable labels do not overlap at 375px width', async ({ page }) => {
@@ -155,7 +136,7 @@ test('movable labels do not overlap at 375px width', async ({ page }) => {
       }
     }
   }
-  await page.screenshot({ path: 'test-results/scene-375.png' });
+  await shot(page, 'test-results/scene-375.png', 'mobile-375-backward-3');
   expect(errors).toEqual([]);
 });
 
