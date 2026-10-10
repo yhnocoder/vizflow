@@ -199,7 +199,7 @@ export class NodeMesh {
 
 export class PlateMesh {
   readonly group = new Group();
-  private readonly mesh: Mesh;
+  readonly mesh: Mesh;
   private readonly geometry: BoxGeometry;
   private readonly edges: EdgesGeometry;
   private readonly material: MeshLambertMaterial;

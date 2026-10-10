@@ -1,0 +1,104 @@
+.vf-edit {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  width: min(260px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vf-edit-head {
+  padding: 6px 11px;
+  cursor: pointer;
+  color: var(--fg);
+  user-select: none;
+}
+
+.vf-edit-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 11px 10px;
+}
+
+.vf-edit-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.vf-edit-name {
+  flex-basis: 100%;
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.vf-edit-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.vf-edit-input {
+  width: 64px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 5px;
+}
+
+.vf-edit-input:focus-visible,
+.vf-edit-code:focus-visible {
+  outline: 2px solid var(--pos);
+  outline-offset: 1px;
+}
+
+.vf-edit-status {
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.vf-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.vf-edit-code {
+  width: 100%;
+  box-sizing: border-box;
+  height: 110px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--ink) 4%, var(--surface));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px;
+}
+
+.vf-scene canvas.vf-cursor-move,
+.vf-editing .vf-lb.vf-ttl,
+.vf-editing .vf-lb.vf-node {
+  cursor: move;
+}
+
+.vf-scene.vf-dragging,
+.vf-scene.vf-dragging canvas {
+  cursor: grabbing;
+  user-select: none;
+}

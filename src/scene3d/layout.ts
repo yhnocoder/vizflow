@@ -19,6 +19,7 @@ export interface TemplateOptions {
 export interface StackOptions extends TemplateOptions {
   level?: number;
   back?: number;
+  offsets?: Record<string, Vec3>;
 }
 
 export type LayoutItem =
@@ -300,6 +301,41 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
   return { op: out, a: aBlock, b: bBlock, out: outBlock, y };
 }
 
+function shiftBlock(block: Block, [dx, dy, dz]: Vec3): void {
+  const shift = (p: { x: number; y: number; z: number }) => {
+    p.x += dx;
+    p.y += dy;
+    p.z += dz;
+  };
+  block.elements.forEach(shift);
+  if (block.plate !== undefined) shift(block.plate);
+  if (block.axis !== undefined) {
+    block.axis.x += dx;
+    block.axis.z += dz;
+  }
+  shift(block.title);
+  block.classLabels.forEach(shift);
+  block.rowLabels.forEach(shift);
+  for (const row of block.frameRows) {
+    row.y += dy;
+    row.z += dz;
+  }
+  block.extent = block.extent.map(([x, y, z]): Vec3 => [x + dx, y + dy, z + dz]);
+}
+
+interface StackCursor {
+  y: number;
+  xs: number[];
+  zs: number[];
+  rowXs?: number[];
+  spanXs?: number[];
+}
+
+function shiftCursor(cursor: StackCursor, [dx, dy, dz]: Vec3): StackCursor {
+  const add = (values: number[] | undefined, d: number) => values?.map((v) => v + d);
+  return { y: cursor.y + dy, xs: add(cursor.xs, dx)!, zs: add(cursor.zs, dz)!, rowXs: add(cursor.rowXs, dx), spanXs: add(cursor.spanXs, dx) };
+}
+
 interface Layer {
   y: number;
   xs: number[];
@@ -390,7 +426,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
   const colGap = (options.gap ?? BOARD_COLUMN_SPACING) * s;
   const blocks: Block[] = [];
   let planar: Layer | undefined;
-  let last: { y: number; xs: number[]; zs: number[]; rowXs?: number[]; spanXs?: number[] } | undefined;
+  let last: StackCursor | undefined;
   for (const n of item.nodes) {
     const existing = placed.get(n);
     if (existing !== undefined) {
@@ -444,6 +480,12 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const extent = (spanXs ?? []).map((x): Vec3 => [x, y, zOf(0)]);
       block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent);
       last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs };
+    }
+    const offset = options.offsets?.[n.name];
+    if (offset !== undefined) {
+      shiftBlock(block, offset);
+      if (block.role === 'planar') planar = layerOf(block);
+      last = block.role === 'planar' ? planar : shiftCursor(last!, offset);
     }
     placed.set(n, block);
     blocks.push(block);

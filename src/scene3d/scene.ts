@@ -25,6 +25,8 @@ import { type StepState, type Steps, allVisible } from '../steps';
 import { defaultDigits, formatNumber, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
+import { type EditHost, mountEditor } from './edit';
+import { editableLayout } from './editconfig';
 import { edgeCardElement, nodeCardElement, placePop, placeTip } from './cards';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import { LABEL_SAFE_MARGIN, type Label, LabelLayer, anchorOffset } from './labels';
@@ -60,6 +62,7 @@ export interface SceneOptions {
   edit?: boolean;
   camera?: CameraOptions;
   hint?: string;
+  labels?: Record<string, [number, number]>;
 }
 
 export interface SceneHandle {
@@ -179,15 +182,15 @@ function parenthesized(v: number): string {
   return v < 0 ? `(${formatNumber(v)})` : formatNumber(v);
 }
 
-class SceneController {
+class SceneController implements EditHost {
   private readonly renderer: WebGLRenderer;
   private readonly scene = new Scene();
-  private readonly camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_DISTANCE * 5);
-  private readonly controls: OrbitControls;
+  readonly camera = new OrthographicCamera(-1, 1, 1, -1, 0.1, CAMERA_DISTANCE * 5);
+  readonly controls: OrbitControls;
   private readonly direction: Vector3;
   private readonly explainer: Explainer;
   private readonly aligned: Map<Node, Node>;
-  private readonly labels: LabelLayer;
+  readonly labels: LabelLayer;
   private readonly tip: HTMLDivElement;
   private readonly pop: HTMLDivElement;
   private readonly lines: LineBatch;
@@ -216,9 +219,9 @@ class SceneController {
   private disposed = false;
 
   constructor(
-    private readonly root: HTMLDivElement,
+    readonly root: HTMLDivElement,
     private readonly g: Graph,
-    private readonly options: SceneOptions,
+    readonly options: SceneOptions,
     renderer: WebGLRenderer,
   ) {
     this.renderer = renderer;
@@ -252,10 +255,7 @@ class SceneController {
     const [minZoom, maxZoom] = cameraOptions.zoom ?? DEFAULT_ZOOM;
     this.controls.minZoom = minZoom;
     this.controls.maxZoom = maxZoom;
-    const azimuth = Math.atan2(this.direction.x, this.direction.z);
-    const [azLo, azHi] = cameraOptions.azimuth ?? DEFAULT_AZIMUTH;
-    this.controls.minAzimuthAngle = azimuth + azLo;
-    this.controls.maxAzimuthAngle = azimuth + azHi;
+    this.limitAzimuth();
     const [polarLo, polarHi] = cameraOptions.polar ?? DEFAULT_POLAR;
     this.controls.minPolarAngle = polarLo;
     this.controls.maxPolarAngle = polarHi;
@@ -288,7 +288,57 @@ class SceneController {
     });
     this.resizeObserver.observe(root);
     this.bindPointer();
+    if (options.edit === true) this.unsubscribe.push(mountEditor(this));
     this.requestFrame();
+  }
+
+  private limitAzimuth(): void {
+    const azimuth = Math.atan2(this.direction.x, this.direction.z);
+    const [azLo, azHi] = this.options.camera?.azimuth ?? DEFAULT_AZIMUTH;
+    this.controls.minAzimuthAngle = azimuth + azLo;
+    this.controls.maxAzimuthAngle = azimuth + azHi;
+  }
+
+  get canvas(): HTMLCanvasElement {
+    return this.renderer.domElement;
+  }
+
+  get visible(): readonly Node[] {
+    return this.options.steps?.visible ?? this.g.nodes;
+  }
+
+  setDirection(direction: Vec3): void {
+    this.direction.set(...direction).normalize();
+    this.limitAzimuth();
+    this.resetView();
+  }
+
+  relayout(reframe: boolean): void {
+    this.resolve();
+    for (const renderable of this.renderables) {
+      if (renderable.plate === undefined) continue;
+      this.scene.remove(renderable.plate.group);
+      renderable.plate.dispose();
+      renderable.plate = new PlateMesh(renderable.block, this.theme);
+      this.scene.add(renderable.plate.group);
+    }
+    this.refresh();
+    if (reframe) this.resetView();
+  }
+
+  blockAt(clientX: number, clientY: number): { node: Node; y: number } | undefined {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const owners = new Map<Object3D, Renderable>();
+    for (const renderable of this.renderables) {
+      for (const object of renderable.pickables) owners.set(object, renderable);
+      if (renderable.plate !== undefined) owners.set(renderable.plate.mesh, renderable);
+    }
+    const hits = this.raycaster.intersectObjects([...owners.keys()], false);
+    if (hits.length === 0) return undefined;
+    const block = owners.get(hits[0].object)!.block;
+    return { node: block.node, y: block.elements[0].y };
   }
 
   private currentState(): StepState {
@@ -319,9 +369,8 @@ class SceneController {
   }
 
   private resolve(): void {
-    const steps = this.options.steps;
     const resolved = resolveLayout(this.options.layout, {
-      visible: steps?.visible ?? this.g.nodes,
+      visible: this.visible,
       aligned: this.aligned,
       targetOf: targetColumn,
       focus: this.state.focus,
@@ -445,6 +494,7 @@ class SceneController {
         renderable.title!.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
         renderable.title!.visible = revealed;
         renderable.title!.el.dataset.node = node.name;
+        renderable.title!.offset = this.options.labels?.[node.name];
         texOf(renderable.title!, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
         let largest = 0;
         for (let i = 0; i < values.length; i++) largest = Math.max(largest, Math.abs(values[i]));
@@ -467,6 +517,7 @@ class SceneController {
           label.pos = [element.x, element.y + renderable.nodes!.height / 2 + 0.45, element.z];
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
+          label.offset = this.options.labels?.[node.name];
           label.visible = revealed && focusedRow(element.row);
         });
         const colors = block.elements.map((element, i) => nodeColor(values[i], this.theme, { dir, revealed, active, focused: focusedRow(element.row) }));
@@ -761,14 +812,15 @@ class SceneController {
       if (w === 0 && h === 0) continue;
       const [ax, ay] = anchorOffset(label.anchor);
       tmpVector.set(...label.pos).applyMatrix4(view);
-      const flippable = label.kind === 'node';
+      const flippable = label.kind === 'node' && label.offset === undefined;
+      const [dx, dy] = label.offset ?? [0, 0];
       items.push({
         x: tmpVector.x,
         y: tmpVector.y,
-        left: LABEL_SAFE_MARGIN + (flippable ? w : -ax * w),
-        right: LABEL_SAFE_MARGIN + (flippable ? 0 : (ax + 1) * w),
-        up: LABEL_SAFE_MARGIN - ay * h,
-        down: (ay + 1) * h + LABEL_SAFE_MARGIN,
+        left: LABEL_SAFE_MARGIN + (flippable ? w : -ax * w - dx),
+        right: LABEL_SAFE_MARGIN + (flippable ? 0 : (ax + 1) * w + dx),
+        up: LABEL_SAFE_MARGIN - ay * h - dy,
+        down: (ay + 1) * h + dy + LABEL_SAFE_MARGIN,
       });
     }
     const reserve = this.chromeBottom();
@@ -808,6 +860,9 @@ class SceneController {
   }
 
   resetView(): void {
+    this.controls.enableDamping = false;
+    this.controls.update();
+    this.controls.enableDamping = true;
     this.controls.reset();
     this.placeCamera();
     this.frameAll();
@@ -1058,6 +1113,7 @@ export function mountScene(el: string | HTMLElement, g: Graph, options: SceneOpt
     root.appendChild(notice);
     return { resetView() {}, dispose: () => root.remove() };
   }
-  const controller = new SceneController(root, g, options, renderer);
+  const sceneOptions = options.edit === true ? { ...options, layout: editableLayout(options.layout), camera: { ...options.camera }, labels: { ...options.labels } } : options;
+  const controller = new SceneController(root, g, sceneOptions, renderer);
   return { resetView: () => controller.resetView(), dispose: () => controller.dispose() };
 }

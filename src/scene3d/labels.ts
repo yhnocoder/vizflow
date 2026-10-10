@@ -41,6 +41,9 @@ export class Label {
   visible = true;
   size: [number, number] | undefined = undefined;
   under: Label[] = [];
+  offset: [number, number] | undefined = undefined;
+  base: [number, number] = [0, 0];
+  placed: [number, number] = [0, 0];
   private content = '';
 
   constructor(readonly kind: LabelKind, extraClass: string) {
@@ -115,6 +118,12 @@ export class LabelLayer {
       const [ax, ay] = ANCHORS[label.anchor];
       const [w, h] = label.size!;
       const box = { x: px + ax * w, y: py + ay * h, w, h };
+      label.base = [box.x, box.y];
+      if (label.offset !== undefined) {
+        box.x += label.offset[0];
+        box.y += label.offset[1];
+        return { box, movable: false, hideOnOverlap: false, priority: label.priority };
+      }
       if (label.kind === 'node') {
         if (box.x + w > bounds.x + bounds.w) box.x = px - w;
         else if (box.x < bounds.x) box.x = px;
@@ -141,6 +150,7 @@ export class LabelLayer {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];
       label.el.classList.toggle('vf-off', hidden);
+      label.placed = [box.x + dx, box.y + dy];
       label.el.style.transform = `translate(${(box.x + dx).toFixed(1)}px, ${(box.y + dy).toFixed(1)}px)`;
     });
   }

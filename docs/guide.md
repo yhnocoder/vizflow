@@ -482,7 +482,8 @@ scene.dispose();
 - `layout`：布局模板列表，见 6.2。
 - `hint`：图例下方的一行灰色提示，省略时不显示。画布宽度不超过 600px 时隐藏。
 - `camera`：相机。`direction` 是从观察点指向相机的方向，默认 `[0.42, 0.78, 1]`；`azimuth` 是相对初始方向的水平旋转范围（弧度），默认 `[-0.8, 0.7]`；`polar` 是极角范围，默认 `[0.3, 1.45]`；`zoom` 是缩放范围，默认 `[0.6, 3]`。取景按所有元素和标签的范围自动计算，内容尽量填满画布，标签离画布边缘至少 12px，不需要调。
-- `edit`：编辑模式。第一版接受这个选项但还没有实现，传入后没有效果。
+- `labels`：按节点名给标签加像素偏移 `[dx, dy]`（x 向右、y 向下），作用于柱子块的块名标签和标量节点的标签，例如 `labels: { 'log p': [12, -8] }`。给了偏移的标签固定在这个位置，不再翻转和避让，其他标签避开它。一般由编辑模式写出，见 6.5。
+- `edit`：编辑模式，见 6.5。只在写页面时打开，发布前删掉。
 
 场景左上角固定显示图例，右上角是「复位视角」按钮。浏览器创建不了 WebGL 时，容器里显示一行提示，`mountScene` 照常返回，步骤条和面板不受影响。
 
@@ -511,6 +512,7 @@ scene.dispose();
 | `back` | stack | 每一层比上一层往后（$z$ 减小）移动的距离；侧面的标量节点往后移一半 | 0.7 |
 | `scale` | board、stack | 同时缩放间距，柱子底面尺寸不变 | 1 |
 | `scales` | board、stack | 按节点名指定柱子刻度 | 由初始值决定 |
+| `offsets` | stack | 按节点名把这个 stack 放置的一层整体平移 `[dx, dy, dz]`，后面以它为起点的层跟着移动 | 无 |
 
 ### 6.3 柱子刻度
 
@@ -544,6 +546,38 @@ const S = g.sum(u, -1, { keepdim: true, name: 'S', tex: 'S',
 ```
 
 `card.forward` 与 `card.backward` 各有 `title`（文字）、`tex`（LaTeX 数组，每项一行）、`note`（文字）。
+
+### 6.5 编辑模式
+
+自动布局不满意时，临时在 `mountScene` 的选项里加上 `edit: true`，用 `npm run dev` 打开页面，画布右下角出现「编辑布局」面板：
+
+```js
+const scene = mountScene('#stage', g, {
+  steps,
+  edit: true,
+  layout: [
+    board(h, W.T, z),
+    stack(z, L, logp, loss),
+  ],
+});
+```
+
+- 拖动块：按住柱子、圆柱或底板在水平面内拖动。`board` 的三个块一起移动，写成 `board` 的 `at`；`node` 写成它的 `at`；`stack` 的第一层（没有从前面模板接过来的起点时）写成 `stack` 的 `at`，其余层写成 `stack` 的 `offsets`。
+- 调间距：面板里改 `board` 的 `gap`、`scale` 和 `stack` 的 `level`、`back`，场景立即重排。
+- 移动标签：拖动块名或标量节点的标签，写成 `labels`。
+- 「设为默认视角」：先用鼠标转到想要的角度，再点这个按钮，写成 `camera.direction`。
+- 「复制配置」：面板里出现一段代码并复制到剪贴板，例如：
+
+```js
+layout: [
+  board(g.node('h'), g.node('W.T'), g.node('z')),
+  stack(g.node('z'), g.node('LSE'), g.node('log p'), g.node('loss'), { offsets: { 'log p': [1.2, 0, -0.6] } }),
+],
+camera: { direction: [0.3, 0.8, 1] },
+labels: { z: [24, -10] },
+```
+
+用它替换页面里 `mountScene` 选项中的 `layout`（以及 `camera`、`labels`），节点写成 `g.node('节点名')`，图的变量名不是 `g` 时改成实际的名字，也可以换回自己的变量名。然后删掉 `edit: true`。编辑模式不保存任何东西，刷新页面后回到页面代码里的配置，所以改完要先复制。每次拖完或改完数值，视角会回到默认方向并重新取景，看到的就是粘贴回去以后的样子。
 
 ## 7. 主题与页面布局
 
