@@ -8,6 +8,7 @@
   font-size: 14.5px;
   line-height: 1.6;
   color: var(--fg);
+  container-type: inline-size;
 }
 
 .vf-scene canvas {
@@ -304,7 +305,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container (max-width: 600px) {
   .vf-hint {
     display: none;
   }

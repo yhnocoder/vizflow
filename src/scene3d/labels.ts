@@ -34,6 +34,7 @@ export class Label {
   readonly hideOnOverlap: boolean;
   visible = true;
   size: [number, number] | undefined = undefined;
+  under: Label[] = [];
   private content = '';
 
   constructor(readonly kind: LabelKind, extraClass: string) {
@@ -112,6 +113,16 @@ export class LabelLayer {
         hideOnOverlap: label.hideOnOverlap,
         priority: label.priority,
       };
+    });
+    const index = new Map(shown.map((label, i) => [label, i]));
+    shown.forEach((label, i) => {
+      const { box } = placements[i];
+      for (const above of label.under) {
+        const j = index.get(above);
+        if (j === undefined) continue;
+        const other = placements[j].box;
+        if (other.x < box.x + box.w && box.x < other.x + other.w) box.y = Math.max(box.y, other.y + other.h);
+      }
     });
     const adjustments = avoidOverlaps(placements);
     shown.forEach((label, i) => {

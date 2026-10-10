@@ -16,6 +16,7 @@ async function openScene(page: Page, query = ''): Promise<string[]> {
   const errors: string[] = [];
   page.on('console', (message) => {
     if (message.type() === 'error' && !message.location().url.endsWith('/favicon.ico')) errors.push(message.text());
+    if (message.type() === 'warning' && message.text().startsWith('THREE.')) errors.push(message.text());
   });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto(`/examples/scene-lmhead.html${query}`);

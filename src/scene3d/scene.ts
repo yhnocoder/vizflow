@@ -23,6 +23,7 @@ import { type Explainer, type FlowEdge, explain, explainOf } from '../explain';
 import { render } from '../formula';
 import { type StepState, type Steps, allVisible } from '../steps';
 import { formatNumber, offsetOf } from '../tensor';
+import { defaultDigits } from '../tensor/format';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
 import { edgeCardElement, nodeCardElement, placePop, placeTip } from './cards';
@@ -40,6 +41,7 @@ import {
   elementAt,
   resolveLayout,
   targetColumn,
+  tokenText,
 } from './layout';
 import { LineBatch } from './lines';
 import { HEIGHT_CAP, barHeight, niceTicks, scaleFor } from './scales';
@@ -365,7 +367,11 @@ class SceneController {
       });
     }
     if (block.plate !== undefined) renderable.plate = new PlateMesh(block, this.theme);
-    renderable.classes = block.classLabels.map(() => this.labels.add(block.role === 'board-b' ? 'colh' : 'cls'));
+    renderable.classes = block.classLabels.map((text) => {
+      const label = this.labels.add(block.role === 'board-b' ? 'colh' : 'cls');
+      if (block.role === 'planar') label.under = renderable.values.filter((_, i) => block.elements[i].col === text.col);
+      return label;
+    });
     renderable.rows = block.rowLabels.map(() => this.labels.add('kk'));
     if (block.axis !== undefined) renderable.tickLabels = Array.from({ length: Math.max(renderable.ticks.forward.length, renderable.ticks.backward.length) }, () => this.labels.add('tick'));
     return renderable;
@@ -421,14 +427,16 @@ class SceneController {
         renderable.title!.visible = revealed;
         renderable.title!.el.dataset.node = node.name;
         texOf(renderable.title!, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
+        let largest = 0;
+        for (let i = 0; i < values.length; i++) largest = Math.max(largest, Math.abs(values[i]));
+        const digits = defaultDigits(largest);
         renderable.values.forEach((label, i) => {
           const element = block.elements[i];
-          label.setText(formatNumber(values[i]));
+          label.setText(formatNumber(values[i], { digits }));
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
-          label.visible = revealed && active;
+          label.visible = revealed && active && focusedRow(element.row);
           label.setFlag('vf-target', this.targetOf(block, element.row) === element.col);
-          label.setFlag('vf-unfocused', !focusedRow(element.row));
         });
       }
       if (renderable.nodes !== undefined) {
@@ -440,7 +448,7 @@ class SceneController {
           label.pos = [element.x, element.y + renderable.nodes!.height / 2 + 0.45, element.z];
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
-          label.visible = revealed;
+          label.visible = revealed && focusedRow(element.row);
         });
         const colors = block.elements.map((element, i) => nodeColor(values[i], this.theme, { dir, revealed, active, focused: focusedRow(element.row) }));
         renderable.nodes.update(block.elements, colors, block.elements.map(() => revealed));
@@ -448,7 +456,7 @@ class SceneController {
       renderable.classes.forEach((label, i) => {
         const text = block.classLabels[i];
         const target = this.targetOf(block, block.rows - 1);
-        const isTarget = this.aligned.has(node) && target === text.col;
+        const isTarget = this.aligned.has(node) && !block.batched && target === text.col;
         label.setText(block.role === 'planar' && isTarget ? `${text.text} · 目标` : text.text);
         label.setFlag('vf-on', isTarget);
         label.pos = [text.x, text.y, text.z];
@@ -476,7 +484,7 @@ class SceneController {
           const column = block.elements.find((e) => e.col === (target ?? 0));
           return column?.x ?? block.elements[0].x;
         });
-        renderable.plate.update(revealed, frameXs, ticks, scale);
+        renderable.plate.update({ revealed, active, backward }, frameXs, ticks, scale);
       }
     }
     this.buildEdges();
@@ -731,18 +739,27 @@ class SceneController {
       minY = Math.min(minY, tmpVector.y);
       maxY = Math.max(maxY, tmpVector.y);
     }
-    const aspect = this.width / this.height;
-    let fw = (maxX - minX) / (1 - 2 * FRAME_MARGIN);
-    let fh = (maxY - minY) / (1 - 2 * FRAME_MARGIN);
-    if (fw / fh < aspect) fw = fh * aspect;
-    else fh = fw / aspect;
+    const marginX = FRAME_MARGIN * this.width;
+    const marginY = FRAME_MARGIN * this.height;
+    const reserve = this.chromeBottom();
+    const availableW = this.width - 2 * marginX;
+    const availableH = Math.max(this.height - 2 * marginY - reserve, this.height / 2);
+    const unit = Math.max((maxX - minX) / availableW, (maxY - minY) / availableH);
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    this.camera.left = cx - fw / 2;
-    this.camera.right = cx + fw / 2;
-    this.camera.top = cy + fh / 2;
-    this.camera.bottom = cy - fh / 2;
+    this.camera.left = cx - (this.width * unit) / 2;
+    this.camera.right = cx + (this.width * unit) / 2;
+    this.camera.top = cy + (this.height - marginY - availableH / 2) * unit;
+    this.camera.bottom = this.camera.top - this.height * unit;
     this.camera.updateProjectionMatrix();
+  }
+
+  private chromeBottom(): number {
+    let bottom = 0;
+    for (const el of this.root.querySelectorAll<HTMLElement>('.vf-key, .vf-hint')) {
+      if (el.offsetHeight > 0) bottom = Math.max(bottom, el.offsetTop + el.offsetHeight);
+    }
+    return bottom;
   }
 
   resetView(): void {
@@ -829,7 +846,7 @@ class SceneController {
     head.className = 'vf-f';
     const formula = backward ? '' : this.forwardFormula(node, element);
     head.appendChild(render(backward ? `\\partial\\ell/\\partial ${elemTex}` : `${elemTex}${formula}`));
-    if (token !== undefined) head.append(`，"${token}"`);
+    if (token !== undefined) head.append(`，${tokenText(token)}`);
     fragment.appendChild(head);
     const line = document.createElement('div');
     line.className = 'vf-m';
@@ -839,7 +856,7 @@ class SceneController {
     if (label !== undefined && target !== element.col) {
       const note = document.createElement('div');
       note.className = 'vf-s';
-      note.textContent = '点击设为目标 token';
+      note.textContent = label.tokens === undefined ? '点击设为目标类' : '点击设为目标 token';
       fragment.appendChild(note);
     }
     return fragment;

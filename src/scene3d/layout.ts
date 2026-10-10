@@ -211,7 +211,7 @@ function labelsFor(n: Node, ctx: LayoutContext, cols: number, position: (col: nu
   return labels;
 }
 
-function tokenText(token: string): string {
+export function tokenText(token: string): string {
   return token.replace(/^ +/, (spaces) => '\u2423'.repeat(spaces.length));
 }
 
@@ -267,7 +267,7 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
     elements: elementsOf(b, (k, i) => [xs(i), y, wr(k)]),
     footprint: FOOTPRINTS.tile,
     plate: { x: ax, y, z: (wr(0) + wr(d - 1)) / 2, w: plateWidth, d: (wr(d - 1) - wr(0)) + 0.85 },
-    title: { x: xs(0) - 1.0, y, z: wr(0) - 0.6, anchor: 'left' },
+    title: { x: xs(0) - 1.0, y, z: wr(0) - 1.0, anchor: 'left' },
     classLabels: labelsFor(b, ctx, V, (i) => [xs(i), y + 0.05, wr(0) - 0.45], 'above'),
     rowLabels: Array.from({ length: d }, (_, k) => ({ text: `k=${k + 1}`, col: k, x: ax - plateWidth / 2 - ROW_LABEL_MARGIN, y: y + LINE_HEIGHT, z: wr(k), anchor: 'left' as const })),
     frameHalf: ctx.aligned.has(b) ? [0.4, (wr(d - 1) - wr(0)) / 2 + 0.32] : undefined,
@@ -335,7 +335,7 @@ function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: Layout
     elements: elementsOf(n, (r, c) => [xs[c], y, zs[r]]),
     footprint: FOOTPRINTS.bar,
     plate: { x: (xs[0] + xs[cols - 1]) / 2, y, z: (zs[0] + zs[rows - 1]) / 2, w: xs[cols - 1] - xs[0] + 2 * PLATE_SIDE_MARGIN, d: 1.0 + (zs[rows - 1] - zs[0]) },
-    axis: { x: axisX, z: zs[0] },
+    axis: { x: axisX, z: zs[0] - 0.5 },
     title: { x: axisX - 0.95, y: y + 0.35, z: zs[0], anchor: 'left' },
     classLabels: labelsFor(n, ctx, cols, (c) => [xs[c], y + 0.2, zs[rows - 1] + 0.7], 'below'),
     rowLabels: [],
@@ -386,7 +386,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
   const colGap = (options.gap ?? BOARD_COLUMN_SPACING) * s;
   const blocks: Block[] = [];
   let planar: Layer | undefined;
-  let last: { y: number; xs: number[]; zs: number[] } | undefined;
+  let last: { y: number; xs: number[]; zs: number[]; rowXs?: number[]; spanXs?: number[] } | undefined;
   for (const n of item.nodes) {
     const existing = placed.get(n);
     if (existing !== undefined) {
@@ -428,14 +428,18 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       };
       const extent = layer.xs.map((x): Vec3 => [x, y, zOf(0)]);
       block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent);
-      last = { y, xs: [block.elements[0].x], zs: block.elements.map((e) => e.z) };
+      last = { y, xs: [(layer.xs[0] + layer.xs[layer.cols - 1]) / 2], zs: block.elements.map((e) => e.z), rowXs: block.elements.map((e) => e.x), spanXs: layer.xs };
     } else {
       const base = last ?? { y: ay, xs: [ax], zs: [az] };
       const y = base.y + SCALAR_NODE_RISE * s;
-      const x = base.xs.length === 1 ? base.xs[0] : (base.xs[0] + base.xs[base.xs.length - 1]) / 2;
+      const center = (base.xs[0] + base.xs[base.xs.length - 1]) / 2;
+      const rowXs = base.rowXs !== undefined && rows === base.rowXs.length ? base.rowXs : undefined;
+      const xOf = (r: number) => rowXs?.[r] ?? center;
       const zOf = (r: number) => (rows === base.zs.length ? base.zs[r] : (base.zs[0] + base.zs[base.zs.length - 1]) / 2);
-      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [x, y, zOf(r)], options);
-      last = { y, xs: [x], zs: block.elements.map((e) => e.z) };
+      const spanXs = rowXs === undefined ? undefined : base.spanXs;
+      const extent = (spanXs ?? []).map((x): Vec3 => [x, y, zOf(0)]);
+      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent);
+      last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs };
     }
     placed.set(n, block);
     blocks.push(block);

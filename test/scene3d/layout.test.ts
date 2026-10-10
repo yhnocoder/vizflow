@@ -113,7 +113,7 @@ describe('stack layout', () => {
     expect(plane.elements.map((e) => e.x)).toEqual(blockOf(blocks, 'z').elements.map((e) => e.x));
     expect(plane.elements[0].y).toBe(STACK_LEVEL);
     expect(plane.elements[0].z).toBeCloseTo(2.9 - STACK_BACK_OFFSET, 12);
-    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - 1.4, z: 2.9 - STACK_BACK_OFFSET });
+    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - 1.4, z: 2.9 - STACK_BACK_OFFSET - 0.5 });
     expect(plane.classLabels[2].text).toBe('c');
     const box = blockOf(blocks, 'loss');
     expect(box.shape).toBe('box');
@@ -150,6 +150,29 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'log y').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 1.5, 12);
     expect(blockOf(blocks, 'loss')).toMatchObject({ shape: 'box' });
     expect(blockOf(blocks, 'loss').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 3, 12);
+  });
+
+  it('keeps each batch row of a select chain on its own target column and centers the collapsed loss', () => {
+    const g = graph({ dims: { V: 3 } });
+    const x = g.input('x', [2, 'V'], [
+      [1, 2, 3],
+      [3, 1, 2],
+    ]);
+    const t = g.label('t', [[2], [0]], { classes: 3 });
+    const p = g.softmax(x, -1, { name: 'p' });
+    const y = g.gather(p, 1, t, { name: 'y' });
+    const logy = g.log(y, { name: 'log y' });
+    const lb = g.neg(logy, { name: 'l_b' });
+    const loss = g.mean(lb, { name: 'loss' });
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const layout = [stack(x, p, y, logy, lb, loss)];
+    const columns = (name: string) => blockOf(resolveLayout(layout, ctx).blocks, name).elements.map((e) => e.x);
+    const xs = blockOf(resolveLayout(layout, ctx).blocks, 'p').elements.filter((e) => e.row === 0).map((e) => e.x);
+    for (const name of ['y', 'log y', 'l_b']) expect(columns(name)).toEqual([xs[2], xs[0]]);
+    expect(columns('loss')).toEqual([xs[1]]);
+    t.set([[1], [2]]);
+    for (const name of ['y', 'log y', 'l_b']) expect(columns(name)).toEqual([xs[1], xs[2]]);
+    expect(blockOf(resolveLayout(layout, ctx).blocks, 'l_b').extent.map((p) => p[0])).toEqual(xs);
   });
 
   it('skips nodes that are not visible and reads scales from options', () => {

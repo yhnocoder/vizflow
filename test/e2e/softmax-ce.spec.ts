@@ -43,7 +43,7 @@ const BATCH_LOSS = DEFAULT_LOGITS.reduce((s, row, b) => s + crossEntropy(row, DE
 async function open(page: Page): Promise<string[]> {
   const errors: string[] = [];
   page.on('console', (message) => {
-    if (message.type() === 'error') errors.push(message.text());
+    if (message.type() === 'error' || (message.type() === 'warning' && message.text().startsWith('THREE.'))) errors.push(message.text());
   });
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/examples/softmax-ce.html');

@@ -25,6 +25,7 @@ import { BREAK_POSITION, BREAK_THICKNESS } from './scales';
 const BREAK_MARGIN = 0.04;
 const PLATE_REVEALED = 0.5;
 const PLATE_HIDDEN = 0.15;
+const PLATE_INACTIVE_BACKWARD = 0.25;
 const FRAME_REVEALED = 0.95;
 const FRAME_HIDDEN = 0.15;
 const FRAME_LIFT = 0.005;
@@ -206,7 +207,7 @@ export class PlateMesh {
   private readonly frames: LineLoop[] = [];
   private readonly frameMaterial: LineBasicMaterial;
   private readonly frameGeometry: BufferGeometry | undefined;
-  private readonly axis: LineSegments | undefined;
+  readonly axis: LineSegments | undefined;
   private readonly axisMaterial: LineBasicMaterial;
 
   constructor(
@@ -252,8 +253,9 @@ export class PlateMesh {
     this.axisMaterial.color.setRGB(...theme.ink);
   }
 
-  update(revealed: boolean, frameXs: number[], ticks: number[], scale: number): void {
-    this.outlineMaterial.opacity = revealed ? PLATE_REVEALED : PLATE_HIDDEN;
+  update(state: { revealed: boolean; active: boolean; backward: boolean }, frameXs: number[], ticks: number[], scale: number): void {
+    const { revealed } = state;
+    this.outlineMaterial.opacity = !revealed ? PLATE_HIDDEN : state.backward && !state.active ? PLATE_INACTIVE_BACKWARD : PLATE_REVEALED;
     this.frameMaterial.opacity = revealed ? FRAME_REVEALED : FRAME_HIDDEN;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];
@@ -265,7 +267,11 @@ export class PlateMesh {
       const hi = Math.max(...ticks) * scale;
       const points = [new Vector3(x, y0 + lo, z), new Vector3(x, y0 + hi, z)];
       for (const v of ticks) points.push(new Vector3(x - AXIS_TICK, y0 + v * scale, z), new Vector3(x, y0 + v * scale, z));
-      this.axis.geometry.setFromPoints(points);
+      if (this.axis.geometry.getAttribute('position')?.count === points.length) this.axis.geometry.setFromPoints(points);
+      else {
+        this.axis.geometry.dispose();
+        this.axis.geometry = new BufferGeometry().setFromPoints(points);
+      }
       this.axisMaterial.opacity = revealed ? AXIS_REVEALED : AXIS_HIDDEN;
     }
   }
