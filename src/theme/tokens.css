@@ -1,0 +1,56 @@
+:root {
+  color-scheme: light;
+  --bg: #f5f4ed;
+  --surface: #faf9f5;
+  --ink: #141413;
+  --fg: #141413;
+  --muted: #6f6d65;
+  --line: #e6e3d8;
+  --line-strong: #b4b1a6;
+  --pos: #d97757;
+  --neg: #6a9bcc;
+  --serif: "Source Serif 4", "Songti SC", "Noto Serif SC", Georgia, serif;
+  --sans: "Geist", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #262624;
+    --surface: #30302e;
+    --ink: #ece9df;
+    --fg: #faf9f5;
+    --muted: #a8a59b;
+    --line: #3e3d39;
+    --line-strong: #6c6a63;
+    --pos: #d97757;
+    --neg: #7eaad6;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #262624;
+  --surface: #30302e;
+  --ink: #ece9df;
+  --fg: #faf9f5;
+  --muted: #a8a59b;
+  --line: #3e3d39;
+  --line-strong: #6c6a63;
+  --pos: #d97757;
+  --neg: #7eaad6;
+}
+
+html,
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.6;
+}

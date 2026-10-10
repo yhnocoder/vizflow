@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizflow theme</title>
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: 40px; line-height: 1.15; margin: 0 0 8px; }
+h2 { font-family: var(--serif); font-weight: 500; font-size: 20px; margin: 0 0 6px; }
+.lede { color: var(--muted); max-width: 64ch; margin: 0 0 20px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }
+.stage { height: var(--vf-stage-height); }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.swatch { border: 1px solid var(--line-strong); border-radius: 8px; height: 40px; }
+.pos { color: var(--pos); }
+.neg { color: var(--neg); }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>主题与字体 Theme</h1>
+  <p class="lede">正文使用 Geist，标题使用 Source Serif 4，<em style="font-family: var(--serif); font-style: italic;">italic logits</em>，数字使用 Geist Mono。</p>
+  <div class="vf-split">
+    <section class="panel stage">
+      <h2>Stage</h2>
+      <p class="mono">z = W h + b = <span class="pos">+1.284</span> <span class="neg">−0.732</span></p>
+      <p><strong style="font-weight: 600;">Semibold 600</strong> and <span style="font-weight: 500;">medium 500</span>.</p>
+      <p class="mono" style="font-weight: 500;">loss = 0.4170</p>
+    </section>
+    <aside class="panel">
+      <h2>Tokens</h2>
+      <div class="swatches" id="swatches"></div>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import '@yhnocoder/vizflow/theme';
+const swatches = document.getElementById('swatches');
+for (const name of ['bg', 'surface', 'ink', 'fg', 'muted', 'line', 'line-strong', 'pos', 'neg']) {
+  const swatch = document.createElement('div');
+  swatch.className = 'swatch';
+  swatch.style.background = `var(--${name})`;
+  swatch.title = name;
+  swatches.append(swatch);
+}
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

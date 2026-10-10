@@ -1,0 +1,39 @@
+:root {
+  --vf-side-width: 360px;
+  --vf-gap: 20px;
+  --vf-stage-height: min(68vh, 640px);
+}
+
+.vf-page {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 28px 20px 48px;
+}
+
+.vf-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--vf-side-width);
+  gap: var(--vf-gap);
+  align-items: start;
+}
+
+.vf-stack,
+.vf-inline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--vf-gap);
+}
+
+.vf-inline {
+  width: 100%;
+}
+
+@media (max-width: 980px) {
+  :root {
+    --vf-stage-height: 62vh;
+  }
+
+  .vf-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
