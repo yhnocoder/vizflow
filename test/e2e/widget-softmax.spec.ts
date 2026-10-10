@@ -69,11 +69,11 @@ test('arrow button and keyboard switch steps', async ({ page }) => {
   await expect(current).toHaveText('x');
   await expect(page.locator('.vf-caption h3')).toHaveText('logits');
   await page.keyboard.press('ArrowRight');
-  await expect(current).toHaveText('x');
-  await page.locator('.vf-caption').click();
-  await page.keyboard.press('ArrowRight');
   await expect(current).toHaveText('p');
   await page.keyboard.press('ArrowLeft');
+  await expect(current).toHaveText('x');
+  await page.getByRole('button', { name: '重置' }).focus();
+  await page.keyboard.press('ArrowRight');
   await expect(current).toHaveText('x');
   await page.getByRole('slider', { name: 'x₂' }).focus();
   await page.keyboard.press('ArrowRight');

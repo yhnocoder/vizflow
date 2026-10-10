@@ -378,7 +378,7 @@ describe('mountSteps', () => {
   const press = (target: EventTarget, key: string, init: KeyboardEventInit = {}) =>
     target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
 
-  it('ignores modifier keys, handled events and keys on buttons', () => {
+  it('ignores modifier keys, handled events and keys on buttons outside the stepper', () => {
     const { steps } = softmaxGraph();
     const el = container();
     mounted.push(mountSteps(el, steps));
@@ -388,9 +388,15 @@ describe('mountSteps', () => {
     const handled = new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true });
     handled.preventDefault();
     document.dispatchEvent(handled);
-    press(el.querySelector('.vf-st')!, 'ArrowRight');
+    const other = document.createElement('button');
+    document.body.append(other);
+    press(other, 'ArrowRight');
     expect(steps.current).toBe(0);
     press(document, 'ArrowRight');
+    expect(steps.current).toBe(1);
+    press(el.querySelector('.vf-st')!, 'ArrowRight');
+    expect(steps.current).toBe(2);
+    press(el.querySelector('[aria-label="下一步"]')!, 'ArrowLeft');
     expect(steps.current).toBe(1);
   });
 

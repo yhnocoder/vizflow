@@ -43,7 +43,10 @@ function StepsView(props: { steps: Steps }) {
   const onKey = (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-    if (event.target instanceof Element && event.target.closest('input, textarea, select, button, [contenteditable]')) return;
+    if (event.target instanceof Element) {
+      if (event.target.closest('input, textarea, select, [contenteditable]')) return;
+      if (event.target.closest('button') && !root.contains(event.target)) return;
+    }
     if (!engaged && document.querySelectorAll('.vf-stepper').length > 1) return;
     if (event.key === 'ArrowRight') steps.next();
     else steps.prev();
