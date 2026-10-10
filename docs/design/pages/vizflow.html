@@ -332,6 +332,7 @@ defineOp(def: OpDef): void</code></pre>
   <li><code>differentiable</code> 标出每个张量参数是否求梯度，默认全部求。<code>nll_loss</code> 的 target 与 <code>gather</code> 的 index 为 <code>false</code>。</li>
   <li>重复注册同名运算抛错。注册后的运算在运行时出现在 <code>g</code> 上，可以写成 <code>g.&lt;name&gt;(...)</code>；TypeScript 通过对 <code>interface Graph</code> 的声明合并补充类型。</li>
   <li><code>defineOp</code> 可以写在页面里临时使用，也可以放进单独的文件供多个页面共用。加一个运算不需要修改核心库。</li>
+  <li>运算名不能与 Graph 已有的成员同名（例如 <code>input</code>、<code>loss</code>、<code>node</code>），<code>defineOp</code> 遇到这样的名字抛错，因为 <code>g.&lt;运算名&gt;</code> 会遮蔽这些方法。</li>
 </ul>
 
 <h2>正确性怎么保证</h2>
@@ -412,7 +413,7 @@ allVisible(g: Graph): StepState</code></pre>
 <ol>
   <li><code>visible</code> 中可求梯度的节点按拓扑序倒序排列。</li>
   <li>损失节点与它之前第一个可见节点合成第一步，之后每个可见节点一步。lm_head 页因此得到「$\ell$ 与 $\log\mathbf{p}$、LSE、$\mathbf{z}$、$W^{\top}$、$\mathbf{h}$」五步。</li>
-  <li><code>merge</code> 中的每组节点并入组内最早出现的那一步。softmax 批量页用 <code>{ auto: true, merge: [[lb, y]] }</code> 把 $\ell$、$\ell_b$、$y$ 放进同一步。</li>
+  <li><code>merge</code> 中的每组节点并入组内最早出现的那一步。softmax 批量页用 <code>{ auto: true, merge: [[l_b, logy, y]] }</code> 把 $\ell$、$\ell_b$、$\log y$、$y$ 放进同一步。</li>
   <li>反向第 $k$ 步：revealed 为第 1 到 $k$ 步节点的并集，active 为第 $k$ 步的节点。</li>
 </ol>
 <p>图里没有损失节点时（例如只演示 softmax 的小部件），自动反向生成 0 步；这时给了 <code>merge</code> 或 <code>override</code> 会抛错。</p>
