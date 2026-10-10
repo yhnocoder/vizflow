@@ -1,5 +1,5 @@
 import type { Graph } from '../autograd';
-import { mountScene, type SceneOptions } from '../scene3d';
+import type { SceneOptions } from '../scene3d';
 import { createSteps, type Steps, type StepsSpec } from '../steps';
 import { mountPanels, mountSteps, type Mounted, type PanelItem } from '../ui';
 import elementCss from './element.css?inline';
@@ -32,6 +32,7 @@ export class VizflowPage extends HTMLElement {
   #created: Steps | undefined;
   #mounted: Mounted[] = [];
   #layout: HTMLElement | undefined;
+  #generation = 0;
   #pending = false;
 
   constructor() {
@@ -139,12 +140,19 @@ export class VizflowPage extends HTMLElement {
     if (panels !== undefined) layout.append(side);
     this.#layout = layout;
     this.replaceChildren(layout);
-    if (this.#scene !== undefined) this.#mounted.push(mountScene(stage, g, { ...this.#scene, steps, edit: this.#edit }));
     this.#mounted.push(mountSteps(stepsBox, steps));
     if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps }));
+    if (this.#scene !== undefined) void this.#mountScene(stage, g, { ...this.#scene, steps, edit: this.#edit });
+  }
+
+  async #mountScene(stage: HTMLElement, g: Graph, options: SceneOptions): Promise<void> {
+    const generation = this.#generation;
+    const { mountScene } = await import('../scene3d');
+    if (generation === this.#generation) this.#mounted.push(mountScene(stage, g, options));
   }
 
   #unmount(): void {
+    this.#generation++;
     for (const mounted of this.#mounted.splice(0)) mounted.dispose();
     this.#created?.dispose();
     this.#created = undefined;

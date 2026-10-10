@@ -462,10 +462,12 @@ allVisible(g: Graph): StepState</code></pre>
 <ul>
   <li>文字里没有换行时不做任何处理，按原样渲染。</li>
   <li>有换行时，先去掉所有行共同的缩进和开头、结尾的空行，再按空行分块。</li>
-  <li>块内各行去掉行首空白后直接相连，不加分隔符。英文句子跨行时由作者在上一行末尾留一个空格。</li>
+  <li>块内每行去掉行首和行尾的空白。相邻两行按换行前后的两个字符连接：其中一个是 CJK 标点（U+3000 到 U+303F 的 CJK 符号和标点，U+FF00 到 U+FFEF 的全角形式）时直接相连；两个都是 CJK 字符时直接相连；其余情况连接处放一个空格。换行前后紧挨公式或 HTML 标签时，按非 CJK 字符处理。</li>
+  <li>CJK 字符指以下 Unicode 范围：CJK 统一表意文字 U+4E00 到 U+9FFF、扩展 A U+3400 到 U+4DBF、兼容表意文字 U+F900 到 U+FAFF、U+20000 到 U+2FFFF 的扩展区；平假名与片假名 U+3040 到 U+30FF、片假名扩展 U+31F0 到 U+31FF；谚文字母 U+1100 到 U+11FF、谚文兼容字母 U+3130 到 U+318F、谚文音节 U+AC00 到 U+D7AF；以及上面两类 CJK 标点。</li>
   <li>整块是一个 <code>$$...$$</code> 公式时原样保留；以块级标签 <code>p</code>、<code>div</code>、<code>ul</code>、<code>ol</code>、<code>pre</code>、<code>table</code>、<code>h1</code> 到 <code>h6</code>、<code>blockquote</code> 开头的块不再包段落，其中 <code>pre</code> 块保留换行；其余的块包进 <code>&lt;p&gt;</code>。</li>
   <li>公式里的换行原样交给 KaTeX，KaTeX 把它当作空白。模板 <code>{{...}}</code> 解析前去掉全部空白，里面可以换行。</li>
 </ul>
+<p>换行规则这样定，是因为中文、日文、韩文的词之间不加空格，换行处放空格会显示成多余的空隙；英文和公式之间需要空格。全角标点前后本来就不加空格，所以只要一侧是 CJK 标点就直接相连，例如句号后面接英文单词。作者不需要在行尾留空格，编辑器删除行尾空格也不影响结果。</p>
 <p>整理放在 <code>renderText</code> 里，因为面板的 <code>text</code>、<code>note</code> 与卡片说明都经过 <code>renderText</code>，放在这里所有文字只有一套规则。没有换行时不整理，是为了让已有的单行文字渲染结果不变。<code>String.raw</code> 里 <code>${</code> 是插值的开头，公式以模板开头时写成 <code>$ {{x}}$</code>。</p>
 <p>模板可以写在公式里，例如 <code>$z_{ {{t+1}} } = {{z[t]}}$</code>。模板紧贴 LaTeX 花括号时要留一个空格；出现 <code>{{{</code> 或 <code>}}}</code> 时报错。</p>
 <ul>
@@ -721,9 +723,11 @@ class VizflowPage extends HTMLElement {
 
 interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
 <ul>
+  <li>这五项都是 JavaScript 属性，不是 HTML 属性。元素不读取 HTML 属性，写 <code>&lt;vizflow-page edit&gt;</code> 不起作用，要写 <code>page.edit = true</code>。</li>
   <li><code>graph</code> 是计算图，<code>steps</code> 是 <code>createSteps</code> 的第二个参数，<code>panels</code> 是 <code>mountPanels</code> 的面板列表，<code>scene</code> 是 <code>mountScene</code> 的选项（不含 <code>steps</code> 与 <code>edit</code>，元素自己传入），<code>edit</code> 对应场景的编辑模式，默认 <code>false</code>。</li>
   <li>元素在文档中且 <code>graph</code> 与 <code>steps</code> 都已设置时挂载。<code>panels</code> 不设置时不画面板，<code>scene</code> 不设置时不画 3D 场景。</li>
   <li>设置属性后，元素在当前任务的微任务里重新挂载一次：先释放已有的场景、步骤条、面板和 Steps，再按全部属性重新创建。页面连续设置几个属性只挂载一次。读取 <code>createdSteps</code> 时，如果还有待处理的挂载，先同步完成挂载再返回，所以页面设置完属性后可以立即调用 <code>page.createdSteps.go(3)</code>。</li>
+  <li>设置了 <code>scene</code> 时，元素用动态 <code>import()</code> 加载 <code>scene3d</code>，加载完成后再挂载 3D 场景；没有设置 <code>scene</code> 的页面不加载 three.js。步骤条和面板同步挂载，<code>createdSteps</code> 也同步可用。场景加载完成之前元素被移除或重新挂载时，这次加载的结果不再挂载。</li>
   <li><code>createdSteps</code> 是元素创建的 <code>Steps</code>，只读；未挂载时为 <code>undefined</code>。每次重新挂载都换成新的对象。</li>
   <li>元素从文档移除时（<code>disconnectedCallback</code>）释放全部内容，包括 WebGL 上下文和计算图上的订阅；再次加入文档时重新挂载。</li>
   <li>元素用 light DOM，不用 shadow root。theme、KaTeX、ui 与 scene3d 的样式注入在 document 里，shadow root 内的节点用不到这些样式。元素只移除自己创建的布局节点。</li>

@@ -83,8 +83,24 @@ function trimBlock(block: Segment[]): Segment[] {
   return trimmed.filter((segment) => segment.kind === 'tex' || segment.html !== '');
 }
 
+const cjk = /[\u1100-\u11ff\u3000-\u303f\u3040-\u30ff\u3130-\u318f\u31f0-\u31ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef\u{20000}-\u{2ffff}]/u;
+const cjkPunctuation = /[\u3000-\u303f\uff00-\uffef]/u;
+
+function lineBreak(before: string, after: string): string {
+  if (cjkPunctuation.test(before) || cjkPunctuation.test(after)) return '';
+  return cjk.test(before) && cjk.test(after) ? '' : ' ';
+}
+
 function joinLines(block: Segment[]): Segment[] {
-  return block.map((segment) => (segment.kind === 'html' ? { kind: 'html', html: segment.html.replace(/\n[ \t]*/g, '') } : segment));
+  return block.map((segment) => {
+    if (segment.kind === 'tex') return segment;
+    const html = segment.html.replace(/[ \t]*\n[ \t]*/g, (match, offset: number, whole: string) => {
+      const before = [...whole.slice(0, offset)].at(-1) ?? '';
+      const after = [...whole.slice(offset + match.length, offset + match.length + 2)][0] ?? '';
+      return lineBreak(before, after);
+    });
+    return { kind: 'html', html };
+  });
 }
 
 function paragraphs(source: string): Segment[] {

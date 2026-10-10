@@ -95,14 +95,18 @@ describe('build output', () => {
     expect(graphCode('scene3d.js')).toContain('vf-theme-style');
   });
 
-  test('both builds of the element entry register vizflow-page and inject its style', () => {
+  test('both builds of the element entry register vizflow-page and load scene3d only by dynamic import', () => {
     for (const directory of [dist, moduleDirectory()]) {
       const code = graphCode('element.js', directory);
       expect(code, directory).toContain('customElements.define("vizflow-page"');
       expect(code, directory).toContain('vf-element-style');
       expect(code, directory).toContain('vf-ui-style');
-      expect(code, directory).toContain('vf-scene3d-style');
+      expect(code, directory).not.toContain('vf-scene3d-style');
+      expect(staticGraph('element.js', directory), directory).not.toContain('scene3d.js');
+      expect(readFileSync(join(directory, 'element.js'), 'utf8'), directory).toContain('import("./scene3d.js")');
     }
+    expect(bundledLibraries('element.js')).toEqual(['solid', 'katex']);
+    expect(packageImports('element.js').filter((specifier) => specifier.startsWith('three'))).toEqual([]);
     expect(readFileSync(join(workspace, exportsMap['./element'].types), 'utf8')).toContain("'vizflow-page': VizflowPage");
   });
 

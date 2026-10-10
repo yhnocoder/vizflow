@@ -40,8 +40,23 @@ describe('renderText with several lines', () => {
     expect(markup(text)).toBe('<p>模型输出经过 RMSNorm 得到 (\\mathbf{h})，lm_head 把它投影到词表大小。</p>');
   });
 
-  it('keeps a space the author leaves at the end of an English line', () => {
-    expect(markup('\n  The cat \n  sat on the mat.\n')).toBe('<p>The cat sat on the mat.</p>');
+  it('joins English lines with one space and drops trailing spaces', () => {
+    expect(markup('\n  The cat\n  sat on   \n  the mat.\n')).toBe('<p>The cat sat on the mat.</p>');
+  });
+
+  it('joins lines directly only when CJK characters meet across the break', () => {
+    expect(markup('\n  中文\n  继续\n')).toBe('<p>中文继续</p>');
+    expect(markup('\n  かな\n  カナ\n  한글\n')).toBe('<p>かなカナ한글</p>');
+    expect(markup('\n  得到 logits\n  中文\n')).toBe('<p>得到 logits 中文</p>');
+    expect(markup('\n  中文\n  PyTorch\n')).toBe('<p>中文 PyTorch</p>');
+    expect(markup('\n  第一句。\n  PyTorch 里\n')).toBe('<p>第一句。PyTorch 里</p>');
+    expect(markup('\n  softmax\n  （归一化）\n')).toBe('<p>softmax（归一化）</p>');
+    expect(markup('\n  全角\n  ＡＢ\n')).toBe('<p>全角ＡＢ</p>');
+  });
+
+  it('puts a space between a line and a formula or tag on the next line', () => {
+    expect(markup('\n  得到\n  $x$\n  的值\n')).toBe('<p>得到 (x) 的值</p>');
+    expect(markup('\n  得到 $x$，\n  其中\n')).toBe('<p>得到 (x)，其中</p>');
   });
 
   it('splits blocks on blank lines and leaves a display formula block outside paragraphs', () => {
@@ -76,7 +91,7 @@ describe('renderText with several lines', () => {
 
       <div class="note">说明</div>
     `;
-    expect(markup(text)).toBe('<ul><li>第一项</li><li>第二项</li></ul><div class="note">说明</div>');
+    expect(markup(text)).toBe('<ul> <li>第一项</li> <li>第二项</li> </ul><div class="note">说明</div>');
   });
 
   it('keeps the lines of a pre block', () => {
@@ -86,12 +101,12 @@ describe('renderText with several lines', () => {
 
   it('wraps a block that starts with inline markup in a paragraph', () => {
     expect(markup('\n  <code>F.cross_entropy</code> 内部是\n  <code>log_softmax</code>。\n')).toBe(
-      '<p><code>F.cross_entropy</code> 内部是<code>log_softmax</code>。</p>',
+      '<p><code>F.cross_entropy</code> 内部是 <code>log_softmax</code>。</p>',
     );
   });
 
   it('wraps text followed by a display formula in the same block in one paragraph', () => {
-    expect(markup('\n  值为\n  $$x$$\n')).toBe('<p>值为[x]</p>');
+    expect(markup('\n  值为\n  $$x$$\n')).toBe('<p>值为 [x]</p>');
   });
 });
 

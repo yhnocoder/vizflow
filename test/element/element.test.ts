@@ -137,8 +137,42 @@ describe('<vizflow-page>', () => {
     el.steps = steps;
     el.scene = { layout: [board(x, p, p)] };
     el.edit = true;
-    await settle();
+    expect(el.createdSteps).toBeDefined();
     expect(el.querySelector('.vf-main > .vf-stage + .vf-steps')).not.toBeNull();
-    expect(el.querySelector('.vf-stage > .vf-scene')).not.toBeNull();
+    await vi.waitFor(() => expect(el.querySelector('.vf-stage > .vf-scene')).not.toBeNull());
+  });
+
+  it('does not mount the scene when the element is removed or remounted before scene3d loads', async () => {
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    const { g, x, p, steps } = softmaxPage();
+    const el = attach();
+    el.graph = g;
+    el.steps = steps;
+    el.scene = { layout: [board(x, p, p)] };
+    expect(el.createdSteps).toBeDefined();
+    const removedStage = el.querySelector('.vf-stage')!;
+    el.remove();
+    document.body.append(el);
+    expect(el.createdSteps).toBeDefined();
+    const replacedStage = el.querySelector('.vf-stage')!;
+    el.scene = { layout: [board(x, p, p)], hint: 'second' };
+    expect(el.createdSteps).toBeDefined();
+    const currentStage = el.querySelector('.vf-stage')!;
+    await vi.waitFor(() => expect(currentStage.querySelector('.vf-scene')).not.toBeNull());
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(removedStage.querySelector('.vf-scene')).toBeNull();
+    expect(replacedStage.querySelector('.vf-scene')).toBeNull();
+    expect(currentStage.querySelectorAll('.vf-scene').length).toBe(1);
+  });
+
+  it('does not load the scene when no scene is set', async () => {
+    const { g, steps } = softmaxPage();
+    const el = attach();
+    el.graph = g;
+    el.steps = steps;
+    expect(el.createdSteps).toBeDefined();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(el.querySelector('.vf-stage')).toBeNull();
+    expect(document.querySelector('.vf-scene')).toBeNull();
   });
 });
