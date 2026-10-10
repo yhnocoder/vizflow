@@ -16,5 +16,6 @@
     "jsxImportSource": "solid-js",
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "test", "examples", "vite.config.ts", "playwright.config.ts"]
+  "include": ["src", "test", "examples", "vite.config.ts", "playwright.config.ts"],
+  "exclude": ["examples/vite-project"]
 }

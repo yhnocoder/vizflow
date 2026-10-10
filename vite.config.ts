@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
@@ -54,8 +54,35 @@ function bundledFonts(): Plugin {
   };
 }
 
-export default defineConfig({
-  plugins: [bundledFonts(), solid(), dts({ include: ['src'], outDirs: 'dist/types', entryRoot: 'src' })],
+const externalPackages = /^(?:three|solid-js|katex|@fontsource\/[^/]+)(?:\/|$)/;
+
+function moduleVariants(): Plugin {
+  return {
+    name: 'vizflow-module-variants',
+    enforce: 'pre',
+    async resolveId(source, importer, options) {
+      if (importer === undefined || !source.startsWith('.')) return null;
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (resolved === null || !resolved.id.startsWith(src('')) || !resolved.id.endsWith('.ts')) return resolved;
+      const variant = resolved.id.replace(/\.ts$/, '.module.ts');
+      return existsSync(variant) ? variant : resolved;
+    },
+  };
+}
+
+const moduleConfig = defineConfig({
+  plugins: [moduleVariants(), solid()],
+  build: {
+    target: 'es2022',
+    outDir: 'dist/module',
+    lib: { entry: entries, formats: ['es'] },
+    rolldownOptions: { external: (id: string) => externalPackages.test(id) },
+  },
+});
+
+const standaloneConfig = defineConfig({
+  plugins: [bundledFonts(), solid(), dts({ include: ['src'], exclude: ['src/**/*.module.ts'], outDirs: 'dist/types', entryRoot: 'src' })],
+  optimizeDeps: { entries: ['examples/*.html'] },
   resolve: {
     alias: Object.entries(entries).map(([name, path]) => ({
       find: `@yhnocoder/vizflow/${name}`,
@@ -71,3 +98,5 @@ export default defineConfig({
     environment: 'node',
   },
 });
+
+export default defineConfig(({ mode }) => (mode === 'module' ? moduleConfig : standaloneConfig));

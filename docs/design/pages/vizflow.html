@@ -184,7 +184,7 @@ mountPanels('#side', g, [
   </tbody>
 </table>
 <p>模块之间不直接调用，都围绕同一个计算图协作。计算图是唯一的数据来源：输入变化后它重算前向和反向，然后发出更新通知；3D 场景、面板和讲解正文各自订阅通知、读取需要的数值，彼此不知道对方是否存在。<code>steps</code> 只输出一个状态对象，说明当前方向、第几步、每个节点是否出现和是否高亮。<code>scene3d</code> 读取这个状态决定颜色和透明度；页面没有创建 steps 时，<code>scene3d</code> 使用「全部显示」的默认状态。</p>
-<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
+<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme、ui、scene3d 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
 
 <h2>计算图怎么建，输入变化后怎么更新</h2>
 <h3>建图</h3>
@@ -343,7 +343,7 @@ defineOp(def: OpDef): void</code></pre>
     <tr><th>检查</th><th>比较的两方</th><th>发现的错误</th><th>运行时机</th></tr>
   </thead>
   <tbody>
-    <tr><td>有限差分</td><td><code>backward</code> 与 <code>forward</code></td><td>反向公式写错</td><td>测试中对所有内置运算；页面用 <code>graph({ check: true })</code> 打开时每次重算之后</td></tr>
+    <tr><td>有限差分</td><td><code>backward</code> 与 <code>forward</code></td><td>反向公式写错</td><td>测试中对所有内置运算；页面打开检查时每次重算之后</td></tr>
     <tr><td>PyTorch 对拍</td><td>vizflow 的前向值与梯度和 PyTorch 的结果</td><td>前向语义与 torch 不一致</td><td>测试</td></tr>
     <tr><td>边求和</td><td><code>explain</code> 的局部导数与 <code>backward</code></td><td>卡片上的局部导数、传回的量与真实梯度不一致</td><td>测试中对所有带 explain 的运算</td></tr>
   </tbody>
@@ -361,7 +361,12 @@ defineOp(def: OpDef): void</code></pre>
 <p>函数在不可导的点上（例如 <code>max</code> 有并列最大值时）两侧导数不同，中心差分没有意义。检查另算右侧差分 $(\phi(x+\varepsilon e_j) - \phi(x))/\varepsilon$ 与左侧差分 $(\phi(x) - \phi(x-\varepsilon e_j))/\varepsilon$，两者之差超过 $10^{-3}(1 + |\tilde g_j|)$ 时跳过这个元素。这个阈值与式 \eqref{eq:tol} 的容差分开设定：光滑点上两侧差分之差约为 $\varepsilon |\phi''|$，远小于阈值，所以光滑点照常检查。</p>
 <p>不通过时抛出 <code>Error</code>，信息写明运算、节点、输入和下标：</p>
 <div class="term">gradient check failed: op 'exp' (node 'u'), input 0 'x' at [2]: backward 1.234567 vs numeric 4.567890</div>
-<p>检查用显式选项 <code>graph({ check: true })</code> 打开。库以预构建产物的形式给静态站使用，读不到构建环境的「开发模式」变量，所以开关由页面自己写。检查函数也单独导出为 <code>checkOp(def, inputs, attrs)</code>，测试对所有内置运算调用它。</p>
+<p>检查的开关是 <code>graph({ check })</code>。页面写了 <code>check</code> 时按页面写的值，不写时的默认值取决于页面用的是哪一种产物：</p>
+<ul>
+  <li>构建工具产物（<code>dist/module/</code>）：默认值为 <code>process.env.NODE_ENV !== 'production'</code>。Vite、webpack 等构建工具在构建页面时把 <code>process.env.NODE_ENV</code> 替换成常量，所以 <code>vite</code> 开发服务器下检查打开，<code>vite build</code> 的生产产物里检查关闭。运行环境里既没有替换也没有 <code>process</code> 时，读取出错，默认值为关闭。</li>
+  <li>直接引用的产物（<code>dist/*.js</code>）：默认关闭。浏览器直接加载这份产物，读不到构建环境的「开发模式」变量，要检查时页面写 <code>check: true</code>。</li>
+</ul>
+<p>检查函数也单独导出为 <code>checkOp(def, inputs, attrs)</code>，测试对所有内置运算调用它。</p>
 
 <h3>PyTorch 对拍</h3>
 <p>有限差分只能说明反向和前向自洽，不能说明前向符合 torch 的语义。仓库里的 Python 脚本用 PyTorch CPU 版计算每个运算和两个示例页面完整计算图的若干组输入、前向值与梯度，导出成 JSON 提交进仓库，JSON 里记录生成时的 torch 版本。测试读取这些 JSON 与 vizflow 的结果逐元素比较，通过条件为 $|a - b| \le 10^{-9} + 10^{-9}\,|b|$，其中 $b$ 是 torch 的值；torch 为 NaN 时 vizflow 也必须是 NaN。PyTorch 只用于生成测试数据，不进入库本身，运行测试也不需要安装 torch。</p>
@@ -737,17 +742,36 @@ katexAdapter: FormulaAdapter</code></pre>
   </tbody>
 </table>
 <p>字体用 <code>@fontsource</code> 本地托管，不请求 Google Fonts：标题用 Source Serif 4（400、500，含 italic 400，变量 <code>--serif</code>），正文用 Geist（400、500、600，变量 <code>--sans</code>），数字和代码用 Geist Mono（400、500，变量 <code>--mono</code>）。中文不单独打包字体，回退到系统字体。</p>
-<p><code>ui</code> 与 <code>scene3d</code> 入口自动引入 <code>theme</code>，使用它们的页面不需要单独引入。只用其他入口又需要样式的页面写 <code>import '@yhnocoder/vizflow/theme'</code>，它的副作用是把样式注入页面；构建产物里 CSS 和字体文件随 theme 入口一起输出，页面不需要另写 <code>&lt;link&gt;</code>。</p>
+<p><code>ui</code> 与 <code>scene3d</code> 入口自动引入 <code>theme</code>，使用它们的页面不需要单独引入。只用其他入口又需要样式的页面写 <code>import '@yhnocoder/vizflow/theme'</code>，它的副作用是把样式注入页面，页面不需要另写 <code>&lt;link&gt;</code>。两种产物交付字体的方式不同，见「打包与引用」。</p>
 <pre><code class="language-ts">readTheme(): ThemeColors
 onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
 <p><code>readTheme</code> 返回 <code>{ bg, surface, ink, fg, muted, line, lineStrong, pos, neg }</code>，每个是线性空间的 <code>[r, g, b]</code>，分量在 0 到 1 之间，供 three.js 直接使用。<code>onThemeChange</code> 在 <code>prefers-color-scheme</code> 变化或 <code>data-theme</code> 改变时调用。3D 场景在初始化和主题切换时读取颜色，画布与页面其他部分的颜色始终一致。</p>
 
 <h2>打包与引用</h2>
-<p>库用 Vite 的库模式打包，输出 ES module 和类型声明，每个入口对应 <code>package.json</code> 的 <code>exports</code> 中的一项。three.js、Solid、KaTeX 打包进产物，入口之间共用的代码拆成公共 chunk。静态站可以直接 <code>import</code> 产物，不需要 import map；three.js 只在引用 <code>scene3d</code> 时加载，KaTeX 只在引用 <code>formula</code>（包括间接引用）时加载。一个读取构建产物的测试确认 <code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js，并且每个入口都有对应的 <code>.d.ts</code>。</p>
-<p>three.js、Solid、KaTeX 和字体包在构建时打进 <code>dist/</code>，所以在 <code>package.json</code> 里列为 <code>devDependencies</code>，安装 vizflow 不会再下载它们；公开的类型声明也不引用这些库。注入样式的模块（<code>theme</code>、<code>ui</code>、<code>formula</code> 的 KaTeX 适配、<code>scene3d</code>）在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
+<p>库用 Vite 的库模式打包，输出 ES module 和类型声明。<code>npm run build</code> 构建两份产物，分别给两种引用方式使用，入口相同，入口之间共用的代码都拆成公共 chunk：</p>
+<table>
+  <thead>
+    <tr><th>产物</th><th>给谁用</th><th>第三方库</th><th>字体</th><th>有限差分检查的默认值</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>dist/module/*.js</code></td><td>用 npm 和构建工具（Vite、webpack 等）的项目，<code>exports</code> 的 <code>import</code> 指向它</td><td>three.js、Solid、KaTeX、<code>@fontsource</code> 保留为 import，由构建工具解析</td><td>import <code>@fontsource</code> 与 KaTeX 的 CSS 文件，字体由构建工具输出</td><td>开发模式打开，生产构建关闭</td></tr>
+    <tr><td><code>dist/*.js</code></td><td>不用构建工具的静态站，通过 jsDelivr 引用或复制 <code>dist/</code></td><td>打包进产物</td><td>输出到 <code>dist/fonts/</code>，代码按自身地址请求</td><td>关闭</td></tr>
+  </tbody>
+</table>
+<p>两份产物的类型声明都是 <code>dist/types/</code>，<code>exports</code> 的 <code>types</code> 指向它，公开的类型声明不引用 three.js、Solid、KaTeX。</p>
+<h3>构建工具产物</h3>
+<p>构建工具产物不打包第三方库，所以 three.js、Solid、KaTeX 和三个 <code>@fontsource</code> 字体包列在 <code>package.json</code> 的 <code>dependencies</code>，安装 vizflow 时一起安装。页面自己也引用 three.js 时，构建工具把两边的 import 解析到同一份 three.js，页面里只有一个实例，不会出现 three.js 的「Multiple instances」警告；打包进产物时页面会有两份。</p>
+<p>字体通过 import CSS 文件交付：<code>theme</code> 引入 <code>@fontsource</code> 的 CSS，<code>formula</code> 的 KaTeX 适配引入 <code>katex/dist/katex.min.css</code>，CSS 里的 <code>url()</code> 由构建工具处理，开发服务器和生产构建的字体都能正常加载。不用按 <code>import.meta.url</code> 计算字体地址的原因是：Vite 开发服务器会把依赖预打包到缓存目录，模块地址随之改变，按模块地址算出的字体路径就不存在了。</p>
+<p>检查的默认值写成 <code>process.env.NODE_ENV !== 'production'</code>，因为 Vite 和 webpack 都会替换这个表达式。库模式构建时 Vite 保留 <code>process.env.*</code>，不在库自己的构建里替换，留给页面的构建工具。</p>
+<p>源码里与产物有关的三个模块各有一个 <code>.module.ts</code> 版本：字体（<code>theme/fonts</code>）、KaTeX 样式（<code>formula/katex-style</code>）和检查默认值（<code>autograd/check-default</code>）。构建工具产物用 <code>.module.ts</code> 版本，直接引用的产物、开发服务器和测试用原版本。</p>
+<h3>直接引用的产物</h3>
+<p>静态站可以直接 <code>import</code> 这份产物，不需要 import map。three.js、Solid、KaTeX 打包进产物，three.js 只在引用 <code>scene3d</code> 时加载，KaTeX 只在引用 <code>formula</code>（包括间接引用）时加载。</p>
 <p>字体文件输出到 <code>dist/fonts/</code>，包括 KaTeX 的字体和 <code>@fontsource</code> 的 Source Serif 4、Geist、Geist Mono，全部是 woff2。<code>theme</code> 与 <code>formula</code> 的代码以自身所在文件的地址为基准请求 <code>fonts/</code> 下的文件，所以入口文件和 chunk 都放在 <code>dist/</code> 根目录，复制产物时 <code>fonts/</code> 要和它们保持在同一目录。</p>
-<p>版本号遵循 semver，静态站固定引用某个版本。产物可以复制进静态站，也可以通过 jsDelivr 按版本号引用：</p>
+<p>版本号遵循 semver，静态站固定引用某个版本。产物可以复制进静态站，也可以通过 jsDelivr 按版本号和文件路径引用。jsDelivr 按文件路径取文件，不经过 <code>exports</code>，所以 <code>exports</code> 指向构建工具产物不影响这种写法：</p>
 <pre><code class="language-js">import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/core.js';</code></pre>
+<h3>sideEffects 与测试</h3>
+<p>注入样式的模块（<code>theme</code> 及其字体模块、<code>ui</code>、<code>formula</code> 的 KaTeX 样式模块、<code>scene3d</code>）和两份产物的 <code>.js</code> 文件在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
+<p>读取构建产物的测试确认：直接引用的产物里，<code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js；构建工具产物里任何入口都不打包这三个库，它们只以 import 出现，CSS 引用的每个字体文件都存在；每个入口都有对应的 <code>.d.ts</code>。仓库里的 <code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，测试把它安装、构建，再用 <code>vite preview</code> 和 <code>vite</code> 开发服务器各打开一次，确认场景画出、没有控制台错误、字体请求全部返回 200、只有一个 three.js 实例，并且检查在开发服务器下打开、在生产构建里关闭。</p>
 <p>仓库里的写作说明 <code>docs/guide.md</code> 写 API 用法、两个完整示例页面的代码和常见注意事项。作者和 Claude 在编写新页面之前先读它，生成的代码就基于同一套 API。</p>
 
 <h2>第一阶段做什么</h2>

@@ -1,5 +1,6 @@
 import { type Nested, Tensor, formatShape, inferShape } from '../tensor';
 import { checkOpNamed } from './check';
+import { checkByDefault } from './check-default';
 import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
@@ -83,7 +84,7 @@ class GraphImpl {
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
     this.real = options.real === undefined ? undefined : Object.freeze({ ...options.real });
-    this.check = options.check ?? false;
+    this.check = options.check ?? checkByDefault();
     if (this.real !== undefined) {
       const numeric: Record<string, number> = { ...this.dims };
       for (const [key, value] of Object.entries(this.real)) {

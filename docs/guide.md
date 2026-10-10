@@ -39,19 +39,24 @@ npm run dev
 
 ### 1.3 在其他项目里使用
 
-用 npm 和构建工具（例如 Vite）时：
+有两种方式，按项目是否使用构建工具选择。
+
+**用构建工具（Vite、webpack 等）的项目**用 npm 安装：
 
 ```sh
 npm install @yhnocoder/vizflow
 ```
 
-页面里按包名导入，构建工具按 `package.json` 的 `exports` 找到产物：
+three.js、Solid、KaTeX 和字体包是 vizflow 的 `dependencies`，会一起安装。页面里按包名导入，构建工具按 `package.json` 的 `exports` 找到 `dist/module/` 下的产物：
 
 ```js
 import { graph } from '@yhnocoder/vizflow/core';
+import { mountScene, board, stack } from '@yhnocoder/vizflow/scene3d';
 ```
 
-不用构建工具的静态站，可以通过 jsDelivr 按版本号引用，也可以把 `dist/` 目录（`npm run build` 的产物）复制进站点后按相对路径引用：
+这份产物不打包第三方库，页面自己也 `import 'three'` 时，页面和 vizflow 用的是同一份 three.js。字体和 KaTeX 的 CSS 由构建工具处理，不需要额外配置。有限差分检查在开发服务器下默认打开，生产构建里默认关闭，见 2.1。完整的项目见 `examples/vite-project/`，它是一个独立的 Vite + TypeScript 项目，内容与 `examples/lm-head-nll.html` 相同，安装和运行步骤见其中的 `README.md`。
+
+**不用构建工具的静态站**通过 jsDelivr 按版本号和文件路径引用 `dist/` 下的产物，也可以把 `dist/` 目录（`npm run build` 的产物）复制进站点后按相对路径引用：
 
 ```js
 import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/core.js';
@@ -59,6 +64,8 @@ import { createSteps } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1
 import { mountSteps, mountPanels } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/ui.js';
 import { mountScene, board, stack, node } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/scene3d.js';
 ```
+
+这份产物把 three.js、Solid、KaTeX 打包在内，字体从 `dist/fonts/` 加载，复制时保留这个目录。有限差分检查默认关闭。
 
 同一个页面的所有入口必须来自同一个位置和同一个版本。各入口共用内部模块（运算注册表、`Node` 类），混用两个来源会得到两份注册表，面板无法识别另一份里创建的节点。
 
@@ -142,7 +149,7 @@ const g = graph({
 
 - `dims`：命名维度。之后写 shape 时可以用名字代替数字，例如 `[1, 'd']`。用到没有定义的名字时抛错。
 - `real`：真实模型的尺寸。给出后，层名卡片多显示一行「真实模型」，例如 `Qwen3-8B：(1, 151936)`。
-- `check`：打开有限差分检查。每创建一个运算节点、每次重算之后，都对每个运算检查 `backward` 与数值导数是否一致，不一致时抛出 `gradient check failed: ...`。写页面和调试自定义运算时打开；内置运算已经在测试中检查过，发布的页面可以关掉。
+- `check`：有限差分检查的开关。打开时，每创建一个运算节点、每次重算之后，都对每个运算检查 `backward` 与数值导数是否一致，不一致时抛出 `gradient check failed: ...`。不写时的默认值取决于引用方式：通过构建工具引用时，开发服务器下打开，生产构建里关闭；直接引用 `dist/*.js` 时关闭，要检查时写 `check: true`。写了 `check` 时总是按写的值。内置运算已经在测试中检查过，发布的页面不需要检查。
 
 ### 2.2 叶子节点：input、param、label
 

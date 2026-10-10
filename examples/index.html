@@ -22,6 +22,8 @@
   <li><a href="guide-check-log-softmax.html">log_softmax 与 nll_loss 小部件</a>：按写作说明独立写出的页面，用来检查说明是否够用。</li>
   <li><a href="theme.html">theme</a>：颜色变量与字体。</li>
 </ul>
+<h2>用构建工具的项目</h2>
+<p><code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，从 npm 包的构建工具产物引用 vizflow，内容与 lm_head 页面相同。它要在自己的目录里安装和运行，步骤见其中的 README.md。</p>
 <script type="module">
 import * as core from '@yhnocoder/vizflow/core';
 document.getElementById('status').textContent = `core exports: ${Object.keys(core).length}`;
