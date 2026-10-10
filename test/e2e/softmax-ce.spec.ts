@@ -1,5 +1,5 @@
 import { type Page, expect, test } from '@playwright/test';
-import { expectLabelsApartAndInside } from './labels';
+import { expectLabelsApartAndInside, waitForStableLabels, waitForStep } from './labels';
 
 type Mode = 'single' | 'batch';
 
@@ -20,7 +20,6 @@ declare global {
   }
 }
 
-const SETTLE_MS = 400;
 const SCREENSHOT_DIR = process.env.VIZFLOW_SCREENSHOTS ?? 'test-results/softmax-ce';
 const DEFAULT_LOGITS = [
   [2.0, 1.0, 0.2, -0.6, -1.4],
@@ -51,7 +50,8 @@ async function open(page: Page): Promise<string[]> {
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('.vf-scene canvas')).toHaveCount(1);
   await expect(page.locator('.vf-nogl')).toHaveCount(0);
-  await page.waitForTimeout(SETTLE_MS);
+  await page.evaluate(() => document.fonts.ready);
+  await waitForStableLabels(page);
   return errors;
 }
 
@@ -59,12 +59,12 @@ async function switchTo(page: Page, mode: Mode): Promise<void> {
   await page.getByRole('tab', { name: mode === 'single' ? /单样本/ : /批量/ }).click();
   await expect.poll(() => page.evaluate(() => window.vizflow.current())).toBe(mode);
   await expect(page.locator('.vf-scene canvas')).toHaveCount(1);
-  await page.waitForTimeout(SETTLE_MS);
+  await waitForStableLabels(page);
 }
 
 async function goStep(page: Page, mode: Mode, index: number): Promise<void> {
   await page.evaluate(([m, i]) => window.vizflow.modes[m as Mode].steps.go(i as number), [mode, index] as const);
-  await page.waitForTimeout(SETTLE_MS);
+  await waitForStep(page, index);
 }
 
 const readLoss = (page: Page, mode: Mode) => page.evaluate((m) => window.vizflow.modes[m as Mode].g.loss().value.data[0], mode);
@@ -84,6 +84,7 @@ for (const scheme of ['light', 'dark'] as const) {
   for (const width of [1280, 375]) {
     if (scheme === 'dark' && width !== 1280) continue;
     test(`steps through both modes without console errors (${scheme}, ${width}px)`, async ({ page }) => {
+      test.setTimeout(90_000);
       await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
       await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
       const errors = await open(page);

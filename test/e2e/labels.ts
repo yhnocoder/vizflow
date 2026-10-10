@@ -30,6 +30,27 @@ export async function labelRects(page: Page, selector = '.vf-lb'): Promise<(Rect
   );
 }
 
+export async function waitForStableLabels(page: Page): Promise<void> {
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  let previous = '';
+  await expect
+    .poll(
+      async () => {
+        const current = JSON.stringify(await labelRects(page));
+        const stable = current === previous;
+        previous = current;
+        return stable;
+      },
+      { intervals: [100] },
+    )
+    .toBe(true);
+}
+
+export async function waitForStep(page: Page, index: number): Promise<void> {
+  await expect(page.locator('.vf-st').nth(index)).toHaveAttribute('aria-current', 'step');
+  await waitForStableLabels(page);
+}
+
 export async function expectLabelsApartAndInside(page: Page, context: string): Promise<void> {
   const stage = await stageRect(page);
   const rects = await labelRects(page);

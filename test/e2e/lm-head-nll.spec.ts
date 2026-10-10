@@ -1,9 +1,8 @@
 import { join } from 'node:path';
 import { expect, test, type Page, type TestInfo } from '@playwright/test';
-import { expectLabelsApartAndInside } from './labels';
+import { expectLabelsApartAndInside, waitForStableLabels, waitForStep } from './labels';
 
 const DEFAULT_LOSS = 0.5027410756235495;
-const SETTLE_MS = 400;
 const FORWARD_2 = 2;
 const BACKWARD_3 = 8;
 const STEP_NAMES = ['overview', 'forward-1', 'forward-2', 'forward-3', 'forward-4', 'forward-5', 'backward-1', 'backward-2', 'backward-3', 'backward-4', 'backward-5'];
@@ -24,13 +23,13 @@ async function open(page: Page): Promise<string[]> {
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true');
   await expect(page.locator('.vf-scene canvas')).toHaveCount(1);
   await page.evaluate(() => document.fonts.ready);
-  await page.waitForTimeout(SETTLE_MS);
+  await waitForStableLabels(page);
   return errors;
 }
 
 async function goStep(page: Page, index: number): Promise<void> {
   await page.evaluate((i) => (window as unknown as { vizflow: Win }).vizflow.steps.go(i), index);
-  await page.waitForTimeout(SETTLE_MS);
+  await waitForStep(page, index);
 }
 
 const readLoss = (page: Page) => page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.g.loss().value.data[0]);
@@ -45,6 +44,7 @@ async function shot(page: Page, info: TestInfo, name: string): Promise<void> {
 }
 
 test('every step renders without console errors', async ({ page }, info) => {
+  test.setTimeout(60_000);
   await page.setViewportSize({ width: 1280, height: 900 });
   const errors = await open(page);
   const count = await page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.steps.list.length);
@@ -122,7 +122,7 @@ for (const step of [0, FORWARD_2, BACKWARD_3]) {
     await shot(page, info, `${name}-1280`);
 
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.waitForTimeout(SETTLE_MS);
+    await waitForStableLabels(page);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(overflow).toBeLessThanOrEqual(0);
     await expectLabelsApartAndInside(page, `step ${step} at 375px`);
@@ -137,7 +137,7 @@ for (const step of [0, FORWARD_2, BACKWARD_3]) {
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.emulateMedia({ colorScheme: 'dark' });
-    await page.waitForTimeout(SETTLE_MS);
+    await waitForStableLabels(page);
     await shot(page, info, `${name}-dark`);
     expect(errors).toEqual([]);
   });
