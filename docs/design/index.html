@@ -12,6 +12,20 @@
 <h1>Design Docs</h1>
 <p class="lead">本项目的设计文档索引。每份文档写用户能看到的行为、模块接口、影响结果的常量和改动时容易被破坏的设计决定。新文档从模板复制。</p>
 
+<h2>设计文档</h2>
+<ul class="cards">
+  <li><a class="card" href="pages/vizflow.html">
+    <div class="pv">
+      <div class="pv-line pv-cmd"><b>g</b><span class="pv-a">matmul(h, W.T)</span></div>
+      <div class="pv-line pv-a pv-s2">logsumexp(z, -1)</div>
+      <div class="pv-line pv-a pv-s3">nll_loss(logp, t)</div>
+      <div class="pv-line pv-a pv-s4">backward  <span class="pv-chip hot">auto</span></div>
+    </div>
+    <div class="card-body"><strong>vizflow 设计</strong><span>页面的写法、模块与入口、计算图与运算、三道正确性检查、讲解步骤与卡片、3D 场景、面板与布局、主题和打包。</span>
+    <div class="card-tags"><i>design</i><i>api</i><i>pages/vizflow.html</i></div></div>
+  </a></li>
+</ul>
+
 <h2>模板</h2>
 <ul class="cards">
   <li><a class="card" href="pages/_template.html">
