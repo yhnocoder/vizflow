@@ -744,6 +744,7 @@ onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
 
 <h2>打包与引用</h2>
 <p>库用 Vite 的库模式打包，输出 ES module 和类型声明，每个入口对应 <code>package.json</code> 的 <code>exports</code> 中的一项。three.js、Solid、KaTeX 打包进产物，入口之间共用的代码拆成公共 chunk。静态站可以直接 <code>import</code> 产物，不需要 import map；three.js 只在引用 <code>scene3d</code> 时加载，KaTeX 只在引用 <code>formula</code>（包括间接引用）时加载。一个读取构建产物的测试确认 <code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js，并且每个入口都有对应的 <code>.d.ts</code>。</p>
+<p>three.js、Solid、KaTeX 和字体包在构建时打进 <code>dist/</code>，所以在 <code>package.json</code> 里列为 <code>devDependencies</code>，安装 vizflow 不会再下载它们；公开的类型声明也不引用这些库。注入样式的模块（<code>theme</code>、<code>ui</code>、<code>formula</code> 的 KaTeX 适配、<code>scene3d</code>）在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
 <p>字体文件输出到 <code>dist/fonts/</code>，包括 KaTeX 的字体和 <code>@fontsource</code> 的 Source Serif 4、Geist、Geist Mono，全部是 woff2。<code>theme</code> 与 <code>formula</code> 的代码以自身所在文件的地址为基准请求 <code>fonts/</code> 下的文件，所以入口文件和 chunk 都放在 <code>dist/</code> 根目录，复制产物时 <code>fonts/</code> 要和它们保持在同一目录。</p>
 <p>版本号遵循 semver，静态站固定引用某个版本。产物可以复制进静态站，也可以通过 jsDelivr 按版本号引用：</p>
 <pre><code class="language-js">import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/core.js';</code></pre>
