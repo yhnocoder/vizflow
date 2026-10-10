@@ -148,7 +148,13 @@ export class VizflowPage extends HTMLElement {
   async #mountScene(stage: HTMLElement, g: Graph, options: SceneOptions): Promise<void> {
     const generation = this.#generation;
     const { mountScene } = await import('../scene3d');
-    if (generation === this.#generation) this.#mounted.push(mountScene(stage, g, options));
+    if (generation !== this.#generation) return;
+    try {
+      this.#mounted.push(mountScene(stage, g, options));
+    } catch (error) {
+      this.#unmount();
+      reportError(error);
+    }
   }
 
   #unmount(): void {

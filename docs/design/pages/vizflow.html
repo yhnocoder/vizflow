@@ -727,7 +727,7 @@ interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
   <li><code>graph</code> 是计算图，<code>steps</code> 是 <code>createSteps</code> 的第二个参数，<code>panels</code> 是 <code>mountPanels</code> 的面板列表，<code>scene</code> 是 <code>mountScene</code> 的选项（不含 <code>steps</code> 与 <code>edit</code>，元素自己传入），<code>edit</code> 对应场景的编辑模式，默认 <code>false</code>。</li>
   <li>元素在文档中且 <code>graph</code> 与 <code>steps</code> 都已设置时挂载。<code>panels</code> 不设置时不画面板，<code>scene</code> 不设置时不画 3D 场景。</li>
   <li>设置属性后，元素在当前任务的微任务里重新挂载一次：先释放已有的场景、步骤条、面板和 Steps，再按全部属性重新创建。页面连续设置几个属性只挂载一次。读取 <code>createdSteps</code> 时，如果还有待处理的挂载，先同步完成挂载再返回，所以页面设置完属性后可以立即调用 <code>page.createdSteps.go(3)</code>。</li>
-  <li>设置了 <code>scene</code> 时，元素用动态 <code>import()</code> 加载 <code>scene3d</code>，加载完成后再挂载 3D 场景；没有设置 <code>scene</code> 的页面不加载 three.js。步骤条和面板同步挂载，<code>createdSteps</code> 也同步可用。场景加载完成之前元素被移除或重新挂载时，这次加载的结果不再挂载。</li>
+  <li>设置了 <code>scene</code> 时，元素用动态 <code>import()</code> 加载 <code>scene3d</code>，加载完成后再挂载 3D 场景；没有设置 <code>scene</code> 的页面不加载 three.js。步骤条和面板同步挂载，<code>createdSteps</code> 也同步可用。场景加载完成之前元素被移除或重新挂载时，这次加载的结果不再挂载。场景挂载出错时（例如布局里的节点形状不符合模板），元素释放已挂载的全部内容，并用 <code>reportError</code> 报告这个错误，错误出现在控制台。</li>
   <li><code>createdSteps</code> 是元素创建的 <code>Steps</code>，只读；未挂载时为 <code>undefined</code>。每次重新挂载都换成新的对象。</li>
   <li>元素从文档移除时（<code>disconnectedCallback</code>）释放全部内容，包括 WebGL 上下文和计算图上的订阅；再次加入文档时重新挂载。</li>
   <li>元素用 light DOM，不用 shadow root。theme、KaTeX、ui 与 scene3d 的样式注入在 document 里，shadow root 内的节点用不到这些样式。元素只移除自己创建的布局节点。</li>
