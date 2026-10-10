@@ -63,7 +63,7 @@ const TARGETS = [0, 1, 2];
 const B = LOGITS.length;
 const CAMERA = { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] };
 const FORWARD_SCALES = { forward: 0.3 };
-const PYTORCH_SINGLE = 'u = x.exp()\nS = u.sum(-1, keepdim=True)\np = u / S\ny = p.gather(-1, t)\nloss = -y.log()\n# 合起来等价于\nloss = F.cross_entropy(x, t)';
+const PYTORCH_SINGLE = 'u = x.exp()\nS = u.sum(-1, keepdim=True)\np = u / S\ny = p.gather(-1, t)\nloss = -y.log()\n# 合起来等价于\nloss = F.cross_entropy(x, t.squeeze(0))';
 const PYTORCH_BATCH = 'U = X.exp()\ns = U.sum(-1, keepdim=True)\nP = U / s\ny = P.gather(-1, t)\nl_b = -y.log()\nloss = l_b.mean()\n# 合起来等价于\nloss = F.cross_entropy(X, t.squeeze(-1))';
 
 function single() {
