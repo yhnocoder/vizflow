@@ -391,6 +391,54 @@ def page_fixtures():
     return cases
 
 
+STABILITY_INPUTS = [
+    ("large logits", [1000.0, 1001.0, 999.0]),
+    ("logits with -1000", [-1000.0, 0.0, 1.0]),
+    ("rows of large and very negative logits", [[1000.0, 1001.0, 999.0], [-1000.0, 0.0, 1.0]]),
+]
+
+
+def finite(case):
+    return {**case, "finite": True}
+
+
+def stability_op_fixtures():
+    cases = []
+    for title, values in STABILITY_INPUTS:
+        x = torch.tensor(values, dtype=torch.float64)
+        cases.append(
+            finite(
+                op_case(
+                    "logsumexp",
+                    f"{title} dim -1 keepdim True",
+                    lambda a: torch.logsumexp(a, -1, keepdim=True),
+                    [("input", x)],
+                    [tensor_arg(0), -1],
+                    {"keepdim": True},
+                )
+            )
+        )
+        for op, fn in [("softmax", torch.softmax), ("log_softmax", torch.log_softmax)]:
+            cases.append(finite(op_case(op, f"{title} dim -1", lambda a, fn=fn: fn(a, -1), [("input", x)], [tensor_arg(0), -1])))
+    return cases
+
+
+def stability_page_fixtures():
+    cases = []
+    for d, V in [(4, 5), (6, 8)]:
+        cases.append(
+            finite(
+                lmhead_page(
+                    f"large logits d={d} V={V}",
+                    randn(1, d)[0].tolist(),
+                    (randn(V, d) * 150).tolist(),
+                    int(randint(V, ()).item()),
+                )
+            )
+        )
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -401,8 +449,10 @@ def write(name, cases):
 def main():
     torch.set_default_dtype(torch.float64)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    write("ops.json", op_fixtures())
-    write("pages.json", page_fixtures())
+    ops = op_fixtures()
+    pages = page_fixtures()
+    write("ops.json", ops + stability_op_fixtures())
+    write("pages.json", pages + stability_page_fixtures())
 
 
 if __name__ == "__main__":

@@ -56,3 +56,9 @@ export function expectTensor(actual: Tensor | null, expected: EncodedTensor, wha
   });
   expect(mismatches, what).toEqual([]);
 }
+
+export function expectFinite(actual: Tensor | null, what: string): void {
+  if (actual === null) return;
+  const nonFinite = [...actual.data].flatMap((v, i) => (Number.isFinite(v) ? [] : [`[${i}] ${v}`]));
+  expect(nonFinite, `${what} must be finite`).toEqual([]);
+}

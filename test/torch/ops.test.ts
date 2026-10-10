@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type Node, builtinOps, graph } from '../../src/core';
-import { type EncodedTensor, decode, expectTensor, loadFixture, nested } from './fixtures';
+import { type EncodedTensor, decode, expectFinite, expectTensor, loadFixture, nested } from './fixtures';
 
 interface OpCase {
   op: string;
@@ -11,6 +11,7 @@ interface OpCase {
   output: EncodedTensor;
   upstream: EncodedTensor;
   grads: (EncodedTensor | null)[];
+  finite?: boolean;
 }
 
 const fixture = loadFixture<OpCase>('ops.json');
@@ -46,6 +47,10 @@ describe(`PyTorch ${fixture.torch} reference for each op`, () => {
         if (expected === null) expect(leaf.grad).toBeNull();
         else expectTensor(leaf.grad, expected, `grad of tensor ${i}`);
       });
+      if (c.finite) {
+        expectFinite(out.value, 'forward');
+        leaves.forEach((leaf, i) => expectFinite(leaf.grad, `grad of tensor ${i}`));
+      }
     });
   }
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type Graph, graph } from '../../src/core';
-import { type EncodedTensor, decode, expectTensor, loadFixture, nested } from './fixtures';
+import { type EncodedTensor, decode, expectFinite, expectTensor, loadFixture, nested } from './fixtures';
 
 interface PageCase {
   page: 'lmhead' | 'softmax-single' | 'softmax-batch';
@@ -8,6 +8,7 @@ interface PageCase {
   inputs: Record<string, EncodedTensor>;
   loss: EncodedTensor;
   nodes: Record<string, { value: EncodedTensor; grad: EncodedTensor | null }>;
+  finite?: boolean;
 }
 
 const fixture = loadFixture<PageCase>('pages.json');
@@ -60,6 +61,10 @@ describe(`PyTorch ${fixture.torch} reference for the example pages`, () => {
         expectTensor(node.value, expected.value, `value of ${name}`);
         if (expected.grad === null) expect(node.grad, `grad of ${name}`).toBeNull();
         else expectTensor(node.grad, expected.grad, `grad of ${name}`);
+        if (c.finite) {
+          expectFinite(node.value, `value of ${name}`);
+          expectFinite(node.grad, `grad of ${name}`);
+        }
       }
     });
   }
