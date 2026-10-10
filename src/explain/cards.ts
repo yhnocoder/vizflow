@@ -34,10 +34,9 @@ function squeeze(shape: readonly number[]): number[] {
   return shape.filter((d) => d !== 1);
 }
 
-function consumersOf(g: Graph, node: Node): Node[] {
-  const loss = lossOf(g);
+function consumersOf(g: Graph, node: Node, reachesLoss: (node: Node) => boolean): Node[] {
   return g.nodes.filter((other) => {
-    if (other.kind !== 'op' || (loss !== undefined && other.id > loss.id)) return false;
+    if (other.kind !== 'op' || !reachesLoss(other)) return false;
     const flags = opDef(other.op as string)?.differentiable;
     return other.inputs.some((input, arg) => input === node && (flags === undefined || flags[arg]));
   });
@@ -68,7 +67,7 @@ function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
   return [`${left}=${terms.join('+')}`];
 }
 
-export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward'): NodeCard {
+export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', reachesLoss: (node: Node) => boolean): NodeCard {
   const override = node.card?.[dir] ?? {};
   const rows: { label: string; value: string }[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node)];
   let card: NodeCard;
@@ -76,7 +75,7 @@ export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward'): N
     rows.push({ label: '当前值', value: valueText(node.value) });
     card = { title: node.name, tex: forwardTex(node), rows };
   } else {
-    const consumers = consumersOf(g, node);
+    const consumers = consumersOf(g, node, reachesLoss);
     for (const y of consumers) {
       rows.push({
         label: 'Jacobian',

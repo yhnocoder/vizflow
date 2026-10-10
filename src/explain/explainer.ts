@@ -70,7 +70,7 @@ class ExplainerImpl implements Explainer {
   }
 
   nodeCard(node: Node, dir: 'forward' | 'backward'): NodeCard {
-    return nodeCardOf(this.g, node, dir);
+    return nodeCardOf(this.g, node, dir, (n) => this.reachesLoss(n));
   }
 
   edgeCard(e: FlowEdge): EdgeCard {
@@ -79,6 +79,14 @@ class ExplainerImpl implements Explainer {
 
   elemTex(ref: ElemRef | CellRef): string {
     return elemTex(ref);
+  }
+
+  private reachesLoss(node: Node): boolean {
+    const reachable = this.current().reachable;
+    for (let offset = 0; offset < node.value.size; offset++) {
+      if (reachable.has(refKey({ node, index: indexOf(node.shape, offset) }))) return true;
+    }
+    return false;
   }
 
   private current(): Snapshot {

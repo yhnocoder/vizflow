@@ -122,6 +122,21 @@ describe('explain on the lm_head graph', () => {
     expect(hBack.rows.at(-1)!.value).toBe('[' + Array.from(h.grad!.data, (v) => (v < 0 ? '−' : '') + Math.abs(v).toFixed(3)).join(', ') + ']');
   });
 
+  it('ignores consumers that do not reach the loss', () => {
+    const g = graph();
+    const x = g.input('x', [3], [1, 2, 3]);
+    const side = g.exp(x, { name: 'side' });
+    const y = g.neg(x, { name: 'y' });
+    g.loss(g.sum(y, { name: 'loss' }));
+    g.log(x, { name: 'after' });
+    const ex = explain(g);
+    const card = ex.nodeCard(x, 'backward');
+    expect(card.tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathbf{x}}=\\Big(\\frac{\\partial \\mathbf{y}}{\\partial \\mathbf{x}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\mathbf{y}}']);
+    expect(card.rows.map((r) => r.label)).toEqual(['shape', 'Jacobian', '当前梯度']);
+    expect(card.rows[1].value).toBe('∂y/∂x：(3, 3)');
+    expect(ex.nodeCard(side, 'backward').tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathrm{side}}=0']);
+  });
+
   it('lets card options override the generated text', () => {
     const g = graph();
     const x = g.input('x', [2], [1, 2], { card: { forward: { title: '输入', note: '说明' }, backward: { tex: ['\\mathbf{g}'] } } });
