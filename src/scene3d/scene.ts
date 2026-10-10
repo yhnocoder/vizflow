@@ -81,6 +81,8 @@ export const EDGE_HOVER_DISTANCE = 6;
 export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显示不出来。下方的分步讲解和右侧数值仍然可用。';
 
 const CAMERA_DISTANCE = 60;
+const NARROW_WIDTH = 600;
+const SIDE_LABEL_GAP = 0.15;
 const AMBIENT_INTENSITY = 0.72;
 const DIRECTIONAL_INTENSITY = 0.42;
 const LEGACY_LIGHT_FACTOR = Math.PI;
@@ -217,6 +219,7 @@ class SceneController implements EditHost {
   private pinned: { node: Node; el: HTMLElement } | undefined;
   private downAt: [number, number] | undefined;
   private disposed = false;
+  private narrow = false;
 
   constructor(
     readonly root: HTMLDivElement,
@@ -469,6 +472,7 @@ class SceneController implements EditHost {
 
   private refresh(): void {
     if (this.disposed) return;
+    this.narrow = this.width <= NARROW_WIDTH;
     this.state = this.currentState();
     this.resolve();
     const now = performance.now();
@@ -514,7 +518,11 @@ class SceneController implements EditHost {
           const elemTex = this.explainer.elemTex({ node, index: element.index });
           const value = formatNumber(values[i], { tex: true });
           texOf(label, backward ? `\\partial\\ell/\\partial ${elemTex} = ${value}` : `${elemTex} = ${value}`);
-          label.pos = [element.x, element.y + renderable.nodes!.height / 2 + 0.45, element.z];
+          const side = block.title.anchor === 'right' && this.narrow;
+          const mesh = renderable.nodes!;
+          const toward = block.batched ? -1 : 1;
+          label.pos = side ? [element.x + toward * (mesh.radius + SIDE_LABEL_GAP), element.y + mesh.height / 2, element.z] : [element.x, element.y + mesh.height / 2 + 0.45, element.z];
+          label.anchor = !side ? 'top-center' : block.batched ? 'right-middle' : 'left-middle';
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
           label.offset = this.options.labels?.[node.name];
@@ -741,6 +749,7 @@ class SceneController implements EditHost {
     this.width = Math.max(1, this.root.clientWidth);
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
+    if (this.narrow !== this.width <= NARROW_WIDTH) this.refresh();
     this.frameAll();
     this.labelsDirty = true;
   }
@@ -752,10 +761,16 @@ class SceneController implements EditHost {
       const [w, d] = block.footprint;
       const values = block.node.value.data;
       const grad = block.node.grad;
-      let negative = false;
-      for (let i = 0; i < values.length; i++) if (values[i] < 0 || (grad !== null && grad.data[i] < 0)) negative = true;
-      const top = renderable.nodes === undefined ? HEIGHT_CAP : renderable.nodes.height;
-      const bottom = renderable.nodes === undefined && negative ? -HEIGHT_CAP : 0;
+      let high = 0;
+      let low = 0;
+      for (let i = 0; i < values.length; i++) {
+        for (const h of [values[i] * renderable.scale.forward, grad === null ? 0 : grad.data[i] * renderable.scale.backward]) {
+          high = Math.max(high, Math.min(h, HEIGHT_CAP));
+          low = Math.min(low, Math.max(h, -HEIGHT_CAP));
+        }
+      }
+      const top = renderable.nodes === undefined ? high : renderable.nodes.height;
+      const bottom = renderable.nodes === undefined ? low : 0;
       const radius = block.shape === 'disc' ? DISC_RADIUS : w / 2;
       const depth = block.shape === 'disc' ? DISC_RADIUS : d / 2;
       for (const e of block.elements) {

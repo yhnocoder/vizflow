@@ -55,7 +55,7 @@ export const STACK_LEVEL = 5.2;
 export const STACK_BACK_OFFSET = 0.7;
 export const SIDE_NODE_OFFSET = 2.6;
 export const SELECT_NODE_RISE = 2.6;
-export const SCALAR_NODE_RISE = 1.1;
+export const SCALAR_NODE_RISE = 0.7;
 export const LINE_HEIGHT = 0.03;
 export const PLATE_THICKNESS = 0.04;
 export const AXIS_OFFSET = 2.0;
@@ -70,6 +70,7 @@ export const FOOTPRINTS = {
   box: [1.2, 0.8],
 } as const;
 export const DISC_RADIUS = 0.55;
+export const BATCH_DISC_RADIUS = 0.32;
 export const DISC_HEIGHT = 0.3;
 export const BOX_HEIGHT = 0.5;
 
@@ -234,7 +235,7 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
   const xs = (i: number) => ax + (i - (V - 1) / 2) * BOARD_COLUMN_SPACING * s;
   const zf = az + BOARD_FRONT * s;
   const wr = (k: number) => zf - BOARD_BACK_OFFSET * s - (d - 1 - k) * gap * s;
-  const zRow = (r: number) => zf + r * BATCH_ROW_SPACING * s;
+  const zRow = (r: number) => zf + (B - 1 - r) * BATCH_ROW_SPACING * s;
   const xa = (k: number) => xs(0) - BOARD_A_OFFSET * s + k * BOARD_A_SPACING * s;
   const y = ay;
   const aCenter = (xa(0) + xa(d - 1)) / 2;
@@ -252,8 +253,8 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
     elements: elementsOf(a, (r, k) => [xa(k), y, zRow(r)]),
     footprint: FOOTPRINTS.a,
     plate: { x: aCenter, y, z: rowCenter, w: (d - 1) * BOARD_A_SPACING * s + 1.0, d: 1.0 + rowDepth },
-    title: { x: aCenter, y: y - 0.6, z: zRow(B - 1) + 1.35, anchor: 'below' },
-    classLabels: Array.from({ length: d }, (_, k) => ({ text: `k=${k + 1}`, col: k, x: xa(k), y, z: zRow(B - 1) + 0.7, anchor: 'below' as const })),
+    title: { x: aCenter, y: y - 0.6, z: zRow(0) + 1.35, anchor: 'below' },
+    classLabels: Array.from({ length: d }, (_, k) => ({ text: `k=${k + 1}`, col: k, x: xa(k), y, z: zRow(0) + 0.7, anchor: 'below' as const })),
     rowLabels: [],
     frameRows: [],
     scales: scalesFor(a, options),
@@ -287,7 +288,7 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
     elements: elementsOf(out, (r, i) => [xs(i), y, zRow(r)]),
     footprint: FOOTPRINTS.bar,
     plate: { x: ax, y, z: rowCenter, w: plateWidth, d: 1.0 + rowDepth },
-    title: { x: ax, y: y - 0.75, z: zRow(B - 1) + 1.45, anchor: 'below' },
+    title: { x: ax, y: y - 0.75, z: zRow(0) + 1.45, anchor: 'below' },
     classLabels: [],
     rowLabels: [],
     frameHalf: ctx.aligned.has(out) ? [0.45, 0.45] : undefined,
@@ -386,7 +387,7 @@ function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: Layout
   return block;
 }
 
-function scalarBlock(n: Node, shape: 'disc' | 'box', position: (row: number) => Vec3, options: TemplateOptions, extent: Vec3[] = []): Block {
+function scalarBlock(n: Node, shape: 'disc' | 'box', position: (row: number) => Vec3, options: TemplateOptions, extent: Vec3[] = [], anchor: Anchor['anchor'] = 'above'): Block {
   const [rows] = rowsCols(n.shape);
   const elements = elementsOf(n, (r) => position(r));
   const top = shape === 'disc' ? DISC_HEIGHT : BOX_HEIGHT;
@@ -400,7 +401,7 @@ function scalarBlock(n: Node, shape: 'disc' | 'box', position: (row: number) => 
     batched: rows > 1,
     elements,
     footprint: FOOTPRINTS[shape],
-    title: { x: first.x, y: first.y + top / 2 + 0.45, z: first.z, anchor: 'above' },
+    title: { x: first.x, y: first.y + top / 2 + 0.45, z: first.z, anchor },
     classLabels: [],
     rowLabels: [],
     frameRows: [],
@@ -467,7 +468,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
         return layer.xs[Math.max(0, Math.min(layer.cols - 1, col))];
       };
       const extent = layer.xs.map((x): Vec3 => [x, y, zOf(0)]);
-      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent);
+      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, isLoss(n) ? 'above' : 'right');
       last = { y, xs: [(layer.xs[0] + layer.xs[layer.cols - 1]) / 2], zs: block.elements.map((e) => e.z), rowXs: block.elements.map((e) => e.x), spanXs: layer.xs };
     } else {
       const base = last ?? { y: ay, xs: [ax], zs: [az] };
@@ -478,7 +479,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const zOf = (r: number) => (rows === base.zs.length ? base.zs[r] : (base.zs[0] + base.zs[base.zs.length - 1]) / 2);
       const spanXs = rowXs === undefined ? undefined : base.spanXs;
       const extent = (spanXs ?? []).map((x): Vec3 => [x, y, zOf(0)]);
-      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent);
+      block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, isLoss(n) ? 'above' : 'right');
       last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs };
     }
     const offset = options.offsets?.[n.name];

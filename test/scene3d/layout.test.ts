@@ -76,11 +76,14 @@ describe('board layout', () => {
     expect(elementAt(out, [0, 0]).z).toBeCloseTo(3 + 2.9 * 2, 12);
   });
 
-  it('puts batch rows of out and a along z', () => {
+  it('puts batch row 0 of out and a in front and later rows behind it', () => {
     const { h, W, z, ctx } = build([0, 1], 2);
     const { blocks } = resolveLayout([board(h, W.T, z)], ctx);
-    expect(elementAt(blockOf(blocks, 'z'), [1, 0]).z).toBeCloseTo(2.9 + BATCH_ROW_SPACING, 12);
-    expect(elementAt(blockOf(blocks, 'h'), [1, 2]).z).toBeCloseTo(2.9 + BATCH_ROW_SPACING, 12);
+    expect(elementAt(blockOf(blocks, 'z'), [0, 0]).z).toBeCloseTo(2.9 + BATCH_ROW_SPACING, 12);
+    expect(elementAt(blockOf(blocks, 'z'), [1, 0]).z).toBeCloseTo(2.9, 12);
+    expect(elementAt(blockOf(blocks, 'h'), [0, 2]).z).toBeCloseTo(2.9 + BATCH_ROW_SPACING, 12);
+    expect(elementAt(blockOf(blocks, 'h'), [1, 2]).z).toBeCloseTo(2.9, 12);
+    expect(blockOf(blocks, 'h').classLabels[0].z).toBeGreaterThan(2.9 + BATCH_ROW_SPACING);
     expect(blockOf(blocks, 'z').batched).toBe(true);
     expect(blockOf(blocks, 'W.T').batched).toBe(false);
   });
@@ -152,6 +155,9 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'log y').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + SCALAR_NODE_RISE, 12);
     expect(blockOf(blocks, 'loss')).toMatchObject({ shape: 'box' });
     expect(blockOf(blocks, 'loss').elements[0].y).toBeCloseTo(3 + SELECT_NODE_RISE + 2 * SCALAR_NODE_RISE, 12);
+    expect(blockOf(blocks, 'y').title.anchor).toBe('right');
+    expect(blockOf(blocks, 'log y').title.anchor).toBe('right');
+    expect(blockOf(blocks, 'loss').title.anchor).toBe('above');
   });
 
   it('moves each planar layer and the side node back by the back option', () => {

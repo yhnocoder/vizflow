@@ -10,7 +10,9 @@ header { margin-bottom: 20px; max-width: 760px; }
 h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
 header p { margin: 0; color: var(--muted); max-width: 64ch; }
 .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+main { --vf-stage-height: min(74vh, 700px); }
 #stage { height: var(--vf-stage-height); min-height: 400px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+@media (max-width: 980px) { main { --vf-stage-height: 62vh; } }
 @media (max-width: 980px) { #stage { min-height: 360px; } }
 .tabs { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); gap: 2px; margin-top: 16px; }
 .tab { font: inherit; font-size: 13.5px; border: 0; background: transparent; color: var(--muted); padding: 6px 16px; border-radius: 999px; cursor: pointer; }
@@ -63,7 +65,7 @@ const TARGETS = [0, 1, 2];
 const B = LOGITS.length;
 const CAMERA = { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] };
 const FORWARD_SCALES = { forward: 0.3 };
-const LEVEL = 3.9;
+const LEVEL = 3.0;
 const PYTORCH_SINGLE = 'u = x.exp()\nS = u.sum(-1, keepdim=True)\np = u / S\ny = p.gather(-1, t)\nloss = -y.log()\n# 合起来等价于\nloss = F.cross_entropy(x, t.squeeze(0))';
 const PYTORCH_BATCH = 'U = X.exp()\ns = U.sum(-1, keepdim=True)\nP = U / s\ny = P.gather(-1, t)\nl_b = -y.log()\nloss = l_b.mean()\n# 合起来等价于\nloss = F.cross_entropy(X, t.squeeze(-1))';
 
@@ -131,7 +133,7 @@ function single() {
     g,
     steps,
     nodes: { x, t, u, S, p, y, logy, loss },
-    hint: '拖动旋转 · 滚轮缩放 · 点柱子换目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
+    hint: '拖动旋转 · 点柱子换目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
     layout: [stack(x, u, S, p, y, logy, loss, {
       level: LEVEL,
       back: 1.7,
@@ -218,7 +220,7 @@ function batch() {
     g,
     steps,
     nodes: { X, t, U, S, P, y, logy, lb, loss },
-    hint: '拖动旋转 · 点柱子选样本并设目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
+    hint: '拖动旋转 · 点柱子选样本和目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
     layout: [stack(X, U, S, P, y, logy, lb, loss, {
       level: LEVEL,
       back: 2.2,

@@ -73,7 +73,7 @@ const steps = createSteps(g, {
         + '$$\\mathbf{h} = ({{h[0]:2}},\\; {{h[1]:2}},\\; {{h[2]:2}},\\; {{h[3]:2}}) \\in \\mathbb{R}^{1\\times 4},\\qquad W^{\\top} \\in \\mathbb{R}^{4\\times 5}$$' },
     { show: z, active: [h, W.T, z], label: 'z = hWᵀ', title: 'lm_head：z = hWᵀ',
       text: '<p>$h_k$ 连到 $W^{\\top}$ 的第 $k$ 行，沿这一行经过的每个方块都把它乘上 $W^{\\top}_{ki}$。每一列再从后往前把 4 个乘积累加起来，落到正前方的 $z_i$。'
-        + '换成批量时 $\\mathbf{h}$ 变成 $B\\times d$、$\\mathbf{z}$ 变成 $B\\times V$，只是往前多出几行。下面代入目标 token 那一列。</p>'
+        + '换成批量时 $\\mathbf{h}$ 变成 $B\\times d$、$\\mathbf{z}$ 变成 $B\\times V$，在 $W^{\\top}$ 前方排成 $B$ 行，第 1 行在最前，后面的行依次往后。下面代入目标 token 那一列。</p>'
         + '$$z_{ {{t+1}} } = \\sum_k h_k W^{\\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + ({{h[1]:2}})({{W[t, 1]:2}}) + ({{h[2]:2}})({{W[t, 2]:2}}) + ({{h[3]:2}})({{W[t, 3]:2}}) = {{z[t]}}$$' },
     { show: L, label: 'LSE', title: 'log-sum-exp',
       text: '<p>把所有 logit 汇总成一个数。先减去最大值 $m$ 再取指数，最大的一项是 $e^0=1$，不会溢出。它就是上一页的 $\\ln S$。</p>'

@@ -18,7 +18,7 @@ import {
   Vector3,
 } from 'three';
 import type { LinearRgb, ThemeColors } from '../theme';
-import { BOX_HEIGHT, DISC_HEIGHT, DISC_RADIUS, PLATE_THICKNESS, type Block, type Element, type Vec3 } from './layout';
+import { BATCH_DISC_RADIUS, BOX_HEIGHT, DISC_HEIGHT, DISC_RADIUS, PLATE_THICKNESS, type Block, type Element, type Vec3 } from './layout';
 import { LineBatch } from './lines';
 import { BREAK_POSITION, BREAK_THICKNESS } from './scales';
 
@@ -144,13 +144,15 @@ export class NodeMesh {
   private readonly materials: MeshLambertMaterial[] = [];
   private readonly outlineMaterial: LineBasicMaterial;
   readonly height: number;
+  readonly radius: number;
 
   constructor(
     readonly block: Block,
     theme: ThemeColors,
   ) {
     this.height = block.shape === 'disc' ? DISC_HEIGHT : BOX_HEIGHT;
-    this.geometry = block.shape === 'disc' ? new CylinderGeometry(DISC_RADIUS, DISC_RADIUS, DISC_HEIGHT, 48) : new BoxGeometry(block.footprint[0], BOX_HEIGHT, block.footprint[1]);
+    this.radius = block.batched ? BATCH_DISC_RADIUS : DISC_RADIUS;
+    this.geometry = block.shape === 'disc' ? new CylinderGeometry(this.radius, this.radius, DISC_HEIGHT, 48) : new BoxGeometry(block.footprint[0], BOX_HEIGHT, block.footprint[1]);
     this.edges = new EdgesGeometry(this.geometry, 25);
     this.outlineMaterial = inkMaterial(theme);
     for (let i = 0; i < block.elements.length; i++) {
@@ -181,12 +183,12 @@ export class NodeMesh {
 
   anchorIn(element: Element): Vec3 {
     const cy = element.y + this.height / 2;
-    return this.block.shape === 'disc' ? [element.x - 0.4, cy - 0.14, element.z] : [element.x, cy - 0.25, element.z];
+    return this.block.shape === 'disc' ? [element.x - (this.radius - 0.15), cy - 0.14, element.z] : [element.x, cy - 0.25, element.z];
   }
 
   anchorOut(element: Element): Vec3 {
     const cy = element.y + this.height / 2;
-    return this.block.shape === 'disc' ? [element.x - 0.3, cy + 0.14, element.z] : [element.x, cy + 0.25, element.z];
+    return this.block.shape === 'disc' ? [element.x - (this.radius - 0.25), cy + 0.14, element.z] : [element.x, cy + 0.25, element.z];
   }
 
   dispose(): void {
