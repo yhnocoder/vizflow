@@ -6,7 +6,7 @@ export interface ForwardStep {
   show: Node | Node[];
   active?: Node | Node[];
   title: string;
-  text: string;
+  text?: string;
   label?: string;
 }
 
@@ -20,7 +20,7 @@ export type BackwardSpec = 'auto' | { auto: true; merge?: Node[][]; override?: R
 
 export interface StepsSpec {
   forward: ForwardStep[];
-  overview?: { title: string; text: string; label?: string };
+  overview?: { title: string; text?: string; label?: string };
   backward?: BackwardSpec;
 }
 
@@ -155,13 +155,13 @@ class StepsImpl implements Steps {
     const entries: Entry[] = [];
     const overview = spec.overview ?? { title: DEFAULT_OVERVIEW_TITLE, text: '' };
     const all = new Set(this.visible);
-    entries.push(this.entry(g, { dir: 'forward', index: 0, title: overview.title, label: overview.label ?? overview.title, text: overview.text, nodes: [...this.visible] }, all, all));
+    entries.push(this.entry(g, { dir: 'forward', index: 0, title: overview.title, label: overview.label ?? overview.title, text: overview.text ?? '', nodes: [...this.visible] }, all, all));
     const shown = new Set<Node>();
     spec.forward.forEach((step, k) => {
       const show = toList(step.show);
       show.forEach((n) => shown.add(n));
       const active = new Set(step.active === undefined ? show : toList(step.active));
-      const info: StepInfo = { dir: 'forward', index: k + 1, title: step.title, label: step.label ?? step.title, text: step.text, nodes: show };
+      const info: StepInfo = { dir: 'forward', index: k + 1, title: step.title, label: step.label ?? step.title, text: step.text ?? '', nodes: show };
       entries.push(this.entry(g, info, new Set(shown), active));
     });
     const revealed = new Set<Node>();

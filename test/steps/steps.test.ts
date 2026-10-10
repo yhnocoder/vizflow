@@ -106,6 +106,15 @@ describe('automatic backward steps', () => {
     expect(() => createSteps(g, overridden)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
   });
 
+  it('uses an empty body when a forward step or the overview has no text', () => {
+    const g = graph();
+    const x = g.input('x', [5], [1, 2, 3, 4, 5]);
+    const p = g.softmax(x, -1, { name: 'p' });
+    const steps = createSteps(g, { overview: { title: 'all' }, forward: [{ show: [x, p], title: 'p' }] });
+    expect(steps.text(0).body).toBe('');
+    expect(steps.text(1).body).toBe('');
+  });
+
   it('rejects merge groups and overrides that point outside the steps', () => {
     const { g, x, U, lb, y } = softmaxBatch();
     expect(() => createSteps(g, { forward: [{ show: [x, U], title: 'x', text: '' }], backward: { auto: true, merge: [[lb, y]] } })).toThrow(

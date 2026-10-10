@@ -371,13 +371,13 @@ defineOp(def: OpDef): void</code></pre>
 <h2>讲解怎么组织</h2>
 <h3>步骤</h3>
 <p>步骤状态由 <code>steps</code> 模块的 <code>createSteps</code> 生成，界面上的步骤条由 <code>ui</code> 的 <code>mountSteps</code> 画出。两者分开，只挂 3D 场景的页面不需要引入 <code>ui</code>。</p>
-<pre><code class="language-ts">interface ForwardStep { show: Node | Node[]; active?: Node | Node[]; title: string; text: string; label?: string }
+<pre><code class="language-ts">interface ForwardStep { show: Node | Node[]; active?: Node | Node[]; title: string; text?: string; label?: string }
 interface BackwardOverride { title?: string; text?: string; label?: string }
 type BackwardSpec = 'auto' | { auto: true; merge?: Node[][]; override?: Record&lt;number, BackwardOverride&gt; };
 
 createSteps(g: Graph, spec: {
   forward: ForwardStep[];
-  overview?: { title: string; text: string; label?: string };
+  overview?: { title: string; text?: string; label?: string };
   backward?: BackwardSpec;
 }): Steps
 

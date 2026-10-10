@@ -2,7 +2,7 @@
 
 这份说明写给用 vizflow 编写页面的人，包括作者本人和帮作者写页面的 Claude。读完以后应当能从零写出一个页面：建立计算图，写前向讲解，让库生成反向步骤，挂上步骤条、面板和 3D 场景。
 
-接口的完整定义与设计理由在设计文档 `docs/design/pages/vizflow.html`。这份说明只写怎么用。两个完整示例页面在仓库里：
+接口的完整定义与设计理由在设计文档 `docs/design/pages/vizflow.html`。这份说明只写怎么用。三个完整示例页面在仓库里：
 
 - `examples/lm-head-nll.html`：lm_head 与 NLL Loss，带 3D 场景。
 - `examples/softmax-ce.html`：Softmax 与交叉熵，单样本与批量两种模式，带 3D 场景。
@@ -155,7 +155,7 @@ const W = g.param('W', ['V', 'd'], [
   [ 0.5,  0.7, -0.6, -0.2],
   [-0.7,  0.4, -0.3, -0.5],
 ], { tex: 'W', elem: 'W' });
-const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
+const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 ```
 
 - `g.input(name, shape, values, options?)` 与 `g.param(...)` 创建数值叶子。`values` 可以是扁平数组，也可以是嵌套数组，元素个数必须等于 shape 的元素个数。两者在计算上没有区别，都有梯度，都可以 `set`，都可以放进损失面板的 `sgd.params`、`random.nodes` 和滑块。区分它们是为了表达含义：模型权重用 `param`，输入数据和 logits 用 `input`。只有一个 logits 输入的小部件把它放进 `sgd.params`，「梯度下降一步」就直接更新 logits（见 9.3）。
@@ -259,7 +259,7 @@ const steps = createSteps(g, {
 ### 3.1 前向步骤
 
 - `overview` 是第 0 步，显示整张图。省略时标题为「总览」、正文为空。`label` 是步骤条上的按钮文字，默认等于 `title`。
-- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文；`label` 是按钮文字，默认等于 `title`。
+- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文，省略时正文为空；`label` 是按钮文字，默认等于 `title`。
 - 第 k 步时，第 1 到 k 步 `show` 过的节点都出现，`active` 的节点高亮。
 - 所有 `show` 的并集是 `steps.visible`。没有放进任何一步 `show` 的中间节点在 3D 场景里不画，也不成为反向步骤。标签节点（label）不需要放进 `show`。
 
@@ -598,7 +598,7 @@ declare module '@yhnocoder/vizflow/core' {
 }
 ```
 
-## 9. 两个完整示例
+## 9. 三个完整示例
 
 ### 9.1 lm_head 与 NLL Loss（`examples/lm-head-nll.html`）
 
