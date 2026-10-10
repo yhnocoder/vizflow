@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Softmax 与交叉熵</title>
+<link rel="icon" href="data:,">
+<style>
+header { margin-bottom: 20px; max-width: 760px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+header p { margin: 0; color: var(--muted); max-width: 64ch; }
+.col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#stage { height: var(--vf-stage-height); min-height: 400px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+@media (max-width: 980px) { #stage { min-height: 360px; } }
+.tabs { display: inline-flex; padding: 3px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); gap: 2px; margin-top: 16px; }
+.tab { font: inherit; font-size: 13.5px; border: 0; background: transparent; color: var(--muted); padding: 6px 16px; border-radius: 999px; cursor: pointer; }
+.tab span { font-family: var(--mono); font-size: 12px; margin-left: 6px; opacity: 0.8; }
+.tab[aria-selected="true"] { background: var(--ink); color: var(--surface); }
+.tab:focus-visible, .samp button:focus-visible { outline: 2px solid var(--pos); outline-offset: 2px; }
+.samp { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; font-family: var(--sans); }
+.samp[hidden] { display: none; }
+.samp .grp { font-size: 11px; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
+.samp button { font-family: var(--mono); font-size: 12px; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 2px 11px; cursor: pointer; }
+.samp button:hover { border-color: var(--line-strong); }
+.samp button[aria-current="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>Softmax 与交叉熵</h1>
+    <p>一张计算图，前向从下往上算出损失，反向从上往下传回梯度。柱子的高度用固定刻度，橙色为正，蓝色为负。</p>
+    <div class="tabs" role="tablist" aria-label="输入形状">
+      <button class="tab" type="button" role="tab" id="tab-single" aria-selected="true">单样本<span>(V,)</span></button>
+      <button class="tab" type="button" role="tab" id="tab-batch" aria-selected="false">批量<span>(B, V)</span></button>
+    </div>
+  </header>
+  <div class="vf-split">
+    <div class="col">
+      <div id="stage"></div>
+      <div id="steps"></div>
+    </div>
+    <aside class="col">
+      <div id="side-loss"></div>
+      <div class="samp" id="samp" hidden></div>
+      <div id="side"></div>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountScene, stack } from '@yhnocoder/vizflow/scene3d';
+import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
+
+const V = 5;
+const LOGITS = [
+  [2.0, 1.0, 0.2, -0.6, -1.4],
+  [-0.5, 1.8, 0.3, 0.9, -1.0],
+  [0.4, -0.2, 1.5, 0.1, 0.6],
+];
+const TARGETS = [0, 1, 2];
+const B = LOGITS.length;
+const CAMERA = { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] };
+const FORWARD_SCALES = { forward: 0.3 };
+const PYTORCH_SINGLE = 'u = x.exp()\nS = u.sum(-1, keepdim=True)\np = u / S\ny = p.gather(-1, t)\nloss = -y.log()\n# 合起来等价于\nloss = F.cross_entropy(x, t)';
+const PYTORCH_BATCH = 'U = X.exp()\ns = U.sum(-1, keepdim=True)\nP = U / s\ny = P.gather(-1, t)\nl_b = -y.log()\nloss = l_b.mean()\n# 合起来等价于\nloss = F.cross_entropy(X, t.squeeze(-1))';
+
+function single() {
+  const g = graph({ dims: { V } });
+  const x = g.input('x', ['V'], LOGITS[0], {
+    card: { forward: { title: 'logits', note: '模型最后一层的输出，每个类别一个实数。' } },
+  });
+  const t = g.label('t', [TARGETS[0]], { classes: V });
+  const u = g.exp(x, { name: 'u', card: { forward: { title: '取指数', note: '逐元素运算，shape 不变。实现里会先减去最大值防止溢出，结果不变。' } } });
+  const S = g.sum(u, -1, { keepdim: true, name: 'S', tex: 'S', card: { forward: { title: '分母', note: '批量时要 keepdim 成 (B, 1)，下一步才能和 (B, 5) 广播相除。' } } });
+  const p = g.div(u, S, { name: 'p', card: { forward: { title: '概率', note: '每个分量都在 0 到 1 之间，总和为 1。' } } });
+  const y = g.gather(p, -1, t, { name: 'y', tex: 'y', card: { forward: { title: '目标类概率', note: '按标签取出目标类那一格。' } } });
+  const logy = g.log(y, { name: 'log y', tex: '\\log y', elem: '\\log y' });
+  const loss = g.neg(logy, { name: 'loss', tex: '\\ell', elem: '\\ell', card: { forward: { title: '交叉熵损失', note: '等价于 one-hot 标签下的 −Σ yⱼ log pⱼ。' } } });
+
+  const steps = createSteps(g, {
+    overview: {
+      label: '总览',
+      title: '整张图',
+      text: '<p>前向从下往上：logits 取指数得到 $u$，求和得到 $S$，相除得到概率 $p$，取出目标类的概率 $y$，再取负对数得到损失 $\\ell$。反向沿同一张图从上往下。点上面的步骤，或用键盘 ← →。</p>'
+        + '$$\\ell=-\\log\\frac{e^{x_t}}{\\sum_j e^{x_j}}={{loss:3}}$$',
+    },
+    forward: [
+      { show: x, label: 'x', title: 'logits',
+        text: '<p>模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t={{t+1}}$。</p>'
+          + '$$\\mathbf{x}=({{x[0]:2}},\\;{{x[1]:2}},\\;{{x[2]:2}},\\;{{x[3]:2}},\\;{{x[4]:2}})$$' },
+      { show: u, label: 'u = eˣ', title: '取指数',
+        text: '<p>每个分量取指数，结果全为正，差距也被放大：两个 logit 相差 1，取指数后相差 $e\\approx2.72$ 倍。</p>'
+          + '$$u_i=e^{x_i},\\qquad u_{ {{t+1}} }=e^{ {{x[t]:2}} }={{u[t]}}$$' },
+      { show: S, label: 'S', title: '求和',
+        text: '<p>把所有 $u_j$ 加起来，得到所有类别共用的分母。</p>'
+          + '$$S=\\sum_{j=1}^{5}u_j={{u[0]}}+{{u[1]}}+{{u[2]}}+{{u[3]}}+{{u[4]}}={{S}}$$' },
+      { show: p, label: 'p', title: '归一化',
+        text: '<p>每个 $u_i$ 除以 $S$，得到和为 1 的概率。$p_i$ 直接依赖自己的 $u_i$，又经过 $S$ 依赖所有 $u_j$，所以 $u$ 到 $p$ 画了两组连线。</p>'
+          + '$$p_i=\\frac{u_i}{S},\\qquad p_{ {{t+1}} }=\\frac{ {{u[t]}} }{ {{S}} }={{p[t]:3}}$$' },
+      { show: [y, logy, loss], label: 'ℓ', title: '取目标类，取负对数',
+        text: '<p>交叉熵只看目标类的概率。$y$ 越接近 1，损失越接近 0；$y$ 越小，损失增长得越快。</p>'
+          + '$$y=p_{ {{t+1}} }={{y:3}},\\qquad \\ell=-\\log y={{loss:3}}$$' },
+    ],
+    backward: {
+      auto: true,
+      merge: [[logy, y]],
+      override: {
+        1: { label: '∂y', title: '从损失出发',
+          text: '<p>反向传播从 $\\partial\\ell/\\partial\\ell=1$ 开始，先穿过 $-\\log$。$y$ 越小，这个梯度的绝对值越大。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial y}=-\\frac{1}{y}=-\\frac{1}{ {{y:3}} }={{y.grad}}$$' },
+        2: { title: '传到概率层',
+          text: '<p>$y$ 只是把 $p_t$ 取了出来，所以只有目标类收到梯度，其余 $p_i$ 的梯度都是 0。从它们往下的连线画成虚线，因为那里传不回任何东西。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial p_i}=\\begin{cases}-1/y={{y.grad}} & i=t\\\\[2pt]0 & i\\ne t\\end{cases}$$' },
+        3: { title: '传到分母 S',
+          text: '<p>$p_t=u_t/S$，对分母求导得到 $-u_t/S^2$。和上一步相乘时，$u_t$ 与 $y=u_t/S$ 约掉，只剩 $1/S$。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial S}=-\\frac{1}{y}\\cdot\\Big(-\\frac{u_t}{S^2}\\Big)=\\frac{1}{S}={{S.grad}}$$' },
+        4: { title: '传到 u',
+          text: '<p>每个 $u_j$ 都经过 $S$ 收到 $1/S$。目标类的 $u_t$ 还有一条直连 $p_t$ 的路，额外收到 $\\frac{\\partial\\ell}{\\partial p_t}\\cdot\\frac1S=-\\frac1{u_t}$。这两项对应 $\\frac{\\partial p_i}{\\partial u_j}=\\frac{\\delta_{ij}}{S}-\\frac{u_i}{S^2}$。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial u_j}=\\frac1S-\\frac{\\delta_{jt}}{u_t},\\qquad \\frac{\\partial\\ell}{\\partial u_{ {{t+1}} }}={{u.grad[t]}}$$' },
+        5: { title: '传到 logits',
+          text: '<p>最后穿过指数，$\\partial u_j/\\partial x_j=u_j$。乘进去就是常见的 $p-y$，这里的 $y$ 指 one-hot 标签。目标类的梯度为负，其余为正，所以梯度下降会抬高目标 logit、压低其他 logit。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial x_j}=u_j\\Big(\\frac1S-\\frac{\\delta_{jt}}{u_t}\\Big)=p_j-\\delta_{jt},\\qquad \\frac{\\partial\\ell}{\\partial x_{ {{t+1}} }}={{p[t]:3}}-1={{x.grad[t]:3}}$$' },
+      },
+    },
+  });
+
+  return {
+    g,
+    steps,
+    nodes: { x, t, u, S, p, y, logy, loss },
+    hint: '拖动旋转 · 滚轮缩放 · 点柱子换目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
+    layout: [stack(x, u, S, p, y, logy, loss, {
+      scales: { x: { ...FORWARD_SCALES, backward: 1.6 }, u: { forward: 0.11, backward: 4 }, p: { forward: 2.4, backward: 0.5 } },
+    })],
+    loss: {
+      sgd: { params: [x], lr: 1, label: '梯度下降一步' },
+      random: { nodes: [x], range: [-3, 3], label: '随机' },
+      reset: true,
+      text: '目标类 {{t+1}}，$y=p_{ {{t+1}} }={{y:3}}$',
+    },
+    side: [
+      { tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true, title: 'p − y' }], title: 'logits 与目标类' },
+      { matrix: (graph) => graph.jacobian(p, x), highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian',
+        note: '$J_{ij}=\\partial p_i/\\partial x_j=p_i\\delta_{ij}-p_ip_j$，行为 $i$，列为 $j$。对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t={{t+1}}$ 行，乘上 $-1/p_t$ 就得到 $p_j-\\delta_{jt}$。' },
+      { code: PYTORCH_SINGLE, title: '对应的 PyTorch' },
+    ],
+  };
+}
+
+function batch() {
+  const g = graph({ dims: { B, V } });
+  const X = g.input('X', ['B', 'V'], LOGITS, {
+    card: { forward: { title: 'logits', note: '每行一个样本，每列一个类别。' } },
+  });
+  const t = g.label('t', TARGETS.map((v) => [v]), { classes: V });
+  const U = g.exp(X, { name: 'U', card: { forward: { title: '取指数', note: '逐元素，shape 不变。' } } });
+  const S = g.sum(U, -1, { keepdim: true, name: 'S', tex: '\\mathbf{s}', elem: 'S', card: { forward: { title: '分母', note: '按行求和并 keepdim，才能和 (B, V) 广播相除。' } } });
+  const P = g.div(U, S, { name: 'P', card: { forward: { title: '概率', note: '(B, V) 除以 (B, 1) 靠广播，每行和为 1。' } } });
+  const y = g.gather(P, -1, t, { name: 'y', tex: '\\mathbf{y}', elem: 'y', card: { forward: { title: '目标类概率', note: '对每行按标签 gather 一个元素。' } } });
+  const logy = g.log(y, { name: 'log y', tex: '\\log\\mathbf{y}', elem: '\\log y' });
+  const lb = g.neg(logy, { name: 'l_b', tex: '\\ell_b', elem: '\\ell', card: { forward: { title: '每个样本的损失', note: "reduction='none' 时的输出。" } } });
+  const loss = g.mean(lb, { name: 'loss', tex: '\\ell', elem: '\\ell', card: { forward: { title: '平均损失', note: "reduction='mean'，PyTorch 的默认值。" } } });
+
+  const sample = '下面代入的是样本 {{b+1}}（目标类 {{t[b]+1}}），可在右侧切换样本。';
+  const steps = createSteps(g, {
+    overview: {
+      label: '总览',
+      title: '整张图（批量）',
+      text: '<p>一次送进 $B=3$ 个样本，每个样本占一行，每列是一个类别。每行各自做 softmax、取各自目标类的概率，最后把 $B$ 个损失取平均。</p>'
+        + '$$\\ell=\\frac{1}{B}\\sum_{b=1}^{B}-\\log\\frac{e^{X_{b,t_b}}}{\\sum_j e^{X_{b,j}}}={{loss:3}}$$',
+    },
+    forward: [
+      { show: X, label: 'X', title: 'logits',
+        text: `<p>logits 是一个 $B\\times V$ 的矩阵，shape $(3,\\,5)$。每个样本有自己的目标类 $t_b$。${sample}</p>`
+          + '$$\\mathbf{X}\\in\\mathbb{R}^{3\\times5},\\qquad \\mathbf{t}=({{t[0]+1}},{{t[1]+1}},{{t[2]+1}})$$' },
+      { show: U, label: 'U = eˣ', title: '取指数',
+        text: `<p>逐元素取指数，shape 不变，仍是 $(3,\\,5)$。${sample}</p>`
+          + '$$\\mathbf{U}=\\exp(\\mathbf{X}),\\qquad U_{ {{b+1}},{{t[b]+1}} }=e^{ {{X[b,t[b]]:2}} }={{U[b,t[b]]}}$$' },
+      { show: S, label: 'S', title: '按行求和',
+        text: '<p>每一行单独求和，得到每个样本自己的分母。保留维度后 shape 是 $(3,\\,1)$，下一步才能和 $(3,\\,5)$ 广播相除。</p>'
+          + '$$\\mathbf{s}=\\mathbf{U}\\mathbf{1}=\\begin{pmatrix}{{S[0]}}\\\\{{S[1]}}\\\\{{S[2]}}\\end{pmatrix}$$' },
+      { show: P, label: 'P', title: '按行归一化',
+        text: `<p>$(3,\\,5)$ 除以 $(3,\\,1)$，每行除以自己的 $S_b$，每行之和为 1。不同样本之间互不影响。${sample}</p>`
+          + '$$\\mathbf{P}=\\mathbf{U}/\\mathbf{s},\\qquad P_{ {{b+1}},{{t[b]+1}} }=\\frac{ {{U[b,t[b]]}} }{ {{S[b]}} }={{P[b,t[b]]:3}}$$' },
+      { show: [y, logy, lb, loss], label: 'ℓ', title: '取目标类，求平均',
+        text: '<p>每行按标签取出一个概率（PyTorch 里是 gather），得到 shape $(3,\\,1)$ 的 $\\mathbf{y}$，再逐个取负对数，最后求平均得到标量。</p>'
+          + '$$\\ell_b=-\\log P_{b,t_b},\\qquad \\ell=\\frac{1}{B}\\sum_b\\ell_b=\\frac{ {{l_b[0]:3}}+{{l_b[1]:3}}+{{l_b[2]:3}} }{3}={{loss:3}}$$' },
+    ],
+    backward: {
+      auto: true,
+      merge: [[lb, logy, y]],
+      override: {
+        1: { label: '∂y', title: '从损失出发',
+          text: '<p>平均操作让每个 $\\ell_b$ 先收到 $1/B$，再穿过 $-\\log$。所以批量模式下每个梯度都比单样本小 $B$ 倍。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial\\ell_b}=\\frac{1}{B},\\qquad \\frac{\\partial\\ell}{\\partial y_b}=-\\frac{1}{B\\,y_b},\\qquad \\frac{\\partial\\ell}{\\partial y_{ {{b+1}} }}={{y.grad[b]}}$$' },
+        2: { title: '传到概率层',
+          text: '<p>$\\partial\\ell/\\partial\\mathbf{P}$ 的 shape 和 $\\mathbf{P}$ 一样是 $(3,\\,5)$，每一行只有目标类那一格非零。</p>'
+            + '$$\\Big(\\frac{\\partial\\ell}{\\partial\\mathbf{P}}\\Big)_{b,j}=-\\frac{\\delta_{j t_b}}{B\\,y_b}$$' },
+        3: { title: '传到分母',
+          text: '<p>每个样本的 $S_b$ 各自收到 $1/(B S_b)$，shape $(3,\\,1)$。</p>'
+            + '$$\\frac{\\partial\\ell}{\\partial S_b}=\\frac{1}{B\\,S_b},\\qquad \\frac{\\partial\\ell}{\\partial\\mathbf{s}}=\\begin{pmatrix}{{S.grad[0]}}\\\\{{S.grad[1]}}\\\\{{S.grad[2]}}\\end{pmatrix}$$' },
+        4: { title: '传到 U',
+          text: `<p>和单样本一样有两条路，只是多了 $1/B$。经过 $S_b$ 的那一项在一行里是同一个数，广播回 $V$ 列，就是反向里的「按行求和」对应的操作。${sample}</p>`
+            + '$$\\frac{\\partial\\ell}{\\partial U_{b,j}}=\\frac{1}{B}\\Big(\\frac{1}{S_b}-\\frac{\\delta_{jt_b}}{U_{b,t_b}}\\Big),\\qquad \\frac{\\partial\\ell}{\\partial U_{ {{b+1}},{{t[b]+1}} }}={{U.grad[b,t[b]]}}$$' },
+        5: { title: '传到 logits',
+          text: `<p>结果是 $(\\mathbf{P}-\\mathbf{Y})/B$，$\\mathbf{Y}$ 是 shape $(3,\\,5)$ 的 one-hot 标签矩阵。如果 reduction 用 sum 而不是 mean，就没有这个 $1/B$。${sample}</p>`
+            + '$$\\frac{\\partial\\ell}{\\partial\\mathbf{X}}=\\frac{\\mathbf{P}-\\mathbf{Y}}{B},\\qquad \\frac{\\partial\\ell}{\\partial X_{ {{b+1}},{{t[b]+1}} }}=\\frac{ {{P[b,t[b]]:3}}-1}{3}={{X.grad[b,t[b]]:3}}$$' },
+      },
+    },
+  });
+
+  return {
+    g,
+    steps,
+    nodes: { X, t, U, S, P, y, logy, lb, loss },
+    hint: '拖动旋转 · 点柱子选样本并设目标类 · 悬停层名看公式和 shape · 反向时悬停连线看局部导数',
+    layout: [stack(X, U, S, P, y, logy, lb, loss, {
+      scales: { X: { ...FORWARD_SCALES, backward: 4.8 }, U: { forward: 0.11, backward: 12 }, P: { forward: 2.4, backward: 1.5 } },
+    })],
+    loss: {
+      sgd: { params: [X], lr: 1, label: '梯度下降一步' },
+      random: { nodes: [X], range: [-3, 3], label: '随机' },
+      reset: true,
+      text: '3 个样本的平均；$\\ell_b$ = {{l_b[0]:2}}, {{l_b[1]:2}}, {{l_b[2]:2}}',
+    },
+    side: [
+      { tokens: t, sliders: X, min: -6, max: 6, columns: [P, { node: X, grad: true, title: '∂ℓ/∂x' }], title: 'logits 与目标类（当前样本）' },
+      { matrix: (graph, state) => graph.jacobian(P, X, { row: state.focus }), highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian（当前样本）',
+        note: '这里显示样本 {{b+1}} 的 Jacobian。批量时每个样本各有一个 5×5 的 Jacobian，合起来是 (B, V, V)，样本之间的交叉项全为 0。' },
+      { code: PYTORCH_BATCH, title: '对应的 PyTorch' },
+    ],
+  };
+}
+
+const modes = { single: single(), batch: batch() };
+const tabs = { single: document.getElementById('tab-single'), batch: document.getElementById('tab-batch') };
+const samp = document.getElementById('samp');
+let mounted = [];
+let current;
+
+function drawSamples(steps) {
+  samp.replaceChildren();
+  const label = document.createElement('span');
+  label.className = 'grp';
+  label.textContent = '样本';
+  samp.appendChild(label);
+  for (let b = 0; b < B; b++) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = String(b + 1);
+    button.setAttribute('aria-label', `样本 ${b + 1}`);
+    button.setAttribute('aria-current', String(b === steps.focus));
+    button.addEventListener('click', () => steps.setFocus(b));
+    samp.appendChild(button);
+  }
+}
+
+function show(name) {
+  if (name === current) return;
+  mounted.forEach((m) => m.dispose());
+  current = name;
+  const mode = modes[name];
+  for (const [key, tab] of Object.entries(tabs)) tab.setAttribute('aria-selected', String(key === name));
+  const isBatch = name === 'batch';
+  samp.hidden = !isBatch;
+  mounted = [
+    mountScene('#stage', mode.g, { steps: mode.steps, layout: mode.layout, camera: CAMERA, hint: mode.hint }),
+    mountSteps('#steps', mode.steps),
+    mountPanels('#side-loss', mode.g, [{ loss: mode.loss }], { steps: mode.steps }),
+    mountPanels('#side', mode.g, mode.side, { steps: mode.steps }),
+  ];
+  if (isBatch) {
+    drawSamples(mode.steps);
+    mounted.push({ dispose: mode.steps.subscribe(() => drawSamples(mode.steps)) });
+  } else {
+    samp.replaceChildren();
+  }
+}
+
+tabs.single.addEventListener('click', () => show('single'));
+tabs.batch.addEventListener('click', () => show('batch'));
+show('single');
+
+window.vizflow = { modes, show, current: () => current };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
