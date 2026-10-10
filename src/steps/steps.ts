@@ -73,8 +73,22 @@ interface Entry {
   body: (focus: number) => string;
 }
 
+function lossOf(g: Graph): Node | undefined {
+  try {
+    return g.loss();
+  } catch {
+    return undefined;
+  }
+}
+
 function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto'>): Node[][] {
-  const loss = g.loss();
+  const loss = lossOf(g);
+  if (loss === undefined) {
+    if ((spec.merge?.length ?? 0) > 0 || Object.keys(spec.override ?? {}).length > 0) {
+      throw new Error('backward: the graph has no loss node, so merge and override cannot apply');
+    }
+    return [];
+  }
   const ordered = visible.filter((n) => n.kind !== 'label' && n.id <= loss.id).sort((a, b) => b.id - a.id);
   const groups: Node[][] = [];
   ordered.forEach((node, i) => {
@@ -100,10 +114,10 @@ function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<Backwa
 
 function backwardEntries(g: Graph, visible: readonly Node[], spec: BackwardSpec): StepInfo[] {
   const resolved = spec === 'auto' ? { auto: true as const } : spec;
-  const loss = g.loss();
+  const loss = lossOf(g);
   const explainer = explain(g);
   const infos = backwardGroups(g, visible, resolved).map((nodes, i): StepInfo => {
-    const subject = nodes.find((n) => n !== loss) ?? loss;
+    const subject = nodes.find((n) => n !== loss) ?? nodes[0];
     const card = explainer.nodeCard(subject, 'backward');
     const override = resolved.override?.[i + 1] ?? {};
     return {
@@ -179,6 +193,10 @@ class StepsImpl implements Steps {
   }
 
   setFocus(b: number): void {
+    const rows = Math.max(1, ...this.visible.map((n) => (n.shape.length === 0 ? 1 : n.shape[0])));
+    if (!Number.isInteger(b) || b < 0 || b >= rows) {
+      throw new Error(`setFocus: ${b} is out of range; the visible nodes have ${rows} row(s), so b must be between 0 and ${rows - 1}`);
+    }
     if (b === this.focus) return;
     this.focus = b;
     this.notify();

@@ -93,6 +93,19 @@ describe('automatic backward steps', () => {
     expect(plain.list.filter((st) => st.dir === 'backward').map((st) => st.nodes)).toEqual([[loss, lb], [y], [P], [s], [U], [x]]);
   });
 
+  it('generates no backward steps for a graph without a loss node', () => {
+    const g = graph();
+    const x = g.input('x', [5], [1, 2, 3, 4, 5]);
+    const p = g.softmax(x, -1, { name: 'p' });
+    const steps = createSteps(g, { forward: [{ show: [x, p], title: 'p', text: '{{p[0]:2}}' }] });
+    expect(steps.list.map((st) => st.dir)).toEqual(['forward', 'forward']);
+    expect(steps.text(1).body).toBe('0.01');
+    const merged = { forward: [{ show: [x, p], title: 'p', text: '' }], backward: { auto: true as const, merge: [[x, p]] } };
+    expect(() => createSteps(g, merged)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
+    const overridden = { forward: [{ show: [x, p], title: 'p', text: '' }], backward: { auto: true as const, override: { 1: { title: 'x' } } } };
+    expect(() => createSteps(g, overridden)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
+  });
+
   it('rejects merge groups and overrides that point outside the steps', () => {
     const { g, x, U, lb, y } = softmaxBatch();
     expect(() => createSteps(g, { forward: [{ show: [x, U], title: 'x', text: '' }], backward: { auto: true, merge: [[lb, y]] } })).toThrow(
@@ -141,6 +154,18 @@ describe('step state', () => {
     steps.go(1);
     expect(calls).toBe(8);
     steps.dispose();
+  });
+
+  it('setFocus rejects rows outside the visible nodes', () => {
+    const { g, x, P, loss } = softmaxBatch();
+    const steps = createSteps(g, { forward: [{ show: [x, P, loss], title: 'x', text: '' }] });
+    steps.setFocus(2);
+    expect(steps.focus).toBe(2);
+    expect(() => steps.setFocus(3)).toThrow('setFocus: 3 is out of range; the visible nodes have 3 row(s), so b must be between 0 and 2');
+    expect(() => steps.setFocus(-1)).toThrow('setFocus: -1 is out of range');
+    expect(() => steps.setFocus(1.5)).toThrow('setFocus: 1.5 is out of range');
+    const single = createSteps(g, { forward: [{ show: loss, title: 'l', text: '' }] });
+    expect(() => single.setFocus(1)).toThrow('the visible nodes have 1 row(s), so b must be between 0 and 0');
   });
 
   it('allVisible shows and highlights everything', () => {
@@ -199,18 +224,47 @@ describe('text templates', () => {
     steps.setFocus(2);
     expect(steps.text(1)).toEqual({ title: '样本 3', body: '$b = 2$，1，2.00' });
     expect(() => createSteps(g, { forward: [{ show: x, title: 'x', text: '{{b:token}}' }] })).toThrow("cannot parse template '{{b:token}}': 'b' has no tokens");
-    expect(() => createSteps(g, { forward: [{ show: x, title: 'x', text: '{{b[0]}}' }] })).toThrow("cannot parse template '{{b[0]}}': unexpected '[0]'");
+    expect(() => createSteps(g, { forward: [{ show: x, title: 'x', text: '{{b[0]}}' }] })).toThrow("cannot parse template '{{b[0]}}': no node name matches 'b[0]'");
+  });
+
+  it('resolves node names that contain dots and spaces by longest prefix', () => {
+    const { g, W: Wn, logp, t } = lmHead();
+    const steps = createSteps(g, {
+      forward: [{ show: Wn.T, title: 'W', text: '{{W.T[0,1]}}，{{W.T.grad[0, t]}}，{{ W . T [1, 0] }}，{{log p[0, t]}}，{{W[1, 0]}}' }],
+    });
+    const expected = [Wn.T.value.get([0, 1]), Wn.T.grad!.get([0, 0]), Wn.T.value.get([1, 0]), logp.value.get([0, 0]), Wn.value.get([1, 0])];
+    expect(steps.text(1).body).toBe(expected.map((v) => formatNumber(v)).join('，'));
+    t.set([2]);
+    expect(steps.text(1).body.split('，')[1]).toBe(formatNumber(Wn.T.grad!.get([0, 2])));
+  });
+
+  it('reserves b for the current sample index', () => {
+    const g = graph();
+    const b = g.input('b', [2], [1, 2]);
+    g.loss(g.sum(b));
+    const make = (text: string) => () => createSteps(g, { forward: [{ show: b, title: 'b', text }] });
+    const reserved = "'b' is the current sample index; rename node 'b'";
+    expect(make('{{b}}')).toThrow(reserved);
+    expect(make('{{b+1}}')).toThrow(reserved);
+    expect(make('{{b[b]}}')).toThrow(reserved);
+    expect(make('{{b[0]}}')).not.toThrow();
+    const other = graph();
+    const x = other.input('x', [2], [1, 2]);
+    other.label('t', [[0], [1]]);
+    other.loss(other.sum(x));
+    expect(() => createSteps(other, { forward: [{ show: x, title: 'x', text: '{{x[t[b]]}}' }] })).not.toThrow();
+    expect(() => createSteps(other, { forward: [{ show: x, title: 'x', text: '{{t[b]}}' }] })).not.toThrow();
   });
 
   it('rejects templates that cannot be resolved when the steps are created', () => {
     const { g, z } = lmHead();
     const make = (text: string) => () => createSteps(g, { forward: [{ show: z, title: 'z', text }] });
-    expect(make('{{nope}}')).toThrow("cannot parse template '{{nope}}': node 'nope' does not exist");
+    expect(make('{{nope}}')).toThrow("cannot parse template '{{nope}}': no node name matches 'nope'");
     expect(make('{{z}}')).toThrow("cannot parse template '{{z}}': node 'z' with shape (1, 5) needs a subscript");
     expect(make('{{z[0, 1, 2]}}')).toThrow('takes 2 subscripts, got 3');
     expect(make('{{t.grad}}')).toThrow("label 't' has no gradient");
     expect(make('{{z[0]:token}}')).toThrow("node 'z' has no tokens");
-    expect(make('{{z[0] * 2}}')).toThrow("cannot parse template '{{z[0] * 2}}': unexpected '* 2'");
+    expect(make('{{z[0] * 2}}')).toThrow("cannot parse template '{{z[0] * 2}}': unexpected '*2'");
     expect(make('$z_{{{t}}}$')).toThrow("starts with '{{{'");
     expect(make('$z_{ {{t}}}$')).toThrow("ends with '}}}'");
     expect(make('{{z[0]')).toThrow('is not closed');

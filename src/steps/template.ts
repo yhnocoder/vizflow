@@ -21,10 +21,26 @@ type Part = { kind: 'text'; text: string } | { kind: 'template'; template: Templ
 
 const fail = (source: string, reason: string) => new Error(`cannot parse template '{{${source}}}': ${reason}`);
 
+const compact = (text: string) => text.replace(/\s+/g, '');
+
 function lookup(g: Graph, name: string, source: string): Node {
   const node = g.node(name);
   if (node === undefined) throw fail(source, `node '${name}' does not exist`);
   return node;
+}
+
+function focusRef(g: Graph, source: string): void {
+  if (g.node('b') !== undefined) throw fail(source, "'b' is the current sample index; rename node 'b'");
+}
+
+function matchName(g: Graph, text: string, source: string): { node: Node; rest: string } {
+  let best: Node | undefined;
+  for (const node of g.nodes) {
+    const name = compact(node.name);
+    if (text.startsWith(name) && (best === undefined || name.length > compact(best.name).length)) best = node;
+  }
+  if (best === undefined) throw fail(source, `no node name matches '${text}'`);
+  return { node: best, rest: text.slice(compact(best.name).length) };
 }
 
 function splitTopLevel(text: string): string[] {
@@ -43,32 +59,37 @@ function splitTopLevel(text: string): string[] {
   return parts;
 }
 
-function parseSubscript(g: Graph, text: string, source: string): Subscript {
-  const item = text.trim();
-  if (item === 'b') return { kind: 'focus' };
+function parseSubscript(g: Graph, item: string, source: string): Subscript {
+  if (item === 'b') {
+    focusRef(g, source);
+    return { kind: 'focus' };
+  }
   if (/^-?\d+$/.test(item)) return { kind: 'int', value: Number(item) };
-  const row = /^(.+?)\s*\[\s*b\s*\]$/.exec(item);
-  if (row !== null) return { kind: 'node', node: lookup(g, row[1], source), row: true };
+  const row = /^(.+?)\[b\]$/.exec(item);
+  if (row !== null) {
+    focusRef(g, source);
+    return { kind: 'node', node: lookup(g, row[1], source), row: true };
+  }
   if (item === '' || /[\[\]]/.test(item)) throw fail(source, `bad subscript '${item}'`);
   return { kind: 'node', node: lookup(g, item, source), row: false };
 }
 
 function parseTemplate(g: Graph, source: string): Template {
-  let rest = source.trim();
-  const nameEnd = rest.search(/[[.+\-:]/);
-  const name = (nameEnd < 0 ? rest : rest.slice(0, nameEnd)).trim();
-  if (name === '') throw fail(source, 'missing node name');
-  rest = nameEnd < 0 ? '' : rest.slice(nameEnd);
-  if (name === 'b') {
-    const tail = parseTail(rest, source);
+  const text = compact(source);
+  if (text === '') throw fail(source, 'missing node name');
+  if (/^b(?![^+\-:])/.test(text)) {
+    focusRef(g, source);
+    const tail = parseTail(text.slice(1), source);
     if (tail.format === 'token') throw fail(source, "'b' has no tokens");
     return { source, ref: { kind: 'focus' }, ...tail };
   }
-  const node = lookup(g, name, source);
+  const matched = matchName(g, text, source);
+  const node = matched.node;
+  let rest = matched.rest;
   let grad = false;
   if (rest.startsWith('.grad')) {
     grad = true;
-    rest = rest.slice(5).trimStart();
+    rest = rest.slice(5);
   } else if (rest.startsWith('.')) {
     throw fail(source, `unknown suffix '${rest}'`);
   }
@@ -85,7 +106,7 @@ function parseTemplate(g: Graph, source: string): Template {
     }
     if (close < 0) throw fail(source, 'unclosed subscript');
     subscripts = splitTopLevel(rest.slice(1, close)).map((item) => parseSubscript(g, item, source));
-    rest = rest.slice(close + 1).trimStart();
+    rest = rest.slice(close + 1);
   }
   const ref: NodeRef = { kind: 'node', node, grad, subscripts };
   const template = { source, ref, ...parseTail(rest, source) };
@@ -96,13 +117,13 @@ function parseTemplate(g: Graph, source: string): Template {
 function parseTail(text: string, source: string): { offset: number; format: number | 'token' | undefined } {
   let rest = text;
   let offset = 0;
-  const shift = /^([+-])\s*(\d+)\s*/.exec(rest);
+  const shift = /^([+-])(\d+)/.exec(rest);
   if (shift !== null) {
     offset = (shift[1] === '-' ? -1 : 1) * Number(shift[2]);
     rest = rest.slice(shift[0].length);
   }
   let format: number | 'token' | undefined;
-  const fmt = /^:\s*(\d+|token)\s*$/.exec(rest);
+  const fmt = /^:(\d+|token)$/.exec(rest);
   if (fmt !== null) {
     format = fmt[1] === 'token' ? 'token' : Number(fmt[1]);
     rest = '';
