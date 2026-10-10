@@ -9,7 +9,7 @@ from pathlib import Path
 WHY = re.compile(r"(?://|#)\s*why\(#\d+\): \S")
 SLASH_DIRECTIVE = re.compile(
     r"(?:///?|/\*)\s*(?:eslint-|@ts-|prettier-ignore|biome-ignore|deno-lint-ignore|deno-fmt-ignore"
-    r"|istanbul ignore|c8 ignore|NOLINT|clang-format |swiftlint:|go:|\+build|nolint|<reference )"
+    r"|istanbul ignore|c8 ignore|NOLINT|clang-format |swiftlint:|go:|\+build|nolint|<reference |@vitest-environment )"
 )
 HASH_DIRECTIVE = re.compile(
     r"#\s*(?:noqa|type:|pragma|pyright:|mypy:|fmt:|pylint:|ruff:|isort:|-\*-|coding[:=]|shellcheck\s)"
