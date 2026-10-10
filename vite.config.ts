@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import type { Plugin } from 'vite';
 import { defineConfig } from 'vitest/config';
 import solid from 'vite-plugin-solid';
 import dts from 'vite-plugin-dts';
@@ -16,8 +17,17 @@ const entries = {
   theme: src('theme/index.ts'),
 };
 
+const katexWoff2Only: Plugin = {
+  name: 'vizflow-katex-woff2-only',
+  enforce: 'pre',
+  transform(code, id) {
+    if (!/[\\/]katex[\\/]dist[\\/][^\\/?]+\.css(\?|$)/.test(id)) return null;
+    return { code: code.replace(/,\s*url\([^)]+\.(?:woff|ttf)\)\s*format\("(?:woff|truetype)"\)/g, ''), map: null };
+  },
+};
+
 export default defineConfig({
-  plugins: [solid(), dts({ include: ['src'], outDirs: 'dist/types', entryRoot: 'src' })],
+  plugins: [katexWoff2Only, solid(), dts({ include: ['src'], outDirs: 'dist/types', entryRoot: 'src' })],
   resolve: {
     alias: Object.entries(entries).map(([name, path]) => ({
       find: `@yhnocoder/vizflow/${name}`,
