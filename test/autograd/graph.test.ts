@@ -16,6 +16,21 @@ describe('graph building', () => {
     expect(g.input('y', [2, 2], [[1, 2], [3, 4]]).value.toNested()).toEqual([[1, 2], [3, 4]]);
   });
 
+  it('rejects nested values whose shape differs from the declared one', () => {
+    const g = graph({ dims: { d: 4, V: 5 } });
+    const transposedW = [
+      [0.9, 0.2, -0.4, 0.5, -0.7],
+      [-0.6, -0.8, 0.2, 0.7, 0.4],
+      [0.3, 0.6, 0.9, -0.6, -0.3],
+      [0.6, 0.2, 0.3, -0.2, -0.5],
+    ];
+    expect(() => g.param('W', ['V', 'd'], transposedW)).toThrow(
+      "node 'W': expected shape (5, 4), got nested values of shape (4, 5)",
+    );
+    const W = g.param('W', ['V', 'd'], new Array(20).fill(0));
+    expect(() => W.set(transposedW)).toThrow("node 'W': expected shape (5, 4), got nested values of shape (4, 5)");
+  });
+
   it('infers label shapes from values and keeps tokens', () => {
     const g = graph();
     expect(g.label('a', 0).shape).toEqual([]);

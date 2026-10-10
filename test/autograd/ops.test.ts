@@ -35,9 +35,17 @@ describe('reductions', () => {
     g.loss(g.sum(m));
     expect(x.grad!.toNested()).toEqual([[0, 1, 0], [1, 0, 0]]);
     expect(() => g.max(x, 2)).toThrow('out of range');
+  });
+
+  it('skips non-differentiable points in the gradient check', () => {
     const checked = graph({ check: true });
-    const tied = checked.input('x', [2], [3, 3]);
-    expect(() => checked.max(tied, 0)).toThrow(/^gradient check failed: op 'max' \(node 'max1'\), input 0 'input' at \[0\]/);
+    const tied = checked.input('a', [2], [1, 1]);
+    expect(() => checked.max(tied, 0)).not.toThrow();
+    const moving = graph({ check: true });
+    const b = moving.input('b', [2], [1, 2]);
+    moving.max(b, 0);
+    expect(() => b.set([2, 2])).not.toThrow();
+    expect(moving.version).toBe(1);
   });
 
   it('logsumexp matches the direct formula and subtracts the maximum', () => {

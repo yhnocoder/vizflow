@@ -77,6 +77,7 @@ class GraphImpl {
   private backwardValid = false;
   private batchDepth = 0;
   private pending = false;
+  private readonly touched = new Map<number, Tensor>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -109,6 +110,9 @@ class GraphImpl {
   loss(node?: Node): Node {
     if (node !== undefined) {
       this.ownNode(node, 'loss');
+      if (this.states[node.id].value.size !== 1) {
+        throw new Error(`loss node '${node.name}' must have one element, got shape ${formatShape(node.shape)}`);
+      }
       this.lossNode = node;
       this.backwardValid = false;
       return node;
@@ -135,6 +139,9 @@ class GraphImpl {
     this.batchDepth++;
     try {
       fn();
+    } catch (error) {
+      if (this.batchDepth === 1) this.rollbackLeaves();
+      throw error;
     } finally {
       this.batchDepth--;
     }
@@ -143,10 +150,9 @@ class GraphImpl {
 
   reset(): void {
     this.batch(() => {
-      this.states.forEach((state) => {
+      this.states.forEach((state, id) => {
         if (state.initial === undefined) return;
-        state.value = state.initial.clone();
-        this.pending = true;
+        this.replaceLeaf(id, state.initial.clone());
       });
     });
   }
@@ -281,9 +287,23 @@ class GraphImpl {
 
   private setLeaf(id: number, values: Nested): void {
     const node = this.nodes[id];
-    this.states[id].value = this.tensorFor(node.name, [...node.shape], values);
-    this.pending = true;
+    const value = this.tensorFor(node.name, [...node.shape], values);
+    this.replaceLeaf(id, value);
     if (this.batchDepth === 0) this.recompute();
+  }
+
+  private replaceLeaf(id: number, value: Tensor): void {
+    if (!this.touched.has(id)) this.touched.set(id, this.states[id].value);
+    this.states[id].value = value;
+    this.pending = true;
+  }
+
+  private rollbackLeaves(): void {
+    this.touched.forEach((value, id) => {
+      this.states[id].value = value;
+    });
+    this.touched.clear();
+    this.pending = false;
   }
 
   private transposeOf(id: number): Node {
@@ -311,20 +331,33 @@ class GraphImpl {
   }
 
   private recompute(): void {
-    this.pending = false;
-    this.nodes.forEach((node, i) => {
-      if (node.kind !== 'op') return;
-      const def = opDef(node.op as string) as AnyOpDef;
-      this.states[i].value = def.forward(node.inputs.map((n) => n.value), node.attrs);
-    });
-    this.computeBackward();
-    if (this.check) {
-      this.nodes.forEach((node) => {
+    const saved = this.states.map((state) => ({ value: state.value, grad: state.grad }));
+    const savedBackwardValid = this.backwardValid;
+    try {
+      this.nodes.forEach((node, i) => {
         if (node.kind !== 'op') return;
         const def = opDef(node.op as string) as AnyOpDef;
-        checkOpNamed(def, node.inputs.map((n) => n.value.clone()), node.attrs, node.name);
+        this.states[i].value = def.forward(node.inputs.map((n) => n.value), node.attrs);
       });
+      this.computeBackward();
+      if (this.check) {
+        this.nodes.forEach((node) => {
+          if (node.kind !== 'op') return;
+          const def = opDef(node.op as string) as AnyOpDef;
+          checkOpNamed(def, node.inputs.map((n) => n.value.clone()), node.attrs, node.name);
+        });
+      }
+    } catch (error) {
+      saved.forEach((snapshot, i) => {
+        this.states[i].value = snapshot.value;
+        this.states[i].grad = snapshot.grad;
+      });
+      this.backwardValid = savedBackwardValid;
+      this.rollbackLeaves();
+      throw error;
     }
+    this.touched.clear();
+    this.pending = false;
     this.version++;
     [...this.subscribers].forEach((fn) => fn());
   }
@@ -367,9 +400,6 @@ class GraphImpl {
         state.grad = Tensor.zeros(this.nodes[i].shape);
       });
       return;
-    }
-    if (loss.shape.length > 0 && this.states[loss.id].value.size !== 1) {
-      throw new Error(`loss node '${loss.name}' must have one element, got shape ${formatShape(loss.shape)}`);
     }
     const seed = Tensor.zeros(loss.shape);
     seed.data.fill(1);

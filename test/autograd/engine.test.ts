@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { type Node, type OpOptions, Tensor, defineOp, graph } from '../../src/core';
+import { RESERVED_GRAPH_NAMES } from '../../src/autograd/registry';
 
 defineOp({
   name: 'test_total',
@@ -80,8 +81,8 @@ describe('forward and backward', () => {
     const g = graph();
     const x = g.input('x', [2], [1, 2]);
     const y = g.exp(x);
-    g.loss(y);
-    expect(() => x.grad).toThrow("loss node 'exp1' must have one element, got shape (2,)");
+    expect(() => g.loss(y)).toThrow("loss node 'exp1' must have one element, got shape (2,)");
+    expect(() => g.loss()).toThrow('graph has no loss node');
   });
 });
 
@@ -139,6 +140,73 @@ describe('set, subscribe and batch', () => {
     expect(y.value.get([0])).toBeCloseTo(Math.exp(1), 12);
   });
 
+  it('leaves the graph untouched when a set fails', () => {
+    const g = graph({ check: true });
+    const x = g.input('x', [2, 3], [[1, 2, 3], [0.5, -1, 2]]);
+    const t = g.label('t', [0, 2]);
+    const loss = g.nll_loss(g.log_softmax(x, -1), t);
+    let calls = 0;
+    g.subscribe(() => calls++);
+    const before = {
+      t: t.value,
+      loss: loss.value,
+      grad: x.grad,
+      lossValue: loss.value.get([]),
+      gradValues: Array.from(x.grad!.data),
+      version: g.version,
+    };
+    expect(() => t.set([0, 7])).toThrow('nll_loss: target 7 at row 1 is out of range for 3 classes');
+    expect(t.value).toBe(before.t);
+    expect(t.value.toNested()).toEqual([0, 2]);
+    expect(loss.value).toBe(before.loss);
+    expect(x.grad).toBe(before.grad);
+    expect(loss.value.get([])).toBe(before.lossValue);
+    expect(Array.from(x.grad!.data)).toEqual(before.gradValues);
+    expect(g.version).toBe(before.version);
+    expect(calls).toBe(0);
+    t.set([1, 1]);
+    expect(calls).toBe(1);
+    expect(g.version).toBe(before.version + 1);
+    expect(t.index(0)).toBe(1);
+    expect(x.grad!.get([0, 1])).toBeLessThan(0);
+  });
+
+  it('rolls back every leaf changed in a batch that fails', () => {
+    const g = graph();
+    const x = g.input('x', [2], [1, 2]);
+    const t = g.label('t', 0);
+    const loss = g.nll_loss(g.log_softmax(x, -1), t);
+    let calls = 0;
+    g.subscribe(() => calls++);
+    const lossBefore = loss.value.get([]);
+    expect(() =>
+      g.batch(() => {
+        x.set([5, 6]);
+        t.set(9);
+      }),
+    ).toThrow('out of range');
+    expect(x.value.toNested()).toEqual([1, 2]);
+    expect(t.index()).toBe(0);
+    expect(loss.value.get([])).toBe(lossBefore);
+    expect(g.version).toBe(0);
+    expect(calls).toBe(0);
+    expect(() =>
+      g.batch(() => {
+        x.set([5, 6]);
+        x.set([1, 2, 3]);
+      }),
+    ).toThrow("node 'x': expected 2 values for shape (2,), got 3");
+    expect(x.value.toNested()).toEqual([1, 2]);
+    expect(g.version).toBe(0);
+    g.batch(() => {
+      x.set([5, 6]);
+      t.set(1);
+    });
+    expect(calls).toBe(1);
+    expect(g.version).toBe(1);
+    expect(loss.value.get([])).toBeCloseTo(-Math.log(Math.exp(6) / (Math.exp(5) + Math.exp(6))), 12);
+  });
+
   it('rejects values that do not match the node shape', () => {
     const g = graph();
     const x = g.input('x', [2], [1, 2]);
@@ -164,6 +232,22 @@ describe('gradient check in check mode', () => {
     const off = graph({ check: false });
     const y = off.input('y', [3], [1, 2, 3]);
     expect(() => (off as unknown as { bad_square(n: unknown): unknown }).bad_square(y)).not.toThrow();
+  });
+
+  it('rejects op names that collide with graph members', () => {
+    const def = {
+      args: ['input'],
+      tensors: ['input'],
+      shape: ([a]: number[][]) => [...a],
+      forward: ([a]: Tensor[]) => a,
+      backward: (gradOut: Tensor) => [gradOut],
+    };
+    for (const name of ['input', 'loss', 'subscribe', 'jacobian', 'nodes', 'version']) {
+      expect(() => defineOp({ ...def, name })).toThrow(`op '${name}' is a reserved graph member name`);
+    }
+    const g = graph();
+    const members = [...Object.getOwnPropertyNames(g), ...Object.getOwnPropertyNames(Object.getPrototypeOf(g))];
+    for (const member of members) expect(RESERVED_GRAPH_NAMES.has(member), member).toBe(true);
   });
 
   it('rejects redefining an op', () => {

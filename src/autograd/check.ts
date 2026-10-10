@@ -33,6 +33,7 @@ export function checkOpNamed<A extends object>(
   const random = seededRandom(CHECK_SEED);
   const upstream = new Tensor(out.shape, Float64Array.from({ length: out.size }, () => random() * 2 - 1));
   const grads = def.backward(upstream, inputs, out, attrs);
+  const base = dot(upstream, out);
   const where = nodeName === undefined ? '' : ` (node '${nodeName}')`;
   inputs.forEach((input, arg) => {
     if (def.differentiable && !def.differentiable[arg]) return;
@@ -53,9 +54,12 @@ export function checkOpNamed<A extends object>(
       const minus = dot(upstream, def.forward(inputs, attrs));
       input.data[j] = original;
       const numeric = (plus - minus) / (2 * CHECK_EPSILON);
+      const tolerance = CHECK_ABS_TOLERANCE + CHECK_REL_TOLERANCE * Math.abs(numeric);
+      const rightSided = (plus - base) / CHECK_EPSILON;
+      const leftSided = (base - minus) / CHECK_EPSILON;
+      if (!(Math.abs(rightSided - leftSided) <= tolerance)) continue;
       const analytic = grad.data[j];
-      if (!Number.isFinite(numeric)) continue;
-      if (!(Math.abs(analytic - numeric) <= CHECK_ABS_TOLERANCE + CHECK_REL_TOLERANCE * Math.abs(numeric))) {
+      if (!(Math.abs(analytic - numeric) <= tolerance)) {
         throw new Error(
           `gradient check failed: op '${def.name}'${where}, input ${arg} '${def.tensors[arg]}' at [${indexOf(input.shape, j).join(', ')}]: backward ${analytic.toFixed(6)} vs numeric ${numeric.toFixed(6)}`,
         );

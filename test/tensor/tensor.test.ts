@@ -29,6 +29,14 @@ describe('Tensor', () => {
     expect(() => Tensor.from([1, 2, 3], [2, 2])).toThrow('expected 4 values for shape (2, 2), got 3');
   });
 
+  it('requires nested values to match the given shape exactly', () => {
+    expect(() => Tensor.from([[1, 2], [3, 4], [5, 6]], [2, 3])).toThrow(
+      'expected shape (2, 3), got nested values of shape (3, 2)',
+    );
+    expect(() => Tensor.from([[1, 2, 3, 4]], [4])).toThrow('expected shape (4,), got nested values of shape (1, 4)');
+    expect(Tensor.from([[1, 2, 3], [4, 5, 6]], [2, 3]).toNested()).toEqual([[1, 2, 3], [4, 5, 6]]);
+  });
+
   it('supports one-dimensional tensors', () => {
     const t = Tensor.from([2.0, 1.0, 0.2, -0.6, -1.4]);
     expect(t.shape).toEqual([5]);

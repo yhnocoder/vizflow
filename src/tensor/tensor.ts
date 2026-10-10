@@ -24,6 +24,13 @@ export class Tensor {
   }
 
   static from(values: Nested, shape?: Shape): Tensor {
+    const nested = Array.isArray(values) && values.some(Array.isArray);
+    if (shape !== undefined && nested) {
+      const inferred = inferShape(values);
+      if (formatShape(inferred) !== formatShape(shape)) {
+        throw new Error(`expected shape ${formatShape(shape)}, got nested values of shape ${formatShape(inferred)}`);
+      }
+    }
     const resolved = shape ?? inferShape(values);
     const flat: number[] = [];
     flatten(values, flat);
