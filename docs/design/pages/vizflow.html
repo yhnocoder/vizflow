@@ -356,6 +356,7 @@ defineOp(def: OpDef): void</code></pre>
 \begin{equation}
 |g_j - \tilde g_j| \le 10^{-6} + 10^{-4}\,|\tilde g_j| \label{eq:tol}
 \end{equation}
+<p>函数在不可导的点上（例如 <code>max</code> 有并列最大值时）两侧导数不同，中心差分没有意义。检查另算右侧差分 $(\phi(x+\varepsilon e_j) - \phi(x))/\varepsilon$ 与左侧差分 $(\phi(x) - \phi(x-\varepsilon e_j))/\varepsilon$，两者之差超过 $10^{-3}(1 + |\tilde g_j|)$ 时跳过这个元素。这个阈值与式 \eqref{eq:tol} 的容差分开设定：光滑点上两侧差分之差约为 $\varepsilon |\phi''|$，远小于阈值，所以光滑点照常检查。</p>
 <p>不通过时抛出 <code>Error</code>，信息写明运算、节点、输入和下标：</p>
 <div class="term">gradient check failed: op 'exp' (node 'u'), input 0 'x' at [2]: backward 1.234567 vs numeric 4.567890</div>
 <p>检查用显式选项 <code>graph({ check: true })</code> 打开。库以预构建产物的形式给静态站使用，读不到构建环境的「开发模式」变量，所以开关由页面自己写。检查函数也单独导出为 <code>checkOp(def, inputs, attrs)</code>，测试对所有内置运算调用它。</p>

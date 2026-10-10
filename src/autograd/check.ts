@@ -4,6 +4,7 @@ import type { AnyOpDef, OpDef } from './op';
 export const CHECK_EPSILON = 1e-6;
 export const CHECK_ABS_TOLERANCE = 1e-6;
 export const CHECK_REL_TOLERANCE = 1e-4;
+export const CHECK_KINK_TOLERANCE = 1e-3;
 const CHECK_SEED = 0x9e3779b9;
 
 function seededRandom(seed: number): () => number {
@@ -57,7 +58,7 @@ export function checkOpNamed<A extends object>(
       const tolerance = CHECK_ABS_TOLERANCE + CHECK_REL_TOLERANCE * Math.abs(numeric);
       const rightSided = (plus - base) / CHECK_EPSILON;
       const leftSided = (base - minus) / CHECK_EPSILON;
-      if (!(Math.abs(rightSided - leftSided) <= tolerance)) continue;
+      if (!(Math.abs(rightSided - leftSided) <= CHECK_KINK_TOLERANCE * (1 + Math.abs(numeric)))) continue;
       const analytic = grad.data[j];
       if (!(Math.abs(analytic - numeric) <= tolerance)) {
         throw new Error(
