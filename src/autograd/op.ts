@@ -10,12 +10,30 @@ export interface OpCtx {
   attrs: object;
 }
 
+export interface ForwardTexArgs {
+  out: string;
+  in: string[];
+  attrs: object;
+}
+
+export interface LocalTexArgs {
+  out: string;
+  in: string;
+  ins: string[];
+  arg: number;
+  attrs: object;
+  outIndex: number[];
+  inIndex: number[];
+  ctx: OpCtx;
+  elem(arg: number, index: number[]): string;
+}
+
 export interface OpExplain {
   pattern: Pattern;
   local(ctx: OpCtx, out: number[], arg: number, input: number[]): number;
   tex: {
-    forward(s: { out: string; in: string[]; attrs: object }): string;
-    local(s: { out: string; in: string; arg: number; attrs: object; outIndex: number[]; inIndex: number[] }): string;
+    forward(s: ForwardTexArgs): string;
+    local(s: LocalTexArgs): string;
   };
   selected?(ctx: OpCtx, out: number[]): { arg: number; index: number[] }[];
 }
