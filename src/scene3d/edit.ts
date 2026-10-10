@@ -217,12 +217,14 @@ export function mountEditor(host: EditHost): () => void {
   root.addEventListener('click', onClick, { capture: true });
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
+  window.addEventListener('pointercancel', onUp);
   host.relayout(true);
   return () => {
     root.removeEventListener('pointerdown', onDown, { capture: true });
     root.removeEventListener('click', onClick, { capture: true });
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('pointercancel', onUp);
     clearTimeout(noteTimer);
     panel.remove();
   };

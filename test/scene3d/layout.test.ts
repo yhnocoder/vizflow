@@ -76,6 +76,11 @@ describe('board layout', () => {
     expect(elementAt(out, [0, 0]).z).toBeCloseTo(3 + 2.9 * 2, 12);
   });
 
+  it('rejects options that board does not read', () => {
+    const { h, W, z } = build();
+    expect(() => board(h, W.T, z, { offsets: { z: [0, 0, 1] } } as never)).toThrow("board: unknown option 'offsets'");
+  });
+
   it('puts batch row 0 of out and a in front and later rows behind it', () => {
     const { h, W, z, ctx } = build([0, 1], 2);
     const { blocks } = resolveLayout([board(h, W.T, z)], ctx);

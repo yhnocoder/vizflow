@@ -27,7 +27,11 @@ export type LayoutItem =
   | { template: 'stack'; nodes: Node[]; options: StackOptions }
   | { template: 'node'; node: Node; options: { at?: Vec3 } };
 
+const BOARD_OPTION_KEYS: ReadonlySet<string> = new Set(['at', 'gap', 'scale', 'scales']);
+
 export function board(a: Node, b: Node, out: Node, options: TemplateOptions = {}): LayoutItem {
+  const unknown = Object.keys(options).find((key) => !BOARD_OPTION_KEYS.has(key));
+  if (unknown !== undefined) throw new Error(`board: unknown option '${unknown}'`);
   return { template: 'board', a, b, out, options };
 }
 
