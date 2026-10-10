@@ -29,7 +29,7 @@ async function shot(page: Page, file: string, name: string): Promise<void> {
 }
 
 async function goStep(page: Page, index: number): Promise<void> {
-  await page.evaluate((i) => (window as unknown as { steps: { go(i: number): void } }).steps.go(i), index);
+  await page.evaluate((i) => (window as unknown as { vizflow: { steps: { go(i: number): void } } }).vizflow.steps.go(i), index);
   await page.waitForTimeout(SETTLE_MS);
 }
 
@@ -80,10 +80,12 @@ test('hovering a z → LSE edge in a backward step shows the edge card with expl
   expect(edgeId).not.toBeNull();
   const shown = await pop.locator('.vf-eq').evaluateAll((els) => els.map((el) => (el as HTMLElement).dataset.value));
   const expected = await page.evaluate((id) => {
-    const w = window as unknown as {
-      explainer: { edges(): { id: string }[]; local(e: unknown): number; upstream(e: unknown): number; contribution(e: unknown): number };
-      formatNumber(v: number): string;
-    };
+    const w = (window as unknown as {
+      vizflow: {
+        explainer: { edges(): { id: string }[]; local(e: unknown): number; upstream(e: unknown): number; contribution(e: unknown): number };
+        formatNumber(v: number): string;
+      };
+    }).vizflow;
     const e = w.explainer.edges().find((edge) => edge.id === id)!;
     return [w.formatNumber(w.explainer.local(e)), w.formatNumber(w.explainer.upstream(e)), w.formatNumber(w.explainer.contribution(e))];
   }, edgeId);
@@ -96,8 +98,8 @@ test('clicking another logits bar changes the target and the loss', async ({ pag
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openScene(page);
-  const readLoss = () => page.evaluate(() => (window as unknown as { g: { loss(): { value: { data: Float64Array } } } }).g.loss().value.data[0]);
-  const readTarget = () => page.evaluate(() => (window as unknown as { nodes: { t: { index(i: number): number } } }).nodes.t.index(0));
+  const readLoss = () => page.evaluate(() => (window as unknown as { vizflow: { g: { loss(): { value: { data: Float64Array } } } } }).vizflow.g.loss().value.data[0]);
+  const readTarget = () => page.evaluate(() => (window as unknown as { vizflow: { nodes: { t: { index(i: number): number } } } }).vizflow.nodes.t.index(0));
   const before = await readLoss();
   expect(await readTarget()).toBe(0);
   const label = page.locator('.vf-lb.vf-val[data-node="z"][data-index="0,1"]');
@@ -160,7 +162,7 @@ test('mounting and disposing the scene twenty times still renders', async ({ pag
   await page.setViewportSize({ width: 1280, height: 860 });
   const errors = await openScene(page);
   for (let i = 0; i < 20; i++) {
-    await page.evaluate(() => (window as unknown as { remount(): void }).remount());
+    await page.evaluate(() => (window as unknown as { vizflow: { remount(): void } }).vizflow.remount());
   }
   await page.waitForTimeout(SETTLE_MS);
   await expect(page.locator('.vf-scene canvas')).toHaveCount(1);

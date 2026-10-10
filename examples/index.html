@@ -3,11 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
 <title>vizflow 示例</title>
 </head>
 <body>
 <h1>vizflow 示例</h1>
 <p id="status">loading</p>
+<h2>完整页面</h2>
+<ul id="pages">
+  <li><a href="lm-head-nll.html">lm_head 与 NLL Loss</a>：3D 场景、步骤条与面板。</li>
+  <li><a href="softmax-ce.html">Softmax 与交叉熵</a>：单样本与批量两种模式。</li>
+  <li><a href="widget-softmax.html">Softmax 小部件</a>：只用步骤条和面板，不加载 3D。</li>
+</ul>
+<h2>模块与写作说明的检查页</h2>
+<ul id="checks">
+  <li><a href="scene-lmhead.html">scene3d：lm_head 与 NLL Loss</a>：只挂载 3D 场景。</li>
+  <li><a href="edit-lmhead.html">scene3d：编辑模式</a>：拖动块与标签，复制布局配置。</li>
+  <li><a href="guide-check-log-softmax.html">log_softmax 与 nll_loss 小部件</a>：按写作说明独立写出的页面，用来检查说明是否够用。</li>
+  <li><a href="theme.html">theme</a>：颜色变量与字体。</li>
+</ul>
 <script type="module">
 import * as core from '@yhnocoder/vizflow/core';
 document.getElementById('status').textContent = `core exports: ${Object.keys(core).length}`;

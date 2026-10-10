@@ -888,7 +888,7 @@ VIZFLOW_CHROMIUM=/path/to/chromium npm run e2e -- my-page
 - 面板按钮：`page.getByRole('button', { name: /梯度下降一步/ })`、`{ name: '重置' }`。
 - 类别表：每行一个单选按钮，`page.locator('tbody tr').nth(2).getByRole('radio').check()` 选第 3 类。
 - 步骤条按钮 `.vf-st` 的顺序与 `steps.list` 相同：总览、前向各步、反向各步。反向按钮的文字默认以 `∂` 开头。
-- 页面可以把图挂到 `window` 上（例如 `window.vizflow = { g, steps }`），测试里用 `page.evaluate` 读数值。
+- 页面把测试要读取的对象统一放在 `window.vizflow` 上，例如 `window.vizflow = { g, steps, scene }`，不另外挂其他全局变量。测试里用 `page.evaluate(() => window.vizflow.g.loss().value.data[0])` 读数值。TypeScript 的测试文件里先把 `window` 断言成带 `vizflow` 字段的类型，例如 `(window as unknown as { vizflow: { g: Graph } }).vizflow`。
 
 只验证数值时不需要浏览器：在 Vitest 里直接 `import { graph } from '../src/core'` 建图并断言。
 

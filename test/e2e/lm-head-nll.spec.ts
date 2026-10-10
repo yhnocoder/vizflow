@@ -29,12 +29,12 @@ async function open(page: Page): Promise<string[]> {
 }
 
 async function goStep(page: Page, index: number): Promise<void> {
-  await page.evaluate((i) => (window as unknown as Win).steps.go(i), index);
+  await page.evaluate((i) => (window as unknown as { vizflow: Win }).vizflow.steps.go(i), index);
   await page.waitForTimeout(SETTLE_MS);
 }
 
-const readLoss = (page: Page) => page.evaluate(() => (window as unknown as Win).g.loss().value.data[0]);
-const readTarget = (page: Page) => page.evaluate(() => (window as unknown as Win).nodes.t.index(0));
+const readLoss = (page: Page) => page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.g.loss().value.data[0]);
+const readTarget = (page: Page) => page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.nodes.t.index(0));
 const lossText = (page: Page) => page.locator('.vf-loss-value');
 const caption = (page: Page) => page.locator('.vf-caption-body');
 
@@ -47,7 +47,7 @@ async function shot(page: Page, info: TestInfo, name: string): Promise<void> {
 test('every step renders without console errors', async ({ page }, info) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   const errors = await open(page);
-  const count = await page.evaluate(() => (window as unknown as Win).steps.list.length);
+  const count = await page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.steps.list.length);
   expect(count).toBe(STEP_NAMES.length);
   await expect(page.locator('.vf-st')).toHaveText(['整张图', 'h, Wᵀ', 'z = hWᵀ', 'LSE', 'log p', 'ℓ', '∂log p', '∂LSE', '∂z', '∂Wᵀ', '∂h']);
   for (let i = 0; i < count; i++) {

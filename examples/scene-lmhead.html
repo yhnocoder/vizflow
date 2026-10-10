@@ -71,7 +71,7 @@ let scene = mountScene('#stage', g, sceneOptions);
 const remount = () => {
   scene.dispose();
   scene = mountScene('#stage', g, sceneOptions);
-  window.scene = scene;
+  window.vizflow.scene = scene;
 };
 
 const stepLabel = document.getElementById('step');
@@ -88,7 +88,7 @@ document.getElementById('toggleTheme').addEventListener('click', () => {
   root.dataset.theme = root.dataset.theme === 'dark' ? 'light' : 'dark';
 });
 
-Object.assign(window, { g, steps, scene, remount, explainer: explain(g), nodes: { h, W, t, z, L, logp, loss }, formatNumber });
+window.vizflow = { g, steps, scene, remount, explainer: explain(g), nodes: { h, W, t, z, L, logp, loss }, formatNumber };
 document.body.dataset.ready = 'true';
 </script>
 </body>

@@ -146,7 +146,7 @@ mountPanels('#side', g, [
     note: 'Qwen3-8B 里 d = 4096、V = 151936，lm_head 单独一份权重；Qwen3-0.6B 的 lm_head 和 embed_tokens 共享同一个矩阵。' },
 ], { steps });
 
-Object.assign(window, { g, steps, scene, nodes: { h, W, t, z, L, logp, loss } });
+window.vizflow = { g, steps, scene, nodes: { h, W, t, z, L, logp, loss } };
 document.body.dataset.ready = 'true';
 </script>
 </body>
