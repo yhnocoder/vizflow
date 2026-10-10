@@ -1,6 +1,6 @@
 import type { Graph, Node } from '../autograd';
 import { explain } from '../explain';
-import { compileText } from './template';
+import { compileTemplate } from './template';
 
 export interface ForwardStep {
   show: Node | Node[];
@@ -174,7 +174,7 @@ class StepsImpl implements Steps {
   }
 
   private entry(g: Graph, info: StepInfo, revealed: Set<Node>, active: Set<Node>): Entry {
-    return { info, revealed, active, title: compileText(g, info.title), body: compileText(g, info.text) };
+    return { info, revealed, active, title: compileTemplate(g, info.title), body: compileTemplate(g, info.text) };
   }
 
   go(i: number): void {

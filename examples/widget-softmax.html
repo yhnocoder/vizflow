@@ -8,15 +8,21 @@
 <style>
 h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; }
 .lede { color: var(--muted); max-width: 64ch; margin: 0 0 20px; }
+.widget { max-width: 1040px; }
+.widget-panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--vf-gap); align-items: start; }
+@media (max-width: 760px) { .widget-panels { grid-template-columns: minmax(0, 1fr); } }
 </style>
 </head>
 <body>
 <main class="vf-page">
   <h1>Softmax 与交叉熵</h1>
   <p class="lede">拖动 logits 的滑块或换一个目标类，损失、概率、梯度和讲解里的数值一起更新。这个页面只引入 core、steps 与 ui，不加载 3D。</p>
-  <div class="vf-split">
+  <div class="vf-stack widget">
     <div id="steps"></div>
-    <aside id="side"></aside>
+    <div class="widget-panels">
+      <div id="values"></div>
+      <div id="details"></div>
+    </div>
   </div>
 </main>
 <script type="module">
@@ -53,17 +59,19 @@ const steps = createSteps(g, {
 });
 
 mountSteps('#steps', steps);
-mountPanels('#side', g, [
+mountPanels('#values', g, [
   { loss: {
       sgd: { params: [x], lr: 1, label: '梯度下降一步' },
       random: { nodes: [x], range: [-3, 3] },
       reset: true,
-      text: '目标 "{{t:token}}"，p = {{p[t]:3}}',
+      text: '目标类 {{t+1}}，p = {{p[t]:3}}',
   } },
   { tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true }], title: 'logits 与目标类' },
-  { matrix: (graph) => graph.jacobian(p, x), highlight: t, title: 'Softmax 的 Jacobian' },
-  { note: '$J_{ij} = \\partial p_i / \\partial x_j = p_i\\delta_{ij} - p_ip_j$，对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t$ 行。' },
-  { code: 'p = F.softmax(x, dim=-1)\nloss = F.nll_loss(p.log(), t)  # 等价于 F.cross_entropy(x, t)', title: '对应的 PyTorch' },
+], { steps });
+mountPanels('#details', g, [
+  { matrix: (graph) => graph.jacobian(p, x), highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian',
+    note: '$J_{ij} = \\partial p_i / \\partial x_j = p_i\\delta_{ij} - p_ip_j$，对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t = {{t+1}}$ 行。' },
+  { code: 'p = F.softmax(x, dim=-1)\nloss = F.nll_loss(p.log(), t)\n# 两行合起来等价于\nloss = F.cross_entropy(x, t)', title: '对应的 PyTorch' },
 ], { steps });
 
 window.vizflow = { g, steps };

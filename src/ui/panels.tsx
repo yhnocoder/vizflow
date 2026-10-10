@@ -2,7 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, createUniqueId, onCl
 import { render } from 'solid-js/web';
 import { Node, type Graph } from '../autograd';
 import { renderText } from '../formula';
-import { allVisible, renderTemplate, type StepState, type Steps } from '../steps';
+import { allVisible, compileTemplate, type StepState, type Steps } from '../steps';
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps, type Mounted } from './mount';
 
@@ -14,6 +14,7 @@ export interface LossOptions {
 }
 
 export type MatrixSource = Node | ((g: Graph, state: StepState) => Tensor);
+export type MatrixHighlight = Node | { node: Node; axis: 'row' | 'col' };
 export type TokenColumn = Node | { node: Node; grad?: boolean; title?: string };
 
 export type PanelItem =
@@ -21,7 +22,7 @@ export type PanelItem =
   | { loss: LossOptions }
   | { sliders: Node; min?: number; max?: number; step?: number; title?: string }
   | { tokens: Node; columns?: TokenColumn[]; title?: string; sliders?: Node; min?: number; max?: number }
-  | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: Node }
+  | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: MatrixHighlight; note?: string }
   | { code: string; title?: string; note?: string }
   | { note: string; title?: string };
 
@@ -29,6 +30,7 @@ const SLIDER_MIN = -2.5;
 const SLIDER_MAX = 2.5;
 const SLIDER_STEP = 0.01;
 const ZERO_CELL = 1e-4;
+const CELL_DIGITS = 2;
 const MIN_MATRIX_LIMIT = 1e-6;
 const SUBSCRIPT_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
 
@@ -92,8 +94,14 @@ function Card(props: { title?: string; children: JSX.Element }) {
   );
 }
 
-function Rich(props: { html: string; class: string }) {
-  return <div class={props.class} ref={(el) => renderText(props.html, el)} />;
+function TemplateText(props: { ctx: Context; text: string; class: string }) {
+  const evaluate = compileTemplate(props.ctx.g, props.text);
+  let target!: HTMLDivElement;
+  createEffect(() => {
+    props.ctx.version();
+    renderText(evaluate(props.ctx.focus()), target);
+  });
+  return <div class={props.class} ref={(el) => (target = el)} />;
 }
 
 function Spark(props: { history: number[] }) {
@@ -106,24 +114,15 @@ function Spark(props: { history: number[] }) {
   const lastPoint = () => points()[points().length - 1];
   return (
     <svg class="vf-spark" viewBox="0 0 120 42" aria-label="损失变化">
-      <Show
-        when={props.history.length >= 2}
-        fallback={
-          <text x="120" y="26" text-anchor="end" font-size="9.5" fill="var(--muted)">
-            走几步看损失下降
-          </text>
-        }
-      >
-        <line x1="4" x2="116" y1="37" y2="37" stroke="var(--line-strong)" />
-        <path d={path()} fill="none" stroke="var(--pos)" stroke-width="1.6" />
-        <circle cx={lastPoint()[0]} cy={lastPoint()[1]} r="2.6" fill="var(--pos)" />
-      </Show>
+      <line x1="4" x2="116" y1="37" y2="37" stroke="var(--line-strong)" />
+      <path d={path()} fill="none" stroke="var(--pos)" stroke-width="1.6" />
+      <circle cx={lastPoint()[0]} cy={lastPoint()[1]} r="2.6" fill="var(--pos)" />
     </svg>
   );
 }
 
 function LossPanel(props: { ctx: Context; options: LossOptions }) {
-  const { g, version, focus } = props.ctx;
+  const { g, version } = props.ctx;
   const options = props.options;
   const lossValue = () => g.loss().value.data[0];
   const loss = createMemo(() => {
@@ -137,15 +136,6 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
       if (!stepping) setHistory([]);
     }),
   );
-
-  let sub: HTMLDivElement | undefined;
-  const text = options.text;
-  if (text !== undefined) {
-    createEffect(() => {
-      version();
-      if (sub !== undefined) renderText(renderTemplate(g, text, focus()), sub);
-    });
-  }
 
   const sgdStep = (sgd: NonNullable<LossOptions['sgd']>) => {
     const before = lossValue();
@@ -178,11 +168,11 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
             <i>ℓ =</i>
             <span class="vf-loss-value">{display(loss(), 3)}</span>
           </div>
-          <Show when={text !== undefined}>
-            <div class="vf-sub" ref={(el) => (sub = el)} />
-          </Show>
+          <Show when={options.text}>{(text) => <TemplateText ctx={props.ctx} class="vf-sub" text={text()} />}</Show>
         </div>
-        <Spark history={history()} />
+        <Show when={history().length >= 2}>
+          <Spark history={history()} />
+        </Show>
       </div>
       <Show when={hasButtons}>
         <div class="vf-btns">
@@ -225,6 +215,7 @@ function Slider(props: { ctx: Context; node: Node; i: number; label: string; min
         step={props.step}
         value={value()}
         aria-label={props.label}
+        style={{ '--vf-fill': `${(Math.min(Math.max((value() - props.min) / (props.max - props.min), 0), 1) * 100).toFixed(1)}%` }}
         onInput={(e) => setElement(props.node, rowElement(props.node, props.ctx.focus(), props.i), Number(e.currentTarget.value))}
       />
       <span>{display(value(), 2)}</span>
@@ -267,7 +258,7 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
     return Math.round(label.value.get(targetIndex(label, ctx.focus())));
   });
   const choose = (i: number) => setElement(label, targetIndex(label, ctx.focus()), i);
-  const tokenText = (i: number) => (label.tokens === undefined ? `${i + 1}` : `${i + 1} "${label.tokens[i]}"`);
+  const tokenText = (i: number) => label.tokens?.[i].replace(/^ +/, (spaces) => '␣'.repeat(spaces.length)) ?? '';
 
   return (
     <Card title={item.title ?? '词表与目标 token'}>
@@ -287,6 +278,7 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
                 <td>
                   <label class="vf-tg">
                     <input type="radio" name={group} checked={target() === i} onChange={() => choose(i)} />
+                    <span class="vf-tok-id">{i + 1}</span>
                     <span class="vf-tok">{tokenText(i)}</span>
                   </label>
                 </td>
@@ -314,7 +306,7 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
                     });
                     return (
                       <td class="vf-n" style={c.grad ? { color: signColor(value()) } : undefined}>
-                        {display(value(), c.grad ? 3 : 2)}
+                        {display(value(), 3)}
                       </td>
                     );
                   }}
@@ -347,15 +339,18 @@ function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: M
     ctx.version();
     return read();
   });
-  const highlight = item.highlight;
-  const tokenHeaders = highlight !== undefined && classCount(highlight) === cols ? highlight.tokens : undefined;
-  const frameRow = typeof source === 'function' && rows === cols;
+  const highlight = item.highlight instanceof Node ? item.highlight : item.highlight?.node;
+  const frameRow = !(item.highlight instanceof Node) && item.highlight?.axis === 'row';
+  const tokenHeaders = highlight?.tokens !== undefined && classCount(highlight) === cols ? highlight.tokens : undefined;
+  const frameArea = (t: number) =>
+    frameRow ? { 'grid-row': `${t + 2}`, 'grid-column': `2 / span ${cols}` } : { 'grid-row': `2 / span ${rows}`, 'grid-column': `${t + 2}` };
   const target = createMemo(() => {
     ctx.version();
     return highlight === undefined ? undefined : Math.round(highlight.value.get(targetIndex(highlight, ctx.focus())));
   });
   const shade = (v: number) => {
-    const percent = Math.abs(v) < ZERO_CELL ? 0 : 8 + Math.min(Math.abs(v) / limit, 1) * 62;
+    if (Math.abs(v) < ZERO_CELL || Number(display(Math.abs(v), CELL_DIGITS)) === 0) return 'transparent';
+    const percent = 8 + Math.min(Math.abs(v) / limit, 1) * 62;
     return `color-mix(in srgb, ${signColor(v)} ${percent.toFixed(0)}%, transparent)`;
   };
   const rowIds = Array.from({ length: rows }, (_, r) => r);
@@ -366,10 +361,10 @@ function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: M
   return (
     <Card title={title}>
       <div class="vf-wmat" style={{ 'grid-template-columns': `26px repeat(${cols}, minmax(0, 1fr))` }}>
-        <div class="vf-h" />
+        <div class="vf-h" style={{ 'grid-row': '1', 'grid-column': '1' }} />
         <For each={colIds}>
           {(c) => (
-            <div class="vf-h" title={tokenHeaders?.[c]}>
+            <div class="vf-h" title={tokenHeaders?.[c]} style={{ 'grid-row': '1', 'grid-column': `${c + 2}` }}>
               {tokenHeaders === undefined ? c + 1 : tokenHeaders[c].trim()}
             </div>
           )}
@@ -377,16 +372,15 @@ function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: M
         <For each={rowIds}>
           {(r) => (
             <>
-              <div class="vf-h vf-rh">{r + 1}</div>
+              <div class="vf-h vf-rh" style={{ 'grid-row': `${r + 2}`, 'grid-column': '1' }}>
+                {r + 1}
+              </div>
               <For each={colIds}>
                 {(c) => {
                   const value = () => tensor().get([r, c]);
                   return (
-                    <div
-                      classList={{ 'vf-ct': !frameRow && target() === c, 'vf-rt': frameRow && target() === r }}
-                      style={{ background: shade(value()) }}
-                    >
-                      {display(value(), 2)}
+                    <div style={{ background: shade(value()), 'grid-row': `${r + 2}`, 'grid-column': `${c + 2}` }}>
+                      {display(value(), CELL_DIGITS)}
                     </div>
                   );
                 }}
@@ -394,12 +388,16 @@ function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: M
             </>
           )}
         </For>
+        <Show when={target() !== undefined}>
+          <div class={frameRow ? 'vf-frame vf-rt' : 'vf-frame vf-ct'} style={frameArea(target() ?? 0)} />
+        </Show>
       </div>
+      <Show when={item.note}>{(note) => <TemplateText ctx={ctx} class="vf-note" text={note()} />}</Show>
     </Card>
   );
 }
 
-function CodePanel(props: { item: Extract<PanelItem, { code: string }> }) {
+function CodePanel(props: { ctx: Context; item: Extract<PanelItem, { code: string }> }) {
   const lines = props.item.code.split('\n').map((line) => {
     const hash = line.indexOf('#');
     return hash < 0 ? { code: line, comment: '' } : { code: line.slice(0, hash), comment: line.slice(hash) };
@@ -419,7 +417,7 @@ function CodePanel(props: { item: Extract<PanelItem, { code: string }> }) {
           )}
         </For>
       </pre>
-      <Show when={props.item.note}>{(note) => <Rich class="vf-note" html={note()} />}</Show>
+      <Show when={props.item.note}>{(note) => <TemplateText ctx={props.ctx} class="vf-note" text={note()} />}</Show>
     </Card>
   );
 }
@@ -431,10 +429,10 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   if ('sliders' in item && !('tokens' in item)) return <SlidersPanel ctx={props.ctx} item={item} />;
   if ('tokens' in item) return <TokensPanel ctx={props.ctx} item={item} />;
   if ('matrix' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
-  if ('code' in item) return <CodePanel item={item} />;
+  if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
   return (
     <Card title={item.title}>
-      <Rich class="vf-note" html={item.note} />
+      <TemplateText ctx={props.ctx} class="vf-note" text={item.note} />
     </Card>
   );
 }

@@ -8,6 +8,7 @@
 }
 
 .vf-stepper {
+  container-type: inline-size;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -27,6 +28,34 @@
   gap: 6px;
   flex: 1;
   min-width: 0;
+}
+
+@container (max-width: 560px) {
+  .vf-steprow {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "prev . next" "track track track";
+    row-gap: 10px;
+  }
+
+  .vf-steprow > .vf-nav:first-child {
+    grid-area: prev;
+  }
+
+  .vf-steprow > .vf-nav:last-child {
+    grid-area: next;
+  }
+
+  .vf-track {
+    grid-area: track;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .vf-track > * {
+    flex: none;
+  }
 }
 
 .vf-grp {
@@ -189,6 +218,7 @@ table.vf-cls {
   font-size: 12px;
   text-align: right;
   width: 56px;
+  padding-left: 12px;
 }
 
 .vf-cls td.vf-slcell {
@@ -213,6 +243,12 @@ table.vf-cls {
   margin: 0;
 }
 
+.vf-tok-id {
+  min-width: 2ch;
+  text-align: right;
+  color: var(--muted);
+}
+
 .vf-tok {
   font-family: var(--mono);
   font-size: 12px;
@@ -230,7 +266,38 @@ table.vf-cls {
   flex: 1;
   width: 0;
   min-width: 40px;
-  accent-color: var(--pos);
+  height: 4px;
+  margin: 7px 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--pos) var(--vf-fill, 50%), var(--line-strong) var(--vf-fill, 50%));
+  cursor: pointer;
+}
+
+.vf-sl input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--pos);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--pos);
+}
+
+.vf-sl input::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--pos);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 1px var(--pos);
+}
+
+.vf-sl input:focus-visible {
+  outline: 2px solid var(--pos);
+  outline-offset: 4px;
 }
 
 .vf-sl span {
@@ -310,6 +377,12 @@ table.vf-cls {
 
 .vf-wmat .vf-rh {
   text-align: left;
+}
+
+.vf-wmat .vf-frame {
+  padding: 0;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .vf-wmat .vf-ct {

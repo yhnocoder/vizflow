@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { graph } from '../../src/core';
-import { createSteps, renderTemplate } from '../../src/steps';
+import { compileTemplate, createSteps } from '../../src/steps';
 import { mountPanels, mountSteps, type Mounted } from '../../src/ui';
 
 const X = [2.0, 1.0, 0.2, -0.6, -1.4];
@@ -69,21 +69,24 @@ function button(el: HTMLElement, name: string | RegExp): HTMLButtonElement {
   return found;
 }
 
-describe('renderTemplate', () => {
+describe('compileTemplate', () => {
   it('evaluates the same templates as steps.text', () => {
-    const { g, steps } = softmaxGraph();
-    expect(renderTemplate(g, '$\\ell = {{loss:3}}$，目标 {{t:token}}', 0)).toBe(steps.text(0).body);
-    expect(renderTemplate(g, 'p = {{p[t]:3}} 与 {{p[t]:3}}', 0)).toBe('p = 0.609 与 0.609');
+    const { g, x, steps } = softmaxGraph();
+    const evaluate = compileTemplate(g, '$\\ell = {{loss:3}}$，目标 {{t:token}}');
+    expect(evaluate(0)).toBe(steps.text(0).body);
+    expect(compileTemplate(g, 'p = {{p[t]:3}} 与 {{p[t]:3}}')(0)).toBe('p = 0.609 与 0.609');
+    x.set([0, 0, 0, 0, 0]);
+    expect(evaluate(0)).toBe(steps.text(0).body);
   });
 
   it('uses the focus row in batch graphs', () => {
     const { g } = batchGraph();
-    expect(renderTemplate(g, '{{t[b]:token}} {{b+1}}', 1)).toBe('b 2');
+    expect(compileTemplate(g, '{{t[b]:token}} {{b+1}}')(1)).toBe('b 2');
   });
 
-  it('rejects unknown nodes with the template text', () => {
+  it('rejects unknown nodes when compiling', () => {
     const { g } = softmaxGraph();
-    expect(() => renderTemplate(g, '{{nope}}', 0)).toThrow('{{nope}}');
+    expect(() => compileTemplate(g, '{{nope}}')).toThrow('{{nope}}');
   });
 });
 
@@ -93,8 +96,14 @@ describe('loss panel', () => {
     const el = panels(container(), g, [{ loss: { text: '目标 "{{t:token}}"，p = {{p[t]:3}}' } }]);
     expect(text(el.querySelector('.vf-big'))).toBe('ℓ =0.495');
     expect(text(el.querySelector('.vf-sub'))).toBe('目标 " mat"，p = 0.609');
-    expect(text(el.querySelector('.vf-spark'))).toBe('走几步看损失下降');
+    expect(el.querySelector('.vf-spark')).toBeNull();
     expect(el.querySelector('.vf-btns')).toBeNull();
+  });
+
+  it('throws at mount when a text template is wrong', () => {
+    const { g } = softmaxGraph();
+    expect(() => mountPanels(container(), g, [{ loss: { text: '{{nope[t]}}' } }])).toThrow('{{nope[t]}}');
+    expect(() => mountPanels(container(), g, [{ note: '{{p}}' }])).toThrow('{{p}}');
   });
 
   it('accepts the plain string form', () => {
@@ -122,7 +131,7 @@ describe('loss panel', () => {
     expect(el.querySelector('.vf-spark path')!.getAttribute('d')!.split('L')).toHaveLength(3);
 
     slide(el.querySelector<HTMLInputElement>('input[type="range"]')!, 0);
-    expect(el.querySelectorAll('.vf-spark path')).toHaveLength(0);
+    expect(el.querySelector('.vf-spark')).toBeNull();
 
     vi.spyOn(Math, 'random').mockReturnValue(0.123456);
     button(el, '随机 x').click();
@@ -150,6 +159,7 @@ describe('sliders panel', () => {
     expect([...el.querySelectorAll('.vf-hrow b')].map(text)).toEqual(['x₁', 'x₂', 'x₃', 'x₄', 'x₅']);
     const input = el.querySelector<HTMLInputElement>('input[type="range"]')!;
     expect([input.min, input.max, input.step]).toEqual(['-2.5', '2.5', '0.01']);
+    expect(input.style.getPropertyValue('--vf-fill')).toBe('90.0%');
     expect([...el.querySelectorAll('.vf-sl span')].map(text)).toEqual(['2.00', '1.00', '0.20', '−0.60', '−1.40']);
     slide(el.querySelectorAll<HTMLInputElement>('input[type="range"]')[3], 1.25);
     expect(x.value.get([3])).toBe(1.25);
@@ -178,13 +188,14 @@ describe('tokens panel', () => {
     expect(text(el.querySelector('h2'))).toBe('词表与目标 token');
     expect([...el.querySelectorAll('th')].map(text)).toEqual(['目标', 'x', 'p', '∂ℓ/∂x']);
     const rows = [...el.querySelectorAll('tbody tr')];
-    expect(rows.map((r) => text(r.querySelector('.vf-tok')))).toEqual(TOKENS.map((tk, i) => `${i + 1} "${tk}"`));
+    expect(rows.map((r) => text(r.querySelector('.vf-tok-id')))).toEqual(['1', '2', '3', '4', '5']);
+    expect(rows.map((r) => text(r.querySelector('.vf-tok')))).toEqual(['␣mat', '␣floor', '␣sofa', '␣dog', '␣sat']);
     expect(rows[0].classList.contains('vf-on')).toBe(true);
     const grads = rows.map((r) => r.querySelectorAll<HTMLElement>('td.vf-n')[1]);
     expect(text(grads[0])).toBe('−0.391');
     expect(grads[0].style.color).toBe('var(--neg)');
     expect(grads[1].style.color).toBe('var(--pos)');
-    expect(text(rows[0].querySelectorAll('td.vf-n')[0])).toBe('0.61');
+    expect(text(rows[0].querySelectorAll('td.vf-n')[0])).toBe('0.609');
     expect(rows[0].querySelector<HTMLInputElement>('input[type="range"]')!.max).toBe('6');
 
     const radio = rows[2].querySelector<HTMLInputElement>('input[type="radio"]')!;
@@ -209,6 +220,9 @@ describe('tokens panel', () => {
 });
 
 describe('matrix panel', () => {
+  const cellsOf = (grid: Element) => [...grid.children].filter((c) => !c.classList.contains('vf-h') && !c.classList.contains('vf-frame')) as HTMLElement[];
+  const frameOf = (grid: Element) => grid.querySelector<HTMLElement>('.vf-frame');
+
   it('shades cells against the limit fixed at mount and frames the target column', () => {
     const g = graph();
     const W = g.param('W', [2, 3], [
@@ -217,38 +231,81 @@ describe('matrix panel', () => {
     ]);
     const t = g.label('t', [1], { tokens: ['a', ' b', 'c'] });
     g.nll_loss(g.log_softmax(g.sum(W, 0, { keepdim: true }), -1), t);
-    const el = panels(container(), g, [{ matrix: W, highlight: t }]);
+    const el = panels(container(), g, [{ matrix: W, highlight: t, note: '目标列 {{t+1}}' }]);
     expect(text(el.querySelector('h2'))).toBe('W，(2, 3)');
     const grid = el.querySelector<HTMLElement>('.vf-wmat')!;
     expect(grid.style.gridTemplateColumns).toBe('26px repeat(3, minmax(0, 1fr))');
     const headers = [...grid.querySelectorAll('.vf-h')].map(text);
     expect(headers).toEqual(['', 'a', 'b', 'c', '1', '2']);
-    const cells = [...grid.children].filter((c) => !c.classList.contains('vf-h')) as HTMLElement[];
+    const cells = cellsOf(grid);
     expect(cells.map(text)).toEqual(['1.00', '−0.50', '0.00', '0.25', '2.00', '−2.00']);
     expect(cells[1].style.background).toContain('var(--neg) 24%');
-    expect(cells[2].style.background).toContain('var(--pos) 0%');
+    expect(cells[2].style.background).toBe('transparent');
     expect(cells[4].style.background).toContain('var(--pos) 70%');
-    expect(cells.map((c) => c.classList.contains('vf-ct'))).toEqual([false, true, false, false, true, false]);
+    expect(cells[4].style.gridRow).toBe('3');
+    expect(cells[4].style.gridColumn).toBe('3');
+    expect(grid.querySelectorAll('.vf-frame')).toHaveLength(1);
+    expect(frameOf(grid)!.classList.contains('vf-ct')).toBe(true);
+    expect(frameOf(grid)!.style.gridColumn).toBe('3');
+    expect(frameOf(grid)!.style.gridRow).toBe('2 / span 2');
+    expect(text(el.querySelector('.vf-note'))).toBe('目标列 2');
     W.set([
       [4, 0, 0],
       [0, 0, 0],
     ]);
     expect(cells[0].style.background).toContain('var(--pos) 70%');
     t.set([2]);
-    expect(cells.map((c) => c.classList.contains('vf-ct'))).toEqual([false, false, true, false, false, true]);
+    expect(frameOf(grid)!.style.gridColumn).toBe('4');
+    expect(text(el.querySelector('.vf-note'))).toBe('目标列 3');
   });
 
-  it('frames the target row of a square matrix from a function and follows the focus', () => {
+  it('frames the target row when asked and follows the focus', () => {
     const { g, x, logp, t, steps } = batchGraph();
-    const el = panels(container(), g, [{ matrix: (graph, state) => graph.jacobian(logp, x, { row: state.focus }), highlight: t, title: 'J' }], { steps });
+    const el = panels(
+      container(),
+      g,
+      [{ matrix: (graph, state) => graph.jacobian(logp, x, { row: state.focus }), highlight: { node: t, axis: 'row' }, title: 'J' }],
+      { steps },
+    );
     const grid = el.querySelector('.vf-wmat')!;
-    const framed = () => [...grid.querySelectorAll('.vf-rt')].length;
-    expect(framed()).toBe(3);
-    expect(grid.querySelectorAll('.vf-ct')).toHaveLength(0);
-    const first = text(grid.querySelector('.vf-rt'));
+    const frame = frameOf(grid)!;
+    expect(frame.classList.contains('vf-rt')).toBe(true);
+    expect([frame.style.gridRow, frame.style.gridColumn]).toEqual(['2', '2 / span 3']);
+    const before = cellsOf(grid).map(text);
     steps.setFocus(1);
-    expect(framed()).toBe(3);
-    expect(text(grid.querySelector('.vf-rt'))).not.toBe(first);
+    expect(frameOf(grid)!.style.gridRow).toBe('3');
+    expect(cellsOf(grid).map(text)).not.toEqual(before);
+  });
+
+  it('does not frame rows of a square function matrix unless asked', () => {
+    const { g, x, p, t } = softmaxGraph();
+    const el = panels(container(), g, [{ matrix: (graph) => graph.jacobian(p, x), highlight: t }]);
+    const grid = el.querySelector('.vf-wmat')!;
+    expect(frameOf(grid)!.classList.contains('vf-ct')).toBe(true);
+    expect(el.querySelector('h2')).toBeNull();
+  });
+
+  it('leaves cells that display as 0.00 transparent', () => {
+    const g = graph();
+    const W = g.param('W', [1, 3], [[1, 0.004, -0.006]]);
+    const el = panels(container(), g, [{ matrix: W }]);
+    const cells = cellsOf(el.querySelector('.vf-wmat')!);
+    expect(cells.map(text)).toEqual(['1.00', '0.00', '−0.01']);
+    expect(cells[1].style.background).toBe('transparent');
+    expect(cells[2].style.background).toContain('var(--neg) 8%');
+  });
+
+  it('uses number headers for a label without tokens or classes', () => {
+    const g = graph();
+    const W = g.param('W', [2, 2], [
+      [1, 2],
+      [3, 4],
+    ]);
+    const t = g.label('t', 1);
+    const el = panels(container(), g, [{ matrix: W, highlight: t }]);
+    const grid = el.querySelector('.vf-wmat')!;
+    expect([...grid.querySelectorAll('.vf-h')].map(text)).toEqual(['', '1', '2', '1', '2']);
+    expect(frameOf(grid)!.style.gridColumn).toBe('3');
   });
 
   it('rejects tensors that are not 2-D', () => {
@@ -316,6 +373,44 @@ describe('mountSteps', () => {
 
     pills[pills.length - 1].click();
     expect(next.disabled).toBe(true);
+  });
+
+  const press = (target: EventTarget, key: string, init: KeyboardEventInit = {}) =>
+    target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+
+  it('ignores modifier keys, handled events and keys on buttons', () => {
+    const { steps } = softmaxGraph();
+    const el = container();
+    mounted.push(mountSteps(el, steps));
+    press(document, 'ArrowRight', { altKey: true });
+    press(document, 'ArrowRight', { ctrlKey: true });
+    press(document, 'ArrowRight', { metaKey: true });
+    const handled = new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true });
+    handled.preventDefault();
+    document.dispatchEvent(handled);
+    press(el.querySelector('.vf-st')!, 'ArrowRight');
+    expect(steps.current).toBe(0);
+    press(document, 'ArrowRight');
+    expect(steps.current).toBe(1);
+  });
+
+  it('only the last used stepper follows arrow keys when there are several', () => {
+    const first = softmaxGraph().steps;
+    const second = softmaxGraph().steps;
+    const a = container();
+    const b = container();
+    mounted.push(mountSteps(a, first), mountSteps(b, second));
+    press(document, 'ArrowRight');
+    expect([first.current, second.current]).toEqual([0, 0]);
+    b.querySelector('.vf-caption')!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    press(document, 'ArrowRight');
+    expect([first.current, second.current]).toEqual([0, 1]);
+    a.querySelector('.vf-st')!.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    press(document.body, 'ArrowRight');
+    expect([first.current, second.current]).toEqual([1, 1]);
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    press(document, 'ArrowRight');
+    expect([first.current, second.current]).toEqual([1, 1]);
   });
 
   it('redraws the caption once per frame after graph changes', async () => {

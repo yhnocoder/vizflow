@@ -18,7 +18,7 @@ const captionText = (page: Page) => page.locator('.vf-caption-body').textContent
 
 test('widget page does not load three.js', async ({ page }) => {
   const { requests, errors } = await open(page);
-  await expect(page.locator('.vf-card')).toHaveCount(5);
+  await expect(page.locator('.vf-card')).toHaveCount(4);
   expect(requests.filter((url) => /three/i.test(url))).toEqual([]);
   expect(errors).toEqual([]);
 });
@@ -34,12 +34,12 @@ test('dragging a slider updates the loss readout and the caption together', asyn
   const after = await lossText(page);
   await expect(page.locator('.vf-caption-body')).toContainText(after!);
   expect(await captionText(page)).not.toContain('0.495');
-  await expect(page.locator('.vf-sub')).toContainText('目标 " mat"');
+  await expect(page.locator('.vf-sub')).toContainText('目标类 1');
 });
 
 test('a gradient step lowers the loss and draws the curve', async ({ page }) => {
   await open(page);
-  await expect(page.locator('.vf-spark text')).toHaveText('走几步看损失下降');
+  await expect(page.locator('.vf-spark')).toHaveCount(0);
   const before = Number(await lossText(page));
   await page.getByRole('button', { name: /梯度下降一步（η = 1）/ }).click();
   await expect(page.locator('.vf-spark path')).toHaveCount(1);
@@ -47,15 +47,17 @@ test('a gradient step lowers the loss and draws the curve', async ({ page }) => 
   expect(after).toBeLessThan(before);
   await page.getByRole('button', { name: '重置' }).click();
   await expect(page.locator('.vf-loss-value')).toHaveText('0.495');
-  await expect(page.locator('.vf-spark path')).toHaveCount(0);
+  await expect(page.locator('.vf-spark')).toHaveCount(0);
 });
 
 test('choosing another target updates the table and the matrix frame', async ({ page }) => {
   await open(page);
-  await page.getByRole('radio', { name: '3 " sofa"' }).check();
-  await expect(page.locator('tr.vf-on')).toContainText('3 " sofa"');
-  await expect(page.locator('.vf-wmat .vf-rt')).toHaveCount(5);
-  await expect(page.locator('.vf-wmat .vf-rt').first()).toHaveText('−0.06');
+  await page.locator('tbody tr').nth(2).getByRole('radio').check();
+  await expect(page.locator('tr.vf-on .vf-tok')).toHaveText('␣sofa');
+  const frame = page.locator('.vf-wmat .vf-frame.vf-rt');
+  await expect(frame).toHaveCount(1);
+  await expect(frame).toHaveCSS('grid-row-start', '4');
+  await expect(page.locator('.vf-card', { hasText: 'Jacobian' }).locator('.vf-note')).toContainText('t=3');
 });
 
 test('arrow button and keyboard switch steps', async ({ page }) => {
@@ -66,6 +68,9 @@ test('arrow button and keyboard switch steps', async ({ page }) => {
   await page.getByRole('button', { name: '下一步' }).click();
   await expect(current).toHaveText('x');
   await expect(page.locator('.vf-caption h3')).toHaveText('logits');
+  await page.keyboard.press('ArrowRight');
+  await expect(current).toHaveText('x');
+  await page.locator('.vf-caption').click();
   await page.keyboard.press('ArrowRight');
   await expect(current).toHaveText('p');
   await page.keyboard.press('ArrowLeft');

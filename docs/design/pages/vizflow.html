@@ -422,7 +422,7 @@ allVisible(g: Graph): StepState</code></pre>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
 
 <h3>正文模板</h3>
-<p>步骤正文是作者写的 HTML 字符串，其中 <code>$...$</code> 与 <code>$$...$$</code> 是公式，双花括号 <code>{{...}}</code> 里的是数值模板。模板用双花括号，与 LaTeX 的单花括号区分，<code>\mathbf{h}</code>、<code>W^{\top}_{k,t}</code> 不是模板。作者写 <code>{{z[t]}}</code>，页面就显示当前值，并在输入变化时更新，正文里代入的数字始终与图上的状态一致。<code>steps.text()</code> 只替换模板，公式由 <code>ui</code> 通过 <code>formula</code> 渲染。<code>steps</code> 同时导出 <code>renderTemplate(g, text, focus)</code>，对任意一段文字按同样的规则求值，损失面板的说明行用它。</p>
+<p>步骤正文是作者写的 HTML 字符串，其中 <code>$...$</code> 与 <code>$$...$$</code> 是公式，双花括号 <code>{{...}}</code> 里的是数值模板。模板用双花括号，与 LaTeX 的单花括号区分，<code>\mathbf{h}</code>、<code>W^{\top}_{k,t}</code> 不是模板。作者写 <code>{{z[t]}}</code>，页面就显示当前值，并在输入变化时更新，正文里代入的数字始终与图上的状态一致。<code>steps.text()</code> 只替换模板，公式由 <code>ui</code> 通过 <code>formula</code> 渲染。<code>steps</code> 同时导出 <code>compileTemplate(g, text): (focus: number) =&gt; string</code>，把任意一段文字按同样的规则编译成求值函数。面板的说明文字（损失面板的 <code>text</code>、各面板的 <code>note</code>）在挂载时用它编译，模板写错时 <code>mountPanels</code> 直接抛错。</p>
 <pre><code class="language-text">模板   := '{{' 表达式 (':' 格式)? '}}'
 表达式 := 引用 (('+' | '-') 整数)?
 引用   := 'b' | 名字 ('.grad')? ('[' 下标 (',' 下标)* ']')?
@@ -611,7 +611,7 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 <pre><code class="language-ts">mountSteps(el: string | HTMLElement, steps: Steps): Mounted
 mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { steps?: Steps }): Mounted
 interface Mounted { dispose(): void }</code></pre>
-<p><code>mountSteps</code> 画出步骤条（前向、反向两组按钮）、左右按钮和讲解正文；键盘的左右方向键切换步骤，焦点在输入框里时不响应。</p>
+<p><code>mountSteps</code> 画出步骤条（前向、反向两组按钮）、左右按钮和讲解正文；键盘的左右方向键切换步骤。焦点在输入框、按钮上，或按着 Alt、Ctrl、Meta 时不响应。同一页有多个步骤条时，只有最近一次点击或聚焦落在其中的那个响应方向键。</p>
 
 <h3>面板</h3>
 <p>面板拆成单独的小部件，页面只挂载需要的几个，可以放在侧栏、画布下方或正文里。第一版只组合这些现成的面板，不支持在页面里编写新的面板。</p>
@@ -625,7 +625,7 @@ interface Mounted { dispose(): void }</code></pre>
     } }
   | { sliders: Node; min?: number; max?: number; step?: number; title?: string }
   | { tokens: Node; columns?: (Node | { node: Node; grad?: boolean; title?: string })[]; title?: string; sliders?: Node; min?: number; max?: number }
-  | { matrix: Node | ((g: Graph, state: StepState) =&gt; Tensor); grad?: boolean; title?: string; highlight?: Node }
+  | { matrix: Node | ((g: Graph, state: StepState) =&gt; Tensor); grad?: boolean; title?: string; highlight?: Node | { node: Node; axis: 'row' | 'col' }; note?: string }
   | { code: string; title?: string; note?: string }
   | { note: string; title?: string };</code></pre>
 <table>
@@ -635,10 +635,10 @@ interface Mounted { dispose(): void }</code></pre>
   <tbody>
     <tr><td><code>loss</code></td><td>损失读数与损失曲线。<code>sgd</code> 加一个「更新一步」按钮，对 <code>params</code> 中的每个节点执行一次 $\theta \leftarrow \theta - \eta\,\nabla_\theta \ell$，$\eta$ 为 <code>lr</code>，曲线记录每一步的损失。<code>random</code> 加一个按钮，把 <code>nodes</code> 的值在 <code>range</code> 内随机取值；<code>reset</code> 为 <code>true</code> 时加一个调用 <code>g.reset()</code> 的按钮。<code>text</code> 是读数下方的一行说明，写法与步骤正文的模板相同，例如 <code>目标 "{{t:token}}"，log p = {{log p[t]}}</code>。除「更新一步」以外的任何输入变化都会清空曲线。</td></tr>
     <tr><td><code>sliders</code></td><td>一个输入节点的每个元素一个滑块。</td></tr>
-    <tr><td><code>tokens</code></td><td>token 与目标类表，每行一个类别，单选设为目标类。<code>columns</code> 列出要并排显示的节点值或梯度；给了 <code>sliders</code> 时每行再带一个滑块，用于 softmax 页按类别调 logits。</td></tr>
-    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列；矩阵由函数给出且是方阵时（例如 Jacobian），改为框出目标类所在的行。也可以传入一个从图上取值的函数，函数的参数是计算图与当前的 steps 状态（没有挂载 steps 时 focus 为 0），例如 softmax 页用 <code>{ matrix: (g, state) =&gt; g.jacobian(p, x, { row: state.focus }) }</code> 显示当前样本的 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
-    <tr><td><code>code</code></td><td>代码卡片，例如对应的 PyTorch 代码。</td></tr>
-    <tr><td><code>note</code></td><td>一段说明文字。</td></tr>
+    <tr><td><code>tokens</code></td><td>token 与目标类表，每行一个类别，单选设为目标类。<code>columns</code> 列出要并排显示的节点值或梯度；给了 <code>sliders</code> 时每行再带一个滑块，用于 softmax 页按类别调 logits。token 的前导空格显示为 ␣；数值列显示三位小数，梯度列按正负着色。</td></tr>
+    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列；写成 <code>{ node: t, axis: 'row' }</code> 时框出目标类所在的行，例如 Jacobian 只有第 $t$ 行参与损失。label 有 tokens 且类别数等于列数时，列表头显示 token，否则显示 1 起的序号。数值显示两位小数，显示为 0.00 的格子不着色。<code>note</code> 是卡片底部的说明文字。也可以传入一个从图上取值的函数，函数的参数是计算图与当前的 steps 状态（没有挂载 steps 时 focus 为 0），例如 softmax 页用 <code>{ matrix: (g, state) =&gt; g.jacobian(p, x, { row: state.focus }) }</code> 显示当前样本的 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
+    <tr><td><code>code</code></td><td>代码卡片，例如对应的 PyTorch 代码。<code>#</code> 到行尾显示为注释色。</td></tr>
+    <tr><td><code>note</code></td><td>一段说明文字，可以写公式和数值模板。</td></tr>
   </tbody>
 </table>
 <p><code>ui</code> 内部用 Solid：计算图一更新，面板、步骤条、正文和卡片里许多零散的位置需要各自刷新，Solid 的细粒度响应式让每处只在自己读到的值变化时更新。Solid 只是内部实现，页面通过 <code>mount</code> 调用，不需要编译 JSX，手写 HTML 的静态站可以直接使用。3D 场景用 three.js 命令式编写，不经过 Solid。</p>

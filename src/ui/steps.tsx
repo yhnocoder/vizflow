@@ -35,13 +35,27 @@ function StepsView(props: { steps: Steps }) {
     if (frame !== undefined) cancelAnimationFrame(frame);
   });
 
-  const onKey = (event: KeyboardEvent) => {
-    if (event.target instanceof Element && event.target.closest('input, textarea, select')) return;
-    if (event.key === 'ArrowRight') steps.next();
-    else if (event.key === 'ArrowLeft') steps.prev();
+  let root!: HTMLDivElement;
+  let engaged = false;
+  const onInteract = (event: Event) => {
+    engaged = event.target instanceof globalThis.Node && root.contains(event.target);
   };
+  const onKey = (event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+    if (event.target instanceof Element && event.target.closest('input, textarea, select, button, [contenteditable]')) return;
+    if (!engaged && document.querySelectorAll('.vf-stepper').length > 1) return;
+    if (event.key === 'ArrowRight') steps.next();
+    else steps.prev();
+  };
+  document.addEventListener('pointerdown', onInteract);
+  document.addEventListener('focusin', onInteract);
   document.addEventListener('keydown', onKey);
-  onCleanup(() => document.removeEventListener('keydown', onKey));
+  onCleanup(() => {
+    document.removeEventListener('pointerdown', onInteract);
+    document.removeEventListener('focusin', onInteract);
+    document.removeEventListener('keydown', onKey);
+  });
 
   const button = (entry: { info: Steps['list'][number]; position: number }) => (
     <button
@@ -55,7 +69,7 @@ function StepsView(props: { steps: Steps }) {
   );
 
   return (
-    <div class="vf-stepper">
+    <div class="vf-stepper" ref={(el) => (root = el)}>
       <div class="vf-steprow">
         <button type="button" class="vf-nav" aria-label="上一步" disabled={current() === 0} onClick={() => steps.prev()}>
           ←
