@@ -3,11 +3,16 @@ import { formatNumber } from '../tensor';
 
 type Subscript = { kind: 'int'; value: number } | { kind: 'focus' } | { kind: 'node'; node: Node; row: boolean };
 
-interface Template {
-  source: string;
+interface NodeRef {
+  kind: 'node';
   node: Node;
   grad: boolean;
   subscripts: Subscript[] | undefined;
+}
+
+interface Template {
+  source: string;
+  ref: NodeRef | { kind: 'focus' };
   offset: number;
   format: number | 'token' | undefined;
 }
@@ -54,6 +59,11 @@ function parseTemplate(g: Graph, source: string): Template {
   const name = (nameEnd < 0 ? rest : rest.slice(0, nameEnd)).trim();
   if (name === '') throw fail(source, 'missing node name');
   rest = nameEnd < 0 ? '' : rest.slice(nameEnd);
+  if (name === 'b') {
+    const tail = parseTail(rest, source);
+    if (tail.format === 'token') throw fail(source, "'b' has no tokens");
+    return { source, ref: { kind: 'focus' }, ...tail };
+  }
   const node = lookup(g, name, source);
   let grad = false;
   if (rest.startsWith('.grad')) {
@@ -77,6 +87,14 @@ function parseTemplate(g: Graph, source: string): Template {
     subscripts = splitTopLevel(rest.slice(1, close)).map((item) => parseSubscript(g, item, source));
     rest = rest.slice(close + 1).trimStart();
   }
+  const ref: NodeRef = { kind: 'node', node, grad, subscripts };
+  const template = { source, ref, ...parseTail(rest, source) };
+  validate(template.source, ref, template.format);
+  return template;
+}
+
+function parseTail(text: string, source: string): { offset: number; format: number | 'token' | undefined } {
+  let rest = text;
   let offset = 0;
   const shift = /^([+-])\s*(\d+)\s*/.exec(rest);
   if (shift !== null) {
@@ -90,23 +108,21 @@ function parseTemplate(g: Graph, source: string): Template {
     rest = '';
   }
   if (rest !== '') throw fail(source, `unexpected '${rest}'`);
-  const template = { source, node, grad, subscripts, offset, format };
-  validate(template);
-  return template;
+  return { offset, format };
 }
 
-function validate(t: Template): void {
-  if (t.grad && t.node.kind === 'label') throw fail(t.source, `label '${t.node.name}' has no gradient`);
-  if (t.format === 'token' && t.node.tokens === undefined) throw fail(t.source, `node '${t.node.name}' has no tokens`);
+function validate(source: string, t: NodeRef, format: number | 'token' | undefined): void {
+  if (t.grad && t.node.kind === 'label') throw fail(source, `label '${t.node.name}' has no gradient`);
+  if (format === 'token' && t.node.tokens === undefined) throw fail(source, `node '${t.node.name}' has no tokens`);
   const shape = t.node.shape;
   const count = t.subscripts?.length ?? 0;
-  if (count === 0 && t.node.value.size !== 1) throw fail(t.source, `node '${t.node.name}' with shape (${shape.join(', ')}) needs a subscript`);
+  if (count === 0 && t.node.value.size !== 1) throw fail(source, `node '${t.node.name}' with shape (${shape.join(', ')}) needs a subscript`);
   if (count !== 0 && count !== shape.length && !(count === 1 && shape.length === 2 && (shape[0] === 1 || shape[1] === 1))) {
-    throw fail(t.source, `node '${t.node.name}' with shape (${shape.join(', ')}) takes ${shape.length} subscripts, got ${count}`);
+    throw fail(source, `node '${t.node.name}' with shape (${shape.join(', ')}) takes ${shape.length} subscripts, got ${count}`);
   }
 }
 
-function resolveIndex(t: Template, focus: number): number[] {
+function resolveIndex(t: NodeRef, focus: number): number[] {
   const shape = t.node.shape;
   if (t.subscripts === undefined) return shape.map(() => 0);
   const index = t.subscripts.map((s) => {
@@ -120,26 +136,33 @@ function resolveIndex(t: Template, focus: number): number[] {
   return index;
 }
 
+function integerText(value: number, math: boolean): string {
+  const text = String(Math.round(value));
+  return math ? text : text.replace('-', '−');
+}
+
 function evaluate(t: Template, focus: number, math: boolean): string {
-  const tensor = t.grad ? t.node.grad : t.node.value;
-  if (tensor === null) throw fail(t.source, `label '${t.node.name}' has no gradient`);
+  if (t.ref.kind === 'focus') {
+    const value = focus + t.offset;
+    return typeof t.format === 'number' ? formatNumber(value, { digits: t.format, tex: math }) : integerText(value, math);
+  }
+  const ref = t.ref;
+  const tensor = ref.grad ? ref.node.grad : ref.node.value;
+  if (tensor === null) throw fail(t.source, `label '${ref.node.name}' has no gradient`);
   let value: number;
   try {
-    value = tensor.get(resolveIndex(t, focus));
+    value = tensor.get(resolveIndex(ref, focus));
   } catch (error) {
     throw fail(t.source, (error as Error).message);
   }
   value += t.offset;
   if (t.format === 'token') {
-    const token = t.node.tokens?.[Math.round(value)];
-    if (token === undefined) throw fail(t.source, `node '${t.node.name}' has no token ${Math.round(value)}`);
+    const token = ref.node.tokens?.[Math.round(value)];
+    if (token === undefined) throw fail(t.source, `node '${ref.node.name}' has no token ${Math.round(value)}`);
     return token;
   }
   if (typeof t.format === 'number') return formatNumber(value, { digits: t.format, tex: math });
-  if (t.node.kind === 'label' && !t.grad) {
-    const text = String(Math.round(value));
-    return math ? text : text.replace('-', '−');
-  }
+  if (ref.node.kind === 'label' && !ref.grad) return integerText(value, math);
   return formatNumber(value, { tex: math });
 }
 

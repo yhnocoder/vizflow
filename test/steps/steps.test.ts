@@ -183,13 +183,23 @@ describe('text templates', () => {
   it('uses the focus row for b and label[b]', () => {
     const { g, x, t, P, loss } = softmaxBatch();
     const steps = createSteps(g, {
-      forward: [{ show: [x, P, loss], title: 'x', text: '样本的目标是 {{t[b]}}，$X = {{X[b, t[b]]}}$，P = {{P[b, t[b]]:2}}，$g = {{X.grad[b, 0]}}$' }],
+      forward: [{ show: [x, P, loss], title: 'x', text: '样本 {{b+1}} 的目标是 {{t[b]}}，$X = {{X[b, t[b]]}}$，P = {{P[b, t[b]]:2}}，$g = {{X.grad[b, 0]}}$' }],
     });
-    expect(steps.text(1).body).toBe('样本的目标是 0，$X = 2.00$，P = 0.61，$g = ' + formatNumber(x.grad!.get([0, 0]), { tex: true }) + '$');
+    expect(steps.text(1).body).toBe('样本 1 的目标是 0，$X = 2.00$，P = 0.61，$g = ' + formatNumber(x.grad!.get([0, 0]), { tex: true }) + '$');
     steps.setFocus(2);
-    expect(steps.text(1).body).toBe('样本的目标是 2，$X = 1.50$，P = 0.46，$g = ' + formatNumber(x.grad!.get([2, 0]), { tex: true }) + '$');
+    expect(steps.text(1).body).toBe('样本 3 的目标是 2，$X = 1.50$，P = 0.46，$g = ' + formatNumber(x.grad!.get([2, 0]), { tex: true }) + '$');
     t.set([[4], [4], [4]]);
-    expect(steps.text(1).body.startsWith('样本的目标是 4，$X = 0.600$')).toBe(true);
+    expect(steps.text(1).body.startsWith('样本 3 的目标是 4，$X = 0.600$')).toBe(true);
+  });
+
+  it('evaluates a bare b as the current focus', () => {
+    const { g, x } = softmaxBatch();
+    const steps = createSteps(g, { forward: [{ show: x, title: '样本 {{b+1}}', text: '$b = {{b}}$，{{b-1}}，{{b:2}}' }] });
+    expect(steps.text(1)).toEqual({ title: '样本 1', body: '$b = 0$，−1，0.00' });
+    steps.setFocus(2);
+    expect(steps.text(1)).toEqual({ title: '样本 3', body: '$b = 2$，1，2.00' });
+    expect(() => createSteps(g, { forward: [{ show: x, title: 'x', text: '{{b:token}}' }] })).toThrow("cannot parse template '{{b:token}}': 'b' has no tokens");
+    expect(() => createSteps(g, { forward: [{ show: x, title: 'x', text: '{{b[0]}}' }] })).toThrow("cannot parse template '{{b[0]}}': unexpected '[0]'");
   });
 
   it('rejects templates that cannot be resolved when the steps are created', () => {
