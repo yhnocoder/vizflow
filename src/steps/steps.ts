@@ -73,16 +73,8 @@ interface Entry {
   body: (focus: number) => string;
 }
 
-function lossOf(g: Graph): Node | undefined {
-  try {
-    return g.loss();
-  } catch {
-    return undefined;
-  }
-}
-
 function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto'>): Node[][] {
-  const loss = lossOf(g);
+  const loss = g.findLoss();
   if (loss === undefined) {
     if ((spec.merge?.length ?? 0) > 0 || Object.keys(spec.override ?? {}).length > 0) {
       throw new Error('backward: the graph has no loss node, so merge and override cannot apply');
@@ -114,7 +106,7 @@ function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<Backwa
 
 function backwardEntries(g: Graph, visible: readonly Node[], spec: BackwardSpec): StepInfo[] {
   const resolved = spec === 'auto' ? { auto: true as const } : spec;
-  const loss = lossOf(g);
+  const loss = g.findLoss();
   const explainer = explain(g);
   const infos = backwardGroups(g, visible, resolved).map((nodes, i): StepInfo => {
     const subject = nodes.find((n) => n !== loss) ?? nodes[0];

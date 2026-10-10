@@ -3,7 +3,7 @@ import { type Tensor, broadcastIndex, formatNumber, formatShape } from '../tenso
 import { elemTex, elemTexOf, isCell, matmulOperands } from './elem';
 import { type FlowEdge, contextOf } from './edges';
 import type { Explainer } from './explainer';
-import { explainDefOf, lossOf } from './lookup';
+import { explainDefOf } from './lookup';
 import { explainOf } from './registry';
 
 export interface NodeCard {
@@ -59,7 +59,7 @@ function forwardTex(node: Node): string[] {
 
 function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
   const left = `\\frac{\\partial\\ell}{\\partial ${node.tex}}`;
-  if (lossOf(g) === node) return [`\\frac{\\partial\\ell}{\\partial\\ell}=1`];
+  if (g.findLoss() === node) return [`\\frac{\\partial\\ell}{\\partial\\ell}=1`];
   if (consumers.length === 0) return [`${left}=0`];
   const terms = consumers.map(
     (y) => `\\Big(\\frac{\\partial ${y.tex}}{\\partial ${node.tex}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial ${y.tex}}`,

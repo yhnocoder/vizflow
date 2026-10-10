@@ -29,6 +29,7 @@ export interface Graph extends BuiltinOps {
   param(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: LabelOptions): Node;
   loss(node?: Node): Node;
+  findLoss(): Node | undefined;
   node(name: string): Node | undefined;
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
@@ -117,9 +118,18 @@ class GraphImpl {
       this.backwardValid = false;
       return node;
     }
-    const current = this.resolveLoss();
+    const current = this.findLoss();
     if (current === undefined) throw new Error('graph has no loss node');
     return current;
+  }
+
+  findLoss(): Node | undefined {
+    if (this.lossNode !== undefined) return this.lossNode;
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const node = this.nodes[i];
+      if (node.kind === 'op' && this.states[i].value.size === 1) return node;
+    }
+    return undefined;
   }
 
   node(name: string): Node | undefined {
@@ -321,15 +331,6 @@ class GraphImpl {
     return state.transposed;
   }
 
-  private resolveLoss(): Node | undefined {
-    if (this.lossNode !== undefined) return this.lossNode;
-    for (let i = this.nodes.length - 1; i >= 0; i--) {
-      const node = this.nodes[i];
-      if (node.kind === 'op' && this.states[i].value.size === 1) return node;
-    }
-    return undefined;
-  }
-
   private recompute(): void {
     const saved = this.states.map((state) => ({ value: state.value, grad: state.grad }));
     const savedBackwardValid = this.backwardValid;
@@ -394,7 +395,7 @@ class GraphImpl {
 
   private computeBackward(): void {
     this.backwardValid = true;
-    const loss = this.resolveLoss();
+    const loss = this.findLoss();
     if (loss === undefined) {
       this.states.forEach((state, i) => {
         state.grad = Tensor.zeros(this.nodes[i].shape);

@@ -125,3 +125,26 @@ describe('graph building', () => {
     expect(() => g.exp(x, { name: 'x' })).toThrow("node 'x' already exists");
   });
 });
+
+describe('findLoss', () => {
+  it('returns undefined when no op node has a single element', () => {
+    const g = graph();
+    g.input('x', [2], [1, 2]);
+    expect(g.findLoss()).toBeUndefined();
+    expect(() => g.loss()).toThrow('graph has no loss node');
+    g.exp(g.input('y', [2], [1, 2]));
+    expect(g.findLoss()).toBeUndefined();
+  });
+
+  it('picks the last single-element op node unless one was set explicitly', () => {
+    const g = graph();
+    const x = g.input('x', [2], [1, 2]);
+    const s = g.sum(x, { name: 's' });
+    const m = g.mean(x, { name: 'm' });
+    expect(g.findLoss()).toBe(m);
+    expect(g.loss()).toBe(m);
+    g.loss(s);
+    expect(g.findLoss()).toBe(s);
+    expect(g.loss()).toBe(s);
+  });
+});

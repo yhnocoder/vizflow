@@ -210,6 +210,7 @@ interface Graph {
   param(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: NodeOptions &amp; { tokens?: string[]; classes?: number }): Node;
   loss(node?: Node): Node;
+  findLoss(): Node | undefined;
   node(name: string): Node | undefined;
   subscribe(fn: () =&gt; void): () =&gt; void;
   batch(fn: () =&gt; void): void;
@@ -226,7 +227,7 @@ interface Graph {
     <tr><td><code>check</code></td><td>打开有限差分检查，见「正确性怎么保证」。</td></tr>
     <tr><td><code>input</code>、<code>param</code></td><td>叶子节点。<code>values</code> 可以是扁平数组或嵌套数组，元素个数必须等于 shape 的元素个数。两者的区别是 param 可以被损失面板的「更新一步」更新。</td></tr>
     <tr><td><code>label</code></td><td>整数标签，shape 从 <code>values</code> 推断：<code>0</code> 是 <code>()</code>，<code>[0]</code> 是 <code>(1,)</code>，<code>[[0],[1],[2]]</code> 是 <code>(3, 1)</code>。<code>tokens</code> 是每个类别的显示名，<code>classes</code> 是类别数，默认等于 <code>tokens.length</code>。</td></tr>
-    <tr><td><code>loss</code></td><td>指定损失节点，不传参数时返回当前损失节点。未指定时取最后创建的、元素个数为 1 的运算节点。</td></tr>
+    <tr><td><code>loss</code>、<code>findLoss</code></td><td><code>loss(node)</code> 指定损失节点。<code>findLoss()</code> 返回当前损失节点：指定过时返回指定的节点，否则取最后创建的、元素个数为 1 的运算节点，都没有时返回 <code>undefined</code>。不传参数的 <code>loss()</code> 与 <code>findLoss()</code> 相同，但没有损失节点时抛错；steps、explain 与 scene3d 用 <code>findLoss()</code> 判断一个节点是否是损失。</td></tr>
     <tr><td><code>node</code></td><td>按名字查找节点，比较时忽略空白，<code>'log p'</code> 与 <code>'logp'</code> 相同。</td></tr>
     <tr><td><code>batch</code></td><td><code>fn</code> 内的多次 <code>set</code> 合并成一次重算和一次通知。</td></tr>
     <tr><td><code>reset</code></td><td>所有叶子节点恢复创建时的值。</td></tr>

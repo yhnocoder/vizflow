@@ -3,7 +3,7 @@ import { indexOf } from '../tensor';
 import { type CellRef, type ElemRef, elemTex, isCell, matmulOperands, refKey } from './elem';
 import { type FlowEdge, cellValue, contextOf, edgesOf } from './edges';
 import { type EdgeCard, type NodeCard, edgeCardOf, nodeCardOf } from './cards';
-import { explainDefOf, lossOf } from './lookup';
+import { explainDefOf } from './lookup';
 
 export interface Explainer {
   edges(op?: Node): FlowEdge[];
@@ -90,7 +90,7 @@ class ExplainerImpl implements Explainer {
   }
 
   private current(): Snapshot {
-    const loss = lossOf(this.g);
+    const loss = this.g.findLoss();
     const key = `${this.g.version}:${this.g.nodes.length}:${loss?.id ?? -1}`;
     if (this.snapshot?.key !== key) this.snapshot = this.build(key, loss);
     return this.snapshot;
