@@ -16,7 +16,3 @@ export function defineOp<A extends object>(def: OpDef<A>): void {
 export function opDef(name: string): AnyOpDef | undefined {
   return registry.get(name);
 }
-
-export function opNames(): string[] {
-  return [...registry.keys()];
-}

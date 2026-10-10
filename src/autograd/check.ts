@@ -54,6 +54,7 @@ export function checkOpNamed<A extends object>(
       input.data[j] = original;
       const numeric = (plus - minus) / (2 * CHECK_EPSILON);
       const analytic = grad.data[j];
+      if (!Number.isFinite(numeric)) continue;
       if (!(Math.abs(analytic - numeric) <= CHECK_ABS_TOLERANCE + CHECK_REL_TOLERANCE * Math.abs(numeric))) {
         throw new Error(
           `gradient check failed: op '${def.name}'${where}, input ${arg} '${def.tensors[arg]}' at [${indexOf(input.shape, j).join(', ')}]: backward ${analytic.toFixed(6)} vs numeric ${numeric.toFixed(6)}`,

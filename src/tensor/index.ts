@@ -12,5 +12,5 @@ export {
   reduceMap,
   formatShape,
 } from './shape';
-export { broadcastShapes, broadcastIndex, broadcastTo, unbroadcast } from './broadcast';
+export { broadcastShapes, broadcastIndex, unbroadcast } from './broadcast';
 export { formatNumber } from './format';

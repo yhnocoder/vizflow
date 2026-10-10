@@ -3,7 +3,6 @@ import {
   Tensor,
   broadcastIndex,
   broadcastShapes,
-  broadcastTo,
   normDim,
   normDims,
   reduceMap,
@@ -41,10 +40,6 @@ describe('broadcastIndex', () => {
     expect(broadcastIndex([1, 2, 3], [2, 1])).toEqual([2, 0]);
   });
 
-  it('materializes a broadcast tensor', () => {
-    const t = broadcastTo(Tensor.from([[1], [2]]), [2, 3]);
-    expect(t.toNested()).toEqual([[1, 1, 1], [2, 2, 2]]);
-  });
 });
 
 describe('unbroadcast', () => {

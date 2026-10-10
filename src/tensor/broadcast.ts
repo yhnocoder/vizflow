@@ -1,4 +1,4 @@
-import { type Shape, formatShape, forEachIndex, offsetOf, reduceMap } from './shape';
+import { type Shape, formatShape, reduceMap } from './shape';
 import { Tensor } from './tensor';
 
 export function broadcastShapes(a: Shape, b: Shape): number[] {
@@ -21,14 +21,6 @@ export function broadcastIndex(outIndex: readonly number[], inShape: Shape): num
     throw new Error(`output index ${formatShape(outIndex)} has fewer dimensions than input shape ${formatShape(inShape)}`);
   }
   return inShape.map((size, d) => (size === 1 ? 0 : outIndex[skip + d]));
-}
-
-export function broadcastTo(input: Tensor, shape: Shape): Tensor {
-  const out = new Tensor(shape);
-  forEachIndex(shape, (index, offset) => {
-    out.data[offset] = input.data[offsetOf(input.shape, broadcastIndex(index, input.shape))];
-  });
-  return out;
 }
 
 export function unbroadcast(grad: Tensor, shape: Shape): Tensor {
