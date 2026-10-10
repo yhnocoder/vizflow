@@ -24,9 +24,9 @@ import { BREAK_POSITION, BREAK_THICKNESS } from './scales';
 
 const BREAK_MARGIN = 0.04;
 const PLATE_REVEALED = 0.5;
-const PLATE_HIDDEN = 0.25;
+const PLATE_HIDDEN = 0.15;
 const FRAME_REVEALED = 0.95;
-const FRAME_HIDDEN = 0.3;
+const FRAME_HIDDEN = 0.15;
 const FRAME_LIFT = 0.005;
 const AXIS_REVEALED = 0.6;
 const AXIS_HIDDEN = 0.2;

@@ -303,3 +303,9 @@
     transition: none;
   }
 }
+
+@media (max-width: 600px) {
+  .vf-hint {
+    display: none;
+  }
+}

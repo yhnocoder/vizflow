@@ -4,7 +4,7 @@ import { ZERO_THRESHOLD } from './scales';
 export const INACTIVE_MIX = 0.55;
 export const UNFOCUSED_MIX = 0.45;
 export const OUTLINE_ACTIVE = 0.9;
-export const OUTLINE_HIDDEN = 0.35;
+export const OUTLINE_HIDDEN = 0.2;
 
 export function mix(a: LinearRgb, b: LinearRgb, k: number): LinearRgb {
   return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];

@@ -6,6 +6,7 @@ import {
   BOARD_COLUMN_SPACING,
   SELECT_NODE_RISE,
   SIDE_NODE_OFFSET,
+  STACK_BACK_OFFSET,
   STACK_LEVEL,
   type Block,
   board,
@@ -91,8 +92,10 @@ describe('board layout', () => {
     expect(blockOf(blocks, 'W.T').frameHalf).toBeDefined();
     expect(blockOf(blocks, 'z').frameHalf).toBeDefined();
     expect(blockOf(blocks, 'h').frameHalf).toBeUndefined();
-    expect(blockOf(blocks, 'W.T').classLabels.map((l) => l.text)).toEqual(['"a"', '"b"', '"c"', '"d"', '"e"']);
+    expect(blockOf(blocks, 'W.T').classLabels.map((l) => l.text)).toEqual(['a', 'b', 'c', 'd', 'e']);
     expect(blockOf(blocks, 'W.T').rowLabels.map((l) => l.text)).toEqual(['k=1', 'k=2', 'k=3', 'k=4']);
+    expect(blockOf(blocks, 'W.T').rowLabels[0].x).toBeLessThan(blockOf(blocks, 'W.T').plate!.x - blockOf(blocks, 'W.T').plate!.w / 2);
+    expect(blockOf(blocks, 'h').classLabels[0].z).toBeGreaterThan(2.9 + 0.3);
     expect(blockOf(blocks, 'h').classLabels.map((l) => l.text)).toEqual(['k=1', 'k=2', 'k=3', 'k=4']);
   });
 });
@@ -104,16 +107,18 @@ describe('stack layout', () => {
     expect(blocks.filter((b) => b.node === z)).toHaveLength(1);
     const side = blockOf(blocks, 'LSE');
     expect(side.shape).toBe('disc');
-    expect(side.elements[0]).toMatchObject({ x: 2 * BOARD_COLUMN_SPACING + SIDE_NODE_OFFSET, y: STACK_LEVEL / 2, z: 2.9 });
+    expect(side.elements[0]).toMatchObject({ x: 2 * BOARD_COLUMN_SPACING + SIDE_NODE_OFFSET, y: STACK_LEVEL / 2, z: 2.9 - STACK_BACK_OFFSET / 2 });
     const plane = blockOf(blocks, 'log p');
     expect(plane.shape).toBe('bar');
     expect(plane.elements.map((e) => e.x)).toEqual(blockOf(blocks, 'z').elements.map((e) => e.x));
     expect(plane.elements[0].y).toBe(STACK_LEVEL);
-    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - 1.0, z: 2.9 });
-    expect(plane.classLabels[2].text).toBe('"c"');
+    expect(plane.elements[0].z).toBeCloseTo(2.9 - STACK_BACK_OFFSET, 12);
+    expect(plane.axis).toEqual({ x: -2 * BOARD_COLUMN_SPACING - 1.4, z: 2.9 - STACK_BACK_OFFSET });
+    expect(plane.classLabels[2].text).toBe('c');
     const box = blockOf(blocks, 'loss');
     expect(box.shape).toBe('box');
-    expect(box.elements[0]).toMatchObject({ x: 0, y: STACK_LEVEL + SELECT_NODE_RISE, z: 2.9 });
+    expect(box.elements[0]).toMatchObject({ x: 0, y: STACK_LEVEL + SELECT_NODE_RISE });
+    expect(box.elements[0].z).toBeCloseTo(2.9 - STACK_BACK_OFFSET, 12);
     expect(box.extent).toHaveLength(5);
   });
 
@@ -176,5 +181,13 @@ describe('targetColumn', () => {
     expect(targetColumn(g.label('b', [1]), 0)).toBe(1);
     expect(targetColumn(g.label('c', [1, 3]), 1)).toBe(3);
     expect(targetColumn(g.label('d', [[0], [4]]), 1)).toBe(4);
+  });
+
+  it('rejects the node template for tensors with more than one element per row', () => {
+    const g = graph();
+    const x = g.input('x', [3], [1, 2, 3]);
+    expect(() => node(x)).toThrow("node: 'x' has shape (3); use stack for tensors with more than one element per row");
+    expect(node(g.input('s', [], 1)).template).toBe('node');
+    expect(node(g.input('b', [2, 1], [1, 2])).template).toBe('node');
   });
 });

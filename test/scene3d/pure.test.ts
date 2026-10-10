@@ -66,10 +66,10 @@ describe('colors', () => {
     expect(nodeColor(2, theme, { dir: 'backward', revealed: false, active: true, focused: true })).toEqual(mix(theme.bg, theme.surface, 0.5));
   });
 
-  it('uses 0.9 for active outlines and 0.35 otherwise', () => {
+  it('uses 0.9 for active outlines and 0.2 otherwise', () => {
     expect(outlineOpacity(true, true)).toBe(0.9);
-    expect(outlineOpacity(true, false)).toBe(0.35);
-    expect(outlineOpacity(false, false)).toBe(0.35);
+    expect(outlineOpacity(true, false)).toBe(0.2);
+    expect(outlineOpacity(false, false)).toBe(0.2);
   });
 });
 
@@ -138,15 +138,16 @@ describe('label avoidance', () => {
     expect(result[1].dy).toBe(0);
   });
 
-  it('hides value labels that overlap a movable label but not ones that overlap fixed labels', () => {
+  it('hides lower-priority fixed labels that overlap a placed label and keeps the rest', () => {
     const result = avoidOverlaps([
       { box: box(0, 0), movable: false, hideOnOverlap: true, priority: 1 },
       { box: box(5, 5), movable: true, hideOnOverlap: false, priority: 3 },
       { box: box(200, 200), movable: false, hideOnOverlap: true, priority: 1 },
-      { box: box(205, 205), movable: false, hideOnOverlap: false, priority: 4 },
+      { box: box(205, 205), movable: false, hideOnOverlap: true, priority: 2 },
     ]);
     expect(result[0].hidden).toBe(true);
-    expect(result[2].hidden).toBe(false);
+    expect(result[2].hidden).toBe(true);
+    expect(result[3].hidden).toBe(false);
   });
 
   it('leaves a movable label in place when no offset is free', () => {

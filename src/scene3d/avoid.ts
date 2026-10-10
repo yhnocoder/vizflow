@@ -38,9 +38,9 @@ function shifted(box: Box, dx: number, dy: number): Box {
 
 export function avoidOverlaps(items: Placement[]): Adjustment[] {
   const order = items.map((_, i) => i).sort((a, b) => items[b].priority - items[a].priority || a - b);
-  const placed: { box: Box; movable: boolean }[] = [];
+  const placed: { box: Box }[] = []; 
   const result: Adjustment[] = items.map(() => ({ dx: 0, dy: 0, hidden: false }));
-  const free = (box: Box, movableOnly = false) => placed.every((other) => (movableOnly && !other.movable) || !intersects(box, other.box));
+  const free = (box: Box) => placed.every((other) => !intersects(box, other.box));
   for (const i of order) {
     const item = items[i];
     if (item.movable) {
@@ -57,12 +57,12 @@ export function avoidOverlaps(items: Placement[]): Adjustment[] {
       }
       const [dx, dy] = found ?? [0, 0];
       result[i] = { dx, dy, hidden: false };
-      placed.push({ box: shifted(item.box, dx, dy), movable: true });
+      placed.push({ box: shifted(item.box, dx, dy) });
     } else if (item.hideOnOverlap) {
-      if (free(item.box, true)) placed.push({ box: item.box, movable: false });
+      if (free(item.box)) placed.push({ box: item.box });
       else result[i].hidden = true;
     } else {
-      placed.push({ box: item.box, movable: false });
+      placed.push({ box: item.box });
     }
   }
   return result;

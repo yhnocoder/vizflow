@@ -23,17 +23,48 @@ const DEFAULT_ANCHOR: Record<LabelKind, AnchorName> = {
   colh: 'top-center',
 };
 
-export const PRIORITY = { fixed: 4, title: 3, node: 2, value: 1 } as const;
+export const PRIORITY = { title: 5, node: 4, value: 3, category: 2, minor: 1 } as const;
 
-export interface Label {
+export class Label {
   readonly el: HTMLDivElement;
-  readonly kind: LabelKind;
-  pos: Vec3 | undefined;
+  pos: Vec3 | undefined = undefined;
   anchor: AnchorName;
-  priority: number;
-  movable: boolean;
-  hideOnOverlap: boolean;
-  visible: boolean;
+  readonly priority: number;
+  readonly movable: boolean;
+  readonly hideOnOverlap: boolean;
+  visible = true;
+  size: [number, number] | undefined = undefined;
+  private content = '';
+
+  constructor(readonly kind: LabelKind, extraClass: string) {
+    this.el = document.createElement('div');
+    this.el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
+    this.anchor = DEFAULT_ANCHOR[kind];
+    this.priority =
+      kind === 'ttl' ? PRIORITY.title : kind === 'node' ? PRIORITY.node : kind === 'val' ? PRIORITY.value : kind === 'cls' || kind === 'colh' ? PRIORITY.category : PRIORITY.minor;
+    this.movable = kind === 'ttl' || kind === 'node';
+    this.hideOnOverlap = !this.movable;
+  }
+
+  setText(text: string): void {
+    if (this.content === text) return;
+    this.content = text;
+    this.el.textContent = text;
+    this.size = undefined;
+  }
+
+  setContent(key: string, build: () => Node): void {
+    if (this.content === key) return;
+    this.content = key;
+    this.el.replaceChildren(build());
+    this.size = undefined;
+  }
+
+  setFlag(className: string, on: boolean): void {
+    if (this.el.classList.contains(className) === on) return;
+    this.el.classList.toggle(className, on);
+    this.size = undefined;
+  }
 }
 
 const projected = new Vector3();
@@ -42,50 +73,41 @@ export class LabelLayer {
   readonly root: HTMLDivElement;
   readonly labels: Label[] = [];
 
-  constructor(parent: HTMLElement) {
+  constructor(parent: HTMLElement, onRemeasure: () => void) {
     this.root = document.createElement('div');
     this.root.className = 'vf-labels';
     parent.appendChild(this.root);
+    document.fonts?.ready.then(() => {
+      for (const label of this.labels) label.size = undefined;
+      onRemeasure();
+    });
   }
 
   add(kind: LabelKind, extraClass = ''): Label {
-    const el = document.createElement('div');
-    el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
-    this.root.appendChild(el);
-    const label: Label = {
-      el,
-      kind,
-      pos: undefined,
-      anchor: DEFAULT_ANCHOR[kind],
-      priority: kind === 'ttl' ? PRIORITY.title : kind === 'node' ? PRIORITY.node : kind === 'val' ? PRIORITY.value : PRIORITY.fixed,
-      movable: kind === 'ttl' || kind === 'node',
-      hideOnOverlap: kind === 'val',
-      visible: true,
-    };
+    const label = new Label(kind, extraClass);
+    this.root.appendChild(label.el);
     this.labels.push(label);
     return label;
   }
 
   project(camera: Camera, width: number, height: number): void {
     const shown: Label[] = [];
-    const sizes: [number, number][] = [];
-    const points: [number, number][] = [];
     for (const label of this.labels) {
       const off = label.pos === undefined || !label.visible;
       label.el.classList.toggle('vf-off', off);
-      if (off) continue;
+      if (!off) shown.push(label);
+    }
+    for (const label of shown) {
+      if (label.size === undefined) label.size = [label.el.offsetWidth, label.el.offsetHeight];
+    }
+    const placements: Placement[] = shown.map((label) => {
       projected.set(...label.pos!).project(camera);
       const px = ((projected.x + 1) / 2) * width;
       const py = ((1 - projected.y) / 2) * height;
-      shown.push(label);
-      points.push([px, py]);
-      sizes.push([label.el.offsetWidth, label.el.offsetHeight]);
-    }
-    const placements: Placement[] = shown.map((label, i) => {
       const [ax, ay] = ANCHORS[label.anchor];
-      const [w, h] = sizes[i];
+      const [w, h] = label.size!;
       return {
-        box: { x: points[i][0] + ax * w, y: points[i][1] + ay * h, w, h },
+        box: { x: px + ax * w, y: py + ay * h, w, h },
         movable: label.movable,
         hideOnOverlap: label.hideOnOverlap,
         priority: label.priority,

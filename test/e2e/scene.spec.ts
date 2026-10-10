@@ -157,3 +157,37 @@ test('movable labels do not overlap at 375px width', async ({ page }) => {
   await page.screenshot({ path: 'test-results/scene-375.png' });
   expect(errors).toEqual([]);
 });
+
+for (const [width, height] of [[1280, 860], [375, 700]]) {
+  test(`no two visible labels overlap in the overview at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    const errors = await openScene(page);
+    await goStep(page, 0);
+    const rects = await labelRects(page, '.vf-lb');
+    expect(rects.length).toBeGreaterThan(10);
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        expect(intersects(rects[i], rects[j]), `${JSON.stringify(rects[i])} vs ${JSON.stringify(rects[j])}`).toBe(false);
+      }
+    }
+    expect(errors).toEqual([]);
+  });
+}
+
+test('mounting and disposing the scene twenty times still renders', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 860 });
+  const errors = await openScene(page);
+  for (let i = 0; i < 20; i++) {
+    await page.evaluate(() => (window as unknown as { remount(): void }).remount());
+  }
+  await page.waitForTimeout(SETTLE_MS);
+  await expect(page.locator('.vf-scene canvas')).toHaveCount(1);
+  await expect(page.locator('.vf-nogl')).toHaveCount(0);
+  const painted = await page.locator('.vf-scene canvas').evaluate((canvas) => {
+    const gl = (canvas as HTMLCanvasElement).getContext('webgl2') ?? (canvas as HTMLCanvasElement).getContext('webgl');
+    return gl !== null && !gl.isContextLost();
+  });
+  expect(painted).toBe(true);
+  expect(await page.locator('.vf-lb.vf-val:not(.vf-off)').count()).toBeGreaterThan(0);
+  expect(errors).toEqual([]);
+});

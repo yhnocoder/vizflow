@@ -83,6 +83,7 @@ const LEGACY_LIGHT_FACTOR = Math.PI;
 const LIGHT_POSITION: Vec3 = [-4, 12, 8];
 const CURVE_SAMPLES = 24;
 const CURVE_TANGENT = 0.45;
+const CURVE_MIN_TANGENT = 0.5;
 const CLICK_SLOP = 5;
 const VALUE_LABEL_GAP = 0.12;
 const HIGHLIGHT_RADIUS = 0.035;
@@ -123,11 +124,15 @@ interface DrawnEdge {
 
 const tmpVector = new Vector3();
 
+function tangentLength(a: Vec3, b: Vec3): number {
+  return Math.max(Math.abs(b[1] - a[1]) * CURVE_TANGENT, CURVE_MIN_TANGENT);
+}
+
 function sampleCurve(a: Vec3, b: Vec3, flat: boolean): number[] {
   if (flat) return [...a, ...b];
-  const d = b[1] - a[1];
-  const c1: Vec3 = [a[0], a[1] + d * CURVE_TANGENT, a[2]];
-  const c2: Vec3 = [b[0], b[1] - d * CURVE_TANGENT, b[2]];
+  const t = tangentLength(a, b);
+  const c1: Vec3 = [a[0], a[1] + t, a[2]];
+  const c2: Vec3 = [b[0], b[1] - t, b[2]];
   const points: number[] = [];
   for (let s = 0; s < CURVE_SAMPLES; s++) {
     const t = s / (CURVE_SAMPLES - 1);
@@ -147,9 +152,7 @@ function segmentDistance(px: number, py: number, ax: number, ay: number, bx: num
 }
 
 function texOf(label: Label, tex: string): void {
-  if (label.el.dataset.tex === tex) return;
-  label.el.dataset.tex = tex;
-  label.el.replaceChildren(render(tex));
+  label.setContent(tex, () => render(tex));
 }
 
 function parenthesized(v: number): string {
@@ -206,7 +209,10 @@ class SceneController {
     renderer.setPixelRatio(Math.min(devicePixelRatio, PIXEL_RATIO_CAP));
     renderer.outputColorSpace = SRGBColorSpace;
     root.appendChild(renderer.domElement);
-    this.labels = new LabelLayer(root);
+    this.labels = new LabelLayer(root, () => {
+      this.labelsDirty = true;
+      this.requestFrame();
+    });
     this.buildChrome();
     this.tip = document.createElement('div');
     this.tip.className = 'vf-tip';
@@ -417,12 +423,12 @@ class SceneController {
         texOf(renderable.title!, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
         renderable.values.forEach((label, i) => {
           const element = block.elements[i];
-          label.el.textContent = formatNumber(values[i]);
+          label.setText(formatNumber(values[i]));
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
-          label.visible = revealed;
-          label.el.classList.toggle('vf-target', this.targetOf(block, element.row) === element.col);
-          label.el.classList.toggle('vf-unfocused', !focusedRow(element.row));
+          label.visible = revealed && active;
+          label.setFlag('vf-target', this.targetOf(block, element.row) === element.col);
+          label.setFlag('vf-unfocused', !focusedRow(element.row));
         });
       }
       if (renderable.nodes !== undefined) {
@@ -443,15 +449,15 @@ class SceneController {
         const text = block.classLabels[i];
         const target = this.targetOf(block, block.rows - 1);
         const isTarget = this.aligned.has(node) && target === text.col;
-        label.el.textContent = block.role === 'planar' && isTarget ? `${text.text} · 目标` : text.text;
-        label.el.classList.toggle('vf-on', isTarget);
+        label.setText(block.role === 'planar' && isTarget ? `${text.text} · 目标` : text.text);
+        label.setFlag('vf-on', isTarget);
         label.pos = [text.x, text.y, text.z];
         label.anchor = text.anchor === 'above' ? 'top-center' : text.anchor === 'left' ? 'right-middle' : 'bottom-center';
         label.visible = revealed;
       });
       renderable.rows.forEach((label, i) => {
         const text = block.rowLabels[i];
-        label.el.textContent = text.text;
+        label.setText(text.text);
         label.pos = [text.x, text.y, text.z];
         label.visible = revealed;
       });
@@ -459,7 +465,7 @@ class SceneController {
       renderable.tickLabels.forEach((label, i) => {
         const axis = block.axis!;
         if (i < ticks.length) {
-          label.el.textContent = String(ticks[i]).replace('-', '\u2212');
+          label.setText(String(ticks[i]).replace('-', '\u2212'));
           label.pos = [axis.x - 0.18, block.elements[0].y + ticks[i] * scale, axis.z];
           label.visible = revealed;
         } else label.visible = false;
@@ -502,13 +508,7 @@ class SceneController {
   }
 
   private buildEdges(): void {
-    const loss = (() => {
-      try {
-        return this.g.loss();
-      } catch {
-        return undefined;
-      }
-    })();
+    const loss = this.g.findLoss();
     const rowOf = (node: Node, index: number[]) => {
       const renderable = this.renderableOf(node);
       return renderable !== undefined && renderable.block.batched ? elementAt(renderable.block, index).row : undefined;
@@ -621,10 +621,10 @@ class SceneController {
     const d = this.hoverEdge;
     if (d === undefined) return;
     const [a, b] = d.endpoints();
-    const dy = b[1] - a[1];
+    const t = tangentLength(a, b);
     const curve = d.flat
       ? new CubicBezierCurve3(new Vector3(...a), new Vector3(...a).lerp(new Vector3(...b), 1 / 3), new Vector3(...a).lerp(new Vector3(...b), 2 / 3), new Vector3(...b))
-      : new CubicBezierCurve3(new Vector3(...a), new Vector3(a[0], a[1] + dy * CURVE_TANGENT, a[2]), new Vector3(b[0], b[1] - dy * CURVE_TANGENT, b[2]), new Vector3(...b));
+      : new CubicBezierCurve3(new Vector3(...a), new Vector3(a[0], a[1] + t, a[2]), new Vector3(b[0], b[1] - t, b[2]), new Vector3(...b));
     this.highlight = new Mesh(new TubeGeometry(curve, 40, HIGHLIGHT_RADIUS / Math.sqrt(this.camera.zoom), 8, false), this.highlightMaterial);
     this.scene.add(this.highlight);
   }
@@ -972,6 +972,7 @@ class SceneController {
     this.highlightMaterial.dispose();
     this.labels.dispose();
     this.renderer.dispose();
+    this.renderer.forceContextLoss();
     this.root.remove();
   }
 }
