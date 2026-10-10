@@ -36,7 +36,7 @@ const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log 
 const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, {
-  overview: { title: '整张图', text: '$$\\ell = {{loss:3}}$$' },
+  overview: { title: '整张图', text: String.raw`$$\ell = {{loss:3}}$$` },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入', text: '' },
     { show: z, label: 'z', title: 'lm_head', text: '' },

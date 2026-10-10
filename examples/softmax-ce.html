@@ -86,45 +86,78 @@ function single() {
     overview: {
       label: '总览',
       title: '整张图',
-      text: '<p>前向从下往上：logits 取指数得到 $u$，求和得到 $S$，相除得到概率 $p$，取出目标类的概率 $y$，再取负对数得到损失 $\\ell$。反向沿同一张图从上往下。点上面的步骤，或用键盘 ← →。</p>'
-        + '$$\\ell=-\\log\\frac{e^{x_t}}{\\sum_j e^{x_j}}={{loss:3}}$$',
+      text: String.raw`
+        前向从下往上：logits 取指数得到 $u$，求和得到 $S$，相除得到概率 $p$，取出目标类的概率 $y$，再取负对数得到损失 $\ell$。反向沿同一张图从上往下。点上面的步骤，或用键盘 ← →。
+
+        $$\ell=-\log\frac{e^{x_t}}{\sum_j e^{x_j}}={{loss:3}}$$
+      `,
     },
     forward: [
       { show: x, label: 'x', title: 'logits',
-        text: '<p>模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t={{t+1}}$。</p>'
-          + '$$\\mathbf{x}=({{x[0]:2}},\\;{{x[1]:2}},\\;{{x[2]:2}},\\;{{x[3]:2}},\\;{{x[4]:2}})$$' },
+        text: String.raw`
+          模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t={{t+1}}$。
+
+          $$\mathbf{x}=({{x[0]:2}},\;{{x[1]:2}},\;{{x[2]:2}},\;{{x[3]:2}},\;{{x[4]:2}})$$
+        ` },
       { show: u, label: 'u = eˣ', title: '取指数',
-        text: '<p>每个分量取指数，结果全为正，差距也被放大：两个 logit 相差 1，取指数后相差 $e\\approx2.72$ 倍。</p>'
-          + '$$u_i=e^{x_i},\\qquad u_{ {{t+1}} }=e^{ {{x[t]:2}} }={{u[t]}}$$' },
+        text: String.raw`
+          每个分量取指数，结果全为正，差距也被放大：两个 logit 相差 1，取指数后相差 $e\approx2.72$ 倍。
+
+          $$u_i=e^{x_i},\qquad u_{ {{t+1}} }=e^{ {{x[t]:2}} }={{u[t]}}$$
+        ` },
       { show: S, label: 'S', title: '求和',
-        text: '<p>把所有 $u_j$ 加起来，得到所有类别共用的分母。</p>'
-          + '$$S=\\sum_{j=1}^{5}u_j={{u[0]}}+{{u[1]}}+{{u[2]}}+{{u[3]}}+{{u[4]}}={{S}}$$' },
+        text: String.raw`
+          把所有 $u_j$ 加起来，得到所有类别共用的分母。
+
+          $$S=\sum_{j=1}^{5}u_j={{u[0]}}+{{u[1]}}+{{u[2]}}+{{u[3]}}+{{u[4]}}={{S}}$$
+        ` },
       { show: p, label: 'p', title: '归一化',
-        text: '<p>每个 $u_i$ 除以 $S$，得到和为 1 的概率。$p_i$ 直接依赖自己的 $u_i$，又经过 $S$ 依赖所有 $u_j$，所以 $u$ 到 $p$ 画了两组连线。</p>'
-          + '$$p_i=\\frac{u_i}{S},\\qquad p_{ {{t+1}} }=\\frac{ {{u[t]}} }{ {{S}} }={{p[t]:3}}$$' },
+        text: String.raw`
+          每个 $u_i$ 除以 $S$，得到和为 1 的概率。$p_i$ 直接依赖自己的 $u_i$，又经过 $S$ 依赖所有 $u_j$，所以 $u$ 到 $p$ 画了两组连线。
+
+          $$p_i=\frac{u_i}{S},\qquad p_{ {{t+1}} }=\frac{ {{u[t]}} }{ {{S}} }={{p[t]:3}}$$
+        ` },
       { show: [y, logy, loss], label: 'ℓ', title: '取目标类，取负对数',
-        text: '<p>交叉熵只看目标类的概率。$y$ 越接近 1，损失越接近 0；$y$ 越小，损失增长得越快。</p>'
-          + '$$y=p_{ {{t+1}} }={{y:3}},\\qquad \\ell=-\\log y={{loss:3}}$$' },
+        text: String.raw`
+          交叉熵只看目标类的概率。$y$ 越接近 1，损失越接近 0；$y$ 越小，损失增长得越快。
+
+          $$y=p_{ {{t+1}} }={{y:3}},\qquad \ell=-\log y={{loss:3}}$$
+        ` },
     ],
     backward: {
       auto: true,
       merge: [[logy, y]],
       override: {
         1: { label: '∂y', title: '从损失出发',
-          text: '<p>反向传播从 $\\partial\\ell/\\partial\\ell=1$ 开始，先穿过 $-\\log$。$y$ 越小，这个梯度的绝对值越大。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial y}=-\\frac{1}{y}=-\\frac{1}{ {{y:3}} }={{y.grad}}$$' },
+          text: String.raw`
+            反向传播从 $\partial\ell/\partial\ell=1$ 开始，先穿过 $-\log$。$y$ 越小，这个梯度的绝对值越大。
+
+            $$\frac{\partial\ell}{\partial y}=-\frac{1}{y}=-\frac{1}{ {{y:3}} }={{y.grad}}$$
+          ` },
         2: { title: '传到概率层',
-          text: '<p>$y$ 只是把 $p_t$ 取了出来，所以只有目标类收到梯度，其余 $p_i$ 的梯度都是 0。从它们往下的连线画成虚线，因为那里传不回任何东西。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial p_i}=\\begin{cases}-1/y={{y.grad}} & i=t\\\\[2pt]0 & i\\ne t\\end{cases}$$' },
+          text: String.raw`
+            $y$ 只是把 $p_t$ 取了出来，所以只有目标类收到梯度，其余 $p_i$ 的梯度都是 0。从它们往下的连线画成虚线，因为那里传不回任何东西。
+
+            $$\frac{\partial\ell}{\partial p_i}=\begin{cases}-1/y={{y.grad}} & i=t\\[2pt]0 & i\ne t\end{cases}$$
+          ` },
         3: { title: '传到分母 S',
-          text: '<p>$p_t=u_t/S$，对分母求导得到 $-u_t/S^2$。和上一步相乘时，$u_t$ 与 $y=u_t/S$ 约掉，只剩 $1/S$。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial S}=-\\frac{1}{y}\\cdot\\Big(-\\frac{u_t}{S^2}\\Big)=\\frac{1}{S}={{S.grad}}$$' },
+          text: String.raw`
+            $p_t=u_t/S$，对分母求导得到 $-u_t/S^2$。和上一步相乘时，$u_t$ 与 $y=u_t/S$ 约掉，只剩 $1/S$。
+
+            $$\frac{\partial\ell}{\partial S}=-\frac{1}{y}\cdot\Big(-\frac{u_t}{S^2}\Big)=\frac{1}{S}={{S.grad}}$$
+          ` },
         4: { title: '传到 u',
-          text: '<p>每个 $u_j$ 都经过 $S$ 收到 $1/S$。目标类的 $u_t$ 还有一条直连 $p_t$ 的路，额外收到 $\\frac{\\partial\\ell}{\\partial p_t}\\cdot\\frac1S=-\\frac1{u_t}$。这两项对应 $\\frac{\\partial p_i}{\\partial u_j}=\\frac{\\delta_{ij}}{S}-\\frac{u_i}{S^2}$。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial u_j}=\\frac1S-\\frac{\\delta_{jt}}{u_t},\\qquad \\frac{\\partial\\ell}{\\partial u_{ {{t+1}} }}={{u.grad[t]}}$$' },
+          text: String.raw`
+            每个 $u_j$ 都经过 $S$ 收到 $1/S$。目标类的 $u_t$ 还有一条直连 $p_t$ 的路，额外收到 $\frac{\partial\ell}{\partial p_t}\cdot\frac1S=-\frac1{u_t}$。这两项对应 $\frac{\partial p_i}{\partial u_j}=\frac{\delta_{ij}}{S}-\frac{u_i}{S^2}$。
+
+            $$\frac{\partial\ell}{\partial u_j}=\frac1S-\frac{\delta_{jt}}{u_t},\qquad \frac{\partial\ell}{\partial u_{ {{t+1}} }}={{u.grad[t]}}$$
+          ` },
         5: { title: '传到 logits',
-          text: '<p>最后穿过指数，$\\partial u_j/\\partial x_j=u_j$。乘进去就是常见的 $p-y$，这里的 $y$ 指 one-hot 标签。目标类的梯度为负，其余为正，所以梯度下降会抬高目标 logit、压低其他 logit。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial x_j}=u_j\\Big(\\frac1S-\\frac{\\delta_{jt}}{u_t}\\Big)=p_j-\\delta_{jt},\\qquad \\frac{\\partial\\ell}{\\partial x_{ {{t+1}} }}={{p[t]:3}}-1={{x.grad[t]:3}}$$' },
+          text: String.raw`
+            最后穿过指数，$\partial u_j/\partial x_j=u_j$。乘进去就是常见的 $p-y$，这里的 $y$ 指 one-hot 标签。目标类的梯度为负，其余为正，所以梯度下降会抬高目标 logit、压低其他 logit。
+
+            $$\frac{\partial\ell}{\partial x_j}=u_j\Big(\frac1S-\frac{\delta_{jt}}{u_t}\Big)=p_j-\delta_{jt},\qquad \frac{\partial\ell}{\partial x_{ {{t+1}} }}={{p[t]:3}}-1={{x.grad[t]:3}}$$
+          ` },
       },
     },
   });
@@ -148,7 +181,7 @@ function single() {
     side: [
       { tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true, title: 'p − y' }], title: 'logits 与目标类' },
       { matrix: (graph) => graph.jacobian(p, x), highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian',
-        note: '$J_{ij}=\\partial p_i/\\partial x_j=p_i\\delta_{ij}-p_ip_j$，行为 $i$，列为 $j$。对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t={{t+1}}$ 行，乘上 $-1/p_t$ 就得到 $p_j-\\delta_{jt}$。' },
+        note: String.raw`$J_{ij}=\partial p_i/\partial x_j=p_i\delta_{ij}-p_ip_j$，行为 $i$，列为 $j$。对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t={{t+1}}$ 行，乘上 $-1/p_t$ 就得到 $p_j-\delta_{jt}$。` },
       { code: PYTORCH_SINGLE, title: '对应的 PyTorch' },
     ],
   };
@@ -173,45 +206,78 @@ function batch() {
     overview: {
       label: '总览',
       title: '整张图（批量）',
-      text: '<p>一次送进 $B=3$ 个样本，每个样本占一行，每列是一个类别。每行各自做 softmax、取各自目标类的概率，最后把 $B$ 个损失取平均。</p>'
-        + '$$\\ell=\\frac{1}{B}\\sum_{b=1}^{B}-\\log\\frac{e^{X_{b,t_b}}}{\\sum_j e^{X_{b,j}}}={{loss:3}}$$',
+      text: String.raw`
+        一次送进 $B=3$ 个样本，每个样本占一行，每列是一个类别。每行各自做 softmax、取各自目标类的概率，最后把 $B$ 个损失取平均。
+
+        $$\ell=\frac{1}{B}\sum_{b=1}^{B}-\log\frac{e^{X_{b,t_b}}}{\sum_j e^{X_{b,j}}}={{loss:3}}$$
+      `,
     },
     forward: [
       { show: X, label: 'X', title: 'logits',
-        text: `<p>logits 是一个 $B\\times V$ 的矩阵，shape $(3,\\,5)$。每个样本有自己的目标类 $t_b$。${sample}</p>`
-          + '$$\\mathbf{X}\\in\\mathbb{R}^{3\\times5},\\qquad \\mathbf{t}=({{t[0]+1}},{{t[1]+1}},{{t[2]+1}})$$' },
+        text: String.raw`
+          logits 是一个 $B\times V$ 的矩阵，shape $(3,\,5)$。每个样本有自己的目标类 $t_b$。${sample}
+
+          $$\mathbf{X}\in\mathbb{R}^{3\times5},\qquad \mathbf{t}=({{t[0]+1}},{{t[1]+1}},{{t[2]+1}})$$
+        ` },
       { show: U, label: 'U = eˣ', title: '取指数',
-        text: `<p>逐元素取指数，shape 不变，仍是 $(3,\\,5)$。${sample}</p>`
-          + '$$\\mathbf{U}=\\exp(\\mathbf{X}),\\qquad U_{ {{b+1}},{{t[b]+1}} }=e^{ {{X[b,t[b]]:2}} }={{U[b,t[b]]}}$$' },
+        text: String.raw`
+          逐元素取指数，shape 不变，仍是 $(3,\,5)$。${sample}
+
+          $$\mathbf{U}=\exp(\mathbf{X}),\qquad U_{ {{b+1}},{{t[b]+1}} }=e^{ {{X[b,t[b]]:2}} }={{U[b,t[b]]}}$$
+        ` },
       { show: S, label: 'S', title: '按行求和',
-        text: '<p>每一行单独求和，得到每个样本自己的分母。保留维度后 shape 是 $(3,\\,1)$，下一步才能和 $(3,\\,5)$ 广播相除。</p>'
-          + '$$\\mathbf{s}=\\mathbf{U}\\mathbf{1}=\\begin{pmatrix}{{S[0]}}\\\\{{S[1]}}\\\\{{S[2]}}\\end{pmatrix}$$' },
+        text: String.raw`
+          每一行单独求和，得到每个样本自己的分母。保留维度后 shape 是 $(3,\,1)$，下一步才能和 $(3,\,5)$ 广播相除。
+
+          $$\mathbf{s}=\mathbf{U}\mathbf{1}=\begin{pmatrix}{{S[0]}}\\{{S[1]}}\\{{S[2]}}\end{pmatrix}$$
+        ` },
       { show: P, label: 'P', title: '按行归一化',
-        text: `<p>$(3,\\,5)$ 除以 $(3,\\,1)$，每行除以自己的 $S_b$，每行之和为 1。不同样本之间互不影响。${sample}</p>`
-          + '$$\\mathbf{P}=\\mathbf{U}/\\mathbf{s},\\qquad P_{ {{b+1}},{{t[b]+1}} }=\\frac{ {{U[b,t[b]]}} }{ {{S[b]}} }={{P[b,t[b]]:3}}$$' },
+        text: String.raw`
+          $(3,\,5)$ 除以 $(3,\,1)$，每行除以自己的 $S_b$，每行之和为 1。不同样本之间互不影响。${sample}
+
+          $$\mathbf{P}=\mathbf{U}/\mathbf{s},\qquad P_{ {{b+1}},{{t[b]+1}} }=\frac{ {{U[b,t[b]]}} }{ {{S[b]}} }={{P[b,t[b]]:3}}$$
+        ` },
       { show: [y, logy, lb, loss], label: 'ℓ', title: '取目标类，求平均',
-        text: '<p>每行按标签取出一个概率（PyTorch 里是 gather），得到 shape $(3,\\,1)$ 的 $\\mathbf{y}$，再逐个取负对数，最后求平均得到标量。</p>'
-          + '$$\\ell_b=-\\log P_{b,t_b},\\qquad \\ell=\\frac{1}{B}\\sum_b\\ell_b=\\frac{ {{l_b[0]:3}}+{{l_b[1]:3}}+{{l_b[2]:3}} }{3}={{loss:3}}$$' },
+        text: String.raw`
+          每行按标签取出一个概率（PyTorch 里是 gather），得到 shape $(3,\,1)$ 的 $\mathbf{y}$，再逐个取负对数，最后求平均得到标量。
+
+          $$\ell_b=-\log P_{b,t_b},\qquad \ell=\frac{1}{B}\sum_b\ell_b=\frac{ {{l_b[0]:3}}+{{l_b[1]:3}}+{{l_b[2]:3}} }{3}={{loss:3}}$$
+        ` },
     ],
     backward: {
       auto: true,
       merge: [[lb, logy, y]],
       override: {
         1: { label: '∂y', title: '从损失出发',
-          text: '<p>平均操作让每个 $\\ell_b$ 先收到 $1/B$，再穿过 $-\\log$。所以批量模式下每个梯度都比单样本小 $B$ 倍。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial\\ell_b}=\\frac{1}{B},\\qquad \\frac{\\partial\\ell}{\\partial y_b}=-\\frac{1}{B\\,y_b},\\qquad \\frac{\\partial\\ell}{\\partial y_{ {{b+1}} }}={{y.grad[b]}}$$' },
+          text: String.raw`
+            平均操作让每个 $\ell_b$ 先收到 $1/B$，再穿过 $-\log$。所以批量模式下每个梯度都比单样本小 $B$ 倍。
+
+            $$\frac{\partial\ell}{\partial\ell_b}=\frac{1}{B},\qquad \frac{\partial\ell}{\partial y_b}=-\frac{1}{B\,y_b},\qquad \frac{\partial\ell}{\partial y_{ {{b+1}} }}={{y.grad[b]}}$$
+          ` },
         2: { title: '传到概率层',
-          text: '<p>$\\partial\\ell/\\partial\\mathbf{P}$ 的 shape 和 $\\mathbf{P}$ 一样是 $(3,\\,5)$，每一行只有目标类那一格非零。</p>'
-            + '$$\\Big(\\frac{\\partial\\ell}{\\partial\\mathbf{P}}\\Big)_{b,j}=-\\frac{\\delta_{j t_b}}{B\\,y_b}$$' },
+          text: String.raw`
+            $\partial\ell/\partial\mathbf{P}$ 的 shape 和 $\mathbf{P}$ 一样是 $(3,\,5)$，每一行只有目标类那一格非零。
+
+            $$\Big(\frac{\partial\ell}{\partial\mathbf{P}}\Big)_{b,j}=-\frac{\delta_{j t_b}}{B\,y_b}$$
+          ` },
         3: { title: '传到分母',
-          text: '<p>每个样本的 $S_b$ 各自收到 $1/(B S_b)$，shape $(3,\\,1)$。</p>'
-            + '$$\\frac{\\partial\\ell}{\\partial S_b}=\\frac{1}{B\\,S_b},\\qquad \\frac{\\partial\\ell}{\\partial\\mathbf{s}}=\\begin{pmatrix}{{S.grad[0]}}\\\\{{S.grad[1]}}\\\\{{S.grad[2]}}\\end{pmatrix}$$' },
+          text: String.raw`
+            每个样本的 $S_b$ 各自收到 $1/(B S_b)$，shape $(3,\,1)$。
+
+            $$\frac{\partial\ell}{\partial S_b}=\frac{1}{B\,S_b},\qquad \frac{\partial\ell}{\partial\mathbf{s}}=\begin{pmatrix}{{S.grad[0]}}\\{{S.grad[1]}}\\{{S.grad[2]}}\end{pmatrix}$$
+          ` },
         4: { title: '传到 U',
-          text: `<p>和单样本一样有两条路，只是多了 $1/B$。经过 $S_b$ 的那一项在一行里是同一个数，广播回 $V$ 列，就是反向里的「按行求和」对应的操作。${sample}</p>`
-            + '$$\\frac{\\partial\\ell}{\\partial U_{b,j}}=\\frac{1}{B}\\Big(\\frac{1}{S_b}-\\frac{\\delta_{jt_b}}{U_{b,t_b}}\\Big),\\qquad \\frac{\\partial\\ell}{\\partial U_{ {{b+1}},{{t[b]+1}} }}={{U.grad[b,t[b]]}}$$' },
+          text: String.raw`
+            和单样本一样有两条路，只是多了 $1/B$。经过 $S_b$ 的那一项在一行里是同一个数，广播回 $V$ 列，就是反向里的「按行求和」对应的操作。${sample}
+
+            $$\frac{\partial\ell}{\partial U_{b,j}}=\frac{1}{B}\Big(\frac{1}{S_b}-\frac{\delta_{jt_b}}{U_{b,t_b}}\Big),\qquad \frac{\partial\ell}{\partial U_{ {{b+1}},{{t[b]+1}} }}={{U.grad[b,t[b]]}}$$
+          ` },
         5: { title: '传到 logits',
-          text: `<p>结果是 $(\\mathbf{P}-\\mathbf{Y})/B$，$\\mathbf{Y}$ 是 shape $(3,\\,5)$ 的 one-hot 标签矩阵。如果 reduction 用 sum 而不是 mean，就没有这个 $1/B$。${sample}</p>`
-            + '$$\\frac{\\partial\\ell}{\\partial\\mathbf{X}}=\\frac{\\mathbf{P}-\\mathbf{Y}}{B},\\qquad \\frac{\\partial\\ell}{\\partial X_{ {{b+1}},{{t[b]+1}} }}=\\frac{ {{P[b,t[b]]:3}}-1}{3}={{X.grad[b,t[b]]:3}}$$' },
+          text: String.raw`
+            结果是 $(\mathbf{P}-\mathbf{Y})/B$，$\mathbf{Y}$ 是 shape $(3,\,5)$ 的 one-hot 标签矩阵。如果 reduction 用 sum 而不是 mean，就没有这个 $1/B$。${sample}
+
+            $$\frac{\partial\ell}{\partial\mathbf{X}}=\frac{\mathbf{P}-\mathbf{Y}}{B},\qquad \frac{\partial\ell}{\partial X_{ {{b+1}},{{t[b]+1}} }}=\frac{ {{P[b,t[b]]:3}}-1}{3}={{X.grad[b,t[b]]:3}}$$
+          ` },
       },
     },
   });
@@ -230,7 +296,7 @@ function batch() {
       sgd: { params: [X], lr: 1, label: '梯度下降一步' },
       random: { nodes: [X], range: [-3, 3], label: '随机' },
       reset: true,
-      text: '3 个样本的平均；$\\ell_b$ = {{l_b[0]:2}}, {{l_b[1]:2}}, {{l_b[2]:2}}',
+      text: String.raw`3 个样本的平均；$\ell_b$ = {{l_b[0]:2}}, {{l_b[1]:2}}, {{l_b[2]:2}}`,
     },
     side: [
       { tokens: t, sliders: X, min: -6, max: 6, columns: [P, { node: X, grad: true, title: '∂ℓ/∂x' }], title: 'logits 与目标类（当前样本）' },

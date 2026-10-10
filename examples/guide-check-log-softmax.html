@@ -28,16 +28,19 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 const steps = createSteps(g, {
   overview: {
     title: '整张图',
-    text: '<p>目标 token 是 <span class="ctx">{{t:token}}</span>。</p>'
-      + '$$\\ell = -\\log p_{ {{t+1}} } = {{loss:3}}$$',
+    text: String.raw`
+      目标 token 是 <span class="ctx">{{t:token}}</span>。
+
+      $$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$
+    `,
   },
   forward: [
     { show: x, label: 'x', title: '输入：logits x',
-      text: '$$\\mathbf{x} = ({{x[0]:2}},\\; {{x[1]:2}},\\; {{x[2]:2}},\\; {{x[3]:2}},\\; {{x[4]:2}})$$' },
+      text: String.raw`$$\mathbf{x} = ({{x[0]:2}},\; {{x[1]:2}},\; {{x[2]:2}},\; {{x[3]:2}},\; {{x[4]:2}})$$` },
     { show: logp, label: 'log p', title: 'log_softmax',
-      text: '$$\\log p_{ {{t+1}} } = {{log p[t]:3}}$$' },
+      text: String.raw`$$\log p_{ {{t+1}} } = {{log p[t]:3}}$$` },
     { show: loss, label: 'ℓ', title: 'nll_loss',
-      text: '$$\\ell = -\\log p_{ {{t+1}} } = {{loss:3}}$$' },
+      text: String.raw`$$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$` },
   ],
   backward: 'auto',
 });

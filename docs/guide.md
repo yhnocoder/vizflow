@@ -251,7 +251,15 @@ g.jacobian(p, x);          // 当前值下 p 对 x 的 Jacobian，Tensor，不�
 import { createSteps } from '@yhnocoder/vizflow/steps';
 
 const steps = createSteps(g, {
-  overview: { title: '整张图', text: '...' },
+  overview: {
+    title: '整张图',
+    text: String.raw`
+      lm_head 把隐状态 $\mathbf{h}$ 投影到词表大小得到 logits。
+      PyTorch 里 <code>F.cross_entropy</code> 内部就是 <code>log_softmax</code> 加 <code>nll_loss</code>。
+
+      $$\ell = -\log p_t = {{loss:3}}$$
+    `,
+  },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入：h 和 Wᵀ', text: '...' },
     { show: z, active: [h, W.T, z], label: 'z = hWᵀ', title: 'lm_head：z = hWᵀ', text: '...' },
@@ -266,7 +274,7 @@ const steps = createSteps(g, {
 ### 3.1 前向步骤
 
 - `overview` 是第 0 步，显示整张图。省略时标题为「总览」、正文为空。`label` 是步骤条上的按钮文字，默认等于 `title`。
-- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文，省略时正文为空；`label` 是按钮文字，默认等于 `title`。
+- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文，省略时正文为空，写法见 4.1；`label` 是按钮文字，默认等于 `title`。
 - 第 k 步时，第 1 到 k 步 `show` 过的节点都出现，`active` 的节点高亮。
 - 所有 `show` 的并集是 `steps.visible`。没有放进任何一步 `show` 的中间节点在 3D 场景里不画，也不成为反向步骤。标签节点（label）不需要放进 `show`。
 
@@ -324,10 +332,42 @@ steps.text();        // { title, body }，模板已求值，公式未渲染
 
 步骤的 `title` 与 `text`、损失面板的 `text`、各面板的 `note` 都是 HTML 字符串，其中：
 
-- `$...$` 是行内公式，`$$...$$` 是独立成行的公式，由 KaTeX 渲染。要显示美元符号本身时写 `\\$`。
+- `$...$` 是行内公式，`$$...$$` 是独立成行的公式，由 KaTeX 渲染。要显示美元符号本身时写 `\$`。
 - `{{...}}` 是数值模板，显示计算图上的当前值，输入变化后自动更新。
 
-### 4.1 语法
+### 4.1 用 String.raw 写多行正文
+
+正文用 `String.raw` 模板字符串书写。`String.raw` 不处理反斜杠转义，TeX 命令照原样写一个反斜杠，例如 `\mathbf{h}`、`\frac{a}{b}`；正文可以跨多行，不需要用 `+` 拼接：
+
+```js
+text: String.raw`
+  Qwen3 这类模型最后一层的输出经过 RMSNorm 得到 $\mathbf{h}$，lm_head 把它投影到词表大小得到 logits。
+  PyTorch 里 <code>F.cross_entropy</code> 内部就是 <code>log_softmax</code> 加 <code>nll_loss</code>。
+
+  $$\ell = -\log p_t = {{loss:3}}$$
+`,
+```
+
+文字里含换行时，库按下面的规则整理，再渲染公式：
+
+- 去掉所有行共同的缩进，去掉开头和结尾的空行。
+- 空行把正文分成若干块。
+- 同一块里的各行直接相连，行首的空白去掉，行与行之间不加任何字符。中文之间的换行因此不会显示成空格。英文句子跨行时，在上一行末尾自己留一个空格，例如 `The cat ` 换行再写 `sat on the mat.`。有的编辑器保存时会删掉行尾空格，这时把英文句子写在同一行。
+- 整块只有一个 `$$...$$` 公式时，公式原样保留，不放进段落。
+- 以 HTML 块级标签开头的块（`<p>`、`<div>`、`<ul>`、`<ol>`、`<pre>`、`<table>`、`<h1>` 到 `<h6>`、`<blockquote>`）不再包一层段落。`<pre>` 块里的换行原样保留，其他块的各行同样直接相连。`<pre>` 块里不能有空行，空行会把它分成两块。
+- 其余的块各自包进 `<p>`。所以正文不需要手写 `<p>`，段落之间空一行即可。
+- 公式里的换行原样交给 KaTeX，KaTeX 把它当作空白，`$$...$$` 可以写成多行。模板 `{{...}}` 里的换行和空格一样被忽略。
+
+文字里没有换行时，库不做任何整理，与单行字符串的写法完全相同。所以单行的短文字直接写成一行，例如 ``text: String.raw`$$\ell = {{loss:3}}$$` ``，它不会被包进段落。
+
+`String.raw` 里有两个写法要注意：
+
+- `${` 会被当成 JavaScript 的插值开头。公式以模板开头时，在 `$` 和 `{{` 之间留一个空格，写成 `$ {{x[0]}}$`。需要插入 JavaScript 变量时可以正常使用 `${变量}`，例如 softmax 页在批量步骤的正文末尾插入同一句 `${sample}`。
+- 反引号要写成 `&#96;`。
+
+这些规则对步骤正文、损失面板的 `text`、各面板的 `note`、`renderText` 都一样。
+
+### 4.2 语法
 
 ```
 模板   := '{{' 表达式 (':' 格式)? '}}'
@@ -361,17 +401,17 @@ steps.text();        // { title, body }，模板已求值，公式未渲染
 - 在 `$...$` 里的数用 ASCII 负号 `-`，公式外用 `−`（U+2212）。
 - `b` 是当前样本下标 `steps.focus`，按整数输出，可以加偏移和小数位格式，不能写 `:token` 或下标。没有挂载 steps 的面板里 `b` 为 0。
 
-### 4.2 与 LaTeX 花括号相邻
+### 4.3 与 LaTeX 花括号相邻
 
 LaTeX 的花括号是单个的，模板是两个，`\mathbf{h}`、`W^{\top}_{k,t}` 不会被当成模板。模板紧贴 LaTeX 花括号时会出现三个花括号，库无法判断边界，直接报错。在中间留一个空格：
 
 ```js
-'$$z_{ {{t+1}} } = {{z[t]}}$$'          // 正确
-'$$z_{{{t+1}}} = {{z[t]}}$$'            // 报错：starts with '{{{'
-'$$\\frac{ {{u[t]}} }{ {{S}} }$$'      // 正确
+String.raw`$$z_{ {{t+1}} } = {{z[t]}}$$`      // 正确
+String.raw`$$z_{{{t+1}}} = {{z[t]}}$$`        // 报错：starts with '{{{'
+String.raw`$$\frac{ {{u[t]}} }{ {{S}} }$$`    // 正确
 ```
 
-### 4.3 模板的范围与报错时机
+### 4.4 模板的范围与报错时机
 
 模板只能读取节点的值与梯度。模板在 `createSteps` 和 `mountPanels` 时编译，名字不存在、下标个数不对、对 label 取 `.grad`、对没有 tokens 的节点取 `:token` 都在这时抛出带模板原文的错误，例如：
 
@@ -460,7 +500,7 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 ```js
 import { renderText } from '@yhnocoder/vizflow/formula';
-renderText('从隐状态 $\\mathbf{h}$ 经过 lm_head 得到 logits。', document.getElementById('lede'));
+renderText(String.raw`从隐状态 $\mathbf{h}$ 经过 lm_head 得到 logits。`, document.getElementById('lede'));
 ```
 
 `renderText` 不处理 `{{...}}` 模板。需要随数值更新的文字用 note 面板。
@@ -679,31 +719,52 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 const steps = createSteps(g, {
   overview: {
     title: '整张图',
-    text: '<p>...目标 token 是 <span class="ctx">{{t:token}}</span>。</p>'
-      + '$$\\ell = -\\log\\operatorname{softmax}(\\mathbf{h}W^{\\top})_t = \\mathrm{LSE}(\\mathbf{z}) - z_t = {{loss:3}}$$',
+    text: String.raw`
+      ……目标 token 是 <span class="ctx">{{t:token}}</span>。
+
+      $$\ell = -\log\operatorname{softmax}(\mathbf{h}W^{\top})_t = \mathrm{LSE}(\mathbf{z}) - z_t = {{loss:3}}$$
+    `,
   },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入：h 和 Wᵀ',
-      text: '<p>...</p>'
-        + '$$\\mathbf{h} = ({{h[0]:2}},\\; {{h[1]:2}},\\; {{h[2]:2}},\\; {{h[3]:2}}) \\in \\mathbb{R}^{1\\times 4}$$' },
+      text: String.raw`
+        ……
+
+        $$\mathbf{h} = ({{h[0]:2}},\; {{h[1]:2}},\; {{h[2]:2}},\; {{h[3]:2}}) \in \mathbb{R}^{1\times 4}$$
+      ` },
     { show: z, active: [h, W.T, z], label: 'z = hWᵀ', title: 'lm_head：z = hWᵀ',
-      text: '<p>...</p>'
-        + '$$z_{ {{t+1}} } = \\sum_k h_k W^{\\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + \\dots = {{z[t]}}$$' },
+      text: String.raw`
+        ……
+
+        $$z_{ {{t+1}} } = \sum_k h_k W^{\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + \dots = {{z[t]}}$$
+      ` },
     { show: L, label: 'LSE', title: 'log-sum-exp',
-      text: '<p>...</p>$$\\mathrm{LSE} = m + \\log\\sum_j e^{z_j - m} = {{LSE}}$$' },
+      text: String.raw`
+        ……
+
+        $$\mathrm{LSE} = m + \log\sum_j e^{z_j - m} = {{LSE}}$$
+      ` },
     { show: logp, label: 'log p', title: 'log_softmax',
-      text: '<p>...</p>$$\\log p_{ {{t+1}} } = {{z[t]}} - {{LSE}} = {{log p[t]}}$$' },
+      text: String.raw`
+        ……
+
+        $$\log p_{ {{t+1}} } = {{z[t]}} - {{LSE}} = {{log p[t]}}$$
+      ` },
     { show: loss, label: 'ℓ', title: 'nll_loss',
-      text: '<p>...</p>$$\\ell = -\\log p_t = {{loss:3}}$$' },
+      text: String.raw`
+        ……
+
+        $$\ell = -\log p_t = {{loss:3}}$$
+      ` },
   ],
   backward: {
     auto: true,
     override: {
       1: { title: '从 nll 出发', text: '...' },
-      2: { title: '传到 LSE', text: '...$$\\frac{\\partial\\ell}{\\partial\\mathrm{LSE}} = {{LSE.grad}}$$' },
-      3: { title: '传到 logits', text: '...$$g_{ {{t+1}} } = {{z.grad[t]+1:3}} - 1 = {{z.grad[t]:3}}$$' },
+      2: { title: '传到 LSE', text: String.raw`...$$\frac{\partial\ell}{\partial\mathrm{LSE}} = {{LSE.grad}}$$` },
+      3: { title: '传到 logits', text: String.raw`...$$g_{ {{t+1}} } = {{z.grad[t]+1:3}} - 1 = {{z.grad[t]:3}}$$` },
       4: { title: '传到 lm_head 权重', label: '∂Wᵀ', text: '...' },
-      5: { title: '传到隐状态 h', text: '...$$\\frac{\\partial\\ell}{\\partial\\mathbf{h}} = ({{h.grad[0]:3}},\\; \\dots)$$' },
+      5: { title: '传到隐状态 h', text: String.raw`...$$\frac{\partial\ell}{\partial\mathbf{h}} = ({{h.grad[0]:3}},\; \dots)$$` },
     },
   },
 });
@@ -771,19 +832,19 @@ const loss = g.neg(logy, { name: 'loss', tex: '\\ell', elem: '\\ell', card: { fo
 
 ```js
 const steps = createSteps(g, {
-  overview: { label: '总览', title: '整张图', text: '...$$\\ell=-\\log\\frac{e^{x_t}}{\\sum_j e^{x_j}}={{loss:3}}$$' },
+  overview: { label: '总览', title: '整张图', text: String.raw`...$$\ell=-\log\frac{e^{x_t}}{\sum_j e^{x_j}}={{loss:3}}$$` },
   forward: [
-    { show: x, label: 'x', title: 'logits', text: '...$$\\mathbf{x}=({{x[0]:2}},\\;{{x[1]:2}},\\;\\dots)$$' },
-    { show: u, label: 'u = eˣ', title: '取指数', text: '...$$u_{ {{t+1}} }=e^{ {{x[t]:2}} }={{u[t]}}$$' },
-    { show: S, label: 'S', title: '求和', text: '...$$S={{S}}$$' },
-    { show: p, label: 'p', title: '归一化', text: '...$$p_{ {{t+1}} }=\\frac{ {{u[t]}} }{ {{S}} }={{p[t]:3}}$$' },
+    { show: x, label: 'x', title: 'logits', text: String.raw`...$$\mathbf{x}=({{x[0]:2}},\;{{x[1]:2}},\;\dots)$$` },
+    { show: u, label: 'u = eˣ', title: '取指数', text: String.raw`...$$u_{ {{t+1}} }=e^{ {{x[t]:2}} }={{u[t]}}$$` },
+    { show: S, label: 'S', title: '求和', text: String.raw`...$$S={{S}}$$` },
+    { show: p, label: 'p', title: '归一化', text: String.raw`...$$p_{ {{t+1}} }=\frac{ {{u[t]}} }{ {{S}} }={{p[t]:3}}$$` },
     { show: [y, logy, loss], label: 'ℓ', title: '取目标类，取负对数', text: '...' },
   ],
   backward: {
     auto: true,
     merge: [[logy, y]],
     override: {
-      1: { label: '∂y', title: '从损失出发', text: '...$$\\frac{\\partial\\ell}{\\partial y}=-\\frac{1}{ {{y:3}} }={{y.grad}}$$' },
+      1: { label: '∂y', title: '从损失出发', text: String.raw`...$$\frac{\partial\ell}{\partial y}=-\frac{1}{ {{y:3}} }={{y.grad}}$$` },
       2: { title: '传到概率层', text: '...' },
       3: { title: '传到分母 S', text: '...' },
       4: { title: '传到 u', text: '...' },
@@ -804,7 +865,7 @@ const lb = g.neg(logy, { name: 'l_b', tex: '\\ell_b', elem: '\\ell', ... });
 const loss = g.mean(lb, { name: 'loss', tex: '\\ell', elem: '\\ell', ... });
 
 const sample = '下面代入的是样本 {{b+1}}（目标类 {{t[b]+1}}），可在右侧切换样本。';
-// 正文例：'$$P_{ {{b+1}},{{t[b]+1}} }=\\frac{ {{U[b,t[b]]}} }{ {{S[b]}} }={{P[b,t[b]]:3}}$$'
+// 正文例：String.raw`$$P_{ {{b+1}},{{t[b]+1}} }=\frac{ {{U[b,t[b]]}} }{ {{S[b]}} }={{P[b,t[b]]:3}}$$`
 // 反向：merge: [[lb, logy, y]]
 ```
 

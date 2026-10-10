@@ -40,21 +40,33 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 const steps = createSteps(g, {
   overview: {
     title: '整张图',
-    text: '<p>logits 经过 softmax 得到概率，交叉熵取出目标类 {{t:token}} 的概率再取负对数。点上面的步骤，或用键盘 ← →。</p>'
-      + '$$\\ell = -\\log\\frac{e^{x_t}}{\\sum_j e^{x_j}} = {{loss:3}}$$',
+    text: String.raw`
+      logits 经过 softmax 得到概率，交叉熵取出目标类 {{t:token}} 的概率再取负对数。点上面的步骤，或用键盘 ← →。
+
+      $$\ell = -\log\frac{e^{x_t}}{\sum_j e^{x_j}} = {{loss:3}}$$
+    `,
   },
   forward: [
     { show: x, label: 'x', title: 'logits',
-      text: '<p>模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t = {{t+1}}$。</p>'
-        + '$$x_{ {{t+1}} } = {{x[t]:2}}$$' },
+      text: String.raw`
+        模型最后一层输出 5 个实数，可正可负，还不是概率。目标类 $t = {{t+1}}$。
+
+        $$x_{ {{t+1}} } = {{x[t]:2}}$$
+      ` },
     { show: p, label: 'p', title: 'softmax',
-      text: '<p>每个分量取指数后除以总和，得到和为 1 的概率。</p>'
-        + '$$p_{ {{t+1}} } = \\frac{e^{x_{ {{t+1}} }}}{\\sum_j e^{x_j}} = {{p[t]:3}}$$' },
+      text: String.raw`
+        每个分量取指数后除以总和，得到和为 1 的概率。
+
+        $$p_{ {{t+1}} } = \frac{e^{x_{ {{t+1}} }}}{\sum_j e^{x_j}} = {{p[t]:3}}$$
+      ` },
     { show: logp, label: 'log p', title: '取对数',
-      text: '$$\\log p_{ {{t+1}} } = {{log p[t]:3}}$$' },
+      text: String.raw`$$\log p_{ {{t+1}} } = {{log p[t]:3}}$$` },
     { show: loss, label: 'ℓ', title: '取目标类，取负号',
-      text: '<p>交叉熵只看目标类的概率，概率越接近 1，损失越接近 0。</p>'
-        + '$$\\ell = -\\log p_{ {{t+1}} } = {{loss:3}}$$' },
+      text: String.raw`
+        交叉熵只看目标类的概率，概率越接近 1，损失越接近 0。
+
+        $$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$
+      ` },
   ],
 });
 
@@ -70,7 +82,7 @@ mountPanels('#values', g, [
 ], { steps });
 mountPanels('#details', g, [
   { matrix: (graph) => graph.jacobian(p, x), highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian',
-    note: '$J_{ij} = \\partial p_i / \\partial x_j = p_i\\delta_{ij} - p_ip_j$，对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t = {{t+1}}$ 行。' },
+    note: String.raw`$J_{ij} = \partial p_i / \partial x_j = p_i\delta_{ij} - p_ip_j$，对角线为正，其余为负，每行之和为 0。损失只用到框出的第 $t = {{t+1}}$ 行。` },
   { code: 'p = F.softmax(x, dim=-1)\nloss = F.nll_loss(p.log(), t)\n# 两行合起来等价于\nloss = F.cross_entropy(x, t)', title: '对应的 PyTorch' },
 ], { steps });
 

@@ -5,7 +5,7 @@ import { mountSteps, mountPanels } from '@yhnocoder/vizflow/ui';
 import { renderText } from '@yhnocoder/vizflow/formula';
 import { REVISION } from 'three';
 
-renderText('接着上一页往前推一步：从最后一层隐状态 $\\mathbf{h}$ 经过 lm_head 得到 logits，再按 PyTorch 的实际做法用 log_softmax 和 nll_loss 算出损失。上下文是 <span class="ctx">The cat sat on the</span>，词表只画 5 个 token。', document.getElementById('lede')!);
+renderText(String.raw`接着上一页往前推一步：从最后一层隐状态 $\mathbf{h}$ 经过 lm_head 得到 logits，再按 PyTorch 的实际做法用 log_softmax 和 nll_loss 算出损失。上下文是 <span class="ctx">The cat sat on the</span>，词表只画 5 个 token。`, document.getElementById('lede')!);
 
 const g = graph({
   dims: { d: 4, V: 5 },
@@ -29,52 +29,85 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 const steps = createSteps(g, {
   overview: {
     title: '整张图',
-    text: '<p>Qwen3 这类 decoder-only 模型，最后一个 decoder 层的输出经过 RMSNorm 得到 $\\mathbf{h}$，lm_head 把它投影到词表大小得到 logits。'
-      + 'PyTorch 里 <code>F.cross_entropy</code> 内部就是 <code>log_softmax</code> 加 <code>nll_loss</code>。'
-      + '这里按 PyTorch 的习惯把 $\\mathbf{h}$ 当成 $1\\times d$ 的行向量，用 $d=4$、$V=5$ 来画，目标 token 是 <span class="ctx">{{t:token}}</span>。</p>'
-      + '$$\\ell = -\\log\\operatorname{softmax}(\\mathbf{h}W^{\\top})_t = \\mathrm{LSE}(\\mathbf{z}) - z_t = {{loss:3}}$$',
+    text: String.raw`
+      Qwen3 这类 decoder-only 模型，最后一个 decoder 层的输出经过 RMSNorm 得到 $\mathbf{h}$，lm_head 把它投影到词表大小得到 logits。
+      PyTorch 里 <code>F.cross_entropy</code> 内部就是 <code>log_softmax</code> 加 <code>nll_loss</code>。
+      这里按 PyTorch 的习惯把 $\mathbf{h}$ 当成 $1\times d$ 的行向量，用 $d=4$、$V=5$ 来画，目标 token 是 <span class="ctx">{{t:token}}</span>。
+
+      $$\ell = -\log\operatorname{softmax}(\mathbf{h}W^{\top})_t = \mathrm{LSE}(\mathbf{z}) - z_t = {{loss:3}}$$
+    `,
   },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入：h 和 Wᵀ',
-      text: '<p>$\\mathbf{h}$ 是 $1\\times d$ 的行向量。lm_head 的权重 $W$ 在 PyTorch 里存成 $(V,d)$，前向计算的是 <code>h @ W.T</code>，所以图里画的是它的转置 $W^{\\top}$，形状 $d\\times V$。'
-        + '地面上按课本的矩阵乘摆法排开：$W^{\\top}$ 在后方，每一行对应 $\\mathbf{h}$ 的一个维度 $k$，每一列对应一个 token；$\\mathbf{h}$ 在左前方；结果 $\\mathbf{z}$ 在 $W^{\\top}$ 正前方，和它的列对齐。'
-        + '真实的 Qwen3-8B 里 $d=4096$、$V=151936$。</p>'
-        + '$$\\mathbf{h} = ({{h[0]:2}},\\; {{h[1]:2}},\\; {{h[2]:2}},\\; {{h[3]:2}}) \\in \\mathbb{R}^{1\\times 4},\\qquad W^{\\top} \\in \\mathbb{R}^{4\\times 5}$$' },
+      text: String.raw`
+        $\mathbf{h}$ 是 $1\times d$ 的行向量。lm_head 的权重 $W$ 在 PyTorch 里存成 $(V,d)$，前向计算的是 <code>h @ W.T</code>，所以图里画的是它的转置 $W^{\top}$，形状 $d\times V$。
+        地面上按课本的矩阵乘摆法排开：$W^{\top}$ 在后方，每一行对应 $\mathbf{h}$ 的一个维度 $k$，每一列对应一个 token；$\mathbf{h}$ 在左前方；结果 $\mathbf{z}$ 在 $W^{\top}$ 正前方，和它的列对齐。
+        真实的 Qwen3-8B 里 $d=4096$、$V=151936$。
+
+        $$\mathbf{h} = ({{h[0]:2}},\; {{h[1]:2}},\; {{h[2]:2}},\; {{h[3]:2}}) \in \mathbb{R}^{1\times 4},\qquad W^{\top} \in \mathbb{R}^{4\times 5}$$
+      ` },
     { show: z, active: [h, W.T, z], label: 'z = hWᵀ', title: 'lm_head：z = hWᵀ',
-      text: '<p>$h_k$ 连到 $W^{\\top}$ 的第 $k$ 行，沿这一行经过的每个方块都把它乘上 $W^{\\top}_{ki}$。每一列再从后往前把 4 个乘积累加起来，落到正前方的 $z_i$。'
-        + '换成批量时 $\\mathbf{h}$ 变成 $B\\times d$、$\\mathbf{z}$ 变成 $B\\times V$，在 $W^{\\top}$ 前方排成 $B$ 行，第 1 行在最前，后面的行依次往后。下面代入目标 token 那一列。</p>'
-        + '$$z_{ {{t+1}} } = \\sum_k h_k W^{\\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + ({{h[1]:2}})({{W[t, 1]:2}}) + ({{h[2]:2}})({{W[t, 2]:2}}) + ({{h[3]:2}})({{W[t, 3]:2}}) = {{z[t]}}$$' },
+      text: String.raw`
+        $h_k$ 连到 $W^{\top}$ 的第 $k$ 行，沿这一行经过的每个方块都把它乘上 $W^{\top}_{ki}$。每一列再从后往前把 4 个乘积累加起来，落到正前方的 $z_i$。
+        换成批量时 $\mathbf{h}$ 变成 $B\times d$、$\mathbf{z}$ 变成 $B\times V$，在 $W^{\top}$ 前方排成 $B$ 行，第 1 行在最前，后面的行依次往后。下面代入目标 token 那一列。
+
+        $$z_{ {{t+1}} } = \sum_k h_k W^{\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + ({{h[1]:2}})({{W[t, 1]:2}}) + ({{h[2]:2}})({{W[t, 2]:2}}) + ({{h[3]:2}})({{W[t, 3]:2}}) = {{z[t]}}$$
+      ` },
     { show: L, label: 'LSE', title: 'log-sum-exp',
-      text: '<p>把所有 logit 汇总成一个数。先减去最大值 $m$ 再取指数，最大的一项是 $e^0=1$，不会溢出。它就是上一页的 $\\ln S$。</p>'
-        + '$$\\mathrm{LSE} = m + \\log\\sum_j e^{z_j - m} = {{LSE}}$$' },
+      text: String.raw`
+        把所有 logit 汇总成一个数。先减去最大值 $m$ 再取指数，最大的一项是 $e^0=1$，不会溢出。它就是上一页的 $\ln S$。
+
+        $$\mathrm{LSE} = m + \log\sum_j e^{z_j - m} = {{LSE}}$$
+      ` },
     { show: logp, label: 'log p', title: 'log_softmax',
-      text: '<p>每个 logit 减去同一个 LSE，得到的数全都 $\\le 0$。整个计算在对数空间里完成，不先算 $p$ 再取 $\\log$，所以概率很小时也不会出现 $\\log 0$。</p>'
-        + '$$\\log p_i = z_i - \\mathrm{LSE},\\qquad \\log p_{ {{t+1}} } = {{z[t]}} - {{LSE}} = {{log p[t]}}$$' },
+      text: String.raw`
+        每个 logit 减去同一个 LSE，得到的数全都 $\le 0$。整个计算在对数空间里完成，不先算 $p$ 再取 $\log$，所以概率很小时也不会出现 $\log 0$。
+
+        $$\log p_i = z_i - \mathrm{LSE},\qquad \log p_{ {{t+1}} } = {{z[t]}} - {{LSE}} = {{log p[t]}}$$
+      ` },
     { show: loss, label: 'ℓ', title: 'nll_loss',
-      text: '<p>nll_loss 只按标签取出一个元素再取负号，自己不做 log。所以它必须接在 log_softmax 后面，两者合起来才等于 cross_entropy。</p>'
-        + '$$\\ell = -\\log p_t = {{loss:3}}$$' },
+      text: String.raw`
+        nll_loss 只按标签取出一个元素再取负号，自己不做 log。所以它必须接在 log_softmax 后面，两者合起来才等于 cross_entropy。
+
+        $$\ell = -\log p_t = {{loss:3}}$$
+      ` },
   ],
   backward: {
     auto: true,
     override: {
       1: { title: '从 nll 出发',
-        text: '<p>$\\ell=-\\log p_t$ 对 $\\log\\mathbf{p}$ 求导，只有第 $t$ 格是 $-1$。对比上一页：那里要先经过 $-1/y$，$y$ 很小时这个数会非常大；这里是常数。</p>'
-          + '$$\\frac{\\partial\\ell}{\\partial\\log\\mathbf{p}} = -\\mathbf{e}_t$$' },
+        text: String.raw`
+          $\ell=-\log p_t$ 对 $\log\mathbf{p}$ 求导，只有第 $t$ 格是 $-1$。对比上一页：那里要先经过 $-1/y$，$y$ 很小时这个数会非常大；这里是常数。
+
+          $$\frac{\partial\ell}{\partial\log\mathbf{p}} = -\mathbf{e}_t$$
+        ` },
       2: { title: '传到 LSE',
-        text: '<p>每个 $\\log p_i$ 都减了同一个 LSE，局部导数都是 $-1$。只有第 $t$ 格的上游非零，所以 LSE 收到 $(-1)\\times(-1)=1$。</p>'
-          + '$$\\frac{\\partial\\ell}{\\partial\\mathrm{LSE}} = -\\sum_i\\frac{\\partial\\ell}{\\partial\\log p_i} = {{LSE.grad}}$$' },
+        text: String.raw`
+          每个 $\log p_i$ 都减了同一个 LSE，局部导数都是 $-1$。只有第 $t$ 格的上游非零，所以 LSE 收到 $(-1)\times(-1)=1$。
+
+          $$\frac{\partial\ell}{\partial\mathrm{LSE}} = -\sum_i\frac{\partial\ell}{\partial\log p_i} = {{LSE.grad}}$$
+        ` },
       3: { title: '传到 logits',
-        text: '<p>$z_i$ 有两条出边：直连 $\\log p_i$ 的那条局部导数是 1；经过 LSE 的那条局部导数是 $\\partial\\mathrm{LSE}/\\partial z_i=p_i$。'
-          + '两条相加就是 $p-y$，和上一页的结果相同，但路径上没有出现 $1/y$。记 $\\mathbf{g}=\\partial\\ell/\\partial\\mathbf{z}$，它是 $1\\times V$ 的行向量。</p>'
-          + '$$\\mathbf{g} = \\frac{\\partial\\ell}{\\partial\\mathbf{z}} = \\mathbf{p} - \\mathbf{e}_t,\\qquad g_{ {{t+1}} } = {{z.grad[t]+1:3}} - 1 = {{z.grad[t]:3}}$$' },
+        text: String.raw`
+          $z_i$ 有两条出边：直连 $\log p_i$ 的那条局部导数是 1；经过 LSE 的那条局部导数是 $\partial\mathrm{LSE}/\partial z_i=p_i$。
+          两条相加就是 $p-y$，和上一页的结果相同，但路径上没有出现 $1/y$。记 $\mathbf{g}=\partial\ell/\partial\mathbf{z}$，它是 $1\times V$ 的行向量。
+
+          $$\mathbf{g} = \frac{\partial\ell}{\partial\mathbf{z}} = \mathbf{p} - \mathbf{e}_t,\qquad g_{ {{t+1}} } = {{z.grad[t]+1:3}} - 1 = {{z.grad[t]:3}}$$
+        ` },
       4: { title: '传到 lm_head 权重', label: '∂Wᵀ',
-        text: '<p>$z_i=\\sum_k h_kW^{\\top}_{ki}$，所以 $\\partial z_i/\\partial W^{\\top}_{ki}=h_k$。整个梯度是 $\\mathbf{h}^{\\top}$（$d\\times1$）乘 $\\mathbf{g}$（$1\\times V$）的外积，形状和 $W^{\\top}$ 相同。'
-          + '目标 token 那一列是 $(p_t-1)\\mathbf{h}^{\\top}$，梯度下降会把它往 $\\mathbf{h}$ 的方向拉；其余列是 $p_i\\mathbf{h}^{\\top}$，会被往反方向推。'
-          + 'PyTorch 里 <code>lm_head.weight.grad</code> 是它的转置 $\\mathbf{g}^{\\top}\\mathbf{h}$，形状 $(V,d)$。</p>'
-          + '$$\\frac{\\partial\\ell}{\\partial W^{\\top}} = \\mathbf{h}^{\\top}\\mathbf{g} \\in \\mathbb{R}^{4\\times 5}$$' },
+        text: String.raw`
+          $z_i=\sum_k h_kW^{\top}_{ki}$，所以 $\partial z_i/\partial W^{\top}_{ki}=h_k$。整个梯度是 $\mathbf{h}^{\top}$（$d\times1$）乘 $\mathbf{g}$（$1\times V$）的外积，形状和 $W^{\top}$ 相同。
+          目标 token 那一列是 $(p_t-1)\mathbf{h}^{\top}$，梯度下降会把它往 $\mathbf{h}$ 的方向拉；其余列是 $p_i\mathbf{h}^{\top}$，会被往反方向推。
+          PyTorch 里 <code>lm_head.weight.grad</code> 是它的转置 $\mathbf{g}^{\top}\mathbf{h}$，形状 $(V,d)$。
+
+          $$\frac{\partial\ell}{\partial W^{\top}} = \mathbf{h}^{\top}\mathbf{g} \in \mathbb{R}^{4\times 5}$$
+        ` },
       5: { title: '传到隐状态 h',
-        text: '<p>$h_k$ 沿 $W^{\\top}$ 的第 $k$ 行经过 5 个方块，5 段传回的贡献相加，就是 $\\mathbf{g}$（$1\\times V$）乘 $W$（$V\\times d$）。这个梯度会继续传回 RMSNorm 和前面的 decoder 层。</p>'
-          + '$$\\frac{\\partial\\ell}{\\partial\\mathbf{h}} = \\mathbf{g}\\,W = ({{h.grad[0]:3}},\\; {{h.grad[1]:3}},\\; {{h.grad[2]:3}},\\; {{h.grad[3]:3}}) \\in \\mathbb{R}^{1\\times 4}$$' },
+        text: String.raw`
+          $h_k$ 沿 $W^{\top}$ 的第 $k$ 行经过 5 个方块，5 段传回的贡献相加，就是 $\mathbf{g}$（$1\times V$）乘 $W$（$V\times d$）。这个梯度会继续传回 RMSNorm 和前面的 decoder 层。
+
+          $$\frac{\partial\ell}{\partial\mathbf{h}} = \mathbf{g}\,W = ({{h.grad[0]:3}},\; {{h.grad[1]:3}},\; {{h.grad[2]:3}},\; {{h.grad[3]:3}}) \in \mathbb{R}^{1\times 4}$$
+        ` },
     },
   },
 });

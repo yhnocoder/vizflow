@@ -75,23 +75,39 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 const steps = createSteps(g, {
   overview: {
     title: '整张图',
-    text: '目标 token 是 {{t:token}}。'
-      + '$$\\ell = -\\log\\operatorname{softmax}(\\mathbf{h}W^{\\top})_t = \\mathrm{LSE}(\\mathbf{z}) - z_t = {{loss:3}}$$',
+    text: String.raw`
+      目标 token 是 {{t:token}}。
+
+      $$\ell = -\log\operatorname{softmax}(\mathbf{h}W^{\top})_t = \mathrm{LSE}(\mathbf{z}) - z_t = {{loss:3}}$$
+    `,
   },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入：h 和 Wᵀ',
-      text: '$W$ 按 PyTorch 存成 $(V,d)$，前向计算 &lt;code&gt;h @ W.T&lt;/code&gt;，图里画的是 $W^{\\top}$。' },
+      text: String.raw`$W$ 按 PyTorch 存成 $(V,d)$，前向计算 &lt;code&gt;h @ W.T&lt;/code&gt;，图里画的是 $W^{\top}$。` },
     { show: z, active: [h, W.T, z], label: 'z = hWᵀ', title: 'lm_head：z = hWᵀ',
-      text: '$h_k$ 沿 $W^{\\top}$ 的第 $k$ 行经过每个方块，每一列从后往前累加。'
-        + '$$z_{ {{t+1}} } = \\sum_k h_k W^{\\top}_{k, {{t+1}} } = {{z[t]}}$$' },
+      text: String.raw`
+        $h_k$ 沿 $W^{\top}$ 的第 $k$ 行经过每个方块，每一列从后往前累加。
+
+        $$z_{ {{t+1}} } = \sum_k h_k W^{\top}_{k, {{t+1}} } = {{z[t]}}$$
+      ` },
     { show: L, label: 'LSE', title: 'log-sum-exp',
-      text: '先减去最大值 $m$ 再取指数，最大的一项是 $e^0 = 1$，不会溢出。'
-        + '$$\\mathrm{LSE} = m + \\log\\sum_j e^{z_j - m} = {{LSE}}$$' },
+      text: String.raw`
+        先减去最大值 $m$ 再取指数，最大的一项是 $e^0 = 1$，不会溢出。
+
+        $$\mathrm{LSE} = m + \log\sum_j e^{z_j - m} = {{LSE}}$$
+      ` },
     { show: logp, label: 'log p', title: 'log_softmax',
-      text: '每个 logit 减去同一个 LSE。'
-        + '$$\\log p_{ {{t+1}} } = z_{ {{t+1}} } - \\mathrm{LSE} = {{log p[t]}}$$' },
+      text: String.raw`
+        每个 logit 减去同一个 LSE。
+
+        $$\log p_{ {{t+1}} } = z_{ {{t+1}} } - \mathrm{LSE} = {{log p[t]}}$$
+      ` },
     { show: loss, label: 'ℓ', title: 'nll_loss',
-      text: 'nll_loss 按标签取出一个元素再取负号。$$\\ell = -\\log p_t = {{loss:3}}$$' },
+      text: String.raw`
+        nll_loss 按标签取出一个元素再取负号。
+
+        $$\ell = -\log p_t = {{loss:3}}$$
+      ` },
   ],
   backward: 'auto',
 });
@@ -435,6 +451,15 @@ allVisible(g: Graph): StepState</code></pre>
 引用   := 'b' | 名字 ('.grad')? ('[' 下标 (',' 下标)* ']')?
 下标   := 整数 | 'b' | 名字 | 名字 '[' 'b' ']'
 格式   := 整数 | 'token'</code></pre>
+<p>正文通常写成跨多行的 <code>String.raw</code> 模板字符串，TeX 命令只写一个反斜杠，不需要用 <code>+</code> 拼接，也不需要手写 <code>&lt;p&gt;</code>。Chromium 把两个中文字符之间的换行显示成一个空格，所以库在渲染前整理多行文字，整理由 <code>renderText</code> 完成，步骤正文和各面板的文字因此规则相同：</p>
+<ul>
+  <li>文字里没有换行时不做任何处理，按原样渲染。</li>
+  <li>有换行时，先去掉所有行共同的缩进和开头、结尾的空行，再按空行分块。</li>
+  <li>块内各行去掉行首空白后直接相连，不加分隔符。英文句子跨行时由作者在上一行末尾留一个空格。</li>
+  <li>整块是一个 <code>$$...$$</code> 公式时原样保留；以块级标签 <code>p</code>、<code>div</code>、<code>ul</code>、<code>ol</code>、<code>pre</code>、<code>table</code>、<code>h1</code> 到 <code>h6</code>、<code>blockquote</code> 开头的块不再包段落，其中 <code>pre</code> 块保留换行；其余的块包进 <code>&lt;p&gt;</code>。</li>
+  <li>公式里的换行原样交给 KaTeX，KaTeX 把它当作空白。模板 <code>{{...}}</code> 解析前去掉全部空白，里面可以换行。</li>
+</ul>
+<p>整理放在 <code>renderText</code> 而不是 <code>createSteps</code>，因为面板的 <code>text</code>、<code>note</code> 与卡片说明都经过 <code>renderText</code>，放在这里所有文字只有一套规则。没有换行时不整理，是为了让已有的单行文字渲染结果不变。<code>String.raw</code> 里 <code>${</code> 是插值的开头，公式以模板开头时写成 <code>$ {{x}}$</code>。</p>
 <p>模板可以写在公式里，例如 <code>$z_{ {{t+1}} } = {{z[t]}}$</code>。模板紧贴 LaTeX 花括号时要留一个空格；出现 <code>{{{</code> 或 <code>}}}</code> 时报错。</p>
 <ul>
   <li>解析前去掉模板内的空白，名字按图中的节点名做最长前缀匹配，因此名字可以含点：<code>{{W.T.grad[0, t]}}</code> 是节点 <code>W.T</code> 的梯度。label 的名字作为下标时取它的整数值，<code>t[b]</code> 取第 b 行。</li>
@@ -717,7 +742,7 @@ setAdapter(adapter: FormulaAdapter): void
 katexAdapter: FormulaAdapter</code></pre>
 <ul>
   <li><code>render</code> 立即返回占位元素 <code>&lt;span class="vf-tex"&gt;</code>。</li>
-  <li><code>renderText</code> 把正文中的 <code>$...$</code>、<code>$$...$$</code> 换成 <code>render</code> 的结果，其余部分按 HTML 插入。</li>
+  <li><code>renderText</code> 把正文中的 <code>$...$</code>、<code>$$...$$</code> 换成 <code>render</code> 的结果，其余部分按 HTML 插入。文字含换行时先按「正文模板」一节的规则整理成段落。</li>
   <li>KaTeX 适配器按（公式，是否 display）缓存渲染结果。渲染出错时不抛出，占位元素显示原始 TeX 并加 <code>vf-tex-error</code> 类。</li>
   <li>KaTeX 的 CSS 由 <code>formula</code> 入口引入。</li>
   <li>公式模板只使用 KaTeX 和 MathJax 都支持的写法，命令列表见「连线模式」一节末尾。</li>
