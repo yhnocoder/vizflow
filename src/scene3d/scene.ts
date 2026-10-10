@@ -840,10 +840,11 @@ class SceneController implements EditHost {
     }
     const reserve = this.chromeBottom();
     const availableH = Math.max(this.height - reserve, this.height / 2);
+    const availableW = Math.max(this.width - this.chromeRight(), this.width / 2);
     const spanX = (k: number) => span(items, k, (i) => i.x, (i) => i.left, (i) => i.right);
     const spanY = (k: number) => span(items, k, (i) => -i.y, (i) => i.up, (i) => i.down);
-    const fits = (k: number) => spanX(k).size <= this.width && spanY(k).size <= availableH;
-    let k = Math.min((this.width - 2 * marginX) / geometry.x.size, (availableH - 2 * marginY) / geometry.y.size);
+    const fits = (k: number) => spanX(k).size <= availableW && spanY(k).size <= availableH;
+    let k = Math.min((availableW - 2 * marginX) / geometry.x.size, (availableH - 2 * marginY) / geometry.y.size);
     if (!fits(k) && fits(0)) {
       let lo = 0;
       let hi = k;
@@ -859,11 +860,16 @@ class SceneController implements EditHost {
     const sy = spanY(k);
     const cx = ((sx.lo + sx.hi) / 2) * unit;
     const cy = -((sy.lo + sy.hi) / 2) * unit;
-    this.camera.left = cx - (this.width * unit) / 2;
-    this.camera.right = cx + (this.width * unit) / 2;
+    this.camera.left = cx - (availableW * unit) / 2;
+    this.camera.right = this.camera.left + this.width * unit;
     this.camera.top = cy + (reserve + availableH / 2) * unit;
     this.camera.bottom = this.camera.top - this.height * unit;
     this.camera.updateProjectionMatrix();
+  }
+
+  private chromeRight(): number {
+    const panel = this.root.querySelector<HTMLElement>('.vf-edit[open]');
+    return panel === null ? 0 : this.width - panel.offsetLeft;
   }
 
   private chromeBottom(): number {

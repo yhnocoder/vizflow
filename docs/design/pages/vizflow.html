@@ -614,13 +614,13 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 </ul>
 
 <h3>编辑模式</h3>
-<p>自动取景和标签避让之后，作者仍然需要微调位置。<code>mountScene(el, g, { edit: true })</code> 打开编辑模式，只在作者写页面时使用。编辑模式在画布右下角显示可以折叠的「编辑布局」面板，支持以下操作：</p>
+<p>自动取景和标签避让之后，作者仍然需要微调位置。<code>mountScene(el, g, { edit: true })</code> 打开编辑模式，只在作者写页面时使用。编辑模式在画布右下角显示可以折叠的「编辑布局」面板。面板展开时，自动取景把面板左边缘到画布右边缘的宽度从可用宽度中扣除（最多扣到画布宽度的一半），场景放在面板左侧；面板折叠后取景恢复使用整个画布宽度。面板支持以下操作：</p>
 <ul>
   <li>拖动张量块：按住块的柱子、圆柱或底板，在水平面内移动。结果写进放置这个块的模板：<code>board</code> 的三个块一起移动，写成 <code>board</code> 的 <code>at</code>；<code>node</code> 模板写成它的 <code>at</code>；<code>stack</code> 里直接从 <code>at</code> 起放置的第一层写成 <code>stack</code> 的 <code>at</code>，其余各层写成 <code>stack</code> 的 <code>offsets</code>。坐标保留两位小数。</li>
   <li>调整间距：面板里每个 <code>board</code> 有 <code>gap</code>、<code>scale</code> 两个数值输入，每个 <code>stack</code> 有 <code>level</code>、<code>back</code>，步长 0.05，输入后场景立即重排。</li>
   <li>移动标签：拖动块名标签或标量节点的标签，结果写成 <code>mountScene</code> 的 <code>labels</code>，单位为像素，取整数。</li>
   <li>「设为默认视角」：把当前的相机方向（从观察目标指向相机，各分量保留两位小数）写成 <code>camera.direction</code>，视角回到这个方向下的自动取景。缩放不写入配置，取景始终自动计算。</li>
-  <li>「复制配置」：在面板的文本框里显示 <code>layout</code>、<code>camera</code>、<code>labels</code> 三项的代码，同时尝试写进剪贴板。代码是 <code>mountScene</code> 选项对象里的属性，替换页面里原来的这几项即可。节点写成 <code>g.node('节点名')</code>，<code>g</code> 是页面里图的变量名；<code>camera</code>、<code>labels</code> 没有内容时不输出。</li>
+  <li>「复制配置」：在面板的文本框里显示 <code>layout</code>、<code>camera</code>、<code>labels</code> 三项的代码，同时尝试写进剪贴板；按钮旁显示「已复制」或「请从文本框复制」，2 秒后淡出（<code>prefers-reduced-motion</code> 时直接消失）。文本框不折行，可以横向滚动。代码是 <code>mountScene</code> 选项对象里的属性，替换页面里原来的这几项即可。节点写成 <code>g.node('节点名')</code>，<code>g</code> 是页面里图的变量名；<code>camera</code>、<code>labels</code> 没有内容时不输出。</li>
 </ul>
 <p>每次拖动结束或数值变化后，视角回到默认方向并重新自动取景，所以编辑模式里看到的位置与把配置粘贴回页面后打开时一致。拖动过程中不重新取景，块跟随指针移动。</p>
 <p>编辑模式写出的两个选项也可以手写：</p>

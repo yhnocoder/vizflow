@@ -89,6 +89,30 @@
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px;
+  white-space: pre;
+  overflow: auto;
+}
+
+.vf-edit-code::selection {
+  background: color-mix(in srgb, var(--ink) 15%, transparent);
+  color: var(--fg);
+}
+
+.vf-edit-note {
+  align-self: center;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.vf-edit-note.vf-on {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-edit-note {
+    transition: none;
+  }
 }
 
 .vf-scene canvas.vf-cursor-move,

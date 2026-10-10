@@ -9,6 +9,7 @@ import type { SceneOptions } from './scene';
 
 export const EDIT_INPUT_STEP = 0.05;
 export const DIRECTION_DIGITS = 2;
+export const COPY_NOTE_MS = 2000;
 
 export interface EditHost {
   readonly root: HTMLDivElement;
@@ -97,7 +98,9 @@ export function mountEditor(host: EditHost): () => void {
   const copy = element('button', 'vf-chip', '复制配置');
   setView.type = 'button';
   copy.type = 'button';
-  actions.append(setView, copy);
+  const note = element('span', 'vf-edit-note');
+  note.setAttribute('role', 'status');
+  actions.append(setView, copy, note);
   const output = element('textarea', 'vf-edit-code');
   output.readOnly = true;
   output.spellcheck = false;
@@ -105,6 +108,14 @@ export function mountEditor(host: EditHost): () => void {
   output.hidden = true;
   body.append(status, actions, output);
   root.appendChild(panel);
+  panel.addEventListener('toggle', () => host.relayout(true));
+  let noteTimer = 0;
+  const flash = (text: string) => {
+    note.textContent = text;
+    note.classList.add('vf-on');
+    clearTimeout(noteTimer);
+    noteTimer = window.setTimeout(() => note.classList.remove('vf-on'), COPY_NOTE_MS);
+  };
 
   setView.addEventListener('click', () => {
     const direction = host.camera.position.clone().sub(host.controls.target).normalize();
@@ -119,12 +130,10 @@ export function mountEditor(host: EditHost): () => void {
     output.hidden = false;
     output.focus();
     output.select();
-    status.textContent = '配置已写进下方文本框';
-    navigator.clipboard?.writeText(code).then(
-      () => {
-        status.textContent = '已复制到剪贴板，也可以从下方文本框复制';
-      },
-      () => undefined,
+    const written = navigator.clipboard?.writeText(code) ?? Promise.reject(new Error('no clipboard'));
+    written.then(
+      () => flash('已复制'),
+      () => flash('请从文本框复制'),
     );
   });
 
@@ -208,11 +217,13 @@ export function mountEditor(host: EditHost): () => void {
   root.addEventListener('click', onClick, { capture: true });
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);
+  host.relayout(true);
   return () => {
     root.removeEventListener('pointerdown', onDown, { capture: true });
     root.removeEventListener('click', onClick, { capture: true });
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
+    clearTimeout(noteTimer);
     panel.remove();
   };
 }
