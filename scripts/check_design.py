@@ -3,6 +3,7 @@
 # dependencies = ["playwright"]
 # ///
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -102,7 +103,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     failed = False
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome")
+        executable = os.environ.get("VIZFLOW_CHROMIUM")
+        browser = p.chromium.launch(executable_path=executable) if executable else p.chromium.launch(channel="chrome")
         for html in sorted(root.rglob("*.html")):
             rel, errors = check(browser, root, html, out)
             print(f"{'FAIL' if errors else 'PASS'} {rel}")

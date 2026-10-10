@@ -99,3 +99,19 @@ describe('jacobian', () => {
     expect(before).not.toEqual(x.grad!.toNested());
   });
 });
+
+describe('jacobian of one batch row', () => {
+  it('returns the (V, V) block of the selected sample', () => {
+    const g = graph({ dims: { B: 3, C: 5 } });
+    const x = g.input('X', ['B', 'C'], X);
+    const p = g.softmax(x, -1, { name: 'P' });
+    X.forEach((row, b) => {
+      const pRef = softmaxRow(row);
+      const J = g.jacobian(p, x, { row: b });
+      expect(J.shape).toEqual([5, 5]);
+      closeTo(J.toNested(), pRef.map((pi, i) => pRef.map((pj, j) => (i === j ? pi : 0) - pi * pj)));
+    });
+    expect(g.jacobian(p, x).shape).toEqual([3, 5, 3, 5]);
+    expect(() => g.jacobian(p, x, { row: 3 })).toThrow('row 3 is out of range');
+  });
+});

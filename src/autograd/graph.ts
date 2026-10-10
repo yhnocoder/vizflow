@@ -33,7 +33,7 @@ export interface Graph extends BuiltinOps {
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
   reset(): void;
-  jacobian(out: Node, input: Node): Tensor;
+  jacobian(out: Node, input: Node, options?: { row?: number }): Tensor;
 }
 
 interface NodeState {
@@ -333,17 +333,28 @@ class GraphImpl {
     if (!this.backwardValid) this.computeBackward();
   }
 
-  jacobian(out: Node, input: Node): Tensor {
+  jacobian(out: Node, input: Node, options: { row?: number } = {}): Tensor {
     this.ownNode(out, 'jacobian');
     this.ownNode(input, 'jacobian');
-    const outSize = this.states[out.id].value.size;
-    const inSize = this.states[input.id].value.size;
-    const result = Tensor.zeros([...out.shape, ...input.shape]);
-    for (let i = 0; i < outSize; i++) {
+    const { row } = options;
+    if (row === undefined) return this.jacobianBlock(out, input, 0, this.states[out.id].value.size, 0, this.states[input.id].value.size, [...out.shape, ...input.shape]);
+    const rows = out.shape[0];
+    if (out.shape.length === 0 || input.shape.length === 0 || input.shape[0] !== rows) {
+      throw new Error(`jacobian: row needs matching first dimensions, got ${formatShape(out.shape)} and ${formatShape(input.shape)}`);
+    }
+    if (!Number.isInteger(row) || row < 0 || row >= rows) throw new Error(`jacobian: row ${row} is out of range for ${rows} rows`);
+    const outRow = this.states[out.id].value.size / rows;
+    const inRow = this.states[input.id].value.size / rows;
+    return this.jacobianBlock(out, input, row * outRow, outRow, row * inRow, inRow, [...out.shape.slice(1), ...input.shape.slice(1)]);
+  }
+
+  private jacobianBlock(out: Node, input: Node, outStart: number, outCount: number, inStart: number, inCount: number, shape: number[]): Tensor {
+    const result = Tensor.zeros(shape);
+    for (let i = 0; i < outCount; i++) {
       const seed = Tensor.zeros(out.shape);
-      seed.data[i] = 1;
+      seed.data[outStart + i] = 1;
       const grad = this.propagate(out, seed)[input.id];
-      result.data.set(grad.data, i * inSize);
+      result.data.set(grad.data.subarray(inStart, inStart + inCount), i * inCount);
     }
     return result;
   }

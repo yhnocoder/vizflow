@@ -184,7 +184,7 @@ mountPanels('#side', g, [
   </tbody>
 </table>
 <p>模块之间不直接调用，都围绕同一个计算图协作。计算图是唯一的数据来源：输入变化后它重算前向和反向，然后发出更新通知；3D 场景、面板和讲解正文各自订阅通知、读取需要的数值，彼此不知道对方是否存在。<code>steps</code> 只输出一个状态对象，说明当前方向、第几步、每个节点是否出现和是否高亮。<code>scene3d</code> 读取这个状态决定颜色和透明度；页面没有创建 steps 时，<code>scene3d</code> 使用「全部显示」的默认状态。</p>
-<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。唯一的例外是运算注册表：运算定义本身不可变，与 torch 的全局算子表同理。</p>
+<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
 
 <h2>计算图怎么建，输入变化后怎么更新</h2>
 <h3>建图</h3>
@@ -214,7 +214,7 @@ interface Graph {
   subscribe(fn: () =&gt; void): () =&gt; void;
   batch(fn: () =&gt; void): void;
   reset(): void;
-  jacobian(out: Node, input: Node): Tensor;
+  jacobian(out: Node, input: Node, options?: { row?: number }): Tensor;
 }</code></pre>
 <table>
   <thead>
@@ -230,7 +230,7 @@ interface Graph {
     <tr><td><code>node</code></td><td>按名字查找节点，比较时忽略空白，<code>'log p'</code> 与 <code>'logp'</code> 相同。</td></tr>
     <tr><td><code>batch</code></td><td><code>fn</code> 内的多次 <code>set</code> 合并成一次重算和一次通知。</td></tr>
     <tr><td><code>reset</code></td><td>所有叶子节点恢复创建时的值。</td></tr>
-    <tr><td><code>jacobian</code></td><td>当前值下 <code>out</code> 对 <code>input</code> 的完整 Jacobian，shape 为 <code>out.shape</code> 接上 <code>input.shape</code>。结果不是计算图的节点，供矩阵面板显示，例如 softmax 页的 $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$。</td></tr>
+    <tr><td><code>jacobian</code></td><td>当前值下 <code>out</code> 对 <code>input</code> 的完整 Jacobian，shape 为 <code>out.shape</code> 接上 <code>input.shape</code>。给出 <code>row</code> 时只取第一维第 <code>row</code> 行的块：输出与输入的第一维必须相同，结果 shape 为两者各自去掉第一维后拼接，批量 softmax 页用它显示当前样本的 $(V, V)$ Jacobian。结果不是计算图的节点，供矩阵面板显示，例如 softmax 页的 $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$。</td></tr>
   </tbody>
 </table>
 <p>节点名重复时抛错。运算节点不给 <code>name</code> 时自动命名为运算名加序号，例如 <code>exp1</code>。</p>
@@ -446,7 +446,7 @@ allVisible(g: Graph): StepState</code></pre>
 \begin{equation}
 \frac{\partial\ell}{\partial X} = \sum_{Y} \Big(\frac{\partial Y}{\partial X}\Big)^{\top} \frac{\partial\ell}{\partial Y} \label{eq:chain}
 \end{equation}
-<p>反向卡片的行依次为 shape、真实模型、Jacobian、当前梯度。Jacobian 每个消费者一行，写作 <code>∂Y/∂X：(...)</code>，括号里是去掉大小为 1 的维度后的输出 shape 接上输入 shape。作者在节点的 <code>card</code> 选项里给出的字段覆盖自动内容，没给的字段用自动内容。</p>
+<p>反向卡片的行依次为 shape、真实模型、Jacobian、当前梯度。Jacobian 每个消费者一行，写作 <code>∂Y/∂X：(...)</code>，括号里是输出 shape 与输入 shape 各自去掉大小为 1 的维度后拼接，例如 $\partial\mathbf{z}/\partial\mathbf{h}$ 写作 <code>(V, d)</code>。作者在节点的 <code>card</code> 选项里给出的字段覆盖自动内容，没给的字段用自动内容。</p>
 <p><b>连线卡片</b>只在反向时悬停连线出现，分三行：这条边的局部导数、上游传来的梯度、两者相乘后沿这条边传回的量。节点有多条出边时，卡片说明各条边的贡献相加并给出合计，例如 $z_i$ 经 $\log p_i$ 与经 LSE 的两条边相加得到 $p_i - \delta_{it}$。</p>
 <pre><code class="language-ts">interface NodeCard { title: string; tex: string[]; note?: string; rows: { label: string; value: string }[] }
 interface EdgeCard {
@@ -632,7 +632,7 @@ interface Mounted { dispose(): void }</code></pre>
     <tr><td><code>loss</code></td><td>损失读数与损失曲线。<code>sgd</code> 加一个「更新一步」按钮，对 <code>params</code> 中的每个节点执行一次 $\theta \leftarrow \theta - \eta\,\nabla_\theta \ell$，$\eta$ 为 <code>lr</code>，曲线记录每一步的损失。<code>random</code> 加一个按钮，把 <code>nodes</code> 的值在 <code>range</code> 内随机取值；<code>reset</code> 为 <code>true</code> 时加一个调用 <code>g.reset()</code> 的按钮。</td></tr>
     <tr><td><code>sliders</code></td><td>一个输入节点的每个元素一个滑块。</td></tr>
     <tr><td><code>tokens</code></td><td>token 与目标类表，每行一个类别，单选设为目标类。<code>columns</code> 列出要并排显示的节点值或梯度；给了 <code>sliders</code> 时每行再带一个滑块，用于 softmax 页按类别调 logits。</td></tr>
-    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列。也可以传入一个从图上取值的函数，例如 softmax 页用 <code>{ matrix: (g) =&gt; g.jacobian(p, x) }</code> 显示 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
+    <tr><td><code>matrix</code></td><td>矩阵热力图，单元格颜色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅表示大小。<code>grad: true</code> 显示梯度；<code>highlight</code> 是 label 节点，框出目标类所在的列。也可以传入一个从图上取值的函数，函数的参数是计算图与当前的 steps 状态（没有挂载 steps 时 focus 为 0），例如 softmax 页用 <code>{ matrix: (g, state) =&gt; g.jacobian(p, x, { row: state.focus }) }</code> 显示当前样本的 Jacobian $\operatorname{diag}(\mathbf{p}) - \mathbf{p}\mathbf{p}^{\top}$，它不是计算图里的节点。</td></tr>
     <tr><td><code>code</code></td><td>代码卡片，例如对应的 PyTorch 代码。</td></tr>
     <tr><td><code>note</code></td><td>一段说明文字。</td></tr>
   </tbody>
