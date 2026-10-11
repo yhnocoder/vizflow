@@ -89,6 +89,11 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     });
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
   };
+  const blocked = (node: Node, index: number[], target: boolean) => {
+    const axis = c.positionAxis(node);
+    const state = axis === undefined ? undefined : c.state.row?.(node, index[axis]);
+    return state === 'hidden' || (target && state === 'inactive');
+  };
   const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
   const frontZ = new Map<Block, number>();
   const frontOf = (block: Block) => frontZ.get(block) ?? frontZ.set(block, Math.max(...block.elements.map((e) => e.z))).get(block)!;
@@ -108,6 +113,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const y = board.y + LINE_HEIGHT;
       const tile = (block: Block, kk: number, ii: number) => block.elements.find((e) => e.row === kk && e.col === ii)!;
       const [tileW, tileD] = board.b.footprint;
+      if (blocked(board.out.node, operands.out, true) || blocked(board.a.node, operands.a, false)) continue;
       const outElement = elementAt(board.out, operands.out);
       const rows = [board.out.batched ? r : undefined];
       let entry: EdgeEntry;
@@ -140,6 +146,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const fromR = copy === undefined ? renderableOf(c, from.node) : renderableFor(c, copy);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
+    if (blocked(from.node, from.index, false) || blocked(to.node, to.index, true)) continue;
     const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
     const fromElement = elementOf(fromR.block, from.node, from.index);
     const toElement = elementOf(toR.block, to.node, to.index);
@@ -177,6 +184,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
         if (Math.abs(value) <= JACOBIAN_EPSILON) return;
         const fromElement = inR.block.elements[ii];
         const toElement = outR.block.elements[oi];
+        if (blocked(pair.input, fromElement.index, false) || blocked(pair.output, toElement.index, true)) return;
         const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromElement.index }, to: { node: pair.output, index: toElement.index } };
         const entry = {
           edge,
@@ -199,6 +207,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const node = link.original.node;
     const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
     link.copy.elements.forEach((element) => {
+      if (blocked(node, element.index, false)) return;
       const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index: element.index }, to: { node, index: element.index } };
       drawn.push({
         edge,

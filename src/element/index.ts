@@ -40,6 +40,7 @@ export class VizflowPage extends HTMLElement {
   #pending = false;
   #compiled: CompiledPage | undefined;
   #loading = 0;
+  #mode: 'train' | 'infer' = 'infer';
 
   static readonly observedAttributes = ['src'];
 
@@ -143,6 +144,7 @@ export class VizflowPage extends HTMLElement {
       this.#compiled = compiled;
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
+      this.#mode = compiled.modes === undefined ? 'train' : 'infer';
       this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
@@ -234,7 +236,39 @@ export class VizflowPage extends HTMLElement {
       renderText(page.lede, lede);
       header.append(lede);
     }
+    const modes = this.#compiled?.modes;
+    if (modes !== undefined) header.append(this.#modeSwitch(modes));
     return header;
+  }
+
+  get mode(): 'train' | 'infer' {
+    return this.#mode;
+  }
+
+  set mode(value: 'train' | 'infer') {
+    const modes = this.#compiled?.modes;
+    if (modes === undefined || value === this.#mode) return;
+    this.#mode = value;
+    this.#steps = modes[value];
+    this.#schedule();
+  }
+
+  #modeSwitch(modes: NonNullable<CompiledPage['modes']>): HTMLElement {
+    const box = element('div', 'vf-modes');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', '模式');
+    for (const [mode, text] of [['train', '训练'], ['infer', '推理']] as const) {
+      const button = element('button', 'vf-mode') as HTMLButtonElement;
+      button.type = 'button';
+      button.textContent = text;
+      button.setAttribute('aria-pressed', String(mode === this.#mode));
+      button.disabled = modes[mode] === undefined;
+      button.addEventListener('click', () => {
+        this.mode = mode;
+      });
+      box.append(button);
+    }
+    return box;
   }
 
   async #mountScene(stage: HTMLElement, g: Graph, options: SceneOptions): Promise<void> {

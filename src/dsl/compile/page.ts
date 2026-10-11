@@ -1,6 +1,6 @@
 import type { Graph, Node } from '../../autograd';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../../scene3d';
-import { type ForwardStep, type PageModule, type StepsSpec, isLeafLike } from '../../steps';
+import { type ForwardStep, type InferSpec, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
 import { type Nested, inferShape } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import { DslError, type Where, child, fail } from '../source';
@@ -8,7 +8,7 @@ import { defaultTex, elemOf } from '../tex';
 import { compileBody } from './body';
 import { declareBuffers, declareParams, declareWeights, define } from './declare';
 import { markFormulas } from './formula';
-import { OVERVIEW_KEYS, SEQUENCE_KEYS, TEXT_KEYS } from './keys';
+import { GENERATE_KEYS, OPTIMIZER_KEYS, OVERVIEW_KEYS, SEQUENCE_KEYS, TEXT_KEYS } from './keys';
 import { pageModules, placeSteps } from './modules';
 import { compilePanels } from './panels';
 import { type SectionSources, compileSections } from './sections';
@@ -27,11 +27,13 @@ export interface CompiledPage {
   sections: SectionItem[];
   nodes: Map<string, Node>;
   sequence?: PageSequence;
+  modes?: { train: StepsSpec; infer: StepsSpec };
   layout?: unknown;
   page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
 }
 
 export interface PageSequence {
+  prompt?: number;
   tokens: string[];
   length: number;
   get(): number[];
@@ -113,7 +115,13 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
       camera: isRecord(page.camera) ? (page.camera as CameraOptions) : undefined,
     },
   };
+  if (page.optimizer !== undefined) stepsSpec.update = updateSpec(c);
   if (sequence !== undefined) compiled.sequence = sequence;
+  if (sequence?.prompt !== undefined) {
+    generate(c.g, sequence);
+    compiled.modes = { train: stepsSpec, infer: { ...stepsSpec, update: undefined, infer: inferSpec(c, sequence.prompt) } };
+    compiled.steps = compiled.modes.infer;
+  }
   if (page.layout !== undefined) compiled.layout = page.layout;
   return compiled;
 }
@@ -136,10 +144,15 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
   checkKeys(spec, SEQUENCE_KEYS, where);
   if (!Array.isArray(spec.tokens) || spec.tokens.length < 2) fail(child(where, spec, 'tokens'), 'sequence needs a list of at least two tokens');
   for (const key of ['input', 'label']) if (typeof spec[key] !== 'string') fail(child(where, spec, key), `sequence needs '${key}', the name of the node it creates`);
-  const ids = tokenIds(c, spec.tokens as unknown[], child(where, spec, 'tokens'));
+  const prompt = tokenIds(c, spec.tokens as unknown[], child(where, spec, 'tokens'));
+  const steps = generateSteps(c);
+  const ids = [...prompt, ...Array<number>(steps ?? 0).fill(0)];
   const T = ids.length - 1;
   const rows = c.root.dims.get('T');
-  if (rows !== undefined && rows.toy !== T) fail(child(where, spec, 'tokens'), `sequence has ${ids.length} tokens, so T must be ${T}, but dims gives T = ${rows.toy}`);
+  if (rows !== undefined && rows.toy !== T) {
+    const reason = steps === undefined ? `sequence has ${ids.length} tokens` : `the prompt has ${prompt.length} tokens and generate adds ${steps}`;
+    fail(child(where, spec, 'tokens'), `${reason}, so T must be ${T}, but dims gives T = ${rows.toy}`);
+  }
   const tokens = [...(page.vocab as string[])];
   const make = (key: 'input' | 'label', values: number[]) => {
     const name = spec[key] as string;
@@ -154,6 +167,7 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
   const label = make('label', ids.slice(1));
   const g = c.g;
   return {
+    ...(steps === undefined ? {} : { prompt: prompt.length }),
     tokens,
     length: ids.length,
     get: () => [...Array.from(input.value.data, Math.round), Math.round(label.value.data[T - 1])],
@@ -218,4 +232,51 @@ function placeLeaves(c: Compiler, tree: LayoutTree): void {
   for (const leaf of leaves) {
     if (!insert(tree.children, leaf)) (c.ownerOf(leaf) ?? tree.children).push({ kind: 'node', node: leaf });
   }
+}
+
+function generateSteps(c: Compiler): number | undefined {
+  const page = c.page;
+  if (page.generate === undefined) return undefined;
+  const where = child(c.pageWhere, page, 'generate');
+  const spec = record(page.generate, where, 'generate');
+  checkKeys(spec, GENERATE_KEYS, where);
+  if (typeof spec.steps !== 'number' || !Number.isInteger(spec.steps) || spec.steps < 2) fail(child(where, spec, 'steps'), 'generate.steps must be an integer of at least 2');
+  return spec.steps;
+}
+
+function nllOf(g: Graph): Node {
+  const nll = g.nodes.find((n) => n.op === 'nll_loss');
+  if (nll === undefined || nll.inputs[1]?.kind !== 'label') throw new Error('generate: the page needs an nll_loss of the log probabilities and the sequence label');
+  return nll;
+}
+
+function generate(g: Graph, sequence: PageSequence): void {
+  const logits = nllOf(g).inputs[0];
+  const ids = sequence.get();
+  const V = logits.shape[1];
+  for (let t = (sequence.prompt as number) - 1; t < ids.length - 1; t++) {
+    const row = logits.value.data.subarray(t * V, (t + 1) * V);
+    ids[t + 1] = row.indexOf(Math.max(...row));
+    sequence.set(ids);
+  }
+}
+
+function inferSpec(c: Compiler, prompt: number): InferSpec {
+  const [logits, label] = nllOf(c.g).inputs;
+  const input = c.g.nodes.find((n) => n.kind === 'label' && n !== label && n.shape[0] === label.shape[0]) as Node;
+  return { prompt, input, label, logits, caches: c.caches };
+}
+
+function updateSpec(c: Compiler): UpdateSpec {
+  const page = c.page;
+  const where = child(c.pageWhere, page, 'optimizer');
+  const spec = record(page.optimizer, where, 'optimizer');
+  checkKeys(spec, OPTIMIZER_KEYS, where);
+  if (spec.type !== 'adamw') fail(child(where, spec, 'type'), "optimizer.type must be 'adamw'");
+  const number = (key: string, fallback: number) => {
+    const value = spec[key] ?? fallback;
+    if (typeof value !== 'number' || value < 0) fail(child(where, spec, key), `optimizer.${key} must be a non-negative number`);
+    return value;
+  };
+  return { lr: number('lr', 0.1), weightDecay: number('weight_decay', 0), title: '参数更新：AdamW 第一步', label: '更新' };
 }
