@@ -81,6 +81,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - `src/dsl/`：YAML 页面描述的加载与编译；编译器各部分在 `src/dsl/compile/`。入口 `src/dsl/index.ts`。
 - `src/nn/`：内置的 YAML 模块。
 - `src/element/`：自定义元素 `<vizflow-page>`。入口 `src/element/index.ts`。
+- `src/serve/`：推理时 KV cache 显存管理的确定性模拟（vLLM 块池与前缀缓存、SGLang radix tree、混合注意力分组）。入口 `src/serve/index.ts`。
 - `examples/`：示例页面与它们的 YAML。
 - `test/`：单元测试按 `src/` 的目录划分；`test/e2e/` 是 Playwright 测试。
 
