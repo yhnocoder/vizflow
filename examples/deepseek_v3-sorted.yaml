@@ -1,0 +1,166 @@
+title: DeepSeek V3 MoE：按专家排序的 dispatch、grouped GEMM 与 combine
+lede: 这一页只画一个 MoE 层，计算顺序按 DeepEP 和 DeepGEMM 的实际做法：先把 (token, 专家) 对按专家排好并复制 token（dispatch），每个专家的那一段行做一次分组矩阵乘（grouped GEMM），再乘权重按 token 加回（combine）。反向传播由运算定义自动推出，可以看到排列和加回在反向里互换。序列长度 $T=4$，词表只画 5 个 token。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  MoE:     ./deepseek_v3/moe-sorted.yaml
+dims: { T: 4, d: 4, V: 5, Ne: 6, G: 2, TG: 1, K: 2, mf: 2, Sh: 1 }
+dtype: bf16
+real: { name: DeepSeek-V3, d: 7168, V: 129280, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261026 }
+sequence: { tokens: [the, cat, sat, on, mat], input: ids, label: y }
+inputs: {}
+weights:
+  E: { shape: [V, d] }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 画到损失，中间只有一个 MoE 层：embedding、一次 RMSNorm、MoE、残差相加、lm_head 和 nll_loss。另一页的 MoE 为了画图让每个专家对所有位置都算一遍；这一页按真实部署的顺序，只计算每个 token 选中的 $K=\of{K}$ 个专家。gate 选出专家以后，$T K=\of{T*K}$ 个 (token, 专家) 对按专家排好，token 复制到对应的行（dispatch）；\of{Ne} 个路由专家的三个投影各是一次 grouped GEMM，每一行只乘自己专家的权重；结果乘上专家权重，按 token 加回（combine）。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span> <span class="ctx">{{ids[3]:token}}</span>。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。dispatch 的反向把各行的梯度按 token 加回，是一次 combine；combine 的反向把每个 token 的梯度复制给它的各行，是一次 dispatch。每个专家的权重只从分给它的行得到梯度。
+      $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id。MoE 的 \of{Ne} 个路由专家的权重按专家叠成三块三维张量 $W_g, W_u\in\mathbb{R}^{E\times m_f\times d}$、$W_d\in\mathbb{R}^{E\times d\times m_f}$，grouped GEMM 按每一行的专家编号取其中一块。gate 的偏置 $\mathbf{b}$ 是 buffer，不靠梯度更新。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - norm:
+      use: RMSNorm
+      title: post_attention_layernorm
+      subtitle: DeepseekV3RMSNorm
+      inputs: { x: e }
+      outputs: { out: n }
+      tex: { out: '\mathbf{n}' }
+      folded: true
+  - mlp:
+      use: MoE
+      title: mlp
+      params: { E: Ne, G: G, TG: TG, K: K, mf: mf, Sh: Sh }
+      inputs: { x: n }
+      outputs: { out: moe }
+  - x: { op: e + moe, tex: '\mathbf{x}' }
+  - z:    x @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。这里省略了注意力，embedding 直接进入 MoE 前的 RMSNorm。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: res
+    show: x
+    segment: 残差
+    brace: { title: 残差相加, subtitle: '$\of{e}+\of{moe}$' }
+    label: '$\of{x}=\of{e}+\of{moe}$'
+    title: 残差相加
+    text: |
+      MoE 的输出加回 residual stream。
+      $$\of{x}={{ x | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{e},\ \partial\of{moe}$'
+      title: 穿过 MoE 的残差
+      text: |
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: x @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      $$\mathbf{z}=\mathbf{x}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: 传到 lm_head 权重和 $\of{x}$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      $$\ell_t=-\log p_{t,y_t}={{ lt | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - sequence: true
+    title: 序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$x_4$ $\cdot$ $y_3$', '$y_4$']
+    note: 前四个是输入，后四个是标签。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    random: true
+    reset: true
+  - title: 对应的 DeepEP 与 DeepGEMM 调用
+    code: |-
+      # 示意，省略 FP8 缩放与多卡细节
+      topk_idx, topk_w = gate(x)
+      event = buffer.dispatch(x, topk_idx=topk_idx, topk_weights=topk_w, num_experts=E,
+                              expert_alignment=deep_gemm.get_mk_alignment_for_contiguous_layout(),
+                              do_expand=True, do_zero_padding=True, defer_epilogue=True, ...)
+      recv_x, _, recv_w, handle = event.current_stream_wait()   # 行已按本卡的专家排好，recv_w 每行一个权重
+      layout = handle.psum_num_recv_tokens_per_expert
+      deep_gemm.m_grouped_fp8_gemm_nt_contiguous(recv_x, W_gate_up, h, layout, use_psum_layout=True)
+      a = silu(h_gate) * h_up
+      deep_gemm.m_grouped_fp8_gemm_nt_contiguous(a, W_down, ys, layout, use_psum_layout=True)
+      event = buffer.combine(ys * recv_w[:, None], handle, bias=shared_experts(x))
+      routed, _ = event.current_stream_wait()                   # 按 token 求和，BF16 传输
+    note: 专家的计算在 combine 之前乘上路由权重，combine 只按 token 求和，共享专家的输出可以作为 bias 在 combine 的最后一步加上。这一页不画 FP8、BLOCK_M 补齐和多卡通信，dispatch 和 combine 在同一张卡上用取行和按下标相加表示。DeepSeek-V3：256 个路由专家分 8 组，每个 token 选 4 组里的 8 个，moe_intermediate_size = 2048。

@@ -1,0 +1,231 @@
+module: DeepseekV3SortedMoE
+subtitle: DeepseekV3MoE，按专家排序
+import:
+  GLU: vizflow/nn/glu
+params:
+  E:   { type: dim }
+  G:   { type: dim }
+  TG:  { type: dim }
+  K:   { type: dim }
+  mf:  { type: dim }
+  Sh:  { type: dim }
+  rsf: { type: float, default: 2.5 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [out]
+weights:
+  Wr: { shape: [E, d], tex: 'W_{r}' }
+  Wg: { shape: [E, mf, d], tex: 'W_{g}' }
+  Wu: { shape: [E, mf, d], tex: 'W_{u}' }
+  Wd: { shape: [E, d, mf], tex: 'W_{d}' }
+buffers:
+  bias: { value: zeros(E), tex: '\mathbf{b}', dtype: fp32 }
+fold:
+  label: '$\of{out}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    路由、排列、\of{E} 个路由专家的 grouped GEMM、加回和共享专家都收进了盒子。每个位置只经过 $K=\of{K}$ 个路由专家和 1 个共享专家。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 mlp（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - gate:
+      title: gate
+      subtitle: DeepseekV3TopkRouter
+      folded: true
+      fold:
+        label: '$\of{sel},\ \of{rw}$'
+        title: gate（已折叠）
+        text: |
+          gate 和另一页的 MoE 相同：sigmoid 亲和度加上负载均衡的偏置，按组限制后选出 $K=\of{K}$ 个专家，再把选中的亲和度归一化成权重。展开这个盒子可以逐步查看。
+          $$\of{sel}={{ sel | matrix:0 }},\qquad \of{rw}={{ rw | matrix:3 }}$$
+        backward:
+          label: '$\partial W_r,\ \partial\of{x}$'
+          title: 穿过 gate（已折叠）
+          text: |
+            挑选专家的部分没有梯度，梯度只经过权重的归一化和亲和度传回 $W_r$ 和 $\of{x}$。
+            $$\frac{\partial\ell}{\partial\of{rw}}={{ rw.grad | matrix:3 }}$$
+      body:
+        - logits: { op: x @ Wr.T, tex: '\mathbf{r}', dtype: fp32 }
+        - s: { op: sigmoid(logits), tex: '\mathbf{s}' }
+        - sc: { op: s + bias, tex: '\tilde{\mathbf{s}}' }
+        - sg: { op: 'view(sc, T, G, E // G)', tex: '\tilde{\mathbf{s}}^{\mathrm{grp}}' }
+        - top2: { op: 'sg * topk_mask(sg, 2, -1)', tex: '\tilde{\mathbf{s}}^{\mathrm{top2}}' }
+        - gs: { op: 'sum(top2, -1)', tex: '\mathbf{g}' }
+        - gm: { op: 'topk_mask(gs, TG, -1)', tex: '\mathbf{m}^{\mathrm{grp}}' }
+        - em: { op: 'repeat_interleave(gm, E // G, -1)', tex: '\mathbf{m}^{\mathrm{exp}}' }
+        - choice: { op: 'where(em, sc, -inf)', tex: '\tilde{\mathbf{s}}^{\mathrm{cand}}' }
+        - sel: { op: 'topk_mask(choice, K, -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
+        - w: { op: s * sel, tex: '\mathbf{w}' }
+        - den: { op: 'sum(w, -1, keepdim=true) + 1e-20', tex: '\textstyle\sum\mathbf{w}' }
+        - wn: { op: w / den, tex: '\bar{\mathbf{w}}' }
+        - rw: { op: wn * rsf, tex: '\mathbf{p}' }
+  - dispatch:
+      title: dispatch
+      subtitle: DeepEP，按专家排列
+      body:
+        - ex: { op: 'route_experts(sel, K)', tex: '\mathbf{e}^{\pi}', dtype: int64 }
+        - rows: { op: 'route_rows(sel, K)', tex: '\mathbf{i}^{\pi}', dtype: int64 }
+        - R: { op: 'embedding(rows, x)', tex: 'X^{\pi}' }
+        - P: { op: 'embedding(rows, rw)', tex: 'P^{\pi}' }
+        - pr: { op: 'gather(P, 1, view(ex, T * K, 1))', tex: '\mathbf{p}^{\pi}' }
+  - experts:
+      title: experts
+      subtitle: DeepGEMM，M 分组 GEMM
+      body:
+        - gate_e: { op: 'grouped_mm(R, Wg, ex)', tex: '\mathbf{gate}^{\pi}' }
+        - up_e: { op: 'grouped_mm(R, Wu, ex)', tex: '\mathbf{up}^{\pi}' }
+        - a_e: { op: silu(gate_e), tex: '\mathrm{SiLU}(\mathbf{gate}^{\pi})' }
+        - m_e: { op: a_e * up_e, tex: '\mathbf{m}^{\pi}' }
+        - Y: { op: 'grouped_mm(m_e, Wd, ex)', tex: 'Y^{\pi}' }
+        - Yw: { op: Y * pr, tex: '\mathbf{p}^{\pi}\odot Y^{\pi}' }
+  - combine:
+      title: combine
+      subtitle: DeepEP，按 token 求和
+      body:
+        - routed: { op: 'index_add(Yw, rows, T)', tex: '\mathbf{y}^{\mathrm{r}}' }
+  - shared_experts:
+      use: GLU
+      subtitle: DeepseekV3MLP，共享专家
+      suffix: s
+      folded: true
+      params: { act: silu, f: mf*Sh, name: shared }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+  - out: { op: routed + shared, tex: '\mathbf{moe}' }
+steps:
+  - id: router
+    show: [Wr.T, logits, s]
+    label: '$\of{s}=\sigma(\of{x}W_r^{\top})$'
+    title: 每个专家一个亲和度
+    text: |
+      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数，HF 把输入和权重都转成 float32 再乘。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度 $\of{s}$，各个专家互不影响。
+      $$\of{s}=\sigma(\of{x}W_r^{\top})={{ s | matrix:3 }}$$
+    backward:
+      label: '$\partial W_r,\ \partial\of{x}$'
+      title: 传到 gate 的权重和 $\of{x}$
+      text: |
+        只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。
+        $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
+  - id: bias
+    show: [bias, sc]
+    label: '$\of{sc}=\of{s}+\of{bias}$'
+    title: 加上负载均衡的偏置
+    text: |
+      <code>e_score_correction_bias</code> 是每个专家一个的偏置，只用来挑专家，不进入专家输出的权重。它是 buffer，不靠梯度更新。
+      $$\of{bias}={{ bias | matrix:3 }},\qquad \of{sc}={{ sc | matrix:3 }}$$
+  - id: group
+    show: [sg, top2, gs]
+    label: '$\of{gs}$'
+    title: 每组专家的得分
+    text: |
+      \of{E} 个专家按编号分成 $G=\of{G}$ 组，每组 \of{E//G} 个。每组取最大的两个 $\of{sc}$ 相加，作为这一组的得分。
+      $$\of{gs}={{ gs | matrix:3 }}$$
+  - id: group_pick
+    show: [gm, em]
+    label: '$\of{em}$'
+    title: 每个位置只看得分最高的 \of{TG} 组
+    text: |
+      每个位置挑出得分最高的 $\of{TG}$ 组，其余组里的专家这一次都不能选。挑选只决定 0 和 1，没有梯度。
+      $$\of{em}={{ em | matrix:2 }}$$
+  - id: topk
+    show: [choice, sel]
+    label: '$\of{sel}$'
+    title: 'top-$\of{K}$：选出 $K$ 个专家'
+    text: |
+      不能选的专家记成 $-\infty$，再在剩下的专家里按 $\of{sc}$ 选最大的 $K=\of{K}$ 个。
+      $$\of{sel}={{ sel | matrix:2 }}$$
+  - id: weights
+    show: [w, den, wn, rw]
+    label: '$\of{rw}$'
+    title: 专家的权重
+    text: |
+      权重用不带偏置的 $\of{s}$：选中的那几个亲和度除以它们的和，再乘 routed_scaling_factor $=\of{rsf}$。
+      $$\of{rw}=\of{rsf}\cdot\frac{\of{s}\odot\of{sel}}{\sum\of{s}\odot\of{sel}}={{ rw | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{s}$'
+      title: 穿过归一化，传到亲和度
+      text: |
+        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
+  - id: sort
+    show: ex
+    label: '$\of{ex}$'
+    title: 按专家排序
+    text: |
+      $\of{sel}$ 里每个 1 是一个 (token, 专家) 对，一共 $T K=\of{T*K}$ 对。把它们先按专家编号、再按 token 编号排好，第 $r$ 行交给专家 $e_r$，这一列记作 $\of{ex}=(e_r)$。同一个专家的行排在一起，各个专家分到的行数不一样多。下标只是整数，没有梯度。
+      $$\of{ex}={{ ex | matrix:0 }}$$
+  - id: sort_rows
+    show: rows
+    label: '$\of{rows}$'
+    title: 每一行来自哪个 token
+    text: |
+      同样的顺序下，第 $r$ 行来自 token $i_r$，这一列记作 $\of{rows}=(i_r)$。每个 token 出现 $K=\of{K}$ 次。
+      $$\of{rows}={{ rows | matrix:0 }}$$
+  - id: dispatch
+    show: [R, P, pr]
+    label: '$\of{R}=\of{x}[\of{rows}]$'
+    title: 排列（dispatch）
+    text: |
+      按 $\of{rows}$ 从 $\of{x}$ 里取行，每个 token 复制 $K=\of{K}$ 份，分别放进它所选专家的那一段。路由权重 $\of{rw}$ 按同样的下标取行得到 $\of{P}$，再按 $\of{ex}$ 取出每一行自己专家的那一个权重 $p^{\pi}_r=p_{i_r,e_r}$。这一步对应 DeepEP 的 dispatch，真实部署里这些行分布在不同的卡上。DeepGEMM 要求每个专家的那一段补齐到 BLOCK_M 的整数倍，这里不补。
+      $$X^{\pi}_r=\mathbf{x}_{i_r}:\quad \of{R}={{ R | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 排列的反向：按 token 加回
+      text: |
+        取行的反向是把每一行的梯度加回它来自的 token，所以排列的反向就是一次 combine：每个 token 收到自己 $K$ 份副本的梯度之和。
+        $$\frac{\partial\ell}{\partial\mathbf{x}_t}\Big|_{\mathrm{dispatch}}=\sum_{r:\,i_r=t}\frac{\partial\ell}{\partial X^{\pi}_r}$$
+  - id: gemm_in
+    show: [Wg, Wu, gate_e, up_e]
+    label: '$\of{gate_e},\ \of{up_e}$'
+    title: grouped GEMM：gate_proj 和 up_proj
+    text: |
+      每一行只乘它所属专家的权重：$\mathbf{gate}^{\pi}_r=W_{g}[e_r]\,X^{\pi}_r$。所有专家的权重形状相同，只有每个专家分到的行数 $M$ 不同，所以全部专家可以放进一次 DeepGEMM 的 M 分组 GEMM（<code>m_grouped_fp8_gemm_nt_contiguous</code>），用每行的专家编号作为 <code>grouped_layout</code>。这里不用 FP8。
+      $$\of{gate_e}={{ gate_e | matrix:2 }}$$
+    backward:
+      label: '$\partial W_g,\ \partial W_u,\ \partial\of{R}$'
+      title: 每个专家只从自己的行学习
+      text: |
+        专家 $e$ 的权重梯度只累加分给它的那些行：
+        $$\frac{\partial\ell}{\partial W_{g}[e]}=\sum_{r:\,e_r=e}\frac{\partial\ell}{\partial\mathbf{gate}^{\pi}_r}\,(X^{\pi}_r)^{\top}$$
+        没有分到行的专家梯度是 0。
+  - id: act
+    show: [a_e, m_e]
+    label: '$\of{m_e}$'
+    title: SwiGLU
+    text: |
+      和普通的 SwiGLU 一样逐元素计算，每一行只用自己的 gate 和 up。
+      $$\of{m_e}=\mathrm{SiLU}(\of{gate_e})\odot\of{up_e}={{ m_e | matrix:2 }}$$
+  - id: gemm_out
+    show: [Wd, Y, Yw]
+    label: '$\of{Yw}$'
+    title: grouped GEMM：down_proj，乘路由权重
+    text: |
+      再做一次 M 分组 GEMM，每一行乘自己专家的 $W_d$，回到 $d$ 维；然后每一行乘上自己的路由权重 $p^{\pi}_r$。路由权重在专家的计算里乘上，不在 combine 里乘。
+      $$Y^{\pi}_r=W_{d}[e_r]\,\mathbf{m}^{\pi}_r,\qquad (\mathbf{p}^{\pi}\odot Y^{\pi})_r=p^{\pi}_r\,Y^{\pi}_r:\quad \of{Yw}={{ Yw | matrix:2 }}$$
+  - id: combine
+    show: routed
+    label: '$\of{routed}$'
+    title: 加回（combine）
+    text: |
+      已经乘过权重的各行按 $\of{rows}$ 加回各自的 token。这一步对应 DeepEP 的 combine，它只做按 token 求和，真实部署里用 BF16 传输。
+      $$\mathbf{y}^{\mathrm{r}}_t=\sum_{r:\,i_r=t}p^{\pi}_r\,Y^{\pi}_r:\quad \of{routed}={{ routed | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{Yw}$'
+      title: 加回的反向：按行取出
+      text: |
+        按 token 求和的反向是把每个 token 的梯度复制给它的每一行，所以加回的反向就是一次 dispatch：第 $r$ 行取出 token $i_r$ 的梯度。
+        $$\frac{\partial\ell}{\partial(\mathbf{p}^{\pi}\odot Y^{\pi})_r}=\frac{\partial\ell}{\partial\mathbf{y}^{\mathrm{r}}_{i_r}}$$
+  - id: add
+    show: out
+    label: '$\of{out}=\of{routed}+\of{shared}$'
+    title: 加上共享专家
+    text: |
+      共享专家每个位置都要经过，不参与排列，权重固定是 1。DeepEP 的 combine 可以通过 <code>bias</code> 参数在求和的最后一步加上共享专家的输出，这里画成单独的一次相加。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{routed},\ \partial\of{shared}$'
+      title: 梯度分给路由专家和共享专家
