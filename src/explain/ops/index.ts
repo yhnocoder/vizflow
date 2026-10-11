@@ -26,6 +26,10 @@ import { nllLossExplain } from './loss';
 import { matmulExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
+import { maskedFillExplain, triuExplain } from './elementwise';
+import { padExplain, unsqueezeExplain } from './index_ops';
+import { solveTriangularExplain } from './matmul';
+import { cumsumExplain } from './reduce';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   add: addExplain,
@@ -65,6 +69,12 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   causal_conv1d: causalConv1dExplain,
   topk_mask: topkMaskExplain,
   where: whereExplain,
+  cumsum: cumsumExplain,
+  unsqueeze: unsqueezeExplain,
+  pad: padExplain,
+  triu: triuExplain,
+  masked_fill: maskedFillExplain,
+  solve_triangular: solveTriangularExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

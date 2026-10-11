@@ -28,6 +28,10 @@ import { type Reduction, nllLossOp } from './loss';
 import { matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
+import { maskedFillOp, triuOp } from './elementwise';
+import { padOp, unsqueezeOp } from './index_ops';
+import { solveTriangularOp } from './matmul';
+import { cumsumOp } from './reduce';
 
 export type { Dim, Reduction };
 
@@ -51,6 +55,15 @@ export interface RsqrtOptions extends OpOptions {
 export interface CatOptions extends OpOptions {
   dim?: number;
   pieces?: number | string | null;
+}
+
+export interface SolveTriangularOptions extends OpOptions {
+  upper?: boolean;
+  unitriangular?: boolean;
+}
+
+export interface TriuOptions extends OpOptions {
+  diagonal?: number;
 }
 
 export interface BuiltinOps {
@@ -92,6 +105,13 @@ export interface BuiltinOps {
   causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
+  cumsum(input: Node, dim: number, options?: OpOptions): Node;
+  unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
+  pad(input: Node, pad: (number | string)[], options?: OpOptions): Node;
+  pad(input: Node, ...pad: (number | string)[]): Node;
+  triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
+  masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
+  solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -132,6 +152,12 @@ export const builtinOps: readonly AnyOpDef[] = [
   causalConv1dOp,
   topkMaskOp,
   whereOp,
+  cumsumOp,
+  unsqueezeOp,
+  padOp,
+  triuOp,
+  maskedFillOp,
+  solveTriangularOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

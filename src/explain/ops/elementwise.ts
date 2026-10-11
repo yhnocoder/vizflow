@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { SOFTPLUS_THRESHOLD, normalCdf, normalPdf, sigmoid } from '../../autograd/ops/elementwise';
+import { SOFTPLUS_THRESHOLD, type TriuAttrs, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -159,5 +159,28 @@ export const whereExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${scalarTex(s.attrs)})`,
     local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
+  },
+};
+
+export const triuExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out) => (triuKeeps(out, ctx.attrs as TriuAttrs) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{triu}(${s.in[0]},${(s.attrs as TriuAttrs).diagonal})`,
+    local: (s) => (triuKeeps(s.outIndex, s.attrs as TriuAttrs) ? '1' : '0'),
+  },
+};
+
+const valueTex = (attrs: object) => {
+  const v = (attrs as { value: number }).value;
+  return v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true });
+};
+
+export const maskedFillExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, arg) => (arg === 0 && operand(ctx, 1, out) === 0 ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{masked\\_fill}(${s.in[0]},${s.in[1]},${valueTex(s.attrs)})`,
+    local: (s) => (s.arg === 0 && operand(s.ctx, 1, s.outIndex) === 0 ? '1' : '0'),
   },
 };

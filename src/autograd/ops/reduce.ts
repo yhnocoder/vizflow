@@ -1,4 +1,4 @@
-import { Tensor, normDims, reduceMap, reducedShape } from '../../tensor';
+import { Tensor, normDim, normDims, reduceMap, reducedShape } from '../../tensor';
 import type { OpDef } from '../op';
 
 export type Dim = number | number[];
@@ -114,4 +114,38 @@ export const logsumexpOp: OpDef<ReduceAttrs> = {
     }
     return [grad];
   },
+};
+
+export interface CumsumAttrs {
+  dim: number;
+}
+
+function scan(input: Tensor, dim: number, reverse: boolean): Tensor {
+  const d = normDim(dim, input.ndim);
+  const size = input.shape[d];
+  const stride = input.shape.slice(d + 1).reduce((a, b) => a * b, 1);
+  const out = new Tensor(input.shape);
+  for (let offset = 0; offset < input.size; offset++) {
+    const position = Math.floor(offset / stride) % size;
+    if (position !== (reverse ? size - 1 : 0)) continue;
+    let total = 0;
+    for (let step = 0; step < size; step++) {
+      const at = offset + (reverse ? -step : step) * stride;
+      total += input.data[at];
+      out.data[at] = total;
+    }
+  }
+  return out;
+}
+
+export const cumsumOp: OpDef<CumsumAttrs> = {
+  name: 'cumsum',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  shape: ([a], attrs) => {
+    normDim(attrs.dim, a.length);
+    return [...a];
+  },
+  forward: ([a], attrs) => scan(a, attrs.dim, false),
+  backward: (gradOut, _inputs, _out, attrs) => [scan(gradOut, attrs.dim, true)],
 };

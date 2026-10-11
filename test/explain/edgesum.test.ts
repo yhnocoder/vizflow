@@ -224,6 +224,68 @@ const cases: Case[] = [
       return { out: g.where(keep, x, -1e9), inputs: [x] };
     },
   },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [2, 4, 3]) },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [4, 2]) },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [3, 4], [2, 1, 4, 2]) },
+  {
+    op: 'cumsum',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.cumsum(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'cumsum',
+    build: (g, r) => {
+      const x = g.input('x', [2, 4], randomValues(r, [2, 4]));
+      return { out: g.cumsum(x, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'unsqueeze',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.unsqueeze(x, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'pad',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.pad(x, 0, 0, 1, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'triu',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.triu(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'masked_fill',
+    build: (g, r) => {
+      const mask = g.label('mask', [[0, 1, 1], [0, 0, 1], [0, 0, 0]]);
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.masked_fill(x, mask, -1e9), inputs: [x] };
+    },
+  },
+  {
+    op: 'solve_triangular',
+    build: (g, r) => {
+      const A = g.input('A', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      const B = g.input('B', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.solve_triangular(A, B, { upper: false, unitriangular: true }), inputs: [A, B] };
+    },
+  },
+  {
+    op: 'solve_triangular',
+    build: (g, r) => {
+      const A = g.input('A', [3, 3], randomValues(r, [3, 3], true));
+      const B = g.input('B', [3, 2], randomValues(r, [3, 2]));
+      return { out: g.solve_triangular(A, B, { upper: true }), inputs: [A, B] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

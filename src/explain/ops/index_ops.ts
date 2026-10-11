@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { convTaps } from '../../autograd/ops/index_ops';
+import { type PadAttrs, convTaps, padSource } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -153,5 +153,26 @@ export const topkMaskExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{topk\\_mask}(${s.in[0]},${(s.attrs as { k: number }).k})`,
     local: () => '0',
+  },
+};
+
+export const unsqueezeExplain: OpExplain = {
+  ...viewExplain,
+  tex: {
+    forward: (s) => `\\operatorname{unsqueeze}(${s.in[0]},${(s.attrs as { dim: number }).dim})`,
+    local: () => '1',
+  },
+};
+
+export const padExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{pad}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const source = padSource(ctx.inputs[0].shape, ctx.attrs as PadAttrs, out);
+    return source === undefined ? [] : [{ arg: 0, index: source }];
   },
 };
