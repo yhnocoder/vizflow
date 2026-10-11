@@ -2,6 +2,7 @@ module: QSAIndexer
 subtitle: Qwen4ExpTextQSAIndexer
 import:
   ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
+  ReLU:                vizflow/nn/relu
 params:
   HI:    { type: dim }
   DI:    { type: dim }
@@ -32,6 +33,8 @@ body:
       outputs: { out: iqn }
       steps:
         square: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        mean: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        eps: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         rms: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         normalize: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         scale: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
@@ -39,7 +42,10 @@ body:
   - iq_rot:  { op: 'narrow(iqn, -1, 0, rd)', tex: '\bar{\mathbf{q}}^{I}_{\mathrm{rot}}' }
   - iq_pass: { op: 'narrow(iqn, -1, rd, DI - rd)', tex: '\bar{\mathbf{q}}^{I}_{\mathrm{pass}}' }
   - iq_cos:  { op: iq_rot * cos, tex: '\bar{\mathbf{q}}^{I}_{\mathrm{rot}}\odot\cos' }
-  - iq_rh:   { op: rotate_half(iq_rot), tex: '\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})' }
+  - iq_r1:   { op: 'narrow(iq_rot, -1, 0, rd // 2)', tex: '{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{1}' }
+  - iq_r2:   { op: 'narrow(iq_rot, -1, rd // 2, rd // 2)', tex: '{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}' }
+  - iq_nr2:  { op: -iq_r2, tex: '-{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}' }
+  - iq_rh:   { op: 'cat([iq_nr2, iq_r1], dim=-1)', tex: '\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})' }
   - iq_sin:  { op: iq_rh * sin, tex: '\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})\odot\sin' }
   - iq_emb:  { op: iq_cos + iq_sin, tex: "\\mathbf{q}'^{I}_{\\mathrm{rot}}" }
   - iqr:     { op: 'cat([iq_emb, iq_pass], dim=2)', tex: "\\mathbf{q}'^{I}" }
@@ -55,6 +61,8 @@ body:
       outputs: { out: pkn }
       steps:
         square: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        mean: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        eps: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         rms: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         normalize: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
         scale: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
@@ -65,12 +73,25 @@ body:
   - ik_rot:  { op: 'narrow(pk3, -1, 0, rd)', tex: '\hat{\mathbf{k}}^{I}_{\mathrm{rot}}' }
   - ik_pass: { op: 'narrow(pk3, -1, rd, DI - rd)', tex: '\hat{\mathbf{k}}^{I}_{\mathrm{pass}}' }
   - ik_cos:  { op: ik_rot * bcos, tex: '\hat{\mathbf{k}}^{I}_{\mathrm{rot}}\odot\cos_{\mathrm{blk}}' }
-  - ik_rh:   { op: rotate_half(ik_rot), tex: '\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})' }
+  - ik_r1:   { op: 'narrow(ik_rot, -1, 0, rd // 2)', tex: '{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{1}' }
+  - ik_r2:   { op: 'narrow(ik_rot, -1, rd // 2, rd // 2)', tex: '{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}' }
+  - ik_nr2:  { op: -ik_r2, tex: '-{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}' }
+  - ik_rh:   { op: 'cat([ik_nr2, ik_r1], dim=-1)', tex: '\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})' }
   - ik_sin:  { op: ik_rh * bsin, tex: '\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})\odot\sin_{\mathrm{blk}}' }
   - ik_emb:  { op: ik_cos + ik_sin, tex: "\\mathbf{k}'^{I}_{\\mathrm{rot}}" }
   - ikr:     { op: 'view(cat([ik_emb, ik_pass], dim=2), T // c, DI)', tex: "K'^{I}" }
   - qk: { op: 'view(view(iqr, T * HI, DI) @ ikr.T, T, HI, T // c)', tex: "\\mathbf{q}'^{I}K'^{I\\top}" }
-  - qk_relu: { op: relu(qk), tex: "\\operatorname{relu}(\\mathbf{q}'^{I}K'^{I\\top})" }
+  - score_relu:
+      use: ReLU
+      inputs: { x: qk }
+      outputs: { out: qk_relu }
+      tex: { out: "\\operatorname{relu}(\\mathbf{q}'^{I}K'^{I\\top})" }
+      steps:
+        relu:
+          text: |
+            <code>torch.relu(scores)</code>：负的点积记为 0，一个 head 只能给块加分，不能减分。
+            $$\operatorname{relu}={{ qk_relu | matrix:3 }}$$
+          backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里。 }
   - qk_sum: { op: 'sum(qk_relu, 1)', tex: '\textstyle\sum_h\operatorname{relu}' }
   - scores: { op: qk_sum / DI ** 0.5, tex: '\mathbf{sc}' }
   - vb: { op: 'select(view(visible, T, T // c, c), 2, c - 1)', tex: '\mathbf{vis}_{\mathrm{blk}}' }
@@ -124,12 +145,31 @@ steps:
     backward:
       label: 无梯度
       title: 没有梯度
+  - id: q_rope_half
+    show: [iq_r1, iq_r2]
+    label: 'rotate_half'
+    title: rotate_half：切成两半
+    text: |
+      <code>rotate_half(q_rope)</code> 有三行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>、<code>return torch.cat((-x2, x1), dim=-1)</code>。这里一行画一步。第一步把旋转的 $\of{rd}$ 维切成前后两半。
+      $${\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}={{ iq_r2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_neg
+    show: iq_nr2
+    label: 'rotate_half'
+    title: rotate_half：后半取负
+    text: |
+      $$-{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}={{ iq_nr2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
   - id: q_rope_rh
     show: iq_rh
     label: rotate_half
-    title: rotate_half
+    title: rotate_half：交换位置拼回去
     text: |
-      <code>rotate_half(q_rope)</code>：后半段取负号放到前面。
+      <code>torch.cat((-x2, x1), dim=-1)</code>：取负的后半放到前面。
       $$\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})={{ iq_rh | matrix:2 }}$$
     backward:
       label: 无梯度
@@ -145,11 +185,21 @@ steps:
       label: 无梯度
       title: 没有梯度
   - id: q_rope_add
-    show: [iq_emb, iqr]
-    label: "$\\of{iqr}$"
-    title: 相加，拼回整个 head
+    show: iq_emb
+    label: "$\\of{iq_emb}$"
+    title: cos 和 sin 两项相加
     text: |
-      <code>q_rope = (q_rope * cos) + (rotate_half(q_rope) * sin)</code>，<code>torch.cat([q_rope, q_nope], dim=-1)</code>。
+      <code>q_rope = (q_rope * cos) + (rotate_half(q_rope) * sin)</code>。
+      $$\mathbf{q}'^{I}_{\mathrm{rot}}={{ iq_emb | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_cat
+    show: iqr
+    label: "$\\of{iqr}$"
+    title: 拼回整个 head
+    text: |
+      <code>torch.cat([q_rope, q_nope], dim=-1)</code>：旋转过的 $\of{rd}$ 维和原样的 $\of{DI-rd}$ 维拼回去。
       $$\mathbf{q}'^{I}={{ iqr | matrix:2 }}$$
     backward:
       label: 无梯度
@@ -203,10 +253,29 @@ steps:
     backward:
       label: 无梯度
       title: 没有梯度
+  - id: k_rope_half
+    show: [ik_r1, ik_r2]
+    label: 'rotate_half'
+    title: rotate_half：切成两半
+    text: |
+      块 key 的 rotate_half 和 query 的相同：先把旋转的 $\of{rd}$ 维切成前后两半。
+      $${\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}={{ ik_r2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_neg
+    show: ik_nr2
+    label: 'rotate_half'
+    title: rotate_half：后半取负
+    text: |
+      $$-{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}={{ ik_nr2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
   - id: k_rope_rh
     show: ik_rh
     label: rotate_half
-    title: rotate_half
+    title: rotate_half：交换位置拼回去
     text: |
       $$\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})={{ ik_rh | matrix:2 }}$$
     backward:
@@ -222,9 +291,18 @@ steps:
       label: 无梯度
       title: 没有梯度
   - id: k_rope_add
-    show: [ik_emb, ikr]
+    show: ik_emb
+    label: "$\\of{ik_emb}$"
+    title: cos 和 sin 两项相加
+    text: |
+      $$\mathbf{k}'^{I}_{\mathrm{rot}}={{ ik_emb | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_cat
+    show: ikr
     label: "$\\of{ikr}$"
-    title: 相加，拼回整个 head
+    title: 拼回整个 head
     text: |
       旋转过的一段和原样的一段拼回去，<code>.squeeze(1)</code> 去掉 head 维，得到每块一行的 block_key_states。
       $$K'^{I}={{ ikr | matrix:2 }}$$
@@ -238,16 +316,6 @@ steps:
     text: |
       <code>torch.matmul(q[batch_idx, query_idx].float(), block_key_states.float().transpose(-1, -2))</code>：HF 对每个 query 算一次，形状 $(\of{HI}, \text{块数})$；图里把所有 query 一起算，形状 $(T, \of{HI}, \of{T//c})$。
       $$\mathbf{q}'^{I}K'^{I\top}={{ qk | matrix:3 }}$$
-    backward:
-      label: 无梯度
-      title: 没有梯度
-  - id: relu
-    show: qk_relu
-    label: '$\operatorname{relu}$'
-    title: relu
-    text: |
-      <code>torch.relu(scores)</code>：负的点积记为 0，一个 head 只能给块加分，不能减分。
-      $$\operatorname{relu}={{ qk_relu | matrix:3 }}$$
     backward:
       label: 无梯度
       title: 没有梯度

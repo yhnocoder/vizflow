@@ -3,6 +3,8 @@ subtitle: Qwen4ExpTextPLELayer
 import:
   NGramEmbedding: ./ngram-embedding.yaml
   GroupedRMSNorm: ./grouped-rmsnorm.yaml
+  Sigmoid:        vizflow/nn/sigmoid
+  SiLU:           vizflow/nn/silu
 params:
   hc:  { type: dim }
   N:   { type: int }
@@ -50,7 +52,14 @@ body:
   - groot: { op: sqrt(gclamp), tex: '\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}' }
   - gsign: { op: sign(gate), tex: '\operatorname{sign}(\mathbf{g}^{p})' }
   - gs: { op: groot * gsign, tex: '\tilde{\mathbf{g}}^{p}' }
-  - gsig: { op: sigmoid(gs), tex: '\sigma(\tilde{\mathbf{g}}^{p})' }
+  - gate_sigmoid:
+      use: Sigmoid
+      inputs: { x: gs }
+      outputs: { out: gsig }
+      tex: { out: '\sigma(\tilde{\mathbf{g}}^{p})' }
+      steps:
+        neg:
+          append: 这里算的是 <code>torch.sigmoid(gate)</code>：每个位置、每条流一个 0 到 1 之间的门。
   - val3: { op: 'view(val, T, 1, n // hc)', tex: '\operatorname{unsqueeze}(\mathbf{v}^{p})' }
   - gv3: { op: gsig * val3, tex: '\sigma(\tilde{\mathbf{g}}^{p})\odot\mathbf{v}^{p}' }
   - gv: { op: 'view(gv3, T, n)', tex: '\mathbf{u}^{p}' }
@@ -61,7 +70,14 @@ body:
       outputs: { out: un }
       tex: { out: '\hat{\mathbf{u}}^{p}', weight: '\boldsymbol{\gamma}_{conv}' }
   - conv: { op: 'causal_conv1d(un, Wconv, dilation=N)', tex: '\mathbf{c}^{p}' }
-  - cs: { op: silu(conv), tex: '\operatorname{SiLU}(\mathbf{c}^{p})' }
+  - conv_act:
+      use: SiLU
+      inputs: { x: conv }
+      outputs: { out: cs }
+      tex: { out: '\operatorname{SiLU}(\mathbf{c}^{p})' }
+      steps:
+        sigmoid.neg:
+          append: 这里算的是 <code>F.silu(self.conv1d(hidden_states))</code>。
   - out: { op: gv + cs, tex: '\mathbf{ple}' }
 steps:
   - id: key
@@ -130,40 +146,69 @@ steps:
     backward:
       label: '$\partial\mathbf{s}$'
       title: 穿过除法
-  - id: magnitude
-    show: [gabs, gclamp, groot]
-    label: '$\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}$'
-    title: 绝对值、下限、开方
+  - id: abs
+    show: gabs
+    label: '$\lvert\mathbf{g}^{p}\rvert$'
+    title: 取绝对值
     text: |
-      <code>gate.abs().clamp_min(1e-6).sqrt()</code>：取绝对值，小于 $10^{-6}$ 的抬到 $10^{-6}$，再开平方。开方把大的点积压小，下限避免在 0 附近开方时导数变成无穷大。
-      $$\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}={{ groot | matrix:3 }}$$
+      <code>gate.abs().clamp_min(1e-6).sqrt()</code> 是三个逐元素运算，这里一步画一个。第一步取绝对值。
+      $$\lvert\mathbf{g}^{p}\rvert={{ gabs | matrix:3 }}$$
     backward:
       label: '$\partial\mathbf{g}^{p}$'
-      title: 穿过开方、下限和绝对值
+      title: 穿过绝对值
       text: |
-        开方的局部导数是 $\frac{1}{2\sqrt{x}}$；clamp_min 在 $\lvert g\rvert\le10^{-6}$ 的地方导数是 0，其余是 1；绝对值的导数是 $\operatorname{sign}(g)$。
+        绝对值的局部导数是 $\operatorname{sign}(g)$。
+        $$\frac{\partial\ell}{\partial\mathbf{g}^{p}}={{ gate.grad | matrix:3 }}$$
+  - id: clamp
+    show: gclamp
+    label: '$\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})$'
+    title: 下限 $10^{-6}$
+    text: |
+      <code>.clamp_min(1e-6)</code>：小于 $10^{-6}$ 的值抬到 $10^{-6}$，避免下一步在 0 附近开方时导数变成无穷大。
+      $$\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})={{ gclamp | matrix:3 }}$$
+    backward:
+      label: '$\partial\lvert\mathbf{g}^{p}\rvert$'
+      title: 穿过下限
+      text: |
+        clamp_min 在 $\lvert g\rvert\le10^{-6}$ 的地方局部导数是 0，其余是 1。
         $$\frac{\partial\ell}{\partial\lvert\mathbf{g}^{p}\rvert}={{ gabs.grad | matrix:3 }}$$
+  - id: sqrt
+    show: groot
+    label: '$\sqrt{\cdot}$'
+    title: 开平方
+    text: |
+      <code>.sqrt()</code>：开方把大的点积压小。
+      $$\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}={{ groot | matrix:3 }}$$
+    backward:
+      label: '$\partial\max(\cdot)$'
+      title: 穿过开方
+      text: |
+        开方的局部导数是 $\frac{1}{2\sqrt{x}}$。
+        $$\frac{\partial\ell}{\partial\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}={{ gclamp.grad | matrix:3 }}$$
   - id: sign
-    show: [gsign, gs]
+    show: gsign
+    label: '$\operatorname{sign}(\mathbf{g}^{p})$'
+    title: 取符号
+    text: |
+      <code>gate.sign()</code>：正数是 1，负数是 $-1$，0 是 0。
+      $$\operatorname{sign}(\mathbf{g}^{p})={{ gsign | matrix:3 }}$$
+    backward:
+      label: '$\operatorname{sign}$'
+      title: 符号没有梯度
+      text: $\operatorname{sign}$ 的导数处处是 0，梯度只沿开方那一路传回 $\mathbf{g}^{p}$。
+  - id: signed
+    show: gs
     label: '$\of{gs}$'
     title: 乘回符号
     text: |
-      <code>... * gate.sign()</code>：开方后的大小乘回原来的符号，得到保号的平方根 $\tilde{g}=\operatorname{sign}(g)\sqrt{\lvert g\rvert}$。
+      <code>gate.abs().clamp_min(1e-6).sqrt() * gate.sign()</code>：开方后的大小乘回原来的符号，得到保号的平方根 $\tilde{g}=\operatorname{sign}(g)\sqrt{\lvert g\rvert}$。
       $$\tilde{\mathbf{g}}^{p}={{ gs | matrix:3 }}$$
     backward:
-      label: '$\partial\sqrt{\cdot}$'
+      label: '$\partial\sqrt{\cdot},\ \partial\operatorname{sign}$'
       title: 穿过乘符号
-      text: $\operatorname{sign}$ 的导数处处是 0，梯度只沿开方那一路传回。
-  - id: sigmoid
-    show: gsig
-    label: '$\sigma(\tilde{\mathbf{g}}^{p})$'
-    title: sigmoid
-    text: |
-      <code>torch.sigmoid(gate)</code>：每个位置、每条流一个 0 到 1 之间的门。
-      $$\sigma(\tilde{\mathbf{g}}^{p})={{ gsig | matrix:3 }}$$
-    backward:
-      label: '$\partial\tilde{\mathbf{g}}^{p}$'
-      title: 穿过 sigmoid
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。
+        $$\frac{\partial\ell}{\partial\sqrt{\cdot}}={{ groot.grad | matrix:3 }}$$
   - id: gated
     show: [val3, gv3]
     label: '$\of{gv3}$'
@@ -203,16 +248,6 @@ steps:
       title: 传到卷积核和卷积的输入
       text: |
         $$\frac{\partial\ell}{\partial W_{\mathrm{conv}}}={{ Wconv.grad | matrix:3 }}$$
-  - id: act
-    show: cs
-    label: '$\operatorname{SiLU}$'
-    title: SiLU
-    text: |
-      <code>F.silu(self.conv1d(hidden_states))</code>。
-      $$\operatorname{SiLU}(\mathbf{c}^{p})={{ cs | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{c}^{p}$'
-      title: 穿过 SiLU
   - id: add
     show: out
     label: '$\of{out}=\mathbf{u}^{p}+\operatorname{SiLU}(\mathbf{c}^{p})$'

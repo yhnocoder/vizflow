@@ -101,6 +101,38 @@ describe('real shapes under a new T', () => {
   });
 });
 
+describe('costTimeline on the MoE pages', () => {
+  it('counts every parameter of Qwen3-30B-A3B once the 47 placeholder layers are repeated', async () => {
+    const page = await loadExample('qwen3_moe-dsl.yaml');
+    const steps = createSteps(page.graph, page.steps);
+    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const QWEN3_30B_A3B_PARAMS = 30_532_122_624;
+    expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_30B_A3B_PARAMS * 2);
+  });
+
+  it.each(['qwen3_5_moe-dsl.yaml', 'qwen3_8_moe-dsl.yaml', 'qwen3_8_flash_next-dsl.yaml'])('takes the chunk loop count of %s from T and chunk at real size', async (file) => {
+    const page = await loadExample(file);
+    const node = page.graph.node('linear_layer.linear_attn.chunk_gated_delta_rule.S[1][1]')!;
+    const realCount = (dims: Record<string, number>) => {
+      const sizes = page.graph.realSizes(dims);
+      return node.copies.real.map((d) => (typeof d === 'number' ? d : sizes[d])).reduce((p, v) => p * v, 1);
+    };
+    const heads = page.graph.realSizes().Hv;
+    expect(realCount({})).toBe(heads * 64);
+    expect(realCount({ T: 1000 })).toBe(heads * 16);
+  });
+
+  it.each(['qwen3_moe-dsl.yaml', 'qwen3_5_moe-dsl.yaml', 'qwen3_8_moe-dsl.yaml', 'qwen3_8_flash_next-dsl.yaml'])('computes the cost of %s at real size within five seconds', async (file) => {
+    const page = await loadExample(file);
+    const steps = createSteps(page.graph, page.steps);
+    const start = performance.now();
+    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules, dims: { T: 2048 } });
+    expect(performance.now() - start).toBeLessThan(5000);
+    expect(t.forward).toBeGreaterThan(0);
+    expect(t.uncounted).toEqual([]);
+  });
+});
+
 describe('costTimeline on the Qwen3 page', () => {
   it('counts every parameter of Qwen3-8B once the placeholder layers are repeated', async () => {
     const page = await loadExample('qwen3-dsl.yaml');

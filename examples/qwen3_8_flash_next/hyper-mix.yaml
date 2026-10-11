@@ -2,7 +2,9 @@ module: GatedResidualMix
 subtitle: Qwen4ExpTextGatedResidual
 import:
   GroupedRMSNorm: ./grouped-rmsnorm.yaml
-formula: '\step{mean}{\of{m}=\operatorname{mean}_k\big(}\step{sig}{\sigma\big(}\step{up}{W_{up}}\step{act}{\operatorname{SiLU}\big(}\step{down}{W_{down}}\step{hc_norm.*}{\hat{H}}\step{scale_down}{/\of{hc}}\step{act}{\big)}\step{sig}{\big)_k}\step{mean}{\odot\hat{H}_k\big)}'
+  Sigmoid:        vizflow/nn/sigmoid
+  SiLU:           vizflow/nn/silu
+formula: '\step{mean}{\of{m}=\operatorname{mean}_k\big(}\step{mix_sigmoid.*}{\sigma\big(}\step{up}{W_{up}}\step{mix_act.*}{\operatorname{SiLU}\big(}\step{down}{W_{down}}\step{hc_norm.*}{\hat{H}}\step{scale_down}{/\of{hc}}\step{mix_act.*}{\big)}\step{mix_sigmoid.*}{\big)_k}\step{mean}{\odot\hat{H}_k\big)}'
 params:
   hc: { type: dim }
   r:  { type: dim }
@@ -21,9 +23,23 @@ body:
       tex: { out: '\hat{\of{H}}' }
   - down: { op: Hn @ Wdown.T, tex: '\hat{\of{H}}W_{down}^{\top}' }
   - ds: { op: down / hc, tex: '\mathbf{u}' }
-  - sd: { op: silu(ds), tex: '\operatorname{SiLU}(\mathbf{u})' }
+  - mix_act:
+      use: SiLU
+      inputs: { x: ds }
+      outputs: { out: sd }
+      tex: { out: '\operatorname{SiLU}(\mathbf{u})' }
+      steps:
+        sigmoid.neg:
+          append: 这里算的是 <code>F.silu(self.input_mix_weight_down(hyper_input_normed) / self.hc_count)</code>。
   - up: { op: sd @ Wup.T, tex: '\mathbf{a}' }
-  - A: { op: sigmoid(up), tex: 'A' }
+  - mix_sigmoid:
+      use: Sigmoid
+      inputs: { x: up }
+      outputs: { out: A }
+      tex: { out: 'A' }
+      steps:
+        neg:
+          append: 这里算的是 <code>torch.sigmoid(self.input_mix_weight_up(...))</code>：$A$ 在 0 和 1 之间，决定从每条流的每一维读出多少。$A$ 由当前位置的输入算出，所以每个位置的读法不同。
   - A3: { op: 'view(A, T, hc, n // hc)', tex: 'A^{(k)}' }
   - Hn3: { op: 'view(Hn, T, hc, n // hc)', tex: '\hat{\of{H}}^{(k)}' }
   - prod: { op: A3 * Hn3, tex: 'A^{(k)}\odot\hat{\of{H}}^{(k)}' }
@@ -53,16 +69,6 @@ steps:
       label: '$\partial\,\of{down}$'
       title: 穿过除法
       text: 局部导数是 $1/\of{hc}$。
-  - id: act
-    show: sd
-    label: '$\operatorname{SiLU}$'
-    title: SiLU
-    text: |
-      <code>F.silu(...)</code>。
-      $$\operatorname{SiLU}(\mathbf{u})={{ sd | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{u}$'
-      title: 穿过 SiLU
   - id: up
     show: [Wup.T, up]
     brace: { title: input_mix_weight_up, subtitle: 'nn.Linear，$\of{r}\to\of{n}$' }
@@ -76,16 +82,6 @@ steps:
       title: 传到 $W_{up}$
       text: |
         $$\frac{\partial\ell}{\partial W_{up}}={{ Wup.grad | matrix:3 }}$$
-  - id: sig
-    show: A
-    label: '$\of{A}=\sigma(\of{up})$'
-    title: sigmoid 得到读出权重 $A$
-    text: |
-      <code>torch.sigmoid(...)</code>：$A$ 在 0 和 1 之间，决定从每条流的每一维读出多少。$A$ 由当前位置的输入算出，所以每个位置的读法不同。
-      $$A={{ A | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{a}$'
-      title: 穿过 sigmoid
   - id: unflatten
     show: [A3, Hn3]
     label: '$\mathrm{unflatten}$'

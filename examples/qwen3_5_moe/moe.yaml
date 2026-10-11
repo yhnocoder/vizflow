@@ -3,6 +3,7 @@ subtitle: Qwen3_5MoeSparseMoeBlock
 import:
   SparseMoE: vizflow/nn/moe
   GLU: vizflow/nn/glu
+  Sigmoid: vizflow/nn/sigmoid
 params:
   E:  { type: dim }
   K:  { type: dim }
@@ -29,7 +30,6 @@ body:
       use: GLU
       subtitle: Qwen3_5MoeMLP，共享专家
       suffix: s
-      folded: true
       params: { act: SiLU, f: sf, name: shared_expert }
       inputs: { x: x }
       outputs: { down: ys }
@@ -42,17 +42,25 @@ body:
       outputs: { out: yr }
       tex: { out: '\mathbf{y}^{\mathrm{r}}' }
   - gl: { op: x @ Wsg.T, tex: '\mathbf{g}^{\mathrm{s}}' }
-  - gs: { op: sigmoid(gl), tex: '\sigma(\mathbf{g}^{\mathrm{s}})' }
+  - gate_sigmoid:
+      use: Sigmoid
+      inputs: { x: gl }
+      outputs: { out: gs }
+      tex: { out: '\sigma(\mathbf{g}^{\mathrm{s}})' }
+      steps:
+        neg:
+          append: 这里算的是共享专家的门 <code>F.sigmoid(self.shared_expert_gate(hidden_states))</code>：每个位置一个 0 到 1 之间的系数，决定这个位置用多少共享专家的输出。
   - shared: { op: gs * ys, tex: '\sigma(\mathbf{g}^{\mathrm{s}})\odot\mathbf{y}^{\mathrm{s}}' }
   - out: { op: yr + shared, tex: '\mathbf{moe}' }
 steps:
   - id: shared_gate
-    show: [Wsg.T, gl, gs]
-    label: '$\sigma(\of{x}W_{sg}^{\top})$'
-    title: 共享专家的门
+    brace: { title: shared_expert_gate, subtitle: nn.Linear }
+    show: [Wsg.T, gl]
+    label: '$\of{gl}=\of{x}W_{sg}^{\top}$'
+    title: 共享专家的门：shared_expert_gate
     text: |
-      <code>shared_expert_gate</code> 是一个输出只有 1 维的 Linear，每个位置得到一个分数，经过 sigmoid 变成 0 到 1 之间的系数，决定这个位置用多少共享专家的输出。
-      $$\sigma(\of{x}W_{sg}^{\top})={{ gs | matrix:3 }}$$
+      <code>shared_expert_gate</code> 是一个输出只有 1 维的 Linear，没有 bias，每个位置得到一个分数，下面经过 sigmoid 变成门的系数。
+      $$\of{gl}={{ gl | matrix:3 }}$$
     backward:
       label: '$\partial W_{sg},\ \partial\of{x}$'
       title: 传到共享专家的门

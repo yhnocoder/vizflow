@@ -103,11 +103,21 @@ steps:
       label: 无梯度
       title: token id 没有梯度
   - id: concat
-    show: [all_ids, ngram_ids]
-    label: '$\of{ngram_ids}$'
-    title: 拼起各个 head，去掉补上的位置
+    show: all_ids
+    label: '$\of{all_ids}$'
+    title: 拼起各个 head
     text: |
-      <code>torch.cat(blocks, dim=-1)[:, -input_ids.shape[1]:]</code>：$\of{N-1}$ 个 n 的 $\of{hpn}$ 个 head 拼成每个位置 $\of{(N-1)*hpn}$ 个 id，再去掉历史开头补的 $\of{N-1}$ 个位置，只留当前的 $T$ 个。
+      <code>torch.cat(blocks, dim=-1)</code>：$\of{N-1}$ 个 n 的 $\of{hpn}$ 个 head 拼成每个位置 $\of{(N-1)*hpn}$ 个 id。
+      $$\of{all_ids}={{ all_ids | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: token id 没有梯度
+  - id: trim
+    show: ngram_ids
+    label: '$\of{ngram_ids}$'
+    title: 去掉补上的位置
+    text: |
+      <code>[:, -input_ids.shape[1]:]</code>：去掉历史开头补的 $\of{N-1}$ 个位置，只留当前的 $T$ 个。
       $$\of{ngram_ids}={{ ngram_ids | matrix:0 }}$$
     backward:
       label: 无梯度

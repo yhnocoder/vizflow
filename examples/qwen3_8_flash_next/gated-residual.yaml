@@ -2,6 +2,7 @@ module: GatedResidual
 subtitle: Qwen4ExpTextGatedResidual
 import:
   GatedResidualMix: ./hyper-mix.yaml
+  Sigmoid:          vizflow/nn/sigmoid
 params:
   hc: { type: dim }
   r:  { type: dim }
@@ -19,7 +20,14 @@ body:
       outputs: { m: m, Hn: Hn }
   - bl: { op: Hn @ Wbeta.T, tex: '\hat{\of{H}}W_{\beta}^{\top}' }
   - bs: { op: bl / hc, tex: '\mathbf{v}' }
-  - bsig: { op: sigmoid(bs), tex: '\sigma(\mathbf{v})' }
+  - inject_sigmoid:
+      use: Sigmoid
+      inputs: { x: bs }
+      outputs: { out: bsig }
+      tex: { out: '\sigma(\mathbf{v})' }
+      steps:
+        neg:
+          append: 这里算的是写回系数里的 <code>torch.sigmoid(self.block_inject_weight(hyper_input_normed) / self.hc_count)</code>。
   - beta: { op: bsig * 2, tex: '\boldsymbol{\beta}' }
 steps:
   - id: inject
@@ -45,16 +53,6 @@ steps:
     backward:
       label: '$\partial\,\of{bl}$'
       title: 穿过除法
-  - id: inject_sigmoid
-    show: bsig
-    label: '$\sigma(\mathbf{v})$'
-    title: sigmoid
-    text: |
-      <code>torch.sigmoid(...)</code>。
-      $$\sigma(\mathbf{v})={{ bsig | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{v}$'
-      title: 穿过 sigmoid
   - id: inject_double
     show: beta
     label: '$\of{beta}=2\sigma(\mathbf{v})$'

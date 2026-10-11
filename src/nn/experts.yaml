@@ -1,9 +1,14 @@
 module: Experts
 subtitle: 路由专家，每个专家只算选中它的 token
+import:
+  Sigmoid: vizflow/nn/sigmoid
+  ReLU:    vizflow/nn/relu
+  GELU:    vizflow/nn/gelu
+  SiLU:    vizflow/nn/silu
 params:
   E:   { type: dim }
   mf:  { type: dim }
-  act_fn: { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+  act_fn: { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
 inputs:
   x:   { shape: [T, d] }
   idx: { shape: [T, K] }
@@ -13,7 +18,7 @@ weights:
   Wgu: { shape: [E, 2*mf, d], tex: 'W_{gu}' }
   Wd:  { shape: [E, d, mf], tex: 'W_{d}' }
 buffers:
-  final: { value: 'zeros(T, d)', tex: 'Z' }
+  final: { value: 'zeros(T, d)', tex: '\mathbf{0}' }
 fold:
   label: '$\of{out}=\mathrm{experts}(\of{x},\of{idx},\of{w})$'
   title: experts（已折叠）
@@ -38,8 +43,12 @@ body:
   - gate_up:       { op: 'grouped_linear(current_state, Wgu, expert_idx)', tex: '\mathbf{gu}' }
   - gate:          { op: 'narrow(gate_up, -1, 0, mf)', tex: '\mathbf{gate}' }
   - up:            { op: 'narrow(gate_up, -1, mf, mf)', tex: '\mathbf{up}' }
-  - act:           { op: act_fn(gate), tex: '\of{act_fn}(\mathbf{gate})' }
-  - hidden:        { op: act * up, tex: '\mathbf{m}' }
+  - act:
+      use: act_fn
+      inputs: { x: gate }
+      outputs: { out: hact }
+      tex: { out: '\of{act_fn}(\mathbf{gate})' }
+  - hidden:        { op: hact * up, tex: '\mathbf{m}' }
   - down:          { op: 'grouped_linear(hidden, Wd, expert_idx)', tex: '\mathbf{d}' }
   - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}' }
   - scaled:        { op: 'down * view(weight, T*K, 1)', tex: '\mathbf{d}^{w}' }
@@ -121,33 +130,19 @@ steps:
       text: |
         chunk 的反向把 $\of{gate}$ 和 $\of{up}$ 的梯度按列拼回去，前 $m_f$ 列来自 gate，后 $m_f$ 列来自 up。
         $$\frac{\partial\ell}{\partial\of{gate_up}}={{ gate_up.grad | matrix:3 }}$$
-  - id: act
-    show: act
-    label: '$\of{act}$'
-    title: 激活
-    text: |
-      <code>self.act_fn(gate)</code>，gate 逐元素经过 $\of{act_fn}$：
-      $$\of{act_fn.def}$$
-      $$\of{act}={{ act | matrix:2 }}$$
-    backward:
-      label: '$\partial\of{gate}$'
-      title: 穿过激活
-      text: |
-        上游梯度逐元素乘激活函数在 $\of{gate}$ 处的导数。
-        $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
   - id: mul
     show: hidden
-    label: '$\of{hidden}=\of{act}\odot\of{up}$'
+    label: '$\of{hidden}=\of{hact}\odot\of{up}$'
     title: 门控相乘
     text: |
-      <code>current_hidden_states = self.act_fn(gate) * up</code>，逐元素相乘。
+      <code>current_hidden_states = self.act_fn(gate) * up</code>：上一步 <code>self.act_fn(gate)</code> 的结果 $\of{hact}$ 和 $\of{up}$ 逐元素相乘。
       $$\of{hidden}={{ hidden | matrix:2 }}$$
     backward:
-      label: '$\partial\of{act},\ \partial\of{up}$'
+      label: '$\partial\of{hact},\ \partial\of{up}$'
       title: 梯度分给激活和 up
       text: |
-        $\of{act}$ 的梯度是上游梯度乘 $\of{up}$，$\of{up}$ 的梯度是上游梯度乘 $\of{act}$，都是逐元素相乘。
-        $$\frac{\partial\ell}{\partial\of{act}}={{ act.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\of{up}}={{ up.grad | matrix:3 }}$$
+        $\of{hact}$ 的梯度是上游梯度乘 $\of{up}$，$\of{up}$ 的梯度是上游梯度乘 $\of{hact}$，都是逐元素相乘。
+        $$\frac{\partial\ell}{\partial\of{hact}}={{ hact.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\of{up}}={{ up.grad | matrix:3 }}$$
   - id: down
     show: [Wd, down]
     label: '$\of{down}$'

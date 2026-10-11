@@ -53,7 +53,8 @@ describe.each(PAGES)('$page against transformers $model in float64', ({ page: fi
 
   it('builds the router and expert steps', () => {
     const titles = createSteps(page.graph, page.steps).list.map((s) => s.title);
-    expect(titles).toContain('top-$2$：选出 $K$ 个专家');
+    expect(titles).toContain('top-$2$：选出 $K$ 个专家的编号');
+    expect(titles).toContain('softmax：按行求和');
     expect(titles).toContain('列出每个专家的 (槽位, 位置)');
   });
 });

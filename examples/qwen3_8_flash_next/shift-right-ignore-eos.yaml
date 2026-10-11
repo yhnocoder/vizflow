@@ -25,52 +25,132 @@ body:
   - valid: { op: 'bitwise_and(ok_seg, ok_src)', tex: '\mathbf{valid}' }
   - out: { op: 'where(valid, shifted, eos)', tex: '\mathbf{tok}^{(\of{shift})}' }
 steps:
+  - id: is_eos
+    show: [pos, is_eos]
+    label: '$\of{is_eos}$'
+    title: $\mathrm{shift}=\of{shift}$：哪些位置是 eos
+    text: |
+      <code>eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)</code> 里先算 <code>token_ids == self.eos_token_id</code>：历史里是 eos 的位置为 1，其余为 0。历史开头补上的 eos 也算在内。<code>positions = torch.arange(seq_len)</code> 是每个位置的下标。
+      $$\of{is_eos}={{ is_eos | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 布尔运算，没有梯度
   - id: eos_positions
-    show: [pos, is_eos, eos_pos]
+    show: eos_pos
     label: '$\of{eos_pos}$'
     title: $\mathrm{shift}=\of{shift}$：找出 eos 的位置
     text: |
-      <code>positions = torch.arange(seq_len)</code>，<code>eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)</code>：历史里是 eos 的位置记下自己的下标，其余记 $-1$。历史开头补上的 eos 也算在内。
+      <code>torch.where(..., positions, -1)</code>：是 eos 的位置记下自己的下标，其余记 $-1$。
       $$\of{eos_pos}={{ eos_pos | matrix:0 }}$$
     backward:
       label: 无梯度
       title: eos 的位置是整数，没有梯度
+  - id: cummax
+    show: prev_incl
+    label: '$\of{prev_incl}$'
+    title: $\mathrm{shift}=\of{shift}$：到当前位置为止最近的 eos
+    text: |
+      <code>previous_eos_inclusive = torch.cummax(eos_positions, dim=1).values</code>：从左到右取累计最大值，得到到当前位置为止（含当前位置）最近的 eos。
+      $$\of{prev_incl}={{ prev_incl | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
+  - id: drop_last
+    show: head
+    label: '$\of{head}$'
+    title: $\mathrm{shift}=\of{shift}$：去掉最后一个位置
+    text: |
+      <code>previous_eos_inclusive[:, :-1]</code>：去掉最后一个位置，为下一步整体右移一位做准备。
+      $$\of{head}={{ head | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
   - id: previous
-    show: [prev_incl, head, neg1, prev_eos]
+    show: [neg1, prev_eos]
     label: '$\of{prev_eos}$'
     title: $\mathrm{shift}=\of{shift}$：每个位置之前最近的 eos
     text: |
-      <code>previous_eos_inclusive = torch.cummax(eos_positions, dim=1).values</code> 是到当前位置为止（含当前位置）最近的 eos；<code>torch.cat([eos_positions.new_full((B, 1), -1), previous_eos_inclusive[:, :-1]], dim=1)</code> 整体右移一位，得到当前位置之前（不含当前位置）最近的 eos，开头补 $-1$。
+      <code>torch.cat([eos_positions.new_full((B, 1), -1), previous_eos_inclusive[:, :-1]], dim=1)</code>：开头补 $-1$，整体右移一位，得到当前位置之前（不含当前位置）最近的 eos。
       $$\of{prev_eos}={{ prev_eos | matrix:0 }}$$
     backward:
       label: 无梯度
       title: 整数运算，没有梯度
+  - id: segment_start
+    show: seg_start
+    label: '$\of{seg_start}$'
+    title: $\mathrm{shift}=\of{shift}$：本段的起点
+    text: |
+      <code>segment_start = previous_eos + 1</code>：eos 把序列分成段，每段从上一个 eos 的下一个位置开始。
+      $$\of{seg_start}={{ seg_start | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
   - id: segment
-    show: [seg_start, in_seg]
+    show: in_seg
     label: '$\of{in_seg}$'
     title: $\mathrm{shift}=\of{shift}$：在本段里的位置
     text: |
-      <code>segment_start = previous_eos + 1</code>，<code>position_in_segment = positions.unsqueeze(0) - segment_start</code>：eos 把序列分成段，$\mathbf{j}$ 是每个位置在自己那一段里的序号。
+      <code>position_in_segment = positions.unsqueeze(0) - segment_start</code>：$\mathbf{j}$ 是每个位置在自己那一段里的序号。
       $$\mathbf{j}={{ in_seg | matrix:0 }}$$
     backward:
       label: 无梯度
       title: 整数运算，没有梯度
+  - id: source
+    show: src
+    label: '$\of{src}$'
+    title: $\mathrm{shift}=\of{shift}$：往前 $\of{shift}$ 个位置的下标
+    text: |
+      <code>source_positions = positions - shift</code>。
+      $$\of{src}={{ src | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
+  - id: clamp
+    show: gather_pos
+    label: '$\of{gather_pos}$'
+    title: $\mathrm{shift}=\of{shift}$：越过开头的下标换成 0
+    text: |
+      <code>gather_positions = source_positions.clamp_min(0)</code>：越过开头的先按位置 0 取，后面再换掉。
+      $$\of{gather_pos}={{ gather_pos | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
   - id: gather
-    show: [src, gather_pos, shifted]
+    show: shifted
     label: '$\of{shifted}$'
     title: $\mathrm{shift}=\of{shift}$：取前 $\of{shift}$ 个位置的 token
     text: |
-      <code>source_positions = positions - shift</code>，<code>gather_positions = source_positions.clamp_min(0)</code>，<code>shifted = token_ids.gather(dim=1, index=gather_positions)</code>：每个位置取它前面第 $\of{shift}$ 个位置的 token，越过开头的先按位置 0 取，下一步再换掉。
+      <code>shifted = token_ids.gather(dim=1, index=gather_positions)</code>：每个位置取它前面第 $\of{shift}$ 个位置的 token。
       $$\of{shifted}={{ shifted | matrix:0 }}$$
     backward:
       label: 无梯度
       title: token id 没有梯度
+  - id: in_segment
+    show: ok_seg
+    label: '$\of{ok_seg}$'
+    title: $\mathrm{shift}=\of{shift}$：往前取不跨过本段的起点
+    text: |
+      <code>valid = (position_in_segment >= shift) &amp; (source_positions.unsqueeze(0) >= 0)</code> 里的第一项：往前 $\of{shift}$ 个位置还在同一段里。
+      $$\of{ok_seg}={{ ok_seg | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 布尔运算，没有梯度
+  - id: in_sequence
+    show: ok_src
+    label: '$\of{ok_src}$'
+    title: $\mathrm{shift}=\of{shift}$：往前取不越过序列开头
+    text: |
+      第二项 <code>source_positions.unsqueeze(0) >= 0</code>：往前 $\of{shift}$ 个位置没有越过序列开头。
+      $$\of{ok_src}={{ ok_src | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 布尔运算，没有梯度
   - id: valid
-    show: [ok_seg, ok_src, valid]
+    show: valid
     label: '$\of{valid}$'
     title: $\mathrm{shift}=\of{shift}$：哪些位置能往前取
     text: |
-      <code>valid = (position_in_segment >= shift) &amp; (source_positions.unsqueeze(0) >= 0)</code>：往前 $\of{shift}$ 个位置还在同一段里、并且没有越过序列开头，才算有效。
+      两项按位与：两个条件都满足才算有效。
       $$\of{valid}={{ valid | matrix:0 }}$$
     backward:
       label: 无梯度

@@ -28,7 +28,9 @@ body:
       subtitle: TopKRouter
       body:
         - logits: { op: x @ Wr.T, tex: '\mathbf{r}' }
-        - p: { op: 'softmax(logits, -1)', tex: '\mathbf{p}', dtype: fp32 }
+        - ex: { op: exp(logits), tex: 'e^{\mathbf{r}}', dtype: fp32 }
+        - Z: { op: 'sum(ex, -1, keepdim=true)', tex: 'Z' }
+        - p: { op: ex / Z, tex: '\mathbf{p}' }
         - idx: { op: 'topk_indices(p, K, -1)', tex: '\mathbf{i}' }
         - top: { op: 'gather(p, -1, idx)', tex: '\mathbf{p}^{\mathrm{top}}' }
         - den: { op: 'sum(top, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{p}^{\mathrm{top}}' }
@@ -52,38 +54,82 @@ steps:
       title: 传到 gate 的权重和 $\of{x}$
       text: |
         $$\frac{\partial\ell}{\partial\of{logits}}={{ logits.grad | matrix:3 }}$$
-  - id: softmax
-    show: p
-    label: '$\of{p}=\operatorname{softmax}(\of{logits})$'
-    title: 每个专家一个概率
+  - id: exp
+    show: ex
+    label: '$\exp$'
+    title: softmax：转成 float32，取 exp
     text: |
-      <code>router_probs = softmax(router_logits, dtype=torch.float, dim=-1)</code>，在 float32 里把一行分数变成 \of{E} 个专家上的概率。
-      $$\of{p}={{ p | matrix:3 }}$$
+      <code>router_probs = softmax(router_logits, dtype=torch.float, dim=-1)</code> 在 float32 里把一行分数变成 \of{E} 个专家上的概率。softmax 按定义拆成三步画：取 exp、按行求和、相除。这一步先把分数转成 float32，再逐元素取 exp。softmax 的 kernel 会先给每一行减去这一行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      $$e^{\mathbf{r}}={{ ex | matrix:3 }}$$
     backward:
       label: '$\partial\of{logits}$'
-      title: 穿过 softmax
+      title: 穿过 exp
+      text: exp 的导数是它自己。
+  - id: sum
+    show: Z
+    label: '$\of{Z}$'
+    title: softmax：按行求和
+    text: |
+      每个位置一个 $Z$，是这一行 \of{E} 个 $e^{r}$ 的和。
+      $$Z={{ Z | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{\mathbf{r}}$'
+      title: 传回 exp
+      text: 求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $e^{r}$，再和直连那条加起来。
+  - id: div
+    show: p
+    label: '$\of{p}$'
+    title: softmax：相除，每个专家一个概率
+    text: |
+      每一行除以自己的 $Z$，得到 \of{E} 个专家上的概率，每行加起来是 1。
+      $$\of{p}={{ p | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{\mathbf{r}},\ \partial Z$'
+      title: 穿过相除
       text: |
-        softmax 让一行里的概率互相影响，没被选中的专家的分数也通过归一化拿到梯度。
+        一行里的概率通过同一个 $Z$ 互相影响，没被选中的专家的分数也通过 $Z$ 拿到梯度。
         $$\frac{\partial\ell}{\partial\of{p}}={{ p.grad | matrix:3 }}$$
   - id: topk
-    show: [idx, top]
-    label: '$\of{idx},\ \of{top}$'
-    title: 'top-$\of{K}$：选出 $K$ 个专家'
+    show: idx
+    label: '$\of{idx}$'
+    title: 'top-$\of{K}$：选出 $K$ 个专家的编号'
     text: |
-      <code>router_top_value, router_indices = torch.topk(router_probs, self.top_k, dim=-1)</code>。每个位置按概率从大到小选 $K=\of{K}$ 个专家，$\of{idx}$ 是它们的编号（从 0 开始），$\of{top}$ 是对应的概率。topk 一次给出两样，图上先画编号（topk_indices），再按编号从 $\of{p}$ 里取出概率（gather），取出的值和 topk 的值相同。编号没有梯度，梯度只通过取出的概率传回 $\of{p}$。
-      $$\of{idx}={{ idx | matrix }},\qquad \of{top}={{ top | matrix:3 }}$$
+      <code>router_top_value, router_indices = torch.topk(router_probs, self.top_k, dim=-1)</code>。每个位置按概率从大到小选 $K=\of{K}$ 个专家，$\of{idx}$ 是它们的编号（从 0 开始）。topk 一次给出值和编号两样，图上分两步画：这一步是编号（topk_indices），下一步按编号从 $\of{p}$ 里取出概率（gather），取出的值和 topk 的值相同。编号没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
+    backward:
+      label: '$\of{idx}$'
+      title: 编号没有梯度
+      text: 编号是整数，没有梯度，这一步没有反向的连线。
+  - id: gather
+    show: top
+    label: '$\of{top}$'
+    title: 'top-$\of{K}$：按编号取出概率'
+    text: |
+      topk 返回的值 <code>router_top_value</code>：按 $\of{idx}$ 从 $\of{p}$ 的每一行取出 $K$ 个概率。
+      $$\of{top}={{ top | matrix:3 }}$$
     backward:
       label: '$\partial\of{p}$'
       title: 传回选中的概率
       text: |
         gather 的反向把梯度放回被选中的那 $K$ 个概率，没选中的专家在这一步拿到 0。
         $$\frac{\partial\ell}{\partial\of{p}}={{ p.grad | matrix:3 }}$$
+  - id: topsum
+    show: den
+    label: '$\of{den}$'
+    title: 选中的概率求和
+    text: |
+      <code>norm_topk_prob = True</code>：<code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>。这一步先算右边的 <code>sum</code>，每个位置一个和。
+      $$\textstyle\sum\mathbf{p}^{\mathrm{top}}={{ den | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{top}$'
+      title: 传回选中的概率
+      text: 求和的局部导数是 1。
   - id: normalize
-    show: [den, rw]
+    show: rw
     label: '$\of{rw}$'
     title: 归一化成路由权重
     text: |
-      <code>norm_topk_prob = True</code>：<code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>，选中的 $K$ 个概率除以它们的和，变成和为 1 的权重，再 <code>.to(router_logits.dtype)</code> 转回分数的 dtype。
+      <code>router_top_value /= ...</code>：选中的 $K$ 个概率除以它们的和，变成和为 1 的权重，再 <code>.to(router_logits.dtype)</code> 转回分数的 dtype。
       $$\of{rw}=\frac{\of{top}}{\sum\of{top}}={{ rw | matrix:3 }}$$
     backward:
       label: '$\partial\of{top}$'
