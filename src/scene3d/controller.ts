@@ -17,7 +17,9 @@ import { LabelLayer } from './labels';
 import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
 import { checkModules } from './modules';
+import { FormulaPanel } from './formulapanel';
 import { ModuleBraces } from './moduleview';
+import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
 import { type Renderable, createRenderable } from './renderable';
@@ -48,6 +50,8 @@ export class SceneController implements EditHost {
   readonly boxes: FoldBoxes;
   readonly chips: TokenChips;
   private readonly nav: OverviewNav | undefined;
+  private readonly formula: FormulaPanel | undefined;
+  readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
@@ -108,6 +112,8 @@ export class SceneController implements EditHost {
     checkModules(modules, this.renderables.map((r) => r.block.node));
     this.moduleBraces.mountLabels(modules);
     this.nav = buildTools(this);
+    this.formula = this.nav === undefined ? undefined : new FormulaPanel(this);
+    this.notes = new SceneNotes(this);
     this.refresh();
     this.resize();
     this.rig.placeCamera();
@@ -248,6 +254,8 @@ export class SceneController implements EditHost {
     this.chips.update();
     this.edgeLines.edges = buildEdges(this);
     if (this.nav !== undefined) updateNav(this, this.nav);
+    this.formula?.update();
+    this.notes.update(info?.notes ?? [], info?.id ?? 'all');
     this.geometryDirty = true;
     this.labelsDirty = true;
     this.popups.repin();
@@ -296,6 +304,7 @@ export class SceneController implements EditHost {
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
       this.labels.project(this.camera, this.width, this.height, !this.follow);
+      this.notes.place();
       this.labelsDirty = false;
       this.screenVersion++;
     }
@@ -363,6 +372,7 @@ export class SceneController implements EditHost {
     this.edgeLines.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();
+    this.notes.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.root.remove();

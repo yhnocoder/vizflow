@@ -61,6 +61,36 @@ export function elemOf(tex: string): string {
   return `{${plain}}`;
 }
 
+function bracedArgument(tex: string, open: number): number {
+  if (tex[open] !== '{') throw new Error('\\step needs two braced arguments: \\step{id}{...}');
+  let depth = 0;
+  for (let i = open; i < tex.length; i++) {
+    if (tex[i] === '\\') i++;
+    else if (tex[i] === '{') depth++;
+    else if (tex[i] === '}' && --depth === 0) return i;
+  }
+  throw new Error('\\step has an unclosed brace');
+}
+
+export function markSteps(tex: string, mark: (id: string) => string): string {
+  const pattern = /\\step(?![A-Za-z])\s*/g;
+  let out = '';
+  let from = 0;
+  for (let found = pattern.exec(tex); found !== null; found = pattern.exec(tex)) {
+    const idOpen = found.index + found[0].length;
+    const idClose = bracedArgument(tex, idOpen);
+    let bodyOpen = idClose + 1;
+    while (/\s/.test(tex[bodyOpen] ?? '')) bodyOpen++;
+    const bodyClose = bracedArgument(tex, bodyOpen);
+    const id = tex.slice(idOpen + 1, idClose).trim();
+    const body = markSteps(tex.slice(bodyOpen + 1, bodyClose), mark);
+    out += `${tex.slice(from, found.index)}\\htmlData{vf-step=${mark(id)}}{${body}}`;
+    from = bodyClose + 1;
+    pattern.lastIndex = from;
+  }
+  return out + tex.slice(from);
+}
+
 export function numberTex(value: number): string {
   if (value === 0 || !Number.isFinite(value)) return String(value);
   const exponent = Math.floor(Math.log10(Math.abs(value)));

@@ -9,6 +9,7 @@
   --line-strong: #b4b1a6;
   --pos: #d97757;
   --neg: #6a9bcc;
+  --note: #2e7a55;
   --serif: "Source Serif 4", "Songti SC", "Noto Serif SC", Georgia, serif;
   --sans: "Geist", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
   --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
@@ -26,6 +27,7 @@
     --line-strong: #6c6a63;
     --pos: #d97757;
     --neg: #7eaad6;
+    --note: #84cfa4;
   }
 }
 
@@ -40,6 +42,7 @@
   --line-strong: #6c6a63;
   --pos: #d97757;
   --neg: #7eaad6;
+  --note: #84cfa4;
 }
 
 html,

@@ -62,9 +62,16 @@ export interface ForItem {
 
 export type Item = Record<Name, Expr | NodeDecl | Instance | Group> | ForItem;
 
+export interface NoteSpec {
+  at: Path;
+  text: Text;
+  side?: 'left' | 'right' | 'above' | 'below';
+}
+
 export interface Step {
   id: Name;
   show: Expr | Expr[];
+  notes?: NoteSpec[];
   active?: Expr[];
   label?: Tex;
   title?: Text;
@@ -81,6 +88,7 @@ export interface StepPatch {
   label?: Tex;
   text?: Text;
   append?: Text;
+  notes?: NoteSpec[];
 }
 
 export interface ModuleFile {
@@ -121,7 +129,7 @@ export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'output
   lede?: Text;
   hint?: Text;
   camera?: Record<string, unknown>;
-  overview?: StepText;
+  overview?: StepText & { notes?: NoteSpec[] };
   modules?: Record<Name, Omit<ModuleFile, 'module'>>;
   dims: Record<Name, number>;
   real?: Record<Name, number | string>;
