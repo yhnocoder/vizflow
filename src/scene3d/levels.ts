@@ -307,7 +307,7 @@ class Plan implements LevelPlan {
       const groups = new Map<string, Node[]>();
       for (const u of this.consumers(x)) {
         const consumer = this.head(u);
-        if (consumer === producer) continue;
+        if (consumer === producer || this.isBoardTile(u)) continue;
         const key = consumer?.id ?? '';
         groups.set(key, [...(groups.get(key) ?? []), u]);
       }
@@ -316,6 +316,11 @@ class Plan implements LevelPlan {
         this.copies.push({ node: x, key: `copy:${x.id}:${scope}`, consumers, board });
       }
     }
+  }
+
+  private isBoardTile(u: Node): boolean {
+    const users = this.consumers(u);
+    return u.op === 'transpose' && users.length > 0 && users.every((w) => this.boards.get(w)?.b === u && !this.boards.get(w)!.linear);
   }
 
   private copyOf(x: Node, consumer: Node): Copy | undefined {

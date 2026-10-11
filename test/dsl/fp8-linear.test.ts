@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { CompiledPage } from '../../src/dsl';
 import { roundToDtype } from '../../src/autograd/rounding';
+import { levelPlan } from '../../src/scene3d/levels';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, decode, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { loadExample } from './load';
@@ -62,5 +63,11 @@ describe('fp8-linear-dsl.yaml against the FP8 linear fixture', () => {
       expect(step.label, step.id).not.toBe('');
       expect(step.text, step.id).not.toBe('');
     }
+  });
+
+  it('draws the transposed dequantized weight as the matmul tile without a separate copy level', () => {
+    const { blocks } = levelPlan(page.steps).resolve({ folded: () => false, aligned: new Map() });
+    const copies = blocks.filter((b) => b.key?.startsWith('copy:')).map((b) => b.node.name);
+    expect(copies).toEqual(['act_quant.xq']);
   });
 });
