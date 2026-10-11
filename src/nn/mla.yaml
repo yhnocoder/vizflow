@@ -4,6 +4,7 @@ import:
   RMSNorm: vizflow/nn/rmsnorm
   RoPE: vizflow/nn/rope
   GQA: vizflow/nn/gqa
+  LightningIndexer: vizflow/nn/lightning-indexer
 params:
   H:     { type: dim }
   dn:    { type: dim }
@@ -12,6 +13,10 @@ params:
   rq:    { type: dim }
   rkv:   { type: dim }
   theta: { type: float, default: 1e4 }
+  sparse: { type: bool, default: false }
+  HI:    { type: dim }
+  dI:    { type: dim }
+  kI:    { type: dim }
 inputs:
   x: { shape: [T, d] }
 outputs: [att]
@@ -63,22 +68,30 @@ body:
   - kv: 'view(ckvn @ Wkvb.T, T, H, dn + dv)'
   - k_pass: { op: 'narrow(kv, -1, 0, dn)', tex: '\mathbf{k}_{\mathrm{pass}}' }
   - v: 'narrow(kv, -1, dn, dv)'
+  - q_de: { op: 'view(transpose(view(q_rot, T*H, dr // 2, 2), 1, 2), T, H, dr)', tex: '\mathrm{deint}(\of{q_rot})' }
+  - k_de: { op: 'view(transpose(view(k_rot, T, dr // 2, 2), 1, 2), T, 1, dr)', tex: '\mathrm{deint}(\of{k_rot})' }
   - apply_rotary_pos_emb:
       use: RoPE
       title: apply_rotary_pos_emb
       subtitle: 只转 $d_r$ 维
       params: { theta: theta }
-      inputs: { q: q_rot, k: k_rot }
+      inputs: { q: q_de, k: k_de }
       outputs: { q_embed: q_emb, k_embed: k_emb }
       tex: { q_embed: "{\\of{q_rot}}'", k_embed: "{\\of{k_rot}}'" }
       folded: true
   - qs: { op: 'cat([q_pass, q_emb], dim=2)', tex: "{\\mathbf{q}'}" }
   - k_rep: { op: 'repeat_interleave(k_emb, H, 1)', tex: '\mathrm{rep}(\of{k_emb})' }
   - ks: { op: 'cat([k_pass, k_rep], dim=2)', tex: "{\\mathbf{k}'}" }
+  - indexer:
+      use: LightningIndexer
+      when: sparse
+      params: { HI: HI, dI: dI, dr: dr, kI: kI, theta: theta }
+      inputs: { x: x, qr: cqn, mask: M }
+      outputs: { out: M_sparse }
   - eager_attention_forward:
       use: GQA
       inline: true
-      inputs: { q: qs, k: ks, v: v, mask: M }
+      inputs: { q: qs, k: ks, v: v, mask: M_sparse if sparse else M }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'softmax $\cdot$ $P\mathbf{v}$，每个 head 各算一次' }
       steps:
@@ -95,8 +108,16 @@ body:
           label: '$\mathbf{v}^{(h)}$'
           title: 每个 head 取出自己的 v
           text: v 也按 head 取出来。
+        mask:
+          when: sparse
+          title: 稀疏的 mask
+          text: |
+            这里加的是 indexer 给出的 mask：causal mask 之外，没被 indexer 选中的 key 也是 $-\infty$，取 exp 之后变成 0。
+            $$\of{M_sparse}={{ M_sparse | matrix:2 }}$$
+          backward:
+            text: 加常量，梯度原样传下去。mask 来自 indexer 的 top-k 选择，选择不可导，HF 里 indexer 又在 <code>torch.no_grad</code> 下运行，所以损失的梯度不会进入 indexer，它的参数从这个损失得不到梯度。训练时 DeepSeek 另用一个 KL 损失训练 indexer，让 index score 接近主注意力的分布。
   - att: { op: o @ Wo.T, tex: '\mathbf{att}' }
-formula: '\step{o_proj}{\of{att}=}\step{eager_attention_forward.*}{\operatorname{attn}\big(}\step{q_cat}{\big[}\step{q_split}{\of{q_pass}}\step{q_cat}{,}\step{apply_rotary_pos_emb.*}{\mathrm{RoPE}(\of{q_rot})}\step{q_cat}{\big]},\ \step{k_cat}{\big[}\step{kv_split}{\of{k_pass}}\step{k_cat}{,}\step{k_expand}{\mathrm{RoPE}(\of{k_rot})}\step{k_cat}{\big]},\ \step{kv_split}{\of{v}}\step{eager_attention_forward.*}{\big)}\step{o_proj}{{\of{Wo}}^{\top}}'
+formula: '\step{o_proj}{\of{att}=}\step{eager_attention_forward.*}{\operatorname{attn}\big(}\step{q_cat}{\big[}\step{q_split}{\of{q_pass}}\step{q_cat}{,}\step{apply_rotary_pos_emb.*}{\mathrm{RoPE}\big(}\step{deinterleave}{\mathrm{deint}(\of{q_rot})}\step{apply_rotary_pos_emb.*}{\big)}\step{q_cat}{\big]},\ \step{k_cat}{\big[}\step{kv_split}{\of{k_pass}}\step{k_cat}{,}\step{k_expand}{\mathrm{RoPE}\big(\mathrm{deint}(\of{k_rot})\big)}\step{k_cat}{\big]},\ \step{kv_split}{\of{v}}\step{eager_attention_forward.*}{\big)}\step{o_proj}{{\of{Wo}}^{\top}}'
 steps:
   - id: q_down
     show: [Wqa.T, cq]
@@ -173,6 +194,16 @@ steps:
     backward:
       label: '$\partial\of{kv}$'
       title: 两段拼回去
+  - id: deinterleave
+    show: [q_de, k_de]
+    label: '$\mathrm{deint}(\of{q_rot}),\ \mathrm{deint}(\of{k_rot})$'
+    title: 把相邻的一对分量拆成前后两半
+    text: |
+      DeepSeek 的权重把 RoPE 的每一对分量放在相邻的两维 $(x_0,x_1),(x_2,x_3),\dots$，每对转同一个角度。HF 的 <code>apply_rotary_pos_emb_interleave</code> 取出偶数位 <code>q[..., 0::2]</code> 和奇数位 <code>q[..., 1::2]</code>，旋转后按 [偶数位, 奇数位] 拼回去。这里先把每个 head 的 $d_r=\of{dr}$ 维重排成 $(x_0,x_2,\dots,x_1,x_3,\dots)$，写成 <code>view(..., d_r/2, 2).transpose(-1, -2).reshape(..., d_r)</code>，再交给普通的前后两半配对的 RoPE，结果和 HF 逐位相同，转完以后也保持这个顺序。q 和 k 用同一个排列，点积只是换了求和的顺序，所以注意力分数不变。$d_r=2$ 时只有一对，排列不改变任何位置。重排的局部导数是 1，每个元素只连一条线。
+      $$\mathrm{deint}(\of{q_rot})={{ q_de | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{q_rot},\ \partial\of{k_rot}$'
+      title: 按原来的顺序放回去
   - id: q_cat
     show: qs
     label: "$\\of{qs}$"

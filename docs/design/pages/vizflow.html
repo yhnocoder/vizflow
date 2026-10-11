@@ -526,7 +526,7 @@ isLeafLike(node: Node): boolean</code></pre>
   <li>折叠状态的初值是 <code>fixed || folded</code>。<code>folded(id)</code> 读取，<code>setFolded(id, b)</code> 与 <code>setAllFolded(b)</code> 修改，id 不存在时抛错 <code>folded: module 'x' does not exist</code>、<code>setFolded: module 'x' does not exist</code>。<code>fixed</code> 的模块不受这两个方法影响。状态改变后步骤列表重建，然后通知订阅者。</li>
   <li>前向：总览之后，<code>kind: 'inputs'</code> 的步骤（有的话）是第 1 步。其余每个步骤声明是一个单元：<code>show</code> 里不是叶子的节点是它算出的节点，没有时取全部 <code>show</code>；它用到的节点是这些节点的输入（权重的转置同时带上权重）；<code>active</code> 默认是两者的并集。叶子指 input、param、label、buffer 和权重的转置（<code>isLeafLike</code>），它们在输入步骤里出现。前向第 $k$ 步的 revealed 是输入步骤的 <code>show</code> 加上到这一步为止各单元算出的节点。</li>
   <li>单元所属的模块链上有折叠的模块时，从最外层的折叠模块开始，连续属于它的单元合成一个 <code>kind: 'module'</code> 步骤：显示模块的输出，高亮输出、输入和参数，标题默认「标题（已折叠）」，按钮文字默认是模块标题。</li>
-  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点时跳过，只有第一步例外。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。<code>overview.backward</code> 给出时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
+  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点，或者单元显示的节点都没有梯度时跳过，只有第一步例外。后一条让 <code>topk_mask</code> 这类不可导的选择不出现在反向里，即使它的输入从别的路径收到了梯度。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，输出都没有梯度时同样跳过；标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。<code>overview.backward</code> 给出时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
   <li>折叠或展开以后，当前位置尽量保持：依次找 id 相同的步骤、同一方向里节点有重叠的步骤、包含原来那一步的折叠模块步骤，都没有时回到同一方向的第一步。</li>
 </ul>
 <p>反向按单元倒序，而不是按节点倒序，是因为读者在前向里按单元建立的分组（例如 RMSNorm 的四步）在反向里应当一一对应；折叠后一个模块只占一步，前向与反向的步数随之一起变化。</p>
