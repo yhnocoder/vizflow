@@ -155,7 +155,7 @@ const page = document.querySelector('vizflow-page');
 page.graph = g;
 page.steps = { overview: { ... }, forward: [ ... ], backward: 'auto' };
 page.panels = [{ loss: { ... } }, { sliders: h }];
-page.scene = { layout: [board(h, W.T, z), stack(z, L, logp, loss)], hint: '...' };
+page.scene = { layout: [board(h, W.T, z), stack(z, ex, S, L, logp, pick, lt, loss)], hint: '...' };
 page.createdSteps.go(1);
 </script>
 ```
@@ -336,9 +336,14 @@ label 的 shape 要与使用它的运算一致：
 
 ```js
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
 内置运算：
@@ -466,16 +471,22 @@ const steps = createSteps(g, {
 2. 损失节点和它前面第一个可见节点合成第一步，之后每个可见节点一步。
 3. 默认标题是 `∂ℓ/∂节点名`（合成的步骤用其中的非损失节点），按钮文字是 `∂节点名`，正文是该节点反向层名卡片的链式法则公式。
 
-lm_head 页因此得到五步：`ℓ` 与 `log p`、`LSE`、`z`、`W.T`、`h`。再举一个小例子：
+lm_head 页因此得到九步：`loss` 与 `lt`、`pick`、`log p`、`LSE`、`S`、`ex`、`z`、`W.T`、`h`。再举一个小例子：
 
 ```js
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { classes: 5 });
-const logp = g.log_softmax(x, -1, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ex = g.exp(x, { name: 'ex', tex: 'e^{\\mathbf{x}}', elem: 'e^{x}' });
+const S = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L = g.log(S, { name: 'LSE' });
+const logp = g.sub(x, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
-`log_softmax` 在图上是一个节点，不拆成更小的运算。`x`、`logp`、`loss` 都在 `show` 里时，反向有两步：第 1 步是 `loss` 与 `log p`，标题 `∂ℓ/∂log p`，按钮 `∂log p`；第 2 步是 `x`，标题 `∂ℓ/∂x`，按钮 `∂x`。
+示例页把 `F.log_softmax` 按定义拆成取 exp、求和、取 log、相减四个节点，把 `F.nll_loss` 拆成按标签取格、取负、取平均三个节点，每一步都在图上画出来。`ti` 只用来调整 label 的形状，不放进 `show`。其余节点都在 `show` 里时，反向有七步：第 1 步是 `loss` 与 `lt`，按钮 `∂ℓ`；之后依次是 `pick`、`log p`、`LSE`、`S`、`ex`，最后一步是 `x`，标题 `∂ℓ/∂x`，按钮 `∂x`。
 
 要调整时写成对象：
 
@@ -785,7 +796,7 @@ const scene = mountScene('#stage', g, {
   steps,
   layout: [
     board(h, W.T, z),
-    stack(z, L, logp, loss),
+    stack(z, ex, S, L, logp, pick, lt, loss),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
   camera: { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] },
@@ -933,7 +944,7 @@ const scene = mountScene('#stage', g, {
   edit: true,
   layout: [
     board(h, W.T, z),
-    stack(z, L, logp, loss),
+    stack(z, ex, S, L, logp, pick, lt, loss),
   ],
 });
 ```
@@ -947,7 +958,7 @@ const scene = mountScene('#stage', g, {
 ```js
 layout: [
   board(g.node('h'), g.node('W.T'), g.node('z')),
-  stack(g.node('z'), g.node('LSE'), g.node('log p'), g.node('loss'), { offsets: { 'log p': [1.2, 0, -0.6] } }),
+  stack(g.node('z'), g.node('ex'), g.node('S'), g.node('LSE'), g.node('log p'), g.node('pick'), g.node('lt'), g.node('loss'), { offsets: { 'log p': [1.2, 0, -0.6] } }),
 ],
 camera: { direction: [0.3, 0.8, 1] },
 labels: { z: [24, -10] },
@@ -1039,14 +1050,19 @@ const W = g.param('W', ['V', 'd'], [
 const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
 这里 `logp` 的 shape 是 `(1, 5)`，所以 label 写成 `[0]`，shape `(1,)`，与 `nll_loss` 的 `(N, C)` 配 `(N,)` 对应。
 
-**步骤**：总览加五个前向步骤；反向自动生成五步，用 `override` 改写每一步的标题和正文。正文里用模板代入目标列的数值。
+**步骤**：总览加九个前向步骤；反向自动生成九步，用 `override` 改写每一步的标题和正文。正文里用模板代入目标列的数值。
 
 ```js
 const steps = createSteps(g, {
@@ -1105,7 +1121,7 @@ const steps = createSteps(g, {
 
 `{{W[t, 0]}}` 读的是 `W`（V×d）的第 t 行，对应 `W.T` 的第 t 列。`{{z.grad[t]+1:3}}` 是梯度加 1，即 $p_t$。
 
-**布局**：`board` 把 `h`、`W.T`、`z` 摆成矩阵乘，`stack` 从 `z` 往上叠 LSE、log p 和损失。`z` 已被 board 放置，在 stack 里作为起点。`scales` 让前向和反向的柱子高度合适。
+**布局**：`board` 把 `h`、`W.T`、`z` 摆成矩阵乘，`stack` 从 `z` 往上叠 log_softmax 的四个节点（`ex`、`S`、`LSE`、`log p`）和 nll_loss 的三个节点（`pick`、`lt`、`loss`）。`z` 已被 board 放置，在 stack 里作为起点。`scales` 让前向和反向的柱子高度合适，`offsets` 把上下相邻的标量节点拉开，标签不会挤在一起。
 
 ```js
 mountSteps('#steps', steps);
@@ -1113,7 +1129,7 @@ const scene = mountScene('#stage', g, {
   steps,
   layout: [
     board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
-    stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
+    stack(z, ex, S, L, logp, pick, lt, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } }),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
 });
@@ -1256,9 +1272,14 @@ import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
 const g = graph({ dims: { V: 5 } });
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
-const p = g.softmax(x, -1, { name: 'p' });
+const u = g.exp(x, { name: 'u' });
+const S = g.sum(u, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const p = g.div(u, S, { name: 'p' });
 const logp = g.log(p, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, { overview: { ... }, forward: [ ... ] });
 mountSteps('#steps', steps);
@@ -1268,7 +1289,7 @@ mountPanels('#values', g, [
 ], { steps });
 ```
 
-这里 `x` 是 `(5,)`，label 写 `0`（shape `()`），对应 `nll_loss` 的 `(C,)` 配 `()`。HTML 用 `.vf-stack` 把步骤条和面板竖排。
+这里 `x` 是 `(5,)`，label 写 `0`（shape `()`），对应 `F.nll_loss` 的 `(C,)` 配 `()`。softmax 按定义拆成取指数、求和、相除，nll_loss 拆成按标签取格、取负、取平均；`gather` 要求 index 与输入维数相同，所以先把 label `view` 成 `(1,)`，对应 `logp.gather(-1, t.view(1))`。HTML 用 `.vf-stack` 把步骤条和面板竖排。
 
 ## 10. 测试页面
 

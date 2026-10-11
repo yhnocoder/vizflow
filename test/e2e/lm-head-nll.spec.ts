@@ -4,8 +4,8 @@ import { expectLabelsApartAndInside, waitForStableLabels, waitForStep } from './
 
 const DEFAULT_LOSS = 0.5027410756235495;
 const FORWARD_2 = 2;
-const BACKWARD_3 = 8;
-const STEP_NAMES = ['overview', 'forward-1', 'forward-2', 'forward-3', 'forward-4', 'forward-5', 'backward-1', 'backward-2', 'backward-3', 'backward-4', 'backward-5'];
+const BACKWARD_Z = 16;
+const STEP_NAMES = ['overview', ...Array.from({ length: 9 }, (_, i) => `forward-${i + 1}`), ...Array.from({ length: 9 }, (_, i) => `backward-${i + 1}`)];
 
 interface Win {
   g: { loss(): { value: { data: Float64Array } } };
@@ -56,7 +56,11 @@ test('every step renders without console errors', async ({ page }, info) => {
       return copy.textContent;
     }),
   );
-  expect(labels).toEqual(['整张图', 'h, Wᵀ', 'z = hWᵀ', 'LSE', 'log p', 'ℓ', '$\\partial \\log\\mathbf{p}$', '$\\partial \\mathrm{LSE}$', '$\\partial \\mathbf{z}$', '∂Wᵀ', '$\\partial \\mathbf{h}$']);
+  expect(labels).toEqual([
+    '整张图', 'h, Wᵀ', 'z = hWᵀ', '$e^{\\mathbf{z}}$', '$S$', 'LSE', 'log p', '$\\log p_t$', '$-\\log p_t$', 'ℓ',
+    '$\\partial \\boldsymbol{\\ell}$', '$\\partial \\log p_{t}$', '$\\partial \\log\\mathbf{p}$', '$\\partial \\mathrm{LSE}$', '$\\partial S$',
+    '$\\partial e^{\\mathbf{z}}$', '$\\partial \\mathbf{z}$', '∂Wᵀ', '$\\partial \\mathbf{h}$',
+  ]);
   for (let i = 0; i < count; i++) {
     await goStep(page, i);
     await expect(page.locator('.vf-st[aria-current="step"]')).toHaveCount(1);
@@ -119,7 +123,7 @@ test('clicking a logits bar changes the target', async ({ page }) => {
   await expect(lossText(page)).not.toHaveText('0.503');
 });
 
-for (const step of [0, FORWARD_2, BACKWARD_3]) {
+for (const step of [0, FORWARD_2, BACKWARD_Z]) {
   test(`review screenshots for step ${step}`, async ({ page }, info) => {
     const name = STEP_NAMES[step];
     await page.setViewportSize({ width: 1280, height: 900 });

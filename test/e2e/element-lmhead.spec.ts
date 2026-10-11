@@ -21,7 +21,7 @@ test('the element lays out scene, steps and panels like lm-head-nll', async ({ p
   await page.setViewportSize({ width: 1280, height: 900 });
   const errors = await open(page);
   await expect(page.locator('vizflow-page > .vf-split > .vf-main > .vf-stage .vf-scene canvas')).toHaveCount(1);
-  await expect(page.locator('vizflow-page > .vf-split > .vf-main > .vf-steps .vf-st')).toHaveCount(11);
+  await expect(page.locator('vizflow-page > .vf-split > .vf-main > .vf-steps .vf-st')).toHaveCount(19);
   await expect(page.locator('vizflow-page > .vf-split > aside.vf-side .vf-loss-value')).toHaveText('0.503');
   const stage = await page.locator('vizflow-page .vf-stage').boundingBox();
   const side = await page.locator('vizflow-page .vf-side').boundingBox();
@@ -32,9 +32,9 @@ test('the element lays out scene, steps and panels like lm-head-nll', async ({ p
 
 test('createdSteps drives the step bar', async ({ page }) => {
   const errors = await open(page);
-  await page.evaluate(() => (window as unknown as Win).vizflow.page.createdSteps!.go(3));
+  await page.evaluate(() => (window as unknown as Win).vizflow.page.createdSteps!.go(5));
   await expect(page.locator('.vf-st[aria-current="step"]')).toHaveText('LSE');
-  await expect(page.locator('.vf-caption h3')).toHaveText('log-sum-exp');
+  await expect(page.locator('.vf-caption h3')).toHaveText('log_softmax：取 log');
   expect(errors).toEqual([]);
 });
 

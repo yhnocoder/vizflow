@@ -69,9 +69,14 @@ const W = g.param('W', ['V', 'd'], [
 const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, {
   overview: {
@@ -91,24 +96,32 @@ const steps = createSteps(g, {
 
         $$z_{ {{t+1}} } = \sum_k h_k W^{\top}_{k, {{t+1}} } = {{z[t]}}$$
       ` },
-    { show: L, label: 'LSE', title: 'log-sum-exp',
+    { show: ex, label: String.raw`$e^{\mathbf{z}}$`, title: 'log_softmax：取 exp',
       text: String.raw`
-        先减去最大值 $m$ 再取指数，最大的一项是 $e^0 = 1$，不会溢出。
+        log_softmax 按定义拆成取 exp、求和、取 log、相减四步。PyTorch 的 kernel 先减去最大值 $m$，$m$ 在式子里抵消，结果不变。
 
-        $$\mathrm{LSE} = m + \log\sum_j e^{z_j - m} = {{LSE}}$$
+        $$e^{z_{ {{t+1}} }} = {{ex[t]:3}}$$
       ` },
-    { show: logp, label: 'log p', title: 'log_softmax',
+    { show: S, label: String.raw`$S$`, title: 'log_softmax：求和',
+      text: String.raw`$$S = \sum_j e^{z_j} = {{S:3}}$$` },
+    { show: L, label: 'LSE', title: 'log_softmax：取 log',
+      text: String.raw`$$\mathrm{LSE} = \log S = {{LSE}}$$` },
+    { show: logp, label: 'log p', title: 'log_softmax：减去 LSE',
       text: String.raw`
         每个 logit 减去同一个 LSE。
 
         $$\log p_{ {{t+1}} } = z_{ {{t+1}} } - \mathrm{LSE} = {{log p[t]}}$$
       ` },
-    { show: loss, label: String.raw`$\ell$`, title: 'nll_loss',
+    { show: pick, label: String.raw`$\log p_t$`, title: 'nll_loss：按标签取格',
       text: String.raw`
-        nll_loss 按标签取出一个元素再取负号。
+        nll_loss 拆成按标签取格、取负、取平均三步。取格对应 logp.gather(-1, t.view(-1, 1))。
 
-        $$\ell = -\log p_t = {{loss:3}}$$
+        $$\log p_t = {{pick:3}}$$
       ` },
+    { show: lt, label: String.raw`$-\log p_t$`, title: 'nll_loss：取负',
+      text: String.raw`$$-\log p_t = {{lt:3}}$$` },
+    { show: loss, label: String.raw`$\ell$`, title: 'nll_loss：取平均',
+      text: String.raw`$$\ell = \frac{1}{1}\sum_n \ell_n = {{loss:3}}$$` },
   ],
   backward: 'auto',
 });
@@ -120,7 +133,7 @@ loss = F.nll_loss(logp, t)`;
 mountSteps('#steps', steps);
 mountScene('#stage', g, {
   steps,
-  layout: [board(h, W.T, z), stack(z, L, logp, loss)],
+  layout: [board(h, W.T, z), stack(z, ex, S, L, logp, pick, lt, loss, { offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } })],
 });
 mountPanels('#side', g, [
   { loss: {
