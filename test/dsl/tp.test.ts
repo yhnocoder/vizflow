@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Node } from '../../src/core';
 import { type CompiledPage, compilePage, loadPage } from '../../src/dsl';
-import { RING_NOTE, gradReduces } from '../../src/scene3d/modes';
+import { DECODE_LATENCY_NOTE, RING_NOTE, gradReduces } from '../../src/scene3d/modes';
 import { parallelMode, parallelNotes, parallelRows } from '../../src/scene3d/parallel';
 import type { SceneController } from '../../src/scene3d/controller';
 import { createSteps } from '../../src/steps';
@@ -134,6 +134,8 @@ describe('qwen3 tensor parallel page', () => {
     expect(prefill.find((r) => r.label === '消息大小')?.value).toContain('=32\\,\\mathrm{MiB}');
     const decode = parallelRows(fakeScene(tp, 'forward', 'decode'), att);
     expect(decode.find((r) => r.label === '消息大小')?.value).toContain('=64\\times 4096\\times 2\\,\\mathrm{B}=512\\,\\mathrm{KiB}');
+    expect(decode.find((r) => r.label === '耗时')?.value).toBe(DECODE_LATENCY_NOTE);
+    expect(prefill.find((r) => r.label === '耗时')).toBeUndefined();
     const n1 = parallelRows(fakeScene(tp, 'backward'), tp.nodes.get('layer.n1')!);
     expect(n1.find((r) => r.label === '通信')?.value).toBe('反向 all_reduce');
     const partial = parallelRows(fakeScene(tp, 'backward'), tp.nodes.get('layer.self_attn.att')!);
@@ -168,6 +170,27 @@ describe('qwen3 tensor parallel page', () => {
     expect(marked.map((info) => info.id)).toEqual(['b:6']);
     const g = steps.list.find((info) => info.dir === 'backward' && info.nodes.includes(tp.nodes.get('layer.self_attn.att_partial')!))!;
     expect(parallelNotes(scene, g).map((note) => note.text)).toContain('all_reduce 的反向不通信');
+  });
+
+  it('gives each all_reduce its own decode step between the row-local steps around it', () => {
+    const list = createSteps(tp.graph, tp.modes!.infer).list;
+    const decode = list.filter((info) => info.segment?.startsWith('decode') === true && info.sub !== '对比');
+    for (const path of ['layer.self_attn.att', 'layer.mlp.down']) {
+      const node = tp.nodes.get(path)!;
+      const i = decode.findIndex((info) => info.nodes.includes(node));
+      expect(decode[i].nodes, path).toEqual([node]);
+      expect(decode[i].title, path).toBe('decode 1：$g$：前向 all_reduce');
+      expect(decode[i].label, path).toBe('$\\mathrm{all\\_reduce}$');
+      expect(decode[i - 1].nodes.some((n) => n.op === 'all_reduce'), path).toBe(false);
+      expect(decode[i + 1].nodes.some((n) => n.op === 'all_reduce'), path).toBe(false);
+    }
+    expect(decode.map((info) => info.title).slice(-5)).toEqual([
+      'decode 1：$g$：前向 all_reduce',
+      'decode 1：逐位置运算',
+      'decode 1：$g$：前向 all_reduce',
+      'decode 1：逐位置运算',
+      '采样第 4 个 token',
+    ]);
   });
 
   it('uses the training and inference modes of the page and tells prefill from decode by the step', () => {

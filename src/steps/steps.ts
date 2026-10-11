@@ -1,4 +1,4 @@
-import type { Graph, Node } from '../autograd';
+import { COMM_OPS, type Graph, type Node } from '../autograd';
 import { type Nested, offsetOf } from '../tensor';
 import { type Positions, explain } from '../explain';
 import { type CacheDecl, type CacheKind, analyzeCache } from './cache';
@@ -796,48 +796,81 @@ class StepsImpl implements Steps {
           { shown: pos, lit: [0, pos], labels: row },
         );
       };
+      type Part = { group: Group; info: StepInfo; prod: Node[]; active: Node[] };
+      const isComm = (part: Part) => part.group.module === undefined && part.prod.length > 0 && part.prod.every((n) => n.op !== undefined && COMM_OPS.has(n.op));
+      const pushComm = (part: Part, id: string) => {
+        push(
+          {
+            id,
+            title: `${phase}：${part.info.title}`,
+            label: part.info.label,
+            text: `decode 每一步只有第 ${pos} 个位置这一行参与这次通信，消息比 prefill 小得多，但各张卡仍然要同步一次，耗时主要是通信的固定延迟。${part.info.text}`,
+            nodes: part.prod,
+            segment: phase,
+            sub: part.info.sub ?? part.info.segment,
+          },
+          part.active,
+          decodeRows(row),
+        );
+        afterWrite(part.group);
+      };
       runs.forEach((run, k) => {
         const live = run.groups.filter((group) => nodesOf(group).some((n) => computes(n, row) || (reads.has(n) && derived.has(n))));
         if (live.length === 0) return;
         const parts = live.map((group) => ({ group, ...this.forwardGroup(group, entries.length) }));
         const prod = unique(parts.flatMap((part) => part.prod));
-        const active = unique(parts.flatMap((part) => part.active));
         const subs = subsOf(parts);
         if (detailed) recompute.push(...prod);
         if (!run.cache) {
-          const first = !seenCacheRun && k === 0;
-          const usesPosition = positional.filter((b) => active.includes(b));
-          const posText = usesPosition.length > 0 ? `位置相关的常量 ${tex(usesPosition)} 只取第 ${pos} 行，也就是位置 ${row}（从 0 数），它等于缓存里已有的行数。` : '';
-          const hasLogits = prod.includes(infer.logits);
-          const text = first
-            ? detailed
-              ? `输入只有一个 token：上一步采样得到的 {{${name}[${row}]:token}}。在第一个带缓存的模块之前，这些运算（${subs}）都是逐位置的：第 ${pos} 个位置的输出只取决于这个位置的输入，所以前 ${row} 个位置在 prefill 里算出的结果不会变，这一步不再重算。矩阵乘变成一行向量乘整个权重矩阵，每个权重读进来只做一次乘加，计算量很小，耗时主要花在读权重上。实际的推理服务因此把许多请求各自的这一行拼成一批，一起乘同一份权重。${posText}`
-              : `输入是 {{${name}[${row}]:token}}。和 decode 1 一样只算这个位置。${posText}`
-            : detailed
-              ? `带缓存的模块只输出这一个位置，之后的运算（${subs}）又是逐位置的，同样只算这一行。${hasLogits ? `最后的 $${infer.logits.tex}$ 也只有这一行，正好是采样需要的。` : ''}`
-              : `${subs} 只算第 ${pos} 行。`;
-          const notes: StepNote[] = [];
-          if (detailed && first) {
-            notes.push({ nodes: [infer.input], index: [row], text: '上一步采样的 token', side: 'left' });
-            const cos = usesPosition[0];
-            const index = cos === undefined ? undefined : at(cos, row);
-            if (cos !== undefined && index !== undefined) notes.push({ nodes: [cos], index, text: `位置 ${row}`, side: 'left' });
+          const chunks: Part[][] = [];
+          for (const part of parts) {
+            const last = chunks[chunks.length - 1];
+            if (last === undefined || isComm(part) || isComm(last[0])) chunks.push([part]);
+            else last.push(part);
           }
-          push(
-            {
-              id: `d:${row}:${k}`,
-              title: first ? `${phase}：第 ${pos} 个 token 进入模型` : `${phase}：逐位置运算`,
-              label: first ? '新 token' : '逐位置',
-              text,
-              nodes: prod,
-              segment: phase,
-              sub: subs,
-            },
-            active,
-            decodeRows(row),
-            notes,
-          );
-          afterWrite(...live);
+          chunks.forEach((chunk, c) => {
+            const id = c === 0 ? `d:${row}:${k}` : `d:${row}:${k}:${c}`;
+            if (isComm(chunk[0])) {
+              pushComm(chunk[0], id);
+              return;
+            }
+            const prod = unique(chunk.flatMap((part) => part.prod));
+            const active = unique(chunk.flatMap((part) => part.active));
+            const subs = subsOf(chunk);
+            const first = !seenCacheRun && k === 0 && c === 0;
+            const usesPosition = positional.filter((b) => active.includes(b));
+            const posText = usesPosition.length > 0 ? `位置相关的常量 ${tex(usesPosition)} 只取第 ${pos} 行，也就是位置 ${row}（从 0 数），它等于缓存里已有的行数。` : '';
+            const hasLogits = prod.includes(infer.logits);
+            const text = first
+              ? detailed
+                ? `输入只有一个 token：上一步采样得到的 {{${name}[${row}]:token}}。在第一个带缓存的模块之前，这些运算（${subs}）都是逐位置的：第 ${pos} 个位置的输出只取决于这个位置的输入，所以前 ${row} 个位置在 prefill 里算出的结果不会变，这一步不再重算。矩阵乘变成一行向量乘整个权重矩阵，每个权重读进来只做一次乘加，计算量很小，耗时主要花在读权重上。实际的推理服务因此把许多请求各自的这一行拼成一批，一起乘同一份权重。${posText}`
+                : `输入是 {{${name}[${row}]:token}}。和 decode 1 一样只算这个位置。${posText}`
+              : detailed
+                ? `带缓存的模块只输出这一个位置，之后的运算（${subs}）又是逐位置的，同样只算这一行。${hasLogits ? `最后的 $${infer.logits.tex}$ 也只有这一行，正好是采样需要的。` : ''}`
+                : `${subs} 只算第 ${pos} 行。`;
+            const notes: StepNote[] = [];
+            if (detailed && first) {
+              notes.push({ nodes: [infer.input], index: [row], text: '上一步采样的 token', side: 'left' });
+              const cos = usesPosition[0];
+              const index = cos === undefined ? undefined : at(cos, row);
+              if (cos !== undefined && index !== undefined) notes.push({ nodes: [cos], index, text: `位置 ${row}`, side: 'left' });
+            }
+            push(
+              {
+                id,
+                title: first ? `${phase}：第 ${pos} 个 token 进入模型` : `${phase}：逐位置运算`,
+                label: first ? '新 token' : '逐位置',
+                text,
+                nodes: prod,
+                segment: phase,
+                sub: subs,
+              },
+              active,
+              decodeRows(row),
+              notes,
+            );
+            afterWrite(...chunk.map((part) => part.group));
+          });
           return;
         }
         seenCacheRun = true;
@@ -846,17 +879,21 @@ class StepsImpl implements Steps {
         const readNodes = [...reads.keys()];
         const show = { reads };
         if (!detailed) {
+          const own = parts.filter((part) => !isComm(part));
           const score = [...scores].find((n) => prod.includes(n) && n.shape.length === 2);
           const writes = runCaches.flatMap((c) => c.nodes).filter((n) => computes(n, row));
           const text = runGrowing
             ? `query 仍然只有第 ${pos} 个位置，但缓存现在有 ${pos} 行：分数行的长度变成 ${pos}，要从缓存读的也多了一行。逐位置的部分每一步计算量不变，这部分随位置线性增长，这就是上下文越长、decode 越慢的原因。${score === undefined ? '' : rowValues(score, row)}`
             : `读上一个位置留下的缓存，算出这个位置的输出${writes.length > 0 ? `，并把 ${tex(writes)} 写回缓存` : ''}。这部分缓存的大小固定，每一步的计算量和位置无关。`;
           push(
-            { id: `d:${row}:${k}`, title: runGrowing ? `${phase}：读取 ${pos} 行缓存` : `${phase}：读取并更新缓存`, label: '读缓存', text, nodes: prod, segment: phase, sub: subs },
-            unique([...active, ...readNodes.filter((n) => members.has(n) || cacheSet.has(n))]),
+            { id: `d:${row}:${k}`, title: runGrowing ? `${phase}：读取 ${pos} 行缓存` : `${phase}：读取并更新缓存`, label: '读缓存', text, nodes: unique(own.flatMap((part) => part.prod)), segment: phase, sub: subsOf(own) },
+            unique([...own.flatMap((part) => part.active), ...readNodes.filter((n) => members.has(n) || cacheSet.has(n))]),
             decodeRows(row, show),
           );
-          afterWrite(...live);
+          afterWrite(...own.map((part) => part.group));
+          parts.forEach((part, j) => {
+            if (isComm(part)) pushComm(part, `d:${row}:${k}:${j}`);
+          });
           return;
         }
         const readParts = parts.filter((part) => part.prod.every((n) => derived.has(n)) && part.prod.some((n) => reads.has(n)));
@@ -905,6 +942,11 @@ class StepsImpl implements Steps {
             return;
           }
           if (!part.prod.some((n) => computes(n, row))) return;
+          if (isComm(part)) {
+            flush();
+            pushComm(part, `d:${row}:${k}:${j}`);
+            return;
+          }
           const first = part.prod[0];
           const mask = part.active.find((n) => masks.has(n));
           const direct = unique(part.prod.flatMap((n) => n.inputs.filter((i) => cacheSet.has(i) && reads.has(i))));

@@ -4,7 +4,7 @@ import type { StepInfo, StepNote } from '../steps';
 import type { Tensor } from '../tensor';
 import type { LinearRgb, ThemeColors } from '../theme';
 import type { SceneController } from './controller';
-import { MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, type ParallelMode, byteSize, gradReduces, stepMode } from './modes';
+import { DECODE_LATENCY_NOTE, MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, type ParallelMode, byteSize, gradReduces, stepMode } from './modes';
 
 export const PARTIAL_LEGEND_TEXT = '细柱 = 各卡的部分值，虚线框 = 和';
 export const ALL_REDUCE_NOTE = 'all_reduce：两张卡的部分值相加，结果回到每张卡';
@@ -65,6 +65,7 @@ function commRows(c: SceneController, node: Node, title: string): CardRow[] {
     ...sizeRows(node, mode, T, S),
     { label: '每卡发送', value: `扁平环形算法 $2\\frac{n-1}{n}S=${bytesText(ring)}$` },
     { label: '算法假设', value: RING_NOTE },
+    ...(mode === 'decode' ? [{ label: '耗时', value: DECODE_LATENCY_NOTE }] : []),
   ];
 }
 

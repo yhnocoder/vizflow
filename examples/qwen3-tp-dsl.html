@@ -34,7 +34,7 @@ main { --vf-stage-height: clamp(480px, calc((100vh - 150px) * 0.85), 1190px); }
 import '@yhnocoder/vizflow/element';
 import { commTransfers, messageBytes, placementText, ringAllReduce } from '@yhnocoder/vizflow/core';
 import { renderText } from '@yhnocoder/vizflow/formula';
-import { MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, byteSize, gradReduces, stepMode } from '@yhnocoder/vizflow/scene3d';
+import { DECODE_LATENCY_NOTE, MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, byteSize, gradReduces, stepMode } from '@yhnocoder/vizflow/scene3d';
 import { mountGpuDiagram, mountStepPanel } from '@yhnocoder/vizflow/ui';
 
 const NODE_LINES = 4;
@@ -211,6 +211,7 @@ function mount(steps, placements) {
           bytesLabel(transfers[0].bytes),
           [...new Set(transfers.map((t) => LINK_TEXT[t.link]))].join('、'),
         ])));
+        if (mode === 'decode') detail.append(paragraph(`${DECODE_LATENCY_NOTE}。`));
         return;
       }
       const { props, nodes, placementOf } = placementView(info);
