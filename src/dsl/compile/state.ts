@@ -1,11 +1,12 @@
-import { type Graph, type Node, graph } from '../../autograd';
+import { type Graph, type Mesh, type MeshTopology, type Node, type Placement, type Placements, graph, placements } from '../../autograd';
 import type { LayoutEntry } from '../../scene3d';
 import type { BackwardOverride } from '../../steps';
 import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { type Env, type FormulaRec, type ModuleRec, type Num, Scope } from './types';
-import { isRecord, record } from './util';
+import { MESH_AXIS_KEYS } from './keys';
+import { checkKeys, isRecord, record } from './util';
 
 const DEFAULT_SEED = 1;
 const INIT_DIGITS = 2;
@@ -19,6 +20,32 @@ function rng(seed: number): () => number {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+function meshAxis(value: unknown, where: Where): [string, MeshTopology] {
+  const entries = isRecord(value) ? Object.entries(value) : [];
+  if (entries.length !== 1) fail(where, 'mesh must name exactly one axis and its number of devices, for example { tp: 2 } or { ep: { size: 4, nodes: 2 } }');
+  const [axis, spec] = entries[0];
+  const at = child(where, value as object, axis);
+  const record = isRecord(spec) ? spec : { size: spec };
+  if (isRecord(spec)) checkKeys(spec, MESH_AXIS_KEYS, at);
+  const { size, nodes = 1 } = record;
+  if (typeof size !== 'number' || !Number.isInteger(size) || size < 2) fail(at, `mesh axis '${axis}' needs an integer number of devices of at least 2`);
+  if (typeof nodes !== 'number' || !Number.isInteger(nodes) || nodes < 1 || size % nodes !== 0) fail(at, `mesh axis '${axis}' has ${size} devices, so nodes must be a positive integer that divides ${size}`);
+  return [axis, { size, nodes }];
+}
+
+function meshOf(page: Record<string, unknown>, where: Where): Mesh | undefined {
+  if (page.mesh === undefined) {
+    if (isRecord(page.real) && page.real.mesh !== undefined) fail(child(child(where, page, 'real'), page.real, 'mesh'), 'real.mesh needs a mesh on the page');
+    return undefined;
+  }
+  const [axis, drawn] = meshAxis(page.mesh, child(where, page, 'mesh'));
+  if (!isRecord(page.real) || page.real.mesh === undefined) return { axis, ...drawn, real: drawn };
+  const realWhere = child(child(where, page, 'real'), page.real, 'mesh');
+  const [realAxis, real] = meshAxis(page.real.mesh, realWhere);
+  if (realAxis !== axis) fail(realWhere, `real.mesh names axis '${realAxis}', but mesh names '${axis}'`);
+  return { axis, ...drawn, real };
 }
 
 export class CompilerState {
@@ -39,6 +66,9 @@ export class CompilerState {
   private readonly namedDims = new Map<string, string>();
   private readonly buffers = new Map<string, Node>();
   private readonly owners = new Map<Node, LayoutEntry[]>();
+  readonly mesh: Mesh | undefined;
+  readonly leafPlacements = new Map<Node, Placement>();
+  readonly placements: Placements | undefined;
 
   constructor(
     readonly page: Record<string, unknown>,
@@ -48,6 +78,7 @@ export class CompilerState {
   ) {
     const dims: Record<string, number> = {};
     const real: Record<string, number | string> = { ...(isRecord(page.real) ? (page.real as Record<string, number | string>) : {}) };
+    delete real.mesh;
     for (const [name, value] of rootDims) {
       dims[name] = value.toy;
       if (!(name in real)) real[name] = value.real;
@@ -66,6 +97,8 @@ export class CompilerState {
     const init = record(page.init, child(pageWhere, page, 'init'), 'init');
     this.random = rng(typeof init.seed === 'number' ? init.seed : DEFAULT_SEED);
     this.root = new Scope(rootDef, '', []);
+    this.mesh = meshOf(page, pageWhere);
+    this.placements = this.mesh === undefined ? undefined : placements(this.g, this.mesh, this.leafPlacements);
     for (const [name, value] of rootDims) this.root.dims.set(name, value);
   }
 

@@ -5,7 +5,7 @@ export const GROUP_KEYS = new Set(['body', 'steps', 'beside', 'formula', ...MODU
 export const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'sequential', 'body']);
 export const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'formula', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold', 'cache']);
 export const PAGE_KEYS = new Set([
-  'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'dtype', 'vocab', 'init', 'inputs', 'sequence',
+  'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'mesh', 'dtype', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout', 'generate', 'optimizer', 'rounding',
 ]);
 export const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward', 'notes']);
@@ -17,5 +17,6 @@ export const OVERVIEW_KEYS = new Set(['title', 'text', 'label', 'backward', 'not
 export const NOTE_KEYS = new Set(['at', 'text', 'side']);
 export const NOTE_SIDES: ReadonlySet<string> = new Set(['left', 'right', 'above', 'below']);
 export const GENERATE_KEYS = new Set(['steps']);
+export const MESH_AXIS_KEYS = new Set(['size', 'nodes']);
 export const OPTIMIZER_KEYS = new Set(['type', 'lr', 'weight_decay']);
 export const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label']);

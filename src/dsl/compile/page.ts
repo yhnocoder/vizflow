@@ -1,4 +1,4 @@
-import type { Graph, Node } from '../../autograd';
+import type { Graph, Node, Placements } from '../../autograd';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../../scene3d';
 import { type ForwardStep, type InferSpec, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
 import { type Nested, inferShape } from '../../tensor';
@@ -28,6 +28,7 @@ export interface CompiledPage {
   nodes: Map<string, Node>;
   sequence?: PageSequence;
   modes?: { train: StepsSpec; infer: StepsSpec };
+  placements?: Placements;
   layout?: unknown;
   page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
 }
@@ -122,6 +123,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
     compiled.modes = { train: stepsSpec, infer: { ...stepsSpec, update: undefined, infer: inferSpec(c, sequence.prompt) } };
     compiled.steps = compiled.modes.infer;
   }
+  if (c.placements !== undefined) compiled.placements = c.placements;
   if (page.layout !== undefined) compiled.layout = page.layout;
   return compiled;
 }
