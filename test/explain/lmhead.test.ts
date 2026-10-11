@@ -40,7 +40,7 @@ describe('explain on the lm_head graph', () => {
     const card = ex.edgeCard(e);
     expect(card.title).toBe('h_{3}\\to h_{3}W^{\\top}_{3,4}');
     expect(card.local.tex).toBe('\\frac{\\partial (h_{3}W^{\\top}_{3,4})}{\\partial h_{3}}=W^{\\top}_{3,4}');
-    expect(card.upstream.value).toBeCloseTo(z.grad!.get([0, 3]), 12);
+    expect(card.upstream!.value).toBeCloseTo(z.grad!.get([0, 3]), 12);
     expect(card.note).toContain('5 条出边');
     const cellOut = edges.find((e) => e.arg === -1 && 'cell' in e.from && e.from.cell.index.join(',') === '0,2,3')!;
     expect(ex.local(cellOut)).toBe(1);
@@ -83,9 +83,9 @@ describe('explain on the lm_head graph', () => {
       expect(card.title).toBe(`z_{${i + 1}}\\to \\mathrm{LSE}`);
       expect(card.local.tex).toBe(`\\frac{\\partial \\mathrm{LSE}}{\\partial z_{${i + 1}}}=\\exp(z_{${i + 1}}-\\mathrm{LSE})`);
       expect(card.local.value).toBeCloseTo(p(i), 12);
-      expect(card.upstream.tex).toBe('\\frac{\\partial\\ell}{\\partial \\mathrm{LSE}}');
-      expect(card.upstream.value).toBeCloseTo(1, 12);
-      expect(card.product.value).toBeCloseTo(p(i), 12);
+      expect(card.upstream!.tex).toBe('\\frac{\\partial\\ell}{\\partial \\mathrm{LSE}}');
+      expect(card.upstream!.value).toBeCloseTo(1, 12);
+      expect(card.product!.value).toBeCloseTo(p(i), 12);
       expect(card.note).toContain('2 条出边');
       expect(card.note).toContain('相加');
       if (i !== 0) {
