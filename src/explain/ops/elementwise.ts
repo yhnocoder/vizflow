@@ -1,4 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
+import { normalCdf, normalPdf } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -77,7 +78,37 @@ export const siluExplain = unary(
   (x) => `\\sigma(${x})\\left(1+${x}\\left(1-\\sigma(${x})\\right)\\right)`,
 );
 
-const exponentOf = (attrs: object) => (attrs as { exponent: number }).exponent;
+export const reluExplain = unary(
+  (a) => `\\operatorname{ReLU}(${a})`,
+  (x) => (x > 0 ? 1 : 0),
+  (x) => `\\mathbf{1}[${x}>0]`,
+);
+export const geluExplain = unary(
+  (a) => `\\operatorname{GELU}(${a})`,
+  (x) => normalCdf(x) + x * normalPdf(x),
+  (x) => `\\Phi(${x})+${x}\\,\\varphi(${x})`,
+);
+export const identityExplain = unary((a) => a, () => 1, () => '1');
+
+const lastHalf = (shape: readonly number[]) => shape[shape.length - 1] / 2;
+
+export const rotateHalfExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out) => (out[out.length - 1] < lastHalf(ctx.out.shape) ? -1 : 1),
+  tex: {
+    forward: (s) => `\\operatorname{rotate\\_half}(${s.in[0]})`,
+    local: (s) => (s.outIndex[s.outIndex.length - 1] < lastHalf(s.ctx.out.shape) ? '-1' : '1'),
+  },
+  selected: (ctx, out) => {
+    const last = out.length - 1;
+    const half = lastHalf(ctx.out.shape);
+    const index = [...out];
+    index[last] = out[last] < half ? out[last] + half : out[last] - half;
+    return [{ arg: 0, index }];
+  },
+};
+
+const exponentOf =(attrs: object) => (attrs as { exponent: number }).exponent;
 
 export const powExplain: OpExplain = {
   pattern: 'elementwise',

@@ -6,10 +6,14 @@ import {
   addOp,
   divOp,
   expOp,
+  geluOp,
+  identityOp,
   logOp,
   mulOp,
   negOp,
   powOp,
+  reluOp,
+  rotateHalfOp,
   rsqrtOp,
   sigmoidOp,
   siluOp,
@@ -55,6 +59,10 @@ export interface BuiltinOps {
   sqrt(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;
+  relu(input: Node, options?: OpOptions): Node;
+  gelu(input: Node, options?: OpOptions): Node;
+  identity(input: Node, options?: OpOptions): Node;
+  rotate_half(input: Node, options?: OpOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
   matmul(input: Node, other: Node, options?: OpOptions): Node;
   sum(input: Node, dim?: Dim | null | SumOptions, options?: SumOptions): Node;
@@ -83,6 +91,10 @@ export const builtinOps: readonly AnyOpDef[] = [
   sqrtOp,
   sigmoidOp,
   siluOp,
+  reluOp,
+  geluOp,
+  identityOp,
+  rotateHalfOp,
   transposeOp,
   matmulOp,
   sumOp,
