@@ -256,7 +256,7 @@ page.nodes.get('h');   // 按路径查节点
 const fromObject = await compilePage({ title: '...', dims: {}, inputs: {}, body: [] });
 ```
 
-`compilePage` 接受与 YAML 结构相同的 JavaScript 对象；对象里引用相对路径的模块时，要传 `{ base: 页面地址 }`。字段的完整列表和规则见设计文档的「页面描述文件怎么写」。
+`compilePage` 接受与 YAML 结构相同的 JavaScript 对象；对象里引用相对路径的模块时，要传 `{ base: 页面地址 }`。字段的完整列表和规则见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
 
 ## 2. 建图
 
