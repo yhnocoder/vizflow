@@ -48,6 +48,7 @@ export interface RsqrtOptions extends OpOptions {
 
 export interface CatOptions extends OpOptions {
   dim?: number;
+  pieces?: number | string | null;
 }
 
 export interface BuiltinOps {

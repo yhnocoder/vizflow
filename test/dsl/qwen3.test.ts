@@ -231,6 +231,23 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     ref = referenceModel() as Reference;
   });
 
+  it('gives every attention node the Qwen3-8B shape, counting all 32 query heads and 8 kv heads', () => {
+    const real = (name: string) => node(page, name).realShape;
+    expect(real(`${ATTN}.q/1`)).toEqual([3, 4096]);
+    expect(real(`${ATTN}.q`)).toEqual([3, 32, 128]);
+    expect(real(`${ATTN}.k`)).toEqual([3, 8, 128]);
+    expect(real(`${NORMS.q}.sq`)).toEqual([3, 32, 128]);
+    expect(real(`${NORMS.k}.sq`)).toEqual([3, 8, 128]);
+    expect(real(`${NORMS.q}.r`)).toEqual([3, 32, 1]);
+    expect(real(`${ROPE}.cos`)).toEqual([3, 1, 128]);
+    expect(real(`${GQA}.kT[1]`)).toEqual([128, 3]);
+    expect(real(`${GQA}.S[1]`)).toEqual([3, 3]);
+    expect(real(`${GQA}.P[2]`)).toEqual([3, 3]);
+    expect(real(`${GQA}.o[1]`)).toEqual([3, 128]);
+    expect(real(`${GQA}.o`)).toEqual([3, 4096]);
+    expect(real(`${ATTN}.att`)).toEqual([3, 4096]);
+  });
+
   it('computes the reference loss with theta = 10', () => {
     const loss = page.graph.findLoss()!.value.data[0];
     expect(loss.toFixed(3)).toBe('2.777');

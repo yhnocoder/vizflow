@@ -33,6 +33,19 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     expect(g.select_matmul(heads, k, 1).realShape).toEqual([1, 1]);
   });
 
+  it('concatenates heads with the real number of pieces', () => {
+    const g = graph({ dims: { T: 1, H: 2, dh: 2 }, real: { H: 32, dh: 128 } });
+    const a = g.input('a', ['T', 'dh'], [[1, 2]]);
+    const b = g.input('b', ['T', 'dh'], [[3, 4]]);
+    const o = g.cat([a, b], 1, { pieces: 'H' });
+    expect(o.shape).toEqual([1, 4]);
+    expect(o.realShape).toEqual([1, 4096]);
+    expect(Array.from(o.value.data)).toEqual([1, 2, 3, 4]);
+    expect(g.cat([a, b], 1).realShape).toEqual([1, 256]);
+    expect(() => g.cat([a, b, a], 1, { pieces: 'H' })).toThrow(/cat: pieces is 2, but 3 tensors are given/);
+    expect(() => g.cat([a, g.input('c', [1, 3], [[1, 2, 3]])], 1, { pieces: 2 })).toThrow(/cat: pieces 2 needs a positive integer and tensors of the same size along dim 1/);
+  });
+
   it('reshape, select and multiply one head', () => {
     const g = graph({ dims: { T: 1, H: 2, dh: 4 } });
     const x = g.input('x', [1, 8], [[1, 2, 3, 4, 5, 6, 7, 8]]);

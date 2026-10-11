@@ -7,7 +7,7 @@ import:
   GLU:            vizflow/nn/glu
   Qwen3Attention: ./qwen3/attention.yaml
 dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 4 }
-real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936 }
+real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261010 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }

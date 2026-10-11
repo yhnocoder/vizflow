@@ -69,7 +69,7 @@ export function defineOp<A extends object>(def: OpDef<A>): void {
     if (!def.tensors.includes(s)) throw new Error(`op '${def.name}': scalar '${s}' is not a tensor argument`);
   }
   for (const s of def.sizes ?? []) {
-    if (!def.args.includes(s) || def.tensors.includes(s)) throw new Error(`op '${def.name}': size '${s}' is not a non-tensor argument`);
+    if ((!def.args.includes(s) && !(def.defaults !== undefined && s in def.defaults)) || def.tensors.includes(s)) throw new Error(`op '${def.name}': size '${s}' is not a non-tensor argument`);
   }
   registry.set(def.name, def);
 }
