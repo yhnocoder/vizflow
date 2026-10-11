@@ -11,6 +11,7 @@ if (!document.getElementById(styleId)) {
 }
 
 export { mountSteps } from './steps';
+export { mountSettings } from './settings';
 export { renderFigures } from './figures';
 export { figureNames } from './figure-spec';
 export {

@@ -214,7 +214,7 @@ mountPanels('#side', g, [
   </tbody>
 </table>
 <p>模块之间不直接调用，都围绕同一个计算图协作。计算图是唯一的数据来源：输入变化后它重算前向和反向，然后发出更新通知；3D 场景、面板和讲解正文各自订阅通知、读取需要的数值，彼此不知道对方是否存在。<code>steps</code> 只输出一个状态对象，说明当前方向、第几步、每个节点是否出现和是否高亮。<code>scene3d</code> 读取这个状态决定颜色和透明度；页面没有创建 steps 时，<code>scene3d</code> 使用「全部显示」的默认状态。</p>
-<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme、ui、scene3d、element 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。</p>
+<p>库不使用模块级可变状态，所有状态挂在计算图实例和 <code>mount</code> 返回的句柄上，同一个页面可以放两张互不干扰的图。例外有以下几处：运算注册表与讲解注册表（定义本身不可变，与 torch 的全局算子表同理）；formula 的当前适配器（<code>setAdapter</code>）与 KaTeX 渲染缓存；theme、ui、scene3d、element 与 formula 注入 <code>&lt;style&gt;</code> 时按 id 判断，同一页面只注入一次。theme 的主题设置是页面级的：当前主题、背景图片和 Liquid Glass 的滤镜作用于整个文档，见「主题设置」。</p>
 
 <h2>计算图怎么建，输入变化后怎么更新</h2>
 <h3>建图</h3>
@@ -1139,7 +1139,42 @@ katexAdapter: FormulaAdapter</code></pre>
 <p><code>ui</code> 与 <code>scene3d</code> 入口自动引入 <code>theme</code>，使用它们的页面不需要单独引入。只用其他入口又需要样式的页面写 <code>import '@yhnocoder/vizflow/theme'</code>，它的副作用是把样式注入页面，页面不需要另写 <code>&lt;link&gt;</code>。两种产物交付字体的方式不同，见「打包与引用」。</p>
 <pre><code class="language-ts">readTheme(): ThemeColors
 onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
-<p><code>readTheme</code> 返回 <code>{ bg, surface, ink, fg, muted, line, lineStrong, pos, neg }</code>，每个是线性空间的 <code>[r, g, b]</code>，分量在 0 到 1 之间，供 three.js 直接使用。<code>onThemeChange</code> 在 <code>prefers-color-scheme</code> 变化或 <code>data-theme</code> 改变时调用。3D 场景在初始化和主题切换时读取颜色，画布与页面其他部分的颜色始终一致。</p>
+<p><code>readTheme</code> 返回 <code>{ bg, surface, ink, fg, muted, line, lineStrong, pos, neg }</code>，每个是线性空间的 <code>[r, g, b]</code>，分量在 0 到 1 之间，供 three.js 直接使用。<code>onThemeChange</code> 在 <code>prefers-color-scheme</code> 变化，或 <code>data-theme</code>、<code>data-vf-theme</code>、<code>data-vf-backdrop</code> 改变时调用。3D 场景在初始化和主题切换时读取颜色，并在切换时立即重画一帧，画布与页面其他部分的颜色始终一致，切换动画截取的新画面里画布也已经是新颜色。</p>
+
+<h3>主题设置</h3>
+<p>除了上面的默认主题，theme 还提供两个只有浅色的主题，用户在设置页选择，选择结果保存在浏览器本地，同一网址下的所有页面都使用它。</p>
+<table>
+  <thead>
+    <tr><th>变量</th><th>Catppuccin Latte</th><th>Liquid Glass</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>--bg</code></td><td><code>#e6e9ef</code>（Mantle）</td><td><code>#eef1f7</code></td></tr>
+    <tr><td><code>--surface</code></td><td><code>#eff1f5</code>（Base）</td><td><code>#fbfcfe</code></td></tr>
+    <tr><td><code>--ink</code>、<code>--fg</code></td><td><code>#4c4f69</code>（Text）</td><td><code>#1d1d1f</code></td></tr>
+    <tr><td><code>--muted</code></td><td><code>#6c6f85</code>（Subtext 0）</td><td><code>#5f6470</code></td></tr>
+    <tr><td><code>--line</code></td><td><code>#ccd0da</code>（Surface 0）</td><td><code>#d8dde6</code></td></tr>
+    <tr><td><code>--line-strong</code></td><td><code>#9ca0b0</code>（Overlay 0）</td><td><code>#a3a9b5</code></td></tr>
+    <tr><td><code>--pos</code></td><td><code>#fe640b</code>（Peach）</td><td><code>#f2622e</code></td></tr>
+    <tr><td><code>--neg</code></td><td><code>#1e66f5</code>（Blue）</td><td><code>#0a7cff</code></td></tr>
+    <tr><td><code>--note</code></td><td><code>#40a02b</code>（Green）</td><td><code>#1f8a4c</code></td></tr>
+  </tbody>
+</table>
+<pre><code class="language-ts">type ThemeName = 'default' | 'catppuccin-latte' | 'liquid-glass'
+themeNames: readonly ThemeName[]
+getTheme(): ThemeName
+setTheme(theme: ThemeName, origin?: { x: number; y: number }): void
+getBackgroundImage(): Promise&lt;Blob | undefined&gt;
+setBackgroundImage(image: Blob | null): Promise&lt;boolean&gt;</code></pre>
+<ul>
+  <li>保存位置：主题名和背景图片的版本号存在 <code>localStorage</code> 的 <code>vizflow.settings</code>，图片本身以 Blob 存在 IndexedDB 数据库 <code>vizflow</code> 的 <code>files</code> 表。图片不离开浏览器，库里没有任何上传代码。浏览器不允许写 IndexedDB 时（例如部分隐私窗口），图片只在当前页面显示，刷新后消失；<code>setBackgroundImage</code> 返回 <code>false</code>，设置页显示一行提示。</li>
+  <li>生效方式：引入 <code>theme</code> 时读取设置并应用，不播放动画。非默认主题写在 <code>&lt;html data-vf-theme="…"&gt;</code>。两个新主题只有浅色，选中时忽略系统的深色设置和 <code>data-theme</code>。</li>
+  <li>同步：另一个标签页修改设置时，本页通过 <code>storage</code> 事件收到通知，用淡入切换到新设置。</li>
+  <li>切换动画：<code>setTheme</code> 带 <code>origin</code>（视口坐标）且浏览器支持 View Transitions 时，新主题从 <code>origin</code> 处以圆形展开，时长 620 毫秒；其他情况颜色、背景和边框用 480 毫秒过渡。系统设置减少动态效果时立即切换。</li>
+  <li>背景图片：设置后页面底部铺一层 <code>.vf-backdrop</code>，<code>&lt;html&gt;</code> 加 <code>data-vf-backdrop</code>。图片上盖一层 38% 的 <code>--bg</code>，标题、导语、卡片和步骤条改为半透明加模糊，保证文字可读。3D 画布保持不透明，柱子颜色会和 <code>--surface</code> 混合，透明画布会让淡出的柱子和背景图混在一起。</li>
+  <li>Liquid Glass：卡片、步骤条和设置页的分区是玻璃。Chromium 内核的浏览器用 SVG 滤镜做折射：每个玻璃元素按自己的尺寸和圆角生成一张位移图，边缘 26px 内的背景向内侧偏移，最大 32px，红绿蓝三个通道的偏移量分别乘 1、0.93、0.86 形成色散，再模糊 1.2px、饱和度乘 1.6。其他浏览器用 <code>backdrop-filter: blur(20px) saturate(170%)</code> 的磨砂玻璃。没有背景图片时，这个主题自带一张由几块柔和色斑和点阵组成的背景，玻璃需要有内容可以折射。</li>
+  <li>玻璃折射画在元素的 <code>::before</code> 上，元素本身不加 <code>backdrop-filter</code>。Chromium 计算参考滤镜的坐标时以元素的绘制范围为原点，外阴影和溢出的子元素会让位移图偏离元素边框；伪元素没有阴影也没有子元素，所以位移图与边框对齐。</li>
+</ul>
+<p><code>ui</code> 的 <code>mountSettings(el)</code> 挂载设置页的内容：主题的三个选项和背景图片的选择、拖放与移除。点击主题时以点击位置为动画起点。示例里的设置页是 <code>examples/settings.html</code>，各示例页面右上角有指向它的链接。</p>
 
 <h2>打包与引用</h2>
 <p>库用 Vite 的库模式打包，输出 ES module 和类型声明。<code>npm run build</code> 构建两份产物，分别给两种引用方式使用，入口相同，入口之间共用的代码都拆成公共 chunk：</p>

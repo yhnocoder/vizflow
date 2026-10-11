@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置</title>
+<link rel="icon" href="data:,">
+<style>
+header { margin-bottom: 20px; max-width: 760px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; }
+.lede { margin: 0; color: var(--muted); max-width: 64ch; }
+#settings { margin-bottom: 28px; }
+.preview-title { font-family: var(--serif); font-weight: 500; font-size: 20px; margin: 0 0 12px; }
+main { --vf-stage-height: clamp(460px, 70vh, 900px); }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>设置</h1>
+    <p class="lede">设置保存在这台设备的浏览器里，同一网址下的所有页面都会使用；其他已打开的页面会同步切换。下方是一个完整页面的预览。</p>
+  </header>
+  <div id="settings"></div>
+  <h2 class="preview-title">预览</h2>
+  <vizflow-page src="qwen3-dsl.yaml"></vizflow-page>
+</main>
+<script type="module">
+import { mountSettings } from '@yhnocoder/vizflow/ui';
+import '@yhnocoder/vizflow/element';
+
+mountSettings('#settings');
+const page = document.querySelector('vizflow-page');
+page.addEventListener('load', () => {
+  document.body.dataset.ready = 'true';
+});
+</script>
+</body>
+</html>

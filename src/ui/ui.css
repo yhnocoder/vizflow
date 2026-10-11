@@ -1350,3 +1350,135 @@ table.vf-costrule {
   font-family: var(--mono);
   word-break: break-word;
 }
+
+.vf-settings {
+  display: grid;
+  gap: 16px;
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.vf-settings-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px 18px;
+}
+
+.vf-settings-section h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 20px;
+  margin: 0 0 12px;
+}
+
+.vf-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.vf-theme-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.vf-theme-choice:hover {
+  border-color: var(--line-strong);
+}
+
+.vf-theme-choice[aria-checked="true"] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.vf-theme-swatches {
+  display: flex;
+  gap: 4px;
+}
+
+.vf-theme-swatches i {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(20, 20, 19, 0.12);
+}
+
+.vf-theme-label {
+  font-weight: 600;
+}
+
+.vf-theme-note,
+.vf-settings-note {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.vf-settings-note {
+  margin: 10px 0 0;
+}
+
+.vf-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+}
+
+.vf-drop-over {
+  border-color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.vf-drop-empty {
+  color: var(--muted);
+}
+
+.vf-drop-preview {
+  width: 160px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.vf-drop-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.vf-settings-button {
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.vf-settings-button:hover {
+  border-color: var(--ink);
+}
+
+.vf-settings-error {
+  margin: 8px 0 0;
+  color: var(--pos);
+}
