@@ -35,6 +35,7 @@ export interface CompiledPage {
 
 export interface PageSequence {
   prompt?: number;
+  packed?: number[];
   tokens: string[];
   length: number;
   get(): number[];
@@ -133,6 +134,28 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
   return compiled;
 }
 
+export const IGNORE_INDEX = -100;
+
+function packedLengths(spec: Record<string, unknown>, count: number, steps: number | undefined, where: Where): number[] | undefined {
+  const packed = spec.packed;
+  if (packed === undefined) return undefined;
+  if (steps !== undefined) fail(where, 'sequence.packed is for training batches and cannot be used with generate');
+  if (!Array.isArray(packed) || packed.length < 2 || !packed.every((n) => Number.isInteger(n) && (n as number) >= 2)) fail(where, 'sequence.packed must list the lengths of at least two sequences, each at least 2 tokens');
+  const total = (packed as number[]).reduce((a, b) => a + b, 0);
+  if (total !== count) fail(where, `sequence.packed adds up to ${total} tokens, but sequence.tokens has ${count}`);
+  return packed as number[];
+}
+
+function packedLabels(ids: number[], lengths: number[]): number[] {
+  const labels: number[] = [];
+  let start = 0;
+  for (const n of lengths) {
+    for (let j = 0; j < n; j++) labels.push(j + 1 < n ? ids[start + j + 1] : IGNORE_INDEX);
+    start += n;
+  }
+  return labels;
+}
+
 function tokenIds(c: Compiler, tokens: unknown[], where: Where): number[] {
   const vocab = c.page.vocab;
   if (!Array.isArray(vocab)) fail(where, 'tokens need a vocab list on the page');
@@ -153,11 +176,12 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
   for (const key of ['input', 'label']) if (typeof spec[key] !== 'string') fail(child(where, spec, key), `sequence needs '${key}', the name of the node it creates`);
   const prompt = tokenIds(c, spec.tokens as unknown[], child(where, spec, 'tokens'));
   const steps = generateSteps(c);
+  const packed = packedLengths(spec, prompt.length, steps, child(where, spec, 'packed'));
   const ids = [...prompt, ...Array<number>(steps ?? 0).fill(0)];
-  const T = ids.length - 1;
+  const T = packed === undefined ? ids.length - 1 : ids.length;
   const rows = c.root.dims.get('T');
   if (rows !== undefined && rows.toy !== T) {
-    const reason = steps === undefined ? `sequence has ${ids.length} tokens` : `the prompt has ${prompt.length} tokens and generate adds ${steps}`;
+    const reason = packed !== undefined ? `the packed sequences have ${ids.length} tokens` : steps === undefined ? `sequence has ${ids.length} tokens` : `the prompt has ${prompt.length} tokens and generate adds ${steps}`;
     fail(child(where, spec, 'tokens'), `${reason}, so T must be ${T}, but dims gives T = ${rows.toy}`);
   }
   const tokens = [...(page.vocab as string[])];
@@ -170,21 +194,23 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
     c.setOwner(node, tree.children);
     return node;
   };
+  const labelsOf = (next: number[]) => (packed === undefined ? next.slice(1) : packedLabels(next, packed));
   const input = make('input', ids.slice(0, T));
-  const label = make('label', ids.slice(1));
+  const label = make('label', labelsOf(ids));
   const g = c.g;
   return {
     ...(steps === undefined ? {} : { prompt: prompt.length }),
+    ...(packed === undefined ? {} : { packed }),
     tokens,
     length: ids.length,
-    get: () => [...Array.from(input.value.data, Math.round), Math.round(label.value.data[T - 1])],
+    get: () => (packed === undefined ? [...Array.from(input.value.data, Math.round), Math.round(label.value.data[T - 1])] : Array.from(input.value.data, Math.round)),
     set: (next) => {
       if (next.length !== ids.length || !next.every((id) => Number.isInteger(id) && id >= 0 && id < tokens.length)) {
         throw new Error(`sequence.set: expected ${ids.length} token ids between 0 and ${tokens.length - 1}, got [${next.join(', ')}]`);
       }
       g.batch(() => {
         input.set(next.slice(0, T));
-        label.set(next.slice(1));
+        label.set(labelsOf(next));
       });
     },
   };

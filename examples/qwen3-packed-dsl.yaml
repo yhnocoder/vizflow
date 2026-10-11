@@ -1,0 +1,414 @@
+title: Qwen3 一层：两条序列打包训练
+lede: 训练时常把几条短序列首尾相接拼成一行（packing），省掉 padding。这一页把 the cat sat 和 on mat 两条序列拼成 $T=5$ 个位置，算一次前向和反向。和单独一条序列相比有三处不同：mask 是分块的下三角，第二条序列看不到第一条；位置编号在每条序列开头归零，RoPE 按归零后的位置旋转；每条序列最后一个位置没有下一个 token，标签是 $-100$，不计入损失。Hugging Face 的 <code>DataCollatorWithFlattening</code> 就这样拼接：它给出每条序列从 0 开始的 position_ids，模型据此构造分块的 mask。词表只画 5 个 token。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm:        vizflow/nn/rmsnorm
+  GLU:            vizflow/nn/glu
+  Qwen3Attention: ./qwen3/attention.yaml
+dims: { T: 5, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 4 }
+dtype: bf16
+real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261010 }
+sequence: { tokens: [the, cat, sat, on, mat], packed: [3, 2], input: ids, label: y }
+optimizer: { type: adamw, lr: 0.02 }
+inputs: {}
+weights:
+  E: { shape: [V, d], init: uniform }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失。embedding 按 id 取出每个位置的向量，中间的 $N-1$ 个 decoder 层收成一个占位盒子，最后一层完整展开：attention 和 SwiGLU MLP 各带一个残差，之后是 final norm、lm_head、log_softmax 和 nll_loss。一共 $T=5$ 个位置，每个激活都是 $T$ 行的板，最前面一行是最后一个位置。前 3 个位置是第一条序列 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，后 2 个是第二条序列 <span class="ctx">{{ids[3]:token}}</span> <span class="ctx">{{ids[4]:token}}</span>。标签在每条序列内部右移一位，每条序列的最后一个位置标签是 $-100$。尺寸用 $d=4$、$f=6$、$V=5$，2 个 query head、1 个 kv head，$d_h=4$。
+    $$\ell=\frac{1}{3}\sum_{t:\,y_t\ne-100}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。损失先把 $1/3$ 分给 3 个有标签的位置，标签为 $-100$ 的两个位置收到 0；lm_head 之后每个位置各自往下传，直到 attention 才发生跨位置的交流：位置 $t$ 的梯度经过 $P$ 和 $\mathbf{v}$、$\mathbf{k}$ 只传给同一条序列里 $s\le t$ 的位置，两条序列之间没有梯度往来。两个残差让 $\mathbf{x}_0$ 至少拿到 $\partial\ell/\partial\mathbf{a}$，再穿过占位的 $N-1$ 层，最后 scatter-add 回 embedding 表里被用到的那几行。
+      $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id。其余都是参数：embedding 表 $E$、三个 RMSNorm 的权重、q_norm 和 k_norm 的权重、四个 attention 投影、三个 MLP 投影和 lm_head。Linear 的权重在 PyTorch 里存成 (out, in)，图里一律画成转置后的板，这样每次矩阵乘都是「左边的行乘右边的板」。RoPE 的 cos/sin 表和 mask 也在这一步出现，它们由每条序列的位置决定，不是参数，也不需要梯度。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}},{{ids[4]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}},{{y[4]}})$$
+
+modules:
+  Qwen3DecoderLayer:
+    subtitle: Qwen3DecoderLayer
+    formula: '\begin{aligned}\step{res1}{\of{a}}&\step{res1}{=\of{x}+}\step{self_attn.*}{\mathrm{attn}\big(}\step{input_layernorm.*}{\mathrm{norm}(\of{x})}\step{self_attn.*}{\big)}\\\step{res2}{\of{x_out}}&\step{res2}{=\of{a}+}\step{mlp.*}{\mathrm{mlp}\big(}\step{post_attention_layernorm.*}{\mathrm{norm}(\of{a})}\step{mlp.*}{\big)}\end{aligned}'
+    params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, f: { type: dim }, theta: { type: float, default: 1e6 } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: Qwen3DecoderLayer（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，从 $\of{x}$ 直接到 $\of{x_out}$，对应 <code>model.layers[-1](hidden_states)</code>。它和下面的「第 1 到 $N-1$ 层」是同一种结构，只是这一层的计算是真实的。连线是整层的 Jacobian：位置 $t$ 的输出依赖所有 $s\le t$ 的输入，对角块里的单位阵来自两条残差。
+        $$\of{x_out}=\mathrm{layer}(\of{x})={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 Qwen3DecoderLayer（已折叠）
+        text: |
+          一次反向算出这一层所有参数的梯度，以及交给 $\of{x}$ 的梯度。训练时如果开了 gradient checkpointing，这里会先用保存的 $\of{x}$ 把整层前向重算一遍，再做反向。
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          params:
+            intro: attention 之前先做一次 RMSNorm，也就是 input_layernorm。
+            out_note: $\of{out}$ 是 q、k、v 三个投影共同的输入。
+            in_note: $\of{x}$ 还会沿残差直接收到 $\partial\ell/\partial\mathbf{a}$，图里显示的是相加后的总量。
+          inputs: { x: x }
+          outputs: { out: n1 }
+          fold:
+            text: |
+              平方、均方根、归一化收在盒子里，$\of{input_layernorm.weight}$ 仍然显示。每一行只和自己那一行有关，所以整体 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+              $$\of{n1}={{ n1 | matrix:2 }}$$
+            backward:
+              text: |
+                一步算出 $\of{input_layernorm.weight}$ 的梯度，以及沿这一路交给 $\of{x}$ 的梯度。
+                $$\frac{\partial\ell}{\partial\of{input_layernorm.weight}}={{ input_layernorm.weight.grad | matrix:3 }}$$
+      - self_attn:
+          use: Qwen3Attention
+          params: { H: H, Hkv: Hkv, dh: dh, theta: theta }
+          inputs: { x: n1 }
+          outputs: { att: att }
+      - a: x + att
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          params:
+            intro: MLP 之前再做一次 RMSNorm，计算和 input_layernorm 相同。
+            out_note: $\of{out}$ 是 MLP 的输入。
+            in_note: $\of{x}$ 还会沿 MLP 的残差直接收到 $\partial\ell/\partial\mathbf{x}$，图里显示的是相加后的总量。
+          inputs: { x: a }
+          outputs: { out: n }
+      - mlp:
+          use: GLU
+          subtitle: Qwen3MLP
+          params: { act: silu, f: f }
+          inputs: { x: n }
+          outputs: { down: down }
+          tex: { a: '\mathbf{s}' }
+          steps:
+            proj:
+              text: |
+                两个投影的输入都是 $\of{n}$，两块权重拼在一起画，$n_{t,k}$ 沿第 $k$ 行一次穿过两块。维度从 $d$ 扩大到 $f$，Qwen3-8B 里是 4096 到 12288。
+                $$\mathbf{gate}=\of{n}W_g^{\top}={{ mlp.gate | matrix:2 }}$$
+              backward:
+                title: 传到 gate_proj、up_proj 权重和 $\of{n}$
+                text: |
+                  $n_{t,k}$ 那一行同时穿过 gate 和 up 两块，一共 $2f$ 段，全部相加。
+                  $$\frac{\partial\ell}{\partial\of{n}}={{ n.grad | matrix:3 }}$$
+            act:
+              title: SiLU
+              text: |
+                gate 逐元素经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。正数基本原样通过，负数被压到接近 0。
+                $$\of{mlp.a}={{ mlp.a | matrix:2 }}$$
+              backward:
+                title: 穿过 SiLU
+                text: |
+                  SiLU 的导数是 $\sigma(v)\big(1+v(1-\sigma(v))\big)$。
+                  $$\frac{\partial\ell}{\partial\mathbf{gate}}={{ mlp.gate.grad | matrix:3 }}$$
+            gate:
+              text: |
+                $\of{mlp.a}$ 和 $\mathbf{up}$ 逐元素相乘，$\of{mlp.a}$ 决定 $\mathbf{up}$ 的每个分量放行多少。
+                $$\of{mlp.m}={{ mlp.m | matrix:2 }}$$
+              backward:
+                title: 传到 $\of{mlp.a}$ 和 up
+                text: |
+                  逐元素乘，两个输入互为对方的局部导数。门 $s$ 接近 0 的地方，up 那一路几乎收不到梯度。
+                  $$\frac{\partial\ell}{\partial\mathbf{up}}={{ mlp.up.grad | matrix:3 }}$$
+            down:
+              text: |
+                再投影回 $d$ 维，摆法和 lm_head 一样。
+                $$\of{down}=\of{mlp.m}W_d^{\top}={{ down | matrix:2 }}$$
+              backward:
+                title: 传到 down_proj 权重和 $\of{mlp.m}$
+                text: |
+                  权重的梯度是 ${\of{mlp.m}}^{\top}\frac{\partial\ell}{\partial\of{down}}$，所有位置加在一起。
+                  $$\frac{\partial\ell}{\partial\of{mlp.m}}={{ mlp.m.grad | matrix:3 }}$$
+          fold:
+            text: |
+              gate_proj、up_proj、SiLU、门控相乘和 down_proj 收进了盒子，对应 HF 里的 <code>self.mlp(hidden_states)</code>。post_attention_layernorm 和残差都在盒子外面。MLP 对每个位置单独计算，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+              $$\of{down}=\mathrm{mlp}(\of{n})={{ down | matrix:2 }}$$
+      - x_out: { op: a + down, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        notes:
+          - at: a
+            text: '长弧线是残差：$\mathbf{x}$ 绕过 attention 直接加到这里'
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{x}_0+\mathbf{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          attention 算出来的只是一个增量，加回 residual stream。$\of{x}$ 到 $\of{a}$ 的那组长弧线就是残差连接，它绕过了整个 attention。
+          $$\of{a}=\of{x}+\of{att}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 attention 的残差
+          text: |
+            相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\of{att}$，进入 attention；一份沿残差直接交给 $\of{x}$。
+            $$\frac{\partial\ell}{\partial\of{att}}=\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
+        label: '$\of{x_out}=\of{a}+\of{down}$'
+        title: 残差相加
+        text: |
+          MLP 的输出加回 residual stream，得到这一层的输出。
+          $$\of{x_out}=\of{a}+\of{down}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{down}$'
+          title: 穿过 MLP 的残差
+          text: |
+            梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\of{a}$。
+            $$\frac{\partial\ell}{\partial\of{down}}=\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - layers:
+      title: $\cdots$ 第 1 到 $N-1$ 层
+      subtitle: Qwen3DecoderLayer $\times$ ($N-1$)
+      fixed: true
+      fold:
+        label: '$\of{x0}$'
+        title: $\cdots$ 第 1 到 $N-1$ 层（占位）
+        text: |
+          真实模型在 embedding 和最后一层之间还有 $N-1$ 个结构完全相同的 Qwen3DecoderLayer，Qwen3-8B 里 $N=36$。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，数值按恒等映射处理，Jacobian 取单位阵，所以 $\of{x0}$ 和 $\of{e}$ 相同。它右边的大括号和上面「第 N 层」的大括号是同一级，表示它们是同一种层。这个盒子不能展开。
+          $$\of{x0}=\mathrm{layers}_{1..N-1}(\of{e})\;\approx\;\of{e}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{e}$'
+          title: 穿过占位的 $N-1$ 层
+          text: |
+            因为盒子按恒等映射处理，梯度原样传给 $\of{e}$。真实模型里，这里会依次穿过 $N-1$ 个 decoder 层的反向，每一层的结构都和上面展开的这一层相同。
+            $$\frac{\partial\ell}{\partial\of{e}}=\frac{\partial\ell}{\partial\of{x0}}={{ e.grad | matrix:3 }}$$
+      body:
+        - x0: { op: identity(e), tex: '\mathbf{x}_0' }
+  - layer:
+      use: Qwen3DecoderLayer
+      title: Qwen3DecoderLayer
+      subtitle: 第 N 层
+      split: true
+      params: { H: H, Hkv: Hkv, dh: dh, f: f, theta: 10 }
+      inputs: { x: x0 }
+      outputs: { x_out: x }
+      steps:
+        self_attn.eager_attention_forward.mask:
+          title: 分块 causal mask
+          text: |
+            两条序列拼在一行里，mask 是分块的下三角：位置 $t$ 只能看到同一条序列里不晚于自己的位置。第二条序列的 query 看第一条序列的 key，这些格子也加 $-\infty$，所以两条序列互不影响，结果和分别单独计算完全相同。HF 从 position_ids 找出每条序列的起点（位置编号归零的地方），再构造这个 mask；FlashAttention 的 varlen 接口不构造矩阵，直接用每条序列的起止位置 cu_seqlens。
+            $$M={{ layer.self_attn.M | matrix:2 }}$$
+        self_attn.apply_rotary_pos_emb.cos:
+          append: |
+            打包以后位置编号是 $(0,1,2,0,1)$，第二条序列从 0 重新开始，所以第 4、5 行和第 1、2 行相同。如果位置不归零，第二条序列就像是接在第一条后面的同一段文本，RoPE 给出的相对位置会把两条序列连起来。
+  - norm:
+      use: RMSNorm
+      title: model.norm
+      subtitle: Qwen3RMSNorm
+      params:
+        name: final norm
+        intro: 从这里开始是 final norm（<code>model.norm</code>），在所有 decoder 层之后、lm_head 之前。
+        out_note: $\of{out}$ 是 lm_head 的输入。
+      inputs: { x: x }
+      outputs: { out: h }
+      fold:
+        backward:
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: 'sum(lt) / 3', tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。它等价于 one-hot 向量乘 $E$，但实现里就是按下标取行，所以每个位置只和被取到的那一行有连线。
+      $$\mathbf{e}_t=E[x_t],\qquad \mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行（scatter-add）。没有出现在输入里的 token，那一行的梯度是 0；同一个 token 出现几次，它那一行就累加几次。
+        $$\frac{\partial\ell}{\partial E[v]}=\sum_{t:\,x_t=v}\frac{\partial\ell}{\partial\mathbf{e}_t},\qquad \frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每个位置的 $\mathbf{h}_t$ 都乘同一块 $W^{\top}$，得到这个位置对下一个 token 的 logits。$h_{t,k}$ 沿第 $k$ 行经过每个方块，每一列累加后落到 $z_{t,i}$。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $\partial\ell/\partial W^{\top}=\mathbf{h}^{\top}\frac{\partial\ell}{\partial\mathbf{z}}$，所有位置的外积加在一起。
+        $$\frac{\partial\ell}{\partial\mathbf{h}}=\frac{\partial\ell}{\partial\mathbf{z}}W={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      每个位置各算一个 LSE。实现里先减去这一行的最大值再取指数，不会溢出。
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        两条路加起来，有标签的行是 $(\mathbf{p}_t-\mathbf{e}_{y_t})/3$，标签为 $-100$ 的行是 0。
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      每个 logit 减去自己那一行的 LSE。
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+      text: |
+        有标签的行，LSE 收到 $1/3$，$z$ 的直连那条只有标签格非零；标签为 $-100$ 的行都是 0。
+        $$\frac{\partial\ell}{\partial\,\mathrm{LSE}}={{ LSE.grad | matrix:3 }}$$
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "ignore_index=-100" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      每个位置按标签取出目标 token 的 log p，取负号。标签在每条序列内部右移一位：第一条序列的位置 1、2 预测 <span class="ctx">{{y[0]:token}}</span>、<span class="ctx">{{y[1]:token}}</span>，第二条序列的位置 4 预测 <span class="ctx">{{y[3]:token}}</span>。位置 3 和位置 5 是两条序列的最后一个位置，没有下一个 token，标签是 $-100$，<code>F.nll_loss</code> 的 ignore_index 默认就是 $-100$，这两个位置的损失记为 0。位置 3 的下一个位置虽然是 on，但 on 属于另一条序列，不能当作 sat 后面的 token 来训练。
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\\{{lt[3]:3}}\\{{lt[4]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+      text: |
+        有标签的行只有标签那一格收到 $-1/3$；标签为 $-100$ 的行全是 0。
+        $$\frac{\partial\ell}{\partial\log\mathbf{p}}={{ logp.grad | matrix:3 }}$$
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "ignore_index=-100" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      <code>reduction='mean'</code> 只对有标签的位置取平均：这里有 3 个，不是 $T=5$ 个。打包的几条序列在同一行里，每个有标签的位置权重相同，长序列在损失里占的比重更大。
+      $$\ell=\frac{1}{3}\sum_{t:\,y_t\ne-100}\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+      text: |
+        平均值把梯度 $1/3$ 分给每个有标签的位置。图里的 $\ell_t$ 在标签为 $-100$ 的位置是 0，它们的梯度也是 0。
+        $$\frac{\partial\ell}{\partial\ell_t}=\frac{1}{3}\approx 0.333$$
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - sequence: true
+    title: 两条序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$x_4$', '$x_5$ $\cdot$ $y_4$']
+    note: 前 3 个是第一条序列，后 2 个是第二条。改一个 token 只影响它所在的序列：它既是本序列前一个位置的标签，也是自己位置的输入。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    reset: true
+  - attention: 'layer.self_attn.eager_attention_forward.P[1..H]'
+    ids: ids
+    title: 注意力权重 P
+    note: 行是 query 的位置，列是 key 的位置。左下角的 $2\times3$ 块是第二条序列看第一条序列，被 mask 挡住，是 0。
+  - title: 对应的 PyTorch
+    code: |-
+      from transformers import DataCollatorWithFlattening
+      collate = DataCollatorWithFlattening()
+      batch = collate([{"input_ids": tok("the cat sat").input_ids},
+                       {"input_ids": tok("on mat").input_ids}])
+      # input_ids    [[the, cat, sat, on, mat]]
+      # position_ids [[0, 1, 2, 0, 1]]
+      # labels       [[-100, cat, sat, -100, mat]]
+      out = model(**batch)   # 模型内部右移 labels
+      out.loss.backward()
+    note: labels 在每条序列开头放 $-100$，模型把 labels 左移一位后，每条序列最后一个位置的标签就是 $-100$。position_ids 归零的位置就是新序列的起点，attention 据此只在序列内部计算。
+sections:
+  - title: RoPE：用旋转来编码位置
+    src: qwen3/rope.md
+    rope: { q: layer.self_attn.qn, k: layer.self_attn.kn, rows: [-1, 1], head: 1, theta: 10, dh: dh, positions: 24 }
+values:
+  layer.self_attn.M: 'packed_mask([3, 2])'
+  layer.self_attn.apply_rotary_pos_emb.cos: 'rope_cos(packed_positions([3, 2]), dh, theta)'
+  layer.self_attn.apply_rotary_pos_emb.sin: 'rope_sin(packed_positions([3, 2]), dh, theta)'
+  E:
+    - [0.49, -0.96, 0.35, 0.09]
+    - [-1.09, -0.46, -0.67, -0.25]
+    - [0.22, 0.4, -0.29, -1]
+    - [-0.54, -1.17, 0.19, -0.93]
+    - [0.87, 0.87, -0.6, 0.17]
+  layer.input_layernorm.weight: [1.02, 0.97, 1, 1.03]
+  layer.self_attn.Wq:
+    - [-0.04, 0.32, -0.41, 0.44]
+    - [0.25, 0.78, -0.42, 0.01]
+    - [0.29, 0.73, 0.68, 0.63]
+    - [-0.56, 0.14, 0.19, -0.03]
+    - [-0.23, 0.73, 0.09, -0.36]
+    - [0.15, -0.48, 0.69, -0.66]
+    - [0.16, 0.36, 0.04, -0.25]
+    - [-0.35, 0.67, 0.57, -0.8]
+  layer.self_attn.Wk:
+    - [0.39, 0.43, 0.5, -0.53]
+    - [0.58, -0.77, -0.26, -0.24]
+    - [-0.27, -0.36, -0.42, -0.1]
+    - [0.39, 0.27, 0.34, 0.77]
+  layer.self_attn.Wv:
+    - [0.2, -0.07, -0.38, -0.43]
+    - [0.26, 0.16, -0.31, -0.86]
+    - [-0.01, -0.11, -0.3, -0.71]
+    - [0.18, -0.34, 0.78, -0.73]
+  layer.self_attn.q_norm.weight: [1, 0.96, 1.04, 1]
+  layer.self_attn.k_norm.weight: [0.98, 1.02, 1, 1.01]
+  layer.self_attn.Wo:
+    - [0.44, 0, 0.23, -0.21, -0.46, -0.2, -0.07, 0.37]
+    - [0.03, -0.31, -0.39, -0.41, -0.31, 0.33, 0.34, 0.19]
+    - [-0.19, -0.12, -0.47, 0.49, -0.1, 0.49, 0.18, -0.35]
+    - [-0.25, 0.29, -0.03, 0.28, 0.01, -0.28, -0.48, 0.49]
+  layer.post_attention_layernorm.weight: [1, 0.95, 1.05, 1]
+  layer.mlp.Wg:
+    - [0.6, -0.4, 0.2, 0.5]
+    - [-0.5, 0.3, 0.6, -0.2]
+    - [0.3, 0.7, -0.4, 0.4]
+    - [-0.2, -0.6, 0.5, 0.3]
+    - [0.7, 0.1, -0.3, -0.5]
+    - [0.1, -0.3, 0.8, 0.6]
+  layer.mlp.Wu:
+    - [0.4, 0.2, -0.5, 0.3]
+    - [0.3, -0.6, 0.2, 0.5]
+    - [-0.4, 0.5, 0.3, 0.2]
+    - [0.6, 0.1, -0.2, -0.4]
+    - [-0.3, -0.4, 0.6, 0.1]
+    - [0.2, 0.6, 0.1, -0.3]
+  layer.mlp.Wd:
+    - [0.3, -0.2, 0.4, 0.1, 0.2, -0.3]
+    - [-0.4, 0.3, -0.1, 0.2, -0.3, 0.1]
+    - [0.2, 0.1, 0.3, -0.4, 0.1, 0.2]
+    - [0.4, -0.1, 0.2, 0.3, 0.3, 0.2]
+  norm.weight: [0.94, 1.03, 1.04, 1.01]
+  W:
+    - [0.5, 0.7, -0.6, -0.2]
+    - [-0.7, 0.4, -0.3, -0.5]
+    - [0.9, -0.6, 0.3, 0.6]
+    - [-0.4, 0.2, 0.9, 0.3]
+    - [0.2, -0.8, 0.6, 0.2]

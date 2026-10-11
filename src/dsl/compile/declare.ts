@@ -127,8 +127,10 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
     if (!isRecord(bufferDecl)) fail(at, `buffer '${name}' must be a mapping`);
     checkKeys(bufferDecl, new Set(['value', 'shape', 'tex', 'dtype']), at);
     const bufferDtype = dtypeOption(bufferDecl, at);
-    const valueWhere = child(at, bufferDecl, 'value');
-    const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
+    const path = join(scope.path, name);
+    const given = c.takeValue(path);
+    const valueWhere = typeof given === 'string' ? child(child(c.pageWhere, c.page, 'values'), c.page.values as Record<string, unknown>, path) : child(at, bufferDecl, 'value');
+    const value = c.expression(typeof given === 'string' ? given : bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
     if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, `a buffer value must call one of ${Object.keys(BUFFER_FUNCTIONS).join(', ')}`);
     let buffer = value as BufferValue;
     if (bufferDecl.shape !== undefined) {
@@ -140,9 +142,7 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
       }
       buffer = { buffer: true, shape, values: reshapeNested(buffer.values, shape.map((d) => d.toy)) };
     }
-    const path = join(scope.path, name);
-    const given = c.takeValue(path);
-    if (given !== undefined) buffer = { ...buffer, values: given };
+    if (given !== undefined && typeof given !== 'string') buffer = { ...buffer, values: given };
     const key = given !== undefined ? `${path}=values` : `${scope.def.file}#${scope.def.name}.${name}=${String(bufferDecl.value)}(${buffer.shape.map((d) => `${d.toy}:${d.real}`).join(',')};${JSON.stringify(buffer.values)})`;
     const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
     const node = c.bufferNode(key, () => {

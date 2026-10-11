@@ -73,6 +73,7 @@ const MIN_MATRIX_LIMIT = 1e-6;
 const SUBSCRIPT_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
 const TINT_ZERO = 1e-9;
 const ATTENTION_LIMIT = 1;
+const ATTENTION_SIDE_BY_SIDE = 4;
 const PROB_DIGITS = 2;
 const CACHE_KIND_TEXT = { rows: '每个 token 一行，随长度增长', window: '只留最近几行，大小固定', state: '只留一个状态，大小固定' } as const;
 
@@ -347,7 +348,7 @@ function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attent
   });
   return (
     <Card title={item.title}>
-      <div class="vf-attg" style={{ 'grid-template-columns': `repeat(${item.attention.length}, minmax(0, 1fr))` }}>
+      <div class="vf-attg" style={{ 'grid-template-columns': `repeat(${item.attention[0].shape[0] > ATTENTION_SIDE_BY_SIDE ? 1 : item.attention.length}, minmax(0, 1fr))` }}>
         <For each={item.attention}>
           {(node, h) => {
             const size = node.shape[0];
@@ -369,7 +370,7 @@ function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attent
                       <For each={indices}>
                         {(c) => {
                           const v = () => values().get([r, c]);
-                          return <div style={{ background: tint(v(), ATTENTION_LIMIT) }}>{c > r ? '·' : display(v(), CELL_DIGITS)}</div>;
+                          return <div style={{ background: tint(v(), ATTENTION_LIMIT) }}>{c > r || v() === 0 ? '·' : display(v(), CELL_DIGITS)}</div>;
                         }}
                       </For>
                     </>

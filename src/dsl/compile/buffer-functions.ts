@@ -3,9 +3,17 @@ import type { Num } from './types';
 
 type BufferArg = Num | Num[];
 
+export const POSITION_LISTS: ReadonlySet<string> = new Set(['rope_cos', 'rope_sin']);
+
+const positionsOf = (T: BufferArg): number[] => (Array.isArray(T) ? T.map((n) => n.toy) : [...Array(T.toy).keys()]);
+const rowsOf = (T: BufferArg): Num => (Array.isArray(T) ? { toy: T.length, real: T.length } : T);
+
+const ROPE_FUNCTIONS: Record<string, (args: BufferArg[]) => { shape: Num[]; values: Nested }> = {
+  rope_cos: ([T, dh, theta]) => ({ shape: [rowsOf(T), dh as Num], values: ropeTable(positionsOf(T), (dh as Num).toy, (theta as Num).toy, Math.cos) }),
+  rope_sin: ([T, dh, theta]) => ({ shape: [rowsOf(T), dh as Num], values: ropeTable(positionsOf(T), (dh as Num).toy, (theta as Num).toy, Math.sin) }),
+};
+
 const NUMBER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: Nested }> = {
-  rope_cos: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.cos) }),
-  rope_sin: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.sin) }),
   zeros: (shape) => ({ shape, values: zerosOf(shape.map((n) => n.toy)) }),
   causal_mask: ([T]) => ({
     shape: [T, T],
@@ -68,6 +76,7 @@ const PACKED_FUNCTIONS = {
 
 export const BUFFER_FUNCTIONS: Record<string, (args: BufferArg[]) => { shape: Num[]; values: Nested }> = {
   ...(NUMBER_FUNCTIONS as Record<string, (args: BufferArg[]) => { shape: Num[]; values: Nested }>),
+  ...ROPE_FUNCTIONS,
   ...PACKED_FUNCTIONS,
 };
 
@@ -75,9 +84,9 @@ function zerosOf(shape: number[]): Nested {
   return shape.length === 0 ? 0 : Array.from({ length: shape[0] }, () => zerosOf(shape.slice(1)));
 }
 
-function ropeTable(T: number, dh: number, theta: number, fn: (x: number) => number): number[][] {
+function ropeTable(positions: number[], dh: number, theta: number, fn: (x: number) => number): number[][] {
   const inv = [...Array(dh / 2).keys()].map((i) => 1 / theta ** ((2 * i) / dh));
-  return [...Array(T).keys()].map((t) => [...Array(dh).keys()].map((c) => fn(t * inv[c % (dh / 2)])));
+  return positions.map((t) => [...Array(dh).keys()].map((c) => fn(t * inv[c % (dh / 2)])));
 }
 
 export function reshapeNested(values: Nested, shape: number[]): Nested {

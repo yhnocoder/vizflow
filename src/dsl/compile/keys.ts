@@ -19,4 +19,4 @@ export const NOTE_SIDES: ReadonlySet<string> = new Set(['left', 'right', 'above'
 export const GENERATE_KEYS = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note']);
 export const CACHE_KEYS = new Set(['nodes', 'note']);
 export const OPTIMIZER_KEYS = new Set(['type', 'lr', 'weight_decay']);
-export const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label']);
+export const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label', 'packed']);

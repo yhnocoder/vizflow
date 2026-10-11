@@ -3,7 +3,7 @@ import { explainOf } from '../../explain';
 import { type Ast, ParseError, parseExpr } from '../expr';
 import { DslError } from '../source';
 import { elemOf, numberTex } from '../tex';
-import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
+import { BUFFER_ARITY, BUFFER_FUNCTIONS, POSITION_LISTS } from './buffer-functions';
 import { CompilerState } from './state';
 import { type BufferValue, type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
 import { isNum, isRecord, num } from './util';
@@ -193,12 +193,15 @@ export class ExpressionCompiler extends CompilerState {
     const usage = typeof arity === 'object' ? arity.usage : `${arity === 'any' ? 'one or more' : arity} numbers`;
     if (ast.args.length < least || (count !== undefined && ast.args.length > count) || ast.kwargs.length > 0) this.fail(env, `${fnName} takes ${usage}`, at);
     const args = ast.args.map((arg) => {
-      if (arg.k !== 'list') return this.evaluate(arg, env, make, offset);
+      if (arg.k !== 'list') {
+        const value = this.evaluate(arg, env, make, offset);
+        return isRecord(value) && 'buffer' in value && (value as BufferValue).shape.length === 1 ? ((value as BufferValue).values as number[]).map((n) => ({ toy: n, real: n })) : value;
+      }
       const items = arg.items.map((item) => this.evaluate(item, env, make, offset));
       return items.every(isNum) ? (items as Num[]) : this.fail(env, `${fnName} takes ${usage}`, at);
     });
     const lists = typeof arity === 'object' ? arity.lists : 0;
-    const shapeOk = args.every((arg, i) => (i < lists ? Array.isArray(arg) : isNum(arg) || (typeof arity === 'object' && Array.isArray(arg))));
+    const shapeOk = args.every((arg, i) => (i < lists ? Array.isArray(arg) : isNum(arg) || (Array.isArray(arg) && (typeof arity === 'object' || (i === 0 && POSITION_LISTS.has(fnName))))));
     if (!shapeOk) this.fail(env, `${fnName} takes ${usage}`, at);
     try {
       return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as (Num | Num[])[]) };
