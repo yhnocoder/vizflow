@@ -278,6 +278,19 @@
   padding-bottom: 2px;
 }
 
+.vf-display-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  column-gap: 2em;
+}
+
+.vf-display-row > .vf-tex {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .vf-panels {
   display: flex;
   flex-direction: column;

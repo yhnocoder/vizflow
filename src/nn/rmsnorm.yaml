@@ -22,7 +22,7 @@ fold:
     text: |
       $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
 body:
-  - sq: { op: x ** 2, tex: '{\of{x}}^{2}' }
+  - sq: { op: x ** 2, tex: '\of{x}^{2}' }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
   - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}' }
