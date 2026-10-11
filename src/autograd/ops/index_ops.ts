@@ -142,6 +142,7 @@ export const narrowOp: OpDef<NarrowAttrs> = {
 
 export interface CatAttrs {
   dim: number;
+  pieces: number | null;
 }
 
 function catShape(shapes: readonly (readonly number[])[], attrs: CatAttrs): number[] {
@@ -156,6 +157,11 @@ function catShape(shapes: readonly (readonly number[])[], attrs: CatAttrs): numb
     }
     out[dim] += shape[dim];
   }
+  if (attrs.pieces === null) return out;
+  if (!Number.isInteger(attrs.pieces) || attrs.pieces < 1 || shapes.some((shape) => shape[dim] !== first[dim])) {
+    throw new Error(`cat: pieces ${attrs.pieces} needs a positive integer and tensors of the same size along dim ${dim}`);
+  }
+  out[dim] = first[dim] * attrs.pieces;
   return out;
 }
 
@@ -177,9 +183,11 @@ export const catOp: OpDef<CatAttrs> = {
   args: ['tensors', 'dim'],
   tensors: ['tensors'],
   list: 'tensors',
-  defaults: { dim: 0 },
+  sizes: ['pieces'],
+  defaults: { dim: 0, pieces: null },
   shape: (shapes, attrs) => catShape(shapes, attrs),
   forward: (inputs, attrs) => {
+    if (attrs.pieces !== null && attrs.pieces !== inputs.length) throw new Error(`cat: pieces is ${attrs.pieces}, but ${inputs.length} tensors are given`);
     const shapes = inputs.map((t) => t.shape);
     const out = new Tensor(catShape(shapes, attrs));
     forEachIndex(out.shape, (index, offset) => {

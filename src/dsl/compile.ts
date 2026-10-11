@@ -271,6 +271,7 @@ class Compiler {
   private readonly namedDims = new Map<string, string>();
   private readonly buffers = new Map<string, Node>();
   private readonly owners = new Map<Node, LayoutEntry[]>();
+  private readonly rangeCounts = new WeakMap<Node[], Num>();
 
   constructor(
     readonly page: Record<string, unknown>,
@@ -398,6 +399,8 @@ class Compiler {
       if (ast.end !== undefined) {
         const from = this.int(ast.index, env, offset);
         const to = this.int(ast.end, env, offset);
+        const fromNum = this.evaluate(ast.index, env, undefined, offset) as Num;
+        const toNum = this.evaluate(ast.end, env, undefined, offset) as Num;
         const nodes: Node[] = [];
         for (let i = from; i <= to; i++) {
           const target = this.keyOf({ k: 'index', obj: ast.obj, index: { k: 'num', v: i, pos: ast.pos }, pos: ast.pos }, env, offset);
@@ -405,6 +408,7 @@ class Compiler {
           if (!(found instanceof Node)) this.fail(env, `'${target?.key ?? '?'}' is not a node`, offset + ast.pos);
           nodes.push(found);
         }
+        this.rangeCounts.set(nodes, { toy: to - from + 1, real: toNum.real - fromNum.real + 1 });
         return nodes;
       }
       const target = this.keyOf(ast, env, offset);
@@ -538,6 +542,10 @@ class Compiler {
     const positional = args.map((value, i) => convert(restAt >= 0 && i >= restAt ? def.args[restAt] : (def.args[i] ?? `#${i}`), value));
     const options: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(kwargs)) options[key] = convert(key, value);
+    const pieces = def.list === undefined ? undefined : this.rangeCounts.get(args[def.args.indexOf(def.list)] as Node[]);
+    if (pieces !== undefined && pieces.real !== pieces.toy && def.defaults !== undefined && 'pieces' in def.defaults && !('pieces' in options)) {
+      options.pieces = this.dimSpec(pieces);
+    }
     const attrs: Record<string, unknown> = { ...(def.defaults ?? {}), ...options };
     def.args.forEach((argName, i) => {
       if (positional[i] !== undefined && (!def.tensors.includes(argName) || typeof positional[i] === 'number')) attrs[argName] = positional[i];
