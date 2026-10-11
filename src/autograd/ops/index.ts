@@ -23,6 +23,7 @@ import {
   transposeOp,
   whereOp,
 } from './elementwise';
+import { allReduceOp } from './comm';
 import { catOp, causalConv1dOp, embeddingOp, gatherOp, indexAddOp, narrowOp, repeatInterleaveOp, routeExpertsOp, routeRowsOp, selectOp, topkMaskOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { type ScaledMmAccum, groupedMmOp, matmulOp, scaledMmOp, selectMatmulOp } from './matmul';
@@ -104,6 +105,7 @@ export interface BuiltinOps {
   scaled_mm(a: Node, sfa: Node, b: Node, sfb: Node, options?: ScaledMmOptions): Node;
   scaled_mm(a: Node, sfa: Node, b: Node, sfb: Node, block_k: number | string, block_n: number | string, accum?: ScaledMmAccum, options?: OpOptions): Node;
   index_add(src: Node, index: Node, size: number | string, options?: OpOptions): Node;
+  all_reduce(input: Node, group: string, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -152,3 +154,4 @@ export const builtinOps: readonly AnyOpDef[] = [
 ];
 
 for (const def of builtinOps) defineOp(def);
+defineOp(allReduceOp);
