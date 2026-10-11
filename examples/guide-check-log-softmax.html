@@ -22,8 +22,14 @@ import { mountSteps, mountPanels } from '@yhnocoder/vizflow/ui';
 const g = graph({ dims: { V: 5 }, check: true });
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
-const logp = g.log_softmax(x, -1, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ex = g.exp(x, { name: 'ex', tex: 'e^{\\mathbf{x}}', elem: 'e^{x}' });
+const S = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L = g.log(S, { name: 'LSE' });
+const logp = g.sub(x, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, {
   overview: {
@@ -37,9 +43,19 @@ const steps = createSteps(g, {
   forward: [
     { show: x, label: 'x', title: '输入：logits x',
       text: String.raw`$$\mathbf{x} = ({{x[0]:2}},\; {{x[1]:2}},\; {{x[2]:2}},\; {{x[3]:2}},\; {{x[4]:2}})$$` },
-    { show: logp, label: 'log p', title: 'log_softmax',
-      text: String.raw`$$\log p_{ {{t+1}} } = {{log p[t]:3}}$$` },
-    { show: loss, label: 'ℓ', title: 'nll_loss',
+    { show: ex, label: '$e^{\\mathbf{x}}$', title: 'log_softmax：取 exp',
+      text: String.raw`$$e^{x_{ {{t+1}} }} = {{ex[t]:3}}$$` },
+    { show: S, label: '$S$', title: 'log_softmax：求和',
+      text: String.raw`$$S = \sum_j e^{x_j} = {{S:3}}$$` },
+    { show: L, label: 'LSE', title: 'log_softmax：取 log',
+      text: String.raw`$$\mathrm{LSE} = \log S = {{LSE:3}}$$` },
+    { show: logp, label: 'log p', title: 'log_softmax：减去 LSE',
+      text: String.raw`$$\log p_{ {{t+1}} } = x_{ {{t+1}} } - \mathrm{LSE} = {{log p[t]:3}}$$` },
+    { show: pick, label: '$\\log p_t$', title: 'nll_loss：按标签取格',
+      text: String.raw`$$\log p_t = {{pick:3}}$$` },
+    { show: lt, label: '$-\\log p_t$', title: 'nll_loss：取负',
+      text: String.raw`$$-\log p_t = {{lt:3}}$$` },
+    { show: loss, label: 'ℓ', title: 'nll_loss：取平均',
       text: String.raw`$$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$` },
   ],
   backward: 'auto',

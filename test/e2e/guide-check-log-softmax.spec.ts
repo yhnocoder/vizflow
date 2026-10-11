@@ -29,9 +29,9 @@ test('log_softmax widget', async ({ page }) => {
   expect(nllAt(moved, 0)).not.toBe(initialLoss);
 
   const buttons = page.locator('.vf-st');
-  await expect(buttons).toHaveCount(6);
+  await expect(buttons).toHaveCount(16);
   const labels = await buttons.allTextContents();
-  expect(labels.filter((l) => l.trim().startsWith('∂'))).toHaveLength(2);
+  expect(labels.filter((l) => l.trim().startsWith('∂'))).toHaveLength(7);
 
   await buttons.last().click();
   await expect(page.locator('.vf-st[aria-current="step"]')).toHaveText(/∂x/);

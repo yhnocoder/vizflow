@@ -22,9 +22,14 @@ const W = g.param('W', ['V', 'd'], [
 const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps: StepsSpec = {
   overview: {
@@ -53,48 +58,98 @@ const steps: StepsSpec = {
 
         $$z_{ {{t+1}} } = \sum_k h_k W^{\top}_{k, {{t+1}} } = ({{h[0]:2}})({{W[t, 0]:2}}) + ({{h[1]:2}})({{W[t, 1]:2}}) + ({{h[2]:2}})({{W[t, 2]:2}}) + ({{h[3]:2}})({{W[t, 3]:2}}) = {{z[t]}}$$
       ` },
-    { show: L, label: 'LSE', title: 'log-sum-exp',
+    { show: ex, label: String.raw`$e^{\mathbf{z}}$`, title: 'log_softmax：取 exp',
       text: String.raw`
-        把所有 logit 汇总成一个数。先减去最大值 $m$ 再取指数，最大的一项是 $e^0=1$，不会溢出。它就是上一页的 $\ln S$。
+        <code>log_softmax</code> 的定义是 $\log p_i = z_i - \log\sum_j e^{z_j}$。PyTorch 里它是一个 kernel，这里按定义拆成四步：取 exp、求和、取 log、相减。第一步给每个 logit 取 exp，结果全都是正数。
+        PyTorch 的 kernel 会先减去最大值 $m$ 再取 exp，算的是 $z_i - m - \log\sum_j e^{z_j-m}$，防止溢出；$m$ 在式子里正好抵消，结果和梯度都不变，这里的数值也远不会溢出，所以按定义画。
 
-        $$\mathrm{LSE} = m + \log\sum_j e^{z_j - m} = {{LSE}}$$
+        $$e^{z_{ {{t+1}} }} = e^{ {{z[t]}} } = {{ex[t]:3}}$$
       ` },
-    { show: logp, label: 'log p', title: 'log_softmax',
+    { show: S, label: '$S$', title: 'log_softmax：求和',
+      text: String.raw`
+        把 5 个 exp 加起来，得到一个数 $S$。它就是上一页 softmax 的分母。
+
+        $$S = \sum_j e^{z_j} = {{S:3}}$$
+      ` },
+    { show: L, label: 'LSE', title: 'log_softmax：取 log',
+      text: String.raw`
+        对 $S$ 取 log，就是 log-sum-exp，简写为 LSE。
+
+        $$\mathrm{LSE} = \log S = {{LSE}}$$
+      ` },
+    { show: logp, label: 'log p', title: 'log_softmax：减去 LSE',
       text: String.raw`
         每个 logit 减去同一个 LSE，得到的数全都 $\le 0$。整个计算在对数空间里完成，不先算 $p$ 再取 $\log$，所以概率很小时也不会出现 $\log 0$。
 
         $$\log p_i = z_i - \mathrm{LSE},\qquad \log p_{ {{t+1}} } = {{z[t]}} - {{LSE}} = {{log p[t]}}$$
       ` },
-    { show: loss, label: 'ℓ', title: 'nll_loss',
+    { show: pick, label: String.raw`$\log p_t$`, title: 'nll_loss：按标签取格',
       text: String.raw`
-        nll_loss 只按标签取出一个元素再取负号，自己不做 log。所以它必须接在 log_softmax 后面，两者合起来才等于 cross_entropy。
+        <code>F.nll_loss(logp, t)</code> 对每一行 $n$ 算 $-\log p_{n,t_n}$，默认 <code>reduction='mean'</code> 再取平均。它是一个 kernel，自己不做 log，这里拆成三步：按标签取格、取负、取平均。
+        第一步按标签取出目标 token 那一格，写成 PyTorch 是 <code>logp.gather(-1, t.view(-1, 1))</code>，只有目标那一格有连线。
 
-        $$\ell = -\log p_t = {{loss:3}}$$
+        $$\log p_t = \log p_{ {{t+1}} } = {{pick:3}}$$
+      ` },
+    { show: lt, label: String.raw`$-\log p_t$`, title: 'nll_loss：取负',
+      text: String.raw`
+        取负号得到这个位置的损失。目标 token 的概率越小，这个数越大。
+
+        $$\ell_1 = -\log p_t = {{lt:3}}$$
+      ` },
+    { show: loss, label: 'ℓ', title: 'nll_loss：取平均',
+      text: String.raw`
+        对所有位置取平均。这里只有一个位置，平均值等于它自己，但 <code>F.nll_loss</code> 仍然做这一步，所以照样画出来。nll_loss 必须接在 log_softmax 后面，两者合起来才等于 cross_entropy。
+
+        $$\ell = \frac{1}{1}\sum_n \ell_n = {{loss:3}}$$
       ` },
   ],
   backward: {
     auto: true,
     override: {
-      1: { title: '从 nll 出发',
+      1: { title: '从损失出发',
         text: String.raw`
-          $\ell=-\log p_t$ 对 $\log\mathbf{p}$ 求导，只有第 $t$ 格是 $-1$。对比上一页：那里要先经过 $-1/y$，$y$ 很小时这个数会非常大；这里是常数。
+          平均值把梯度 $1/N$ 分给每个位置，这里 $N=1$，所以 $\ell_1$ 拿到 1。
+
+          $$\frac{\partial\ell}{\partial\ell_1} = {{lt.grad:3}}$$
+        ` },
+      2: { title: '穿过取负',
+        text: String.raw`
+          取负的局部导数是 $-1$，梯度变号。
+
+          $$\frac{\partial\ell}{\partial\log p_t} = {{pick.grad:3}}$$
+        ` },
+      3: { title: '穿过取格',
+        text: String.raw`
+          取格的反向把梯度放回被取到的那一格，其他格是 0，所以只有第 $t$ 格是 $-1$。对比上一页：那里要先经过 $-1/y$，$y$ 很小时这个数会非常大；这里是常数。
 
           $$\frac{\partial\ell}{\partial\log\mathbf{p}} = -\mathbf{e}_t$$
         ` },
-      2: { title: '传到 LSE',
+      4: { title: '传到 LSE',
         text: String.raw`
           每个 $\log p_i$ 都减了同一个 LSE，局部导数都是 $-1$。只有第 $t$ 格的上游非零，所以 LSE 收到 $(-1)\times(-1)=1$。
 
           $$\frac{\partial\ell}{\partial\mathrm{LSE}} = -\sum_i\frac{\partial\ell}{\partial\log p_i} = {{LSE.grad}}$$
         ` },
-      3: { title: '传到 logits',
+      5: { title: '穿过 log',
         text: String.raw`
-          $z_i$ 有两条出边：直连 $\log p_i$ 的那条局部导数是 1；经过 LSE 的那条局部导数是 $\partial\mathrm{LSE}/\partial z_i=p_i$。
+          $\frac{d}{dS}\log S = \frac{1}{S}$，所以局部导数是 $1/S$。
+
+          $$\frac{\partial\ell}{\partial S} = \frac{1}{S}\cdot\frac{\partial\ell}{\partial\mathrm{LSE}} = {{S.grad:3}}$$
+        ` },
+      6: { title: '穿过求和',
+        text: String.raw`
+          求和的局部导数是 1，$S$ 的梯度原样复制给每个 $e^{z_j}$。
+
+          $$\frac{\partial\ell}{\partial e^{z_j}} = \frac{\partial\ell}{\partial S} = {{S.grad:3}}$$
+        ` },
+      7: { title: '传到 logits',
+        text: String.raw`
+          $z_i$ 有两条出边：直连 $\log p_i$ 的那条局部导数是 1，拿到 $-\mathbf{e}_t$；经过 exp 的那条局部导数是 $e^{z_i}$，乘上游的 $1/S$ 得到 $e^{z_i}/S=p_i$。
           两条相加就是 $p-y$，和上一页的结果相同，但路径上没有出现 $1/y$。记 $\mathbf{g}=\partial\ell/\partial\mathbf{z}$，它是 $1\times V$ 的行向量。
 
           $$\mathbf{g} = \frac{\partial\ell}{\partial\mathbf{z}} = \mathbf{p} - \mathbf{e}_t,\qquad g_{ {{t+1}} } = {{z.grad[t]+1:3}} - 1 = {{z.grad[t]:3}}$$
         ` },
-      4: { title: '传到 lm_head 权重', label: '∂Wᵀ',
+      8: { title: '传到 lm_head 权重', label: '∂Wᵀ',
         text: String.raw`
           $z_i=\sum_k h_kW^{\top}_{ki}$，所以 $\partial z_i/\partial W^{\top}_{ki}=h_k$。整个梯度是 $\mathbf{h}^{\top}$（$d\times1$）乘 $\mathbf{g}$（$1\times V$）的外积，形状和 $W^{\top}$ 相同。
           目标 token 那一列是 $(p_t-1)\mathbf{h}^{\top}$，梯度下降会把它往 $\mathbf{h}$ 的方向拉；其余列是 $p_i\mathbf{h}^{\top}$，会被往反方向推。
@@ -102,7 +157,7 @@ const steps: StepsSpec = {
 
           $$\frac{\partial\ell}{\partial W^{\top}} = \mathbf{h}^{\top}\mathbf{g} \in \mathbb{R}^{4\times 5}$$
         ` },
-      5: { title: '传到隐状态 h',
+      9: { title: '传到隐状态 h',
         text: String.raw`
           $h_k$ 沿 $W^{\top}$ 的第 $k$ 行经过 5 个方块，5 段传回的贡献相加，就是 $\mathbf{g}$（$1\times V$）乘 $W$（$V\times d$）。这个梯度会继续传回 RMSNorm 和前面的 decoder 层。
 
@@ -129,7 +184,7 @@ page.steps = steps;
 page.scene = {
   layout: [
     board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
-    stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
+    stack(z, ex, S, L, logp, pick, lt, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } }),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
 };
@@ -149,6 +204,6 @@ page.panels = [
     note: 'Qwen3-8B 里 d = 4096、V = 151936，lm_head 单独一份权重；Qwen3-0.6B 的 lm_head 和 embed_tokens 共享同一个矩阵。' },
 ];
 
-Object.assign(window, { vizflow: { g, page, nodes: { h, W, t, z, L, logp, loss } } });
+Object.assign(window, { vizflow: { g, page, nodes: { h, W, t, z, ex, S, L, logp, pick, lt, loss } } });
 document.body.dataset.three = REVISION;
 document.body.dataset.ready = 'true';
