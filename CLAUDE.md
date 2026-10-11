@@ -65,6 +65,37 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 经用户明确同意，小任务可以跳过上面的流程，也可以把多个小任务合并到一个 PR。
 
+## 代码地图
+
+每个目录负责什么、从哪个文件读起。这里只写目录和入口文件，不写函数名和行号；文件改名或移动时同时改这一节，`scripts/check_map.py` 检查这里写到的路径都存在。
+
+- `src/tensor/`：张量、形状与广播、数值格式化。入口 `src/tensor/index.ts`。
+- `src/autograd/`：计算图、节点、dtype、运算注册与反向传播，`src/autograd/ops/` 每个文件是一类运算的前向与反向，`src/autograd/check.ts` 做有限差分检查。入口 `src/autograd/index.ts`。
+- `src/explain/`：由运算定义推导讲解内容，包括逐元素公式、连线和悬停卡片，`src/explain/ops/` 与 `src/autograd/ops/` 一一对应。入口 `src/explain/index.ts`。
+- `src/formula/`：KaTeX 渲染与公式文本。入口 `src/formula/index.ts`。
+- `src/steps/`：步骤序列与讲解文本模板。入口 `src/steps/index.ts`。
+- `src/ui/`：页面上的 DOM 组件（步骤条、面板、讲解段落、图示），使用 Solid。入口 `src/ui/index.ts`。
+- `src/theme/`：颜色与字体。入口 `src/theme/index.ts`。
+- `src/scene3d/`：3D 场景。入口 `src/scene3d/scene.ts`，控制器是 `src/scene3d/controller.ts`，各部分分在单独的文件：
+  - 布局：`src/scene3d/layout.ts`、`src/scene3d/levels.ts`、`src/scene3d/auto.ts`；
+  - 相机与取景：`src/scene3d/camera.ts`、`src/scene3d/framing.ts`；
+  - 柱子与数值标签：`src/scene3d/renderable.ts`、`src/scene3d/blockview.ts`、`src/scene3d/blocks.ts`；
+  - 连线：`src/scene3d/edges.ts`、`src/scene3d/edgelines.ts`、`src/scene3d/lines.ts`；
+  - 模块大括号、折叠盒子、token 标签：`src/scene3d/moduleview.ts`、`src/scene3d/boxes.ts`、`src/scene3d/chips.ts`；
+  - 悬停与点击：`src/scene3d/pointer.ts`、`src/scene3d/popups.ts`，悬停柱子时的相关连线与同 token 框在 `src/scene3d/hover.ts`；
+  - 场景上的按钮与图例：`src/scene3d/chrome.ts`；
+  - 交互编辑：`src/scene3d/edit.ts`。
+- `src/dsl/`：YAML 页面描述的加载与编译。入口 `src/dsl/index.ts`，编译从 `src/dsl/compile.ts` 读起，编译器各部分在 `src/dsl/compile/`；表达式在 `src/dsl/expr.ts`，讲解段落的 Markdown 在 `src/dsl/section-md.ts`。
+- `src/nn/`：内置的 YAML 模块，例如 `src/nn/gqa.yaml`、`src/nn/rmsnorm.yaml`。
+- `src/element/`：自定义元素 `<vizflow-page>`。入口 `src/element/index.ts`。
+- `examples/`：示例页面，`examples/qwen3-dsl.yaml` 是完整的 Qwen3 示例。
+- `test/`：单元测试按 `src/` 的目录划分；`test/e2e/` 是 Playwright 测试。
+
+## 检查命令
+
+- 迭代时运行 `npm run check:fast`：tsgo 类型检查，加上与未提交改动相关的单元测试。可以传一个 git 版本，例如 `sh scripts/check_fast.sh origin/main`，检查相对这个版本的全部改动。
+- 提交 PR 前运行一次 `scripts/test.sh`：注释检查、代码地图检查、tsc 和全部单元测试。
+
 ## 代码规范
 
 - 代码里不写注释和 docstring，代码的含义靠命名与结构表达。唯一例外是代码看起来可以删除或修改、实际上不能改的地方，写一行 `why(#N): 原因`，必须带 issue 编号，尽量少用。工具指令（如 `# noqa`、`# shellcheck`、`// eslint-disable`）和脚本开头的 `#!` 不算注释。检查由 `scripts/check_comment.py` 执行。
