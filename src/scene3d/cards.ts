@@ -24,7 +24,7 @@ export function shade(v: number, limit: number): string {
   return `color-mix(in srgb, var(${v >= 0 ? '--pos' : '--neg'}) ${percent.toFixed(0)}%, transparent)`;
 }
 
-function gridElement(grid: ValueGrid): HTMLElement {
+export function valueGridElement(grid: ValueGrid): HTMLElement {
   const el = element('div', 'vf-jg');
   el.style.gridTemplateColumns = `repeat(${grid.cols}, minmax(0, 1fr))`;
   let limit = 0;
@@ -35,7 +35,8 @@ function gridElement(grid: ValueGrid): HTMLElement {
     const v = grid.values[i];
     const cell = document.createElement('div');
     if (Number.isFinite(v)) cell.style.background = shade(v, limit);
-    cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '−∞';
+    cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '';
+    if (!blank && !Number.isFinite(v)) cell.appendChild(render(formatNumber(v, { tex: true })));
     el.appendChild(cell);
   }
   return el;
@@ -56,7 +57,9 @@ function note(text: string): HTMLElement {
 
 export function nodeCardElement(card: NodeCard, grid?: ValueGrid): DocumentFragment {
   const fragment = document.createDocumentFragment();
-  fragment.appendChild(element('h4', 'vf-pop-title', card.title));
+  const title = element('h4', 'vf-pop-title');
+  renderText(card.title, title);
+  fragment.appendChild(title);
   const eqs = element('div', 'vf-eqs');
   for (const tex of card.tex) eqs.appendChild(render(tex, { display: true }));
   fragment.appendChild(eqs);
@@ -65,10 +68,12 @@ export function nodeCardElement(card: NodeCard, grid?: ValueGrid): DocumentFragm
   for (const row of card.rows) {
     if (grid !== undefined && HIDDEN_ROWS.has(row.label)) continue;
     dl.appendChild(element('dt', '', row.label));
-    dl.appendChild(element('dd', '', row.value));
+    const value = element('dd', '');
+    renderText(row.value, value);
+    dl.appendChild(value);
   }
   fragment.appendChild(dl);
-  if (grid !== undefined) fragment.append(element('div', 'vf-lab', grid.label), gridElement(grid));
+  if (grid !== undefined) fragment.append(element('div', 'vf-lab', grid.label), valueGridElement(grid));
   return fragment;
 }
 

@@ -74,18 +74,18 @@ export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', re
   let card: NodeCard;
   if (dir === 'forward') {
     rows.push({ label: '当前值', value: valueText(node.value) });
-    card = { title: node.name, tex: forwardTex(node), rows };
+    card = { title: `$${node.tex}$`, tex: forwardTex(node), rows };
   } else {
     const consumers = consumersOf(g, node, reachesLoss);
     for (const y of consumers) {
       rows.push({
         label: 'Jacobian',
-        value: `∂${y.name}/∂${node.name}：${formatShape([...squeeze(y.shape), ...squeeze(node.shape)])}`,
+        value: `$\\partial ${y.tex}/\\partial ${node.tex}$：${formatShape([...squeeze(y.shape), ...squeeze(node.shape)])}`,
       });
     }
     const grad = node.grad;
     rows.push({ label: '当前梯度', value: grad === null ? '无' : valueText(grad) });
-    card = { title: `∂ℓ/∂${node.name}`, tex: chainTex(g, node, consumers), rows };
+    card = { title: `$\\frac{\\partial\\ell}{\\partial ${node.tex}}$`, tex: chainTex(g, node, consumers), rows };
   }
   if (override.title !== undefined) card.title = override.title;
   if (override.tex !== undefined) card.tex = [...override.tex];

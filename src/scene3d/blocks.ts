@@ -255,12 +255,13 @@ export class PlateMesh {
     this.axisMaterial.color.setRGB(...theme.ink);
   }
 
-  update(state: { revealed: boolean; far: boolean }, frameXs: number[], ticks: number[], scale: number): void {
+  update(state: { revealed: boolean; far: boolean }, frameXs: number[], ticks: number[], scale: number, frameZs?: number[]): void {
     const { revealed } = state;
     this.outlineMaterial.opacity = state.far ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN;
     this.frameMaterial.opacity = revealed ? FRAME_REVEALED : FRAME_HIDDEN;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];
+      if (frameZs !== undefined) frame.position.z = frameZs[Math.min(r, frameZs.length - 1)];
     });
     if (this.axis !== undefined && this.block.axis !== undefined && ticks.length > 0) {
       const { x, z } = this.block.axis;

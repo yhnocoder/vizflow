@@ -1,9 +1,17 @@
 import {
   AmbientLight,
+  BoxGeometry,
+  BufferGeometry,
   Color,
+  ConeGeometry,
   CubicBezierCurve3,
   DirectionalLight,
+  EdgesGeometry,
+  Group,
   type InstancedMesh,
+  Line,
+  LineBasicMaterial,
+  LineSegments,
   Matrix4,
   Mesh,
   MeshBasicMaterial,
@@ -18,14 +26,14 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { Graph, Node } from '../autograd';
-import { type Explainer, type FlowEdge, explain } from '../explain';
+import { type Graph, type Node, moduleJacobian } from '../autograd';
+import { type Explainer, type FlowEdge, explain, matmulOperands } from '../explain';
 import { render, renderText } from '../formula';
-import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
-import { formatNumber, offsetOf } from '../tensor';
+import { type StepInfo, type StepModule, type StepState, type Steps, allVisible } from '../steps';
+import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
-import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip } from './cards';
+import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import { type EditHost, mountEditor } from './edit';
 import { editableLayout } from './editconfig';
@@ -45,7 +53,8 @@ import {
   tokenText,
 } from './layout';
 import { LineBatch } from './lines';
-import { type Brace, type SceneModule, BRACE_OPACITY, blockSpan, braceOffset, bracePoints, braceTip, checkModules, layoutBraces } from './modules';
+import { type FoldBox, type LevelLayout, type LevelPlan, BRACE_X, CHIP_LIFT } from './levels';
+import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockSpan, braceOffset, bracePoints, braceTip, checkModules, layoutBraces, levelBraces } from './modules';
 import { TICK_COUNT, barHeight, capFor, niceTicks, scaleFor } from './scales';
 import { type EdgeStyle, edgeStyle } from './style';
 import { Transition } from './transition';
@@ -66,6 +75,8 @@ export interface SceneOptions {
   hint?: string;
   labels?: Record<string, [number, number]>;
   modules?: SceneModule[];
+  levels?: LevelPlan;
+  sequence?: { get(): number[]; set(ids: number[]): void };
 }
 
 export interface SceneHandle {
@@ -125,6 +136,34 @@ const HIGHLIGHT_SEGMENTS = 30;
 const HIGHLIGHT_SIDES = 6;
 const TIP_DIGITS = 3;
 const LEVEL_PRECISION = 1000;
+const BOX_MIN_HEIGHT = 0.01;
+const BOX_LABEL_OFFSET: [number, number] = [0.2, 0.15];
+const BOX_OPACITY = 0.3;
+const BOX_EDGE_OPACITY = 0.6;
+export const BOX_FOLDED_TEXT = '已折叠';
+export const BOX_FIXED_TEXT = '占位';
+export const BOX_FIXED_NOTE = '数值按恒等';
+export const BOX_CARD_NOTE = '点这个标签可以展开。';
+export const BOX_FIXED_CARD_NOTE = '这个盒子只用来示意，数值按恒等映射处理，不能展开。';
+export const ARROW_TEXT = '位置顺序';
+const ARROW_SIDE = 2.0;
+const ARROW_BACK = 0.35;
+const ARROW_EXTRA = 0.7;
+const ARROW_LIFT = 0.06;
+const ARROW_TEXT_OFFSET: [number, number] = [0.2, -0.25];
+const ARROW_OPACITY = 0.6;
+const ARROW_HEAD: [number, number] = [0.06, 0.2];
+const ARROW_HEAD_SEGMENTS = 14;
+const ARROW_HEAD_INSET = 0.1;
+const SAME_LEVEL = 0.05;
+export const BOARD_BOW = -2.6;
+export const RESIDUAL_BOW = 1.8;
+export const SPLIT_JACOBIAN_BOW = 1.4;
+const JACOBIAN_EPSILON = 1e-12;
+const LINK_REVEALED = 0.32;
+const LINK_HIDDEN = 0.06;
+export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
+export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
 interface Renderable {
   block: Block;
@@ -155,6 +194,27 @@ interface DrawnEdge {
   points: number[];
   style: EdgeStyle;
   screen: number[];
+  bow?: number;
+  jac?: { module: StepModule; value: number };
+  link?: boolean;
+}
+
+interface SceneBox {
+  box: FoldBox;
+  mesh: Mesh;
+  material: MeshBasicMaterial;
+  edgeMaterial: LineBasicMaterial;
+  label: Label;
+}
+
+interface SceneArrow {
+  group: Group;
+  label: Label;
+  setLength(length: number): void;
+}
+
+function mixRgb(a: LinearRgb, b: LinearRgb, k: number): LinearRgb {
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
 }
 
 interface FollowGoal {
@@ -200,15 +260,16 @@ function span(items: FrameItem[], k: number, at: (i: FrameItem) => number, befor
   return { lo, hi, size: hi - lo };
 }
 
-export function controlPoints(a: Vec3, b: Vec3, flat: boolean): [Vec3, Vec3, Vec3, Vec3] {
+export function controlPoints(a: Vec3, b: Vec3, flat: boolean, bow?: number): [Vec3, Vec3, Vec3, Vec3] {
   if (flat) return [a, a.map((v, i) => v + (b[i] - v) / 3) as Vec3, a.map((v, i) => v + ((b[i] - v) * 2) / 3) as Vec3, b];
   const d = b[1] - a[1];
-  if (d > LONG_EDGE) return [a, [a[0], a[1] + d * BOW_TANGENT, a[2] + EDGE_BOW], [b[0], b[1] - d * BOW_TANGENT, b[2] + EDGE_BOW], b];
+  const z = bow ?? (d > LONG_EDGE ? EDGE_BOW : 0);
+  if (z !== 0) return [a, [a[0], a[1] + d * BOW_TANGENT, a[2] + z], [b[0], b[1] - d * BOW_TANGENT, b[2] + z], b];
   return [a, [a[0], a[1] + d * CURVE_TANGENT, a[2]], [b[0], b[1] - d * CURVE_TANGENT, b[2]], b];
 }
 
-function sampleCurve(a: Vec3, b: Vec3, flat: boolean): number[] {
-  const c = controlPoints(a, b, flat);
+function sampleCurve(a: Vec3, b: Vec3, flat: boolean, bow?: number): number[] {
+  const c = controlPoints(a, b, flat, bow);
   const points: number[] = [];
   for (let s = 0; s <= CURVE_SEGMENTS; s++) {
     const t = s / CURVE_SEGMENTS;
@@ -237,6 +298,11 @@ function chip(text: string): HTMLButtonElement {
   button.type = 'button';
   button.textContent = text;
   return button;
+}
+
+function texTitle(title: string): string {
+  const parts = title.split('$');
+  return parts.map((part, i) => (i % 2 === 1 ? part : part.trim() === '' ? '' : `\\text{${part}}`)).join('');
 }
 
 function levelKey(y: number): number {
@@ -275,6 +341,7 @@ class SceneController implements EditHost {
   private readonly unsubscribe: (() => void)[] = [];
   private renderables: Renderable[] = [];
   private boards: BoardGeometry[] = [];
+  private levelLayout: LevelLayout | undefined;
   private edges: DrawnEdge[] = [];
   private theme: ThemeColors;
   private state: StepState;
@@ -286,6 +353,11 @@ class SceneController implements EditHost {
   private screenVersion = 0;
   private screenCached = -1;
   private hoverEdge: DrawnEdge | undefined;
+  private readonly boxes = new Map<string, SceneBox>();
+  private readonly boxGeometry = new BoxGeometry(1, 1, 1);
+  private readonly boxEdges = new EdgesGeometry(this.boxGeometry);
+  private readonly chipLabels = new Map<string, Label[]>();
+  private arrow: SceneArrow | undefined;
   private highlight: Mesh | undefined;
   private pinned: { node: Node; el: HTMLElement } | undefined;
   private downAt: [number, number] | undefined;
@@ -455,26 +527,43 @@ class SceneController implements EditHost {
     tools.className = 'vf-stage-tools';
     const modules = this.options.modules ?? [];
     if (this.follow && modules.length > 0) {
-      const jump = document.createElement('select');
-      jump.className = 'vf-chip';
-      jump.setAttribute('aria-label', '跳到模块');
-      const placeholder = document.createElement('option');
-      placeholder.value = '';
-      placeholder.textContent = JUMP_PLACEHOLDER;
-      jump.appendChild(placeholder);
-      modules.forEach((module, i) => {
-        const option = document.createElement('option');
-        option.value = String(i);
-        option.textContent = module.title;
-        jump.appendChild(option);
+      const jump = document.createElement('div');
+      jump.className = 'vf-jump';
+      const toggle = chip(JUMP_PLACEHOLDER);
+      toggle.setAttribute('aria-label', '跳到模块');
+      toggle.setAttribute('aria-haspopup', 'menu');
+      toggle.setAttribute('aria-expanded', 'false');
+      const menu = document.createElement('div');
+      menu.className = 'vf-jump-menu';
+      menu.setAttribute('role', 'menu');
+      menu.hidden = true;
+      const close = () => {
+        menu.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+      };
+      modules.forEach((module) => {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'vf-jump-item';
+        item.setAttribute('role', 'menuitem');
+        renderText(module.title, item);
+        item.addEventListener('click', () => {
+          close();
+          const brace = this.braces.find((b) => b.module === module);
+          if (brace === undefined) return;
+          this.goal = { y: this.clampFollowY((brace.y0 + brace.y1) / 2, this.halfHeight()), zoom: 1 };
+          this.refresh();
+        });
+        menu.appendChild(item);
       });
-      jump.addEventListener('change', () => {
-        const brace = this.braces[Number(jump.value)];
-        jump.value = '';
-        if (brace === undefined) return;
-        this.goal = { y: this.clampFollowY((brace.y0 + brace.y1) / 2, this.halfHeight()), zoom: 1 };
-        this.refresh();
+      toggle.addEventListener('click', () => {
+        menu.hidden = !menu.hidden;
+        toggle.setAttribute('aria-expanded', String(!menu.hidden));
       });
+      jump.addEventListener('focusout', (ev) => {
+        if (!jump.contains(ev.relatedTarget as globalThis.Node | null)) close();
+      });
+      jump.append(toggle, menu);
       tools.appendChild(jump);
     }
     if (this.follow) {
@@ -531,26 +620,38 @@ class SceneController implements EditHost {
     if (this.ovnav.text.dataset.key === key) return;
     this.ovnav.text.dataset.key = key;
     const small = document.createElement('small');
-    small.textContent = `${info.dir === 'forward' ? '前向' : '反向'}${info.sub ? ` · ${info.sub}` : ''}`;
+    renderText(`${info.dir === 'forward' ? '前向' : '反向'}${info.sub ? ` · ${info.sub}` : ''}`, small);
     const label = document.createElement('span');
     renderText(info.label, label);
     this.ovnav.text.replaceChildren(small, ...label.childNodes);
   }
 
   private resolve(): void {
+    const steps = this.steps;
     const resolved = resolveLayout(this.options.layout, {
       visible: this.visible,
       aligned: this.aligned,
       targetOf: targetColumn,
       focus: this.state.focus,
+      folded: steps === undefined ? undefined : (id) => steps.folded(id),
+      plan: this.options.levels,
     });
     this.boards = resolved.boards;
+    this.levelLayout = resolved.levels;
     if (this.renderables.length === 0) {
       this.renderables = resolved.blocks.map((block) => this.createRenderable(block));
     } else {
       for (const block of resolved.blocks) {
-        const renderable = this.renderables.find((r) => r.block.node === block.node);
-        if (renderable !== undefined) renderable.block = block;
+        const renderable = this.renderables.find((r) => (r.block.key ?? r.block.node) === (block.key ?? block.node));
+        if (renderable === undefined) continue;
+        const moved = renderable.block.plate?.y !== block.plate?.y;
+        renderable.block = block;
+        if (moved && renderable.plate !== undefined) {
+          this.scene.remove(renderable.plate.group);
+          renderable.plate.dispose();
+          renderable.plate = new PlateMesh(block, this.theme);
+          this.scene.add(renderable.plate.group);
+        }
       }
     }
   }
@@ -616,13 +717,14 @@ class SceneController implements EditHost {
   private foldable(module: SceneModule): string | undefined {
     const steps = this.steps;
     if (module.id === undefined || module.fixed === true || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
+    if (!steps.modules.some((m) => m.id === module.id)) return undefined;
     return module.id;
   }
 
   private moduleLabel(module: SceneModule): Label {
     const side = module.side ?? 'left';
     const id = this.foldable(module);
-    const label = this.labels.add('mod', `vf-mod-${side}${id === undefined ? '' : ' vf-foldable'}`);
+    const label = this.labels.add('mod', `vf-mod-${side === 'outer' ? 'right vf-mod-thick' : side}${id === undefined ? '' : ' vf-foldable'}`);
     label.anchor = side === 'left' ? 'right-middle' : 'left-middle';
     label.el.dataset.module = module.title;
     if (id !== undefined) label.el.addEventListener('click', () => this.steps?.setFolded?.(id, this.steps.folded?.(id) !== true));
@@ -640,12 +742,12 @@ class SceneController implements EditHost {
       const fragment = document.createDocumentFragment();
       const title = document.createElement('span');
       title.className = 'vf-mod-title';
-      title.textContent = module.title;
+      renderText(module.title, title);
       fragment.appendChild(title);
       if (subtitle !== undefined) {
         const sub = document.createElement('span');
         sub.className = 'vf-mod-sub';
-        sub.textContent = subtitle;
+        renderText(subtitle, sub);
         fragment.appendChild(sub);
       }
       if (act !== '') {
@@ -661,16 +763,25 @@ class SceneController implements EditHost {
   private updateBraces(): void {
     const modules = this.options.modules ?? [];
     if (modules.length === 0) return;
-    const { min, max } = boundsOf(this.framingPoints(this.renderables));
-    this.braces = layoutBraces(
-      modules,
-      this.renderables.map((r) => blockSpan(r.block)),
-      { xMin: min[0], xMax: max[0] },
-    );
-    this.braces.forEach((brace, i) => {
+    const levels = this.levelLayout;
+    if (levels !== undefined) {
+      const xs = this.renderables.flatMap((r) => r.block.elements.map((e) => e.x));
+      const shown = modules.filter((m) => !(this.lod && m.inner === true));
+      this.braces = levelBraces(shown, levels.ranges, { xMin: Math.min(...xs), xMax: Math.max(...xs), ...levels.braces }, BRACE_X);
+    } else {
+      const { min, max } = boundsOf(this.framingPoints(this.renderables));
+      this.braces = layoutBraces(
+        modules,
+        this.renderables.map((r) => blockSpan(r.block)),
+        { xMin: min[0], xMax: max[0] },
+      );
+    }
+    modules.forEach((module, i) => {
       const label = this.moduleLabels[i];
+      const brace = this.braces.find((b) => b.module === module);
+      label.visible = brace !== undefined;
+      if (brace === undefined) return;
       this.moduleContent(label, brace.module);
-      label.visible = true;
       if (label.pos === undefined) label.pos = braceTip(brace);
     });
   }
@@ -679,10 +790,14 @@ class SceneController implements EditHost {
     if (this.braces.length === 0) return;
     const view = this.viewDirection();
     const direction: Vec3 = [view.x, view.y, view.z];
-    const polylines = this.braces.map((brace, i) => {
+    const modules = this.options.modules ?? [];
+    const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
-      this.moduleLabels[i].pos = braceTip(brace, offset);
-      return { points: bracePoints(brace, offset), opacity: BRACE_OPACITY, dashed: false };
+      this.moduleLabels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
+      const points = bracePoints(brace, offset);
+      const line = { points, opacity: BRACE_OPACITY, dashed: false };
+      if (brace.thick !== true) return [line];
+      return [line, { ...line, points: points.map((v, i) => (i % 3 === 0 ? v + BRACE_THICK_OFFSET : v)) }];
     });
     this.braceInk.setPolylines(polylines);
   }
@@ -695,7 +810,15 @@ class SceneController implements EditHost {
   }
 
   private renderableOf(node: Node): Renderable | undefined {
-    return this.renderables.find((r) => r.block.node === node);
+    return this.renderables.find((r) => r.block.node === node && r.block.copyOf === undefined);
+  }
+
+  private renderableFor(block: Block): Renderable | undefined {
+    return this.renderables.find((r) => (r.block.key ?? r.block.node) === (block.key ?? block.node));
+  }
+
+  private shown(block: Block | undefined): boolean {
+    return block !== undefined && block.hidden !== true;
   }
 
   private targetOf(block: Block, row: number): number | undefined {
@@ -736,7 +859,7 @@ class SceneController implements EditHost {
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     this.markFar();
-    const stepKey = `${dir}:${this.state.index}`;
+    const stepKey = `${dir}:${this.state.index}:${info?.id ?? ''}`;
     if (this.follow && this.stepKey !== undefined && stepKey !== this.stepKey) {
       this.goal = this.followGoal();
       if (this.reduceMotion.matches) this.applyGoal(1);
@@ -746,11 +869,13 @@ class SceneController implements EditHost {
     for (const renderable of this.renderables) {
       const { block } = renderable;
       const node = block.node;
-      const revealed = this.state.revealed(node);
+      const hidden = block.hidden === true;
+      const revealed = this.state.revealed(node) && !hidden;
       const active = this.state.active(node);
       const far = renderable.far;
       const values = this.valuesOf(node);
       const scale = renderable.scale[dir];
+      for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
       const heights = new Float64Array(block.elements.length);
       for (let i = 0; i < heights.length; i++) {
         const { height, clipped } = barHeight(values[i], scale, revealed, renderable.cap);
@@ -760,16 +885,17 @@ class SceneController implements EditHost {
       renderable.transition.retarget(heights, now);
       const focusedRow = (row: number) => !block.batched || row === this.state.focus;
       const front = Math.max(...block.elements.map((e) => e.z));
-      const showValues = revealed && this.stepNodes.has(node) && !this.lod && (!this.follow || zoom >= VALUE_MIN_ZOOM);
+      const stepped = block.copyOf === undefined ? this.stepNodes.has(node) : active && !this.stepNodes.has(node) && dir === 'forward';
+      const showValues = revealed && stepped && block.quiet !== true && !this.lod && (!this.follow || zoom >= VALUE_MIN_ZOOM);
       const named = revealed && !this.lod && !far;
       const title = renderable.title!;
       title.el.dataset.node = node.name;
       title.offset = this.options.labels?.[node.name];
-      title.visible = named;
+      title.visible = named && block.untitled !== true;
       texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
       if (renderable.bars !== undefined) {
         title.pos = [block.title.x, block.title.y, block.title.z];
-        title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
+        title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
         renderable.values.forEach((label, i) => {
           const element = block.elements[i];
           label.setText(formatNumber(values[i]));
@@ -822,15 +948,20 @@ class SceneController implements EditHost {
         } else label.visible = false;
       });
       if (renderable.plate !== undefined) {
+        const table = block.table;
         const frameXs = block.frameRows.map((_, r) => {
+          if (table !== undefined) return block.plate!.x;
           const target = this.targetOf(block, r);
           const column = block.elements.find((e) => e.col === (target ?? 0));
           return column?.x ?? block.elements[0].x;
         });
-        renderable.plate.update({ revealed, far }, frameXs, ticks, scale);
+        const frameZs = table === undefined ? undefined : Array.from(table.label.value.data, (id) => block.elements.find((e) => e.row === Math.round(id))?.z ?? block.elements[0].z);
+        renderable.plate.update({ revealed, far }, frameXs, ticks, scale, frameZs);
       }
     }
     this.updateBraces();
+    this.updateBoxes();
+    this.updateChips();
     this.buildEdges();
     this.updateNav();
     this.geometryDirty = true;
@@ -844,87 +975,331 @@ class SceneController implements EditHost {
     this.requestFrame();
   }
 
-  private anchorOut(node: Node, index: number[]): Vec3 | undefined {
-    const renderable = this.renderableOf(node);
+  private anchorOut(node: Node, index: number[], renderable = this.renderableOf(node)): Vec3 | undefined {
     if (renderable === undefined) return undefined;
     const element = elementAt(renderable.block, index);
     if (renderable.nodes !== undefined) return renderable.nodes.anchorOut(element);
     return barTop(element, renderable.transition.current[offsetOf(node.shape, index)]);
   }
 
-  private anchorIn(node: Node, index: number[]): Vec3 | undefined {
-    const renderable = this.renderableOf(node);
+  private anchorIn(node: Node, index: number[], renderable = this.renderableOf(node)): Vec3 | undefined {
     if (renderable === undefined) return undefined;
     const element = elementAt(renderable.block, index);
     if (renderable.nodes !== undefined) return renderable.nodes.anchorIn(element);
     return barBottom(element, renderable.transition.current[offsetOf(node.shape, index)]);
   }
 
-  private buildEdges(): void {
-    const rowOf = (node: Node, index: number[]) => {
-      const renderable = this.renderableOf(node);
-      return renderable !== undefined && renderable.block.batched ? elementAt(renderable.block, index).row : undefined;
+  private updateBoxes(): void {
+    const shown = new Set<string>();
+    for (const box of this.levelLayout?.boxes ?? []) {
+      const id = box.module.id;
+      shown.add(id);
+      const entry = this.boxes.get(id) ?? this.createBox(box);
+      entry.box = box;
+      const [x0, x1] = box.x;
+      const [y0, y1] = box.y;
+      const [z0, z1] = box.z;
+      entry.mesh.scale.set(x1 - x0, Math.max(BOX_MIN_HEIGHT, y1 - y0), z1 - z0);
+      entry.mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+      entry.mesh.visible = true;
+      entry.material.color.setRGB(...this.theme.bg);
+      entry.edgeMaterial.color.setRGB(...this.theme.ink);
+      entry.label.pos = [x0 + BOX_LABEL_OFFSET[0], y0 + BOX_LABEL_OFFSET[1], z1];
+      entry.label.visible = true;
+    }
+    for (const [id, entry] of this.boxes) {
+      if (shown.has(id)) continue;
+      entry.mesh.visible = false;
+      entry.label.visible = false;
+    }
+  }
+
+  private createBox(box: FoldBox): SceneBox {
+    const material = new MeshBasicMaterial({ transparent: true, opacity: BOX_OPACITY, depthWrite: false });
+    const edgeMaterial = new LineBasicMaterial({ transparent: true, opacity: BOX_EDGE_OPACITY });
+    const mesh = new Mesh(this.boxGeometry, material);
+    mesh.add(new LineSegments(this.boxEdges, edgeMaterial));
+    this.scene.add(mesh);
+    const module = box.module;
+    const label = this.labels.add('boxlb', module.fixed ? 'vf-fixed' : '');
+    label.anchor = 'above-right';
+    label.setContent(module.title, () => {
+      const fragment = document.createDocumentFragment();
+      const title = document.createElement('span');
+      renderText(`${module.title} · ${module.fixed ? BOX_FIXED_TEXT : BOX_FOLDED_TEXT}`, title);
+      fragment.appendChild(title);
+      if (module.fixed) {
+        const small = document.createElement('small');
+        small.textContent = BOX_FIXED_NOTE;
+        fragment.appendChild(small);
+      }
+      return fragment;
+    });
+    const entry: SceneBox = { box, mesh, material, edgeMaterial, label };
+    label.el.addEventListener('pointerenter', () => this.showBoxCard(entry));
+    label.el.addEventListener('pointerleave', () => this.hideNodeCard());
+    if (!module.fixed) label.el.addEventListener('click', () => this.steps?.setFolded(module.id, false));
+    this.boxes.set(module.id, entry);
+    return entry;
+  }
+
+  private showBoxCard(entry: SceneBox): void {
+    const module = entry.box.module;
+    const io = this.levelLayout?.io.find((p) => p.module.id === module.id);
+    const fragment = document.createDocumentFragment();
+    const title = document.createElement('h4');
+    title.className = 'vf-pop-title';
+    renderText(`${module.title}（${module.fixed ? BOX_FIXED_TEXT : BOX_FOLDED_TEXT}）`, title);
+    fragment.appendChild(title);
+    if (io !== undefined) {
+      const J = moduleJacobian(this.g, module, io.input, io.output);
+      const lab = document.createElement('div');
+      lab.className = 'vf-lab';
+      lab.append(render(`\\partial ${io.output.tex}/\\partial ${io.input.tex}`), '，', render(`${J.length}\\times ${J[0]?.length ?? 0}`));
+      fragment.append(lab, valueGridElement({ label: '', values: J.flat(), cols: J[0]?.length ?? 1 }));
+      const dl = document.createElement('dl');
+      dl.className = 'vf-rows';
+      const row = (name: string, build: (dd: HTMLElement) => void) => {
+        const dt = document.createElement('dt');
+        dt.textContent = name;
+        const dd = document.createElement('dd');
+        build(dd);
+        dl.append(dt, dd);
+      };
+      row('输入 → 输出', (dd) => dd.append(render(`${io.input.tex}\\;${formatShape(io.input.shape).replace(/×/g, '\\times ')}\\to ${io.output.tex}`)));
+      const params = module.params.filter((n) => n.kind === 'param');
+      row('参数', (dd) => {
+        if (params.length === 0) dd.textContent = '无';
+        else dd.append(render(params.map((n) => n.tex).join(',\\ ')));
+      });
+      fragment.appendChild(dl);
+    }
+    const note = document.createElement('p');
+    note.className = 'vf-nt';
+    note.textContent = module.fixed ? BOX_FIXED_CARD_NOTE : BOX_CARD_NOTE;
+    fragment.appendChild(note);
+    this.pinned = undefined;
+    this.pop.replaceChildren(fragment);
+    this.pop.hidden = false;
+    this.tip.hidden = true;
+    const rect = this.root.getBoundingClientRect();
+    const anchor = entry.label.el.getBoundingClientRect();
+    placePop(this.root, this.pop, anchor.right - 8 - rect.left, anchor.top - 22 - rect.top, anchor.width);
+  }
+
+  private updateChips(): void {
+    const chips = this.levelLayout?.chips ?? [];
+    let arrowShown = false;
+    for (const chip of chips) {
+      const renderable = this.renderableFor(chip.block);
+      if (renderable === undefined) continue;
+      const block = chip.block;
+      const rows = block.rows;
+      let labels = this.chipLabels.get(block.key ?? block.node.name + chip.label.name);
+      if (labels === undefined) {
+        labels = Array.from({ length: rows }, () => this.labels.add('tok'));
+        this.chipLabels.set(block.key ?? block.node.name + chip.label.name, labels);
+      }
+      const y = block.elements[0].y;
+      const zs = Array.from({ length: rows }, (_, r) => block.elements.find((e) => e.row === r)!.z);
+      const shown = !this.lod && !renderable.far && block.hidden !== true && (chip.arrow || this.state.revealed(block.node));
+      labels.forEach((label, t) => {
+        const id = Math.round(chip.label.value.data[Math.min(t, chip.label.value.size - 1)]);
+        const token = chip.label.tokens?.[id] ?? String(id);
+        const elem = this.explainer.elemTex({ node: chip.label, index: [t] });
+        label.setContent(`${elem}|${token}`, () => {
+          const fragment = document.createDocumentFragment();
+          const small = document.createElement('small');
+          small.appendChild(render(elem));
+          fragment.append(small, tokenText(token));
+          return fragment;
+        });
+        label.pos = [chip.x, y + CHIP_LIFT, zs[t]];
+        label.visible = shown;
+      });
+      if (chip.arrow) {
+        const arrow = this.arrow ?? this.createArrow();
+        const z0 = zs[0] - ARROW_BACK;
+        const length = zs[rows - 1] - zs[0] + ARROW_EXTRA;
+        arrow.group.position.set(chip.x + ARROW_SIDE, y + ARROW_LIFT, z0);
+        arrow.setLength(length);
+        const pointing = block.hidden !== true;
+        arrow.group.visible = pointing;
+        arrow.label.pos = [chip.x + ARROW_SIDE + ARROW_TEXT_OFFSET[0], y + CHIP_LIFT, z0 + ARROW_TEXT_OFFSET[1]];
+        arrow.label.visible = pointing;
+        arrowShown = true;
+      }
+    }
+    if (!arrowShown && this.arrow !== undefined) {
+      this.arrow.group.visible = false;
+      this.arrow.label.visible = false;
+    }
+  }
+
+  private createArrow(): SceneArrow {
+    const group = new Group();
+    const shaftMaterial = new LineBasicMaterial({ color: new Color(...this.theme.ink), transparent: true, opacity: ARROW_OPACITY });
+    const shaft = new Line(new BufferGeometry().setFromPoints([new Vector3(0, 0, 0), new Vector3(0, 0, 1)]), shaftMaterial);
+    const headMaterial = new MeshBasicMaterial({ color: new Color(...mixRgb(this.theme.surface, this.theme.ink, ARROW_OPACITY)) });
+    const head = new Mesh(new ConeGeometry(ARROW_HEAD[0], ARROW_HEAD[1], ARROW_HEAD_SEGMENTS), headMaterial);
+    head.rotation.x = Math.PI / 2;
+    group.add(shaft, head);
+    this.scene.add(group);
+    const label = this.labels.add('kk', 'vf-arrow-tag');
+    label.anchor = 'top-center';
+    label.setText(ARROW_TEXT);
+    const arrow: SceneArrow = {
+      group,
+      label,
+      setLength: (length) => {
+        shaft.geometry.setFromPoints([new Vector3(0, 0, 0), new Vector3(0, 0, length - ARROW_HEAD[1] + ARROW_HEAD_INSET)]);
+        head.position.z = length - ARROW_HEAD_INSET;
+      },
     };
+    this.arrow = arrow;
+    return arrow;
+  }
+
+  private buildEdges(): void {
     const drawn: DrawnEdge[] = [];
     this.edges = drawn;
     if (this.lod) return;
+    const levels = this.levelLayout;
     const backward = this.state.dir === 'backward';
     const overview = this.state.dir === 'forward' && this.state.index === 0;
+    const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
+    const push = (entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => {
+      const style = edgeStyle({
+        dir: this.state.dir,
+        overview,
+        contract: entry.contract,
+        zeroGrad,
+        focused: rows.every((row) => row === undefined || row === this.state.focus),
+        far: from.far && to.far,
+        current: this.stepNodes.has(backward ? entry.fromNode : entry.toNode),
+        revealedFrom: this.state.revealed(entry.fromNode),
+        revealedTo: this.state.revealed(entry.toNode),
+      });
+      if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
+    };
     for (const edge of this.explainer.edges()) {
-      let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'> | undefined;
-      let rows: (number | undefined)[] = [];
       if ('cell' in edge.from || 'cell' in edge.to) {
         const board = this.boards.find((b) => b.op === edge.op);
         if (board === undefined || edge.arg === 1) continue;
-        if (!this.renderableOf(board.a.node) || !this.renderableOf(board.b.node) || !this.renderableOf(board.out.node)) continue;
-        const [r, k, i] = 'cell' in edge.to ? edge.to.cell.index : (edge.from as { cell: { index: [number, number, number] } }).cell.index;
+        const aR = this.renderableFor(board.a);
+        const bR = this.renderableFor(board.b);
+        const oR = this.renderableFor(board.out);
+        if (aR === undefined || bR === undefined || oR === undefined || !this.shown(board.out) || !this.shown(board.b) || !this.shown(board.a)) continue;
+        const index = 'cell' in edge.to ? edge.to.cell.index : (edge.from as { cell: { index: [number, number, number] } }).cell.index;
+        const [r, k, i] = index;
+        const operands = matmulOperands(edge.op, index);
         const y = board.y + LINE_HEIGHT;
-        const tile = (kk: number, ii: number) => board.b.elements.find((e) => e.row === kk && e.col === ii)!;
+        const tile = (block: Block, kk: number, ii: number) => block.elements.find((e) => e.row === kk && e.col === ii)!;
         const [tileW, tileD] = board.b.footprint;
-        const outElement = board.out.elements.find((e) => e.row === r && e.col === i)!;
-        rows = [board.out.batched ? r : undefined];
+        const outElement = elementAt(board.out, operands.out);
+        const rows = [board.out.batched ? r : undefined];
+        let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
         if (edge.arg === 0) {
-          const aElement = board.a.elements.find((e) => e.row === r && e.col === k)!;
-          const to: Vec3 = [tile(k, i).x - tileW / 2 - 0.01, y, tile(k, i).z];
-          if (i === 0 && board.sharedA) {
-            entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, endpoints: () => [this.anchorOut(board.a.node, aElement.index)!, to], flat: false };
+          const aElement = elementAt(board.a, operands.a);
+          const to: Vec3 = [tile(board.b, k, i).x - tileW / 2 - 0.01, y, tile(board.b, k, i).z];
+          const previous = board.previous;
+          if (i === 0 && previous !== undefined) {
+            const last = tile(previous, k, previous.cols - 1);
+            const from: Vec3 = [last.x + previous.footprint[0] / 2 + 0.01, y, last.z];
+            entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, endpoints: () => [from, to], flat: true };
+          } else if (i === 0 && board.sharedA) {
+            entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, endpoints: () => [this.anchorOut(board.a.node, aElement.index, aR)!, to], flat: false };
           } else {
-            const from: Vec3 = i === 0 ? [aElement.x, y, aElement.z - board.a.footprint[1] / 2 - 0.02] : [tile(k, i - 1).x + tileW / 2 + 0.01, y, tile(k, i - 1).z];
+            const from: Vec3 = i === 0 ? [aElement.x, y, aElement.z - board.a.footprint[1] / 2 - 0.02] : [tile(board.b, k, i - 1).x + tileW / 2 + 0.01, y, tile(board.b, k, i - 1).z];
             entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, endpoints: () => [from, to], flat: true };
           }
         } else {
           const last = k === board.b.rows - 1;
-          const from: Vec3 = [tile(k, i).x, y, tile(k, i).z + tileD / 2 + 0.01];
-          const to: Vec3 = last ? [outElement.x, y, outElement.z - board.out.footprint[1] / 2 - 0.02] : [tile(k + 1, i).x, y, tile(k + 1, i).z - tileD / 2 - 0.01];
+          const from: Vec3 = [tile(board.b, k, i).x, y, tile(board.b, k, i).z + tileD / 2 + 0.01];
+          const to: Vec3 = last ? [outElement.x, y, outElement.z - board.out.footprint[1] / 2 - 0.02] : [tile(board.b, k + 1, i).x, y, tile(board.b, k + 1, i).z - tileD / 2 - 0.01];
           entry = { edge, fromNode: board.b.node, toNode: edge.op, contract: true, endpoints: () => [from, to], flat: true };
         }
+        push(entry, aR, oR, rows, this.explainer.zeroGrad(edge));
+        continue;
+      }
+      const from = edge.from;
+      const to = edge.to;
+      const copy = levels?.copyFor(from.node, to.node);
+      const fromR = copy === undefined ? this.renderableOf(from.node) : this.renderableFor(copy);
+      const toR = this.renderableOf(to.node);
+      if (fromR === undefined || toR === undefined || !this.shown(fromR.block) || !this.shown(toR.block)) continue;
+      const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
+      const fromElement = elementAt(fromR.block, from.index);
+      const toElement = elementAt(toR.block, to.index);
+      let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
+      if (fromR.block.table !== undefined && Math.abs(fromElement.y - toElement.y) < SAME_LEVEL) {
+        const y = toElement.y + LINE_HEIGHT;
+        const a: Vec3 = [fromElement.x, y, fromElement.z + fromR.block.footprint[1] / 2];
+        const b: Vec3 = [toElement.x, y, toElement.z - toR.block.footprint[1] / 2];
+        entry = { edge, fromNode: from.node, toNode: to.node, contract: false, endpoints: () => [a, b], flat: true };
       } else {
-        const from = edge.from;
-        const to = edge.to;
-        if (!this.renderableOf(from.node) || !this.renderableOf(to.node)) continue;
-        rows = [rowOf(from.node, from.index), rowOf(to.node, to.index)];
+        const long = toElement.y - fromElement.y > LONG_EDGE;
+        const bow = toR.block.role === 'board-b' && long ? BOARD_BOW : to.node.kind === 'op' && to.node.op === 'add' && long ? RESIDUAL_BOW : undefined;
         entry = {
           edge,
           fromNode: from.node,
           toNode: to.node,
           contract: false,
-          endpoints: () => [this.anchorOut(from.node, from.index)!, this.anchorIn(to.node, to.index)!],
+          endpoints: () => [this.anchorOut(from.node, from.index, fromR)!, this.anchorIn(to.node, to.index, toR)!],
           flat: false,
+          bow,
         };
       }
-      const style = edgeStyle({
-        dir: this.state.dir,
-        overview,
-        contract: entry.contract,
-        zeroGrad: this.explainer.zeroGrad(edge),
-        focused: rows.every((row) => row === undefined || row === this.state.focus),
-        far: this.renderableOf(entry.fromNode)?.far === true && this.renderableOf(entry.toNode)?.far === true,
-        current: this.stepNodes.has(backward ? entry.fromNode : entry.toNode),
-        revealedFrom: this.state.revealed(entry.fromNode),
-        revealedTo: this.state.revealed(entry.toNode),
+      push(entry, fromR, toR, rows, this.explainer.zeroGrad(edge));
+    }
+    if (levels === undefined) return;
+    for (const pair of levels.io) {
+      const inR = this.renderableOf(pair.input);
+      const outR = this.renderableFor(pair.outputBlock);
+      if (inR === undefined || outR === undefined || !this.shown(inR.block) || !this.shown(outR.block)) continue;
+      const J = moduleJacobian(this.g, pair.module, pair.input, pair.output);
+      const grad = pair.output.grad;
+      J.forEach((row, oi) => {
+        row.forEach((value, ii) => {
+          if (Math.abs(value) <= JACOBIAN_EPSILON) return;
+          const fromElement = inR.block.elements[ii];
+          const toElement = outR.block.elements[oi];
+          const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromElement.index }, to: { node: pair.output, index: toElement.index } };
+          const entry = {
+            edge,
+            fromNode: pair.input,
+            toNode: pair.output,
+            contract: true,
+            endpoints: (): [Vec3, Vec3] => [this.anchorOut(pair.input, fromElement.index, inR)!, this.anchorIn(pair.output, toElement.index, outR)!],
+            flat: false,
+            bow: pair.split ? SPLIT_JACOBIAN_BOW : 0,
+            jac: { module: pair.module, value },
+          };
+          push(entry, inR, outR, [rowOf(inR, fromElement.index), rowOf(outR, toElement.index)], (grad === null ? 0 : grad.data[oi]) === 0);
+        });
       });
-      if (style === null) continue;
-      drawn.push({ ...entry, points: [], style, screen: [] });
+    }
+    for (const link of levels.links) {
+      const origR = this.renderableFor(link.original);
+      const copyR = this.renderableFor(link.copy);
+      if (origR === undefined || copyR === undefined || !this.shown(link.original) || !this.shown(link.copy) || (origR.far && copyR.far)) continue;
+      const node = link.original.node;
+      const opacity = this.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
+      link.copy.elements.forEach((element) => {
+        const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index: element.index }, to: { node, index: element.index } };
+        drawn.push({
+          edge,
+          fromNode: node,
+          toNode: node,
+          contract: false,
+          endpoints: () => [this.anchorOut(node, element.index, origR)!, this.anchorIn(node, element.index, copyR)!],
+          flat: false,
+          link: true,
+          points: [],
+          style: { opacity, dashed: true },
+          screen: [],
+        });
+      });
     }
   }
 
@@ -955,7 +1330,7 @@ class SceneController implements EditHost {
     }
     for (const d of this.edges) {
       const [a, b] = d.endpoints();
-      d.points = sampleCurve(a, b, d.flat);
+      d.points = sampleCurve(a, b, d.flat, d.bow);
     }
     this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity, dashed: d.style.dashed })));
     this.updateHighlight();
@@ -970,7 +1345,7 @@ class SceneController implements EditHost {
     const d = this.hoverEdge;
     if (d === undefined) return;
     const [a, b] = d.endpoints();
-    const [p0, p1, p2, p3] = controlPoints(a, b, d.flat).map((p) => new Vector3(...p));
+    const [p0, p1, p2, p3] = controlPoints(a, b, d.flat, d.bow).map((p) => new Vector3(...p));
     const curve = new CubicBezierCurve3(p0, p1, p2, p3);
     this.highlight = new Mesh(new TubeGeometry(curve, HIGHLIGHT_SEGMENTS, HIGHLIGHT_RADIUS / Math.sqrt(this.camera.zoom), HIGHLIGHT_SIDES, false), this.highlightMaterial);
     this.scene.add(this.highlight);
@@ -1053,6 +1428,7 @@ class SceneController implements EditHost {
   }
 
   private levelRange(): { lo: number; top: number } {
+    if (this.levelLayout !== undefined) return { lo: this.levelLayout.lo, top: this.levelLayout.top };
     const ys = this.renderables.map((r) => r.block.elements[0].y);
     return { lo: Math.min(...ys), top: Math.max(...ys) + FOLLOW_TOP_ROOM };
   }
@@ -1245,12 +1621,12 @@ class SceneController implements EditHost {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.set(((ev.clientX - rect.left) / rect.width) * 2 - 1, -((ev.clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const pickables = this.renderables.filter((r) => this.state.revealed(r.block.node)).flatMap((r) => r.pickables);
+    const pickables = this.renderables.filter((r) => this.state.revealed(r.block.node) && this.shown(r.block)).flatMap((r) => r.pickables);
     const hits = this.raycaster.intersectObjects(pickables, false);
     if (hits.length === 0) return undefined;
     const object = hits[0].object;
     const block = object.userData.block as Block;
-    const renderable = this.renderableOf(block.node)!;
+    const renderable = this.renderableFor(block)!;
     const index = (object as InstancedMesh).isInstancedMesh ? (hits[0].instanceId ?? 0) : (object.userData.element as number);
     return { renderable, index };
   }
@@ -1306,7 +1682,7 @@ class SceneController implements EditHost {
     fragment.appendChild(head);
     const line = document.createElement('div');
     line.className = 'vf-m';
-    line.textContent = `= ${value === -Infinity ? '−∞' : formatNumber(value, { digits: TIP_DIGITS })}`;
+    line.appendChild(render(`= ${value === -Infinity ? '-\\infty' : formatNumber(value, { digits: TIP_DIGITS, tex: true })}`));
     fragment.appendChild(line);
     const name = document.createElement('div');
     name.className = 'vf-s';
@@ -1350,10 +1726,42 @@ class SceneController implements EditHost {
   }
 
   private showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
-    this.pop.replaceChildren(edgeCardElement(this.explainer.edgeCard(d.edge), d.edge.id));
+    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.explainer.edgeCard(d.edge), d.edge.id));
     this.pop.hidden = false;
     const rect = this.root.getBoundingClientRect();
     placePop(this.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
+  }
+
+  private jacobianCard(d: DrawnEdge, jac: { module: StepModule; value: number }): DocumentFragment {
+    const { from, to } = d.edge;
+    if ('cell' in from || 'cell' in to) return document.createDocumentFragment();
+    const outTex = this.explainer.elemTex({ node: to.node, index: to.index });
+    const inTex = this.explainer.elemTex({ node: from.node, index: from.index });
+    const grad = to.node.grad;
+    const upstream = grad === null ? 0 : grad.get(to.index);
+    const i = offsetOf(to.node.shape, to.index) + 1;
+    const j = offsetOf(from.node.shape, from.index) + 1;
+    const card = {
+      title: `${inTex}\\to ${outTex}`,
+      local: { tex: `\\big(J_{${texTitle(jac.module.title)}}\\big)_{${i},${j}}=\\frac{\\partial ${outTex}}{\\partial ${inTex}}`, value: jac.value },
+      upstream: { tex: `\\frac{\\partial\\ell}{\\partial ${outTex}}`, value: upstream },
+      product: { tex: `\\frac{\\partial ${outTex}}{\\partial ${inTex}}\\cdot\\frac{\\partial\\ell}{\\partial ${outTex}}`, value: jac.value * upstream },
+      note: JACOBIAN_CARD_NOTE,
+    };
+    return edgeCardElement(card, d.edge.id);
+  }
+
+  private linkCard(d: DrawnEdge): DocumentFragment {
+    const fragment = document.createDocumentFragment();
+    const title = document.createElement('h4');
+    title.className = 'vf-pop-title';
+    title.dataset.edgeId = d.edge.id;
+    title.appendChild(render(d.fromNode.tex));
+    const note = document.createElement('p');
+    note.className = 'vf-nt';
+    note.textContent = LINK_CARD_NOTE;
+    fragment.append(title, note);
+    return fragment;
   }
 
   private setTarget(renderable: Renderable, index: number): void {
@@ -1362,8 +1770,17 @@ class SceneController implements EditHost {
     if (label === undefined) return;
     const element = block.elements[index];
     const data = Float64Array.from(label.value.data);
-    data[Math.min(element.row, data.length - 1)] = element.col;
-    label.set(label.shape.length === 0 ? data[0] : Array.from(data));
+    const row = Math.min(element.row, data.length - 1);
+    const sequence = this.options.sequence;
+    const ids = sequence?.get();
+    const shift = ids === undefined ? -1 : ids.findIndex((_, k) => k + data.length <= ids.length && data.every((id, i) => Math.round(id) === ids[i + k]));
+    if (sequence !== undefined && ids !== undefined && shift >= 0) {
+      ids[row + shift] = element.col;
+      sequence.set(ids);
+    } else {
+      data[row] = element.col;
+      label.set(label.shape.length === 0 ? data[0] : Array.from(data));
+    }
     if (block.batched) this.options.steps?.setFocus(element.row);
   }
 

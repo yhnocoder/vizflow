@@ -288,11 +288,19 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'LSE').elements[0]).toMatchObject({ x: 4, y: 1, z: 2 });
   });
 
-  it('rejects tensors with more than two dimensions', () => {
+  it('lays a rank-3 tensor out as rows by side-by-side boards', () => {
     const g = graph();
-    const x = g.input('x', [2, 2, 2], [1, 2, 3, 4, 5, 6, 7, 8]);
+    const x = g.input('x', [2, 2, 3], Array.from({ length: 12 }, (_, i) => i));
     const ctx = { visible: g.nodes, aligned: new Map(), targetOf: targetColumn, focus: 0 };
-    expect(() => resolveLayout([stack(x)], ctx)).toThrow(/x.*\(2, 2, 2\)/);
+    const { blocks } = resolveLayout([stack(x)], ctx);
+    expect(blocks[0].elements.map((e) => [e.row, e.col])).toEqual(Array.from({ length: 12 }, (_, i) => [Math.floor(i / 6), i % 6]));
+  });
+
+  it('rejects tensors with more than three dimensions', () => {
+    const g = graph();
+    const x = g.input('x', [2, 2, 2, 1], [1, 2, 3, 4, 5, 6, 7, 8]);
+    const ctx = { visible: g.nodes, aligned: new Map(), targetOf: targetColumn, focus: 0 };
+    expect(() => resolveLayout([stack(x)], ctx)).toThrow(/x.*\(2, 2, 2, 1\)/);
   });
 });
 
