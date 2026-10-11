@@ -220,7 +220,7 @@ panels:
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。
 - `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`sdpa`、`lm-head-nll`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
-- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。
+- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给每次迭代各画一个大括号，迭代的节点已经由实例的大括号标出时不必写。
 - 全页的路径是实例名逐层拼接，例如 `layer.self_attn.attn[1].P`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
 - 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
 - tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。

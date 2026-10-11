@@ -53,8 +53,7 @@ interface Env {
 }
 
 interface StepRec {
-  owner: string;
-  id: string;
+  refs: { owner: string; id: string }[];
   step: ForwardStep;
 }
 
@@ -62,7 +61,7 @@ type Slot =
   | { kind: 'node'; name: string; node: Node; created: Node[] }
   | { kind: 'child'; steps: StepRec[]; created: Node[] }
   | { kind: 'loop'; iterations: Slot[][] }
-  | { kind: 'group'; decl: Record<string, unknown>; where: Where; slots: Slot[] };
+  | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
 
 interface ResolvedStep {
   rec: StepRec;
@@ -1005,8 +1004,9 @@ class PageCompiler {
       const valueWhere = child(at, item, key);
       const valueEnv = { ...itemEnv, where: valueWhere };
       const { name, base, indices } = c.concreteName(key, valueEnv);
+      const braceTitle = env.loops.size > 0 ? base : name;
       if (isRecord(value) && 'use' in value) {
-        slots.push(this.instance(scope, name, indices, value, valueEnv, entries, counts, ordinals, before));
+        slots.push(this.instance(scope, name, braceTitle, indices, value, valueEnv, entries, counts, ordinals, before));
         return;
       }
       if (isRecord(value) && 'body' in value) {
@@ -1014,13 +1014,13 @@ class PageCompiler {
         if (!Array.isArray(value.body)) fail(child(valueWhere, value, 'body'), 'body must be a list');
         if (scope.local(name) !== undefined || scope.groups.has(name)) fail(valueWhere, `name '${name}' is already defined`);
         scope.groups.add(name);
-        const group: LayoutTree = { kind: 'module', title: name, children: [] };
+        const group: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
         if (typeof value.subtitle === 'string') group.subtitle = value.subtitle;
         entries.push(group);
         const groupSlots = this.items(scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
         const created = c.g.nodes.slice(before);
-        this.addModule(name, group.subtitle, created);
-        slots.push({ kind: 'group', decl: value, where: valueWhere, slots: groupSlots });
+        this.addModule(braceTitle, group.subtitle, created);
+        slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
         return;
       }
       slots.push(this.nodeItem(scope, name, base, indices, value, valueEnv, entries, before));
@@ -1066,6 +1066,7 @@ class PageCompiler {
   instance(
     parent: Scope,
     name: string,
+    braceTitle: string,
     indices: number[],
     use: Record<string, unknown>,
     env: Env,
@@ -1130,7 +1131,7 @@ class PageCompiler {
       bindings.push([output, concrete.name, at]);
       if (!scope.texOverride.has(output)) scope.outputTex.set(output, this.marked(c.loopTex(concrete.base, concrete.indices), parent, false));
     }
-    const tree: LayoutTree = { kind: 'module', title: name, children: [] };
+    const tree: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
     if (typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
     entries.push(tree);
     this.weights(scope, decl, childEnv, use.weights === undefined ? undefined : { map: record(use.weights, child(env.where, use, 'weights'), 'weights'), env: { ...env, where: child(env.where, use, 'weights') } }, tree.children);
@@ -1144,7 +1145,7 @@ class PageCompiler {
     this.patch(scope, steps, use, env);
     for (const [output, target, at] of bindings) this.define(parent, target, scope.entries.get(output) as Node, { ...env, where: at });
     const created = c.g.nodes.slice(before);
-    this.addModule(name, tree.subtitle, created);
+    this.addModule(braceTitle, tree.subtitle, created);
     return { kind: 'child', steps, created };
   }
 
@@ -1198,45 +1199,60 @@ class PageCompiler {
       if (step.active !== undefined) forward.active = withAnon(list(step.active as unknown).flatMap((s) => c.nodeList(s, fieldEnv('active'))));
       if (step.label !== undefined) forward.label = c.text(step.label, fieldEnv('label'));
       if (step.text !== undefined) forward.text = c.text(step.text, fieldEnv('text'));
-      return { rec: { owner: scope.path, id: step.id, step: forward }, show };
+      return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
     });
   }
 
   moduleSteps(scope: Scope, decl: Record<string, unknown>, env: Env, slots: Slot[]): StepRec[] {
-    const containers: ResolvedStep[][] = [this.resolveSteps(scope, decl, env, 'steps')];
-    const events: Extract<Slot, { kind: 'node' | 'child' }>[] = [];
-    const flatten = (level: Slot[]) => {
-      for (const slot of level) {
+    const containers: { key: string; steps: ResolvedStep[] }[] = [{ key: '', steps: this.resolveSteps(scope, decl, env, 'steps') }];
+    const events: { slot: Extract<Slot, { kind: 'node' | 'child' }>; key: string }[] = [];
+    const flatten = (level: Slot[], prefix: string) => {
+      level.forEach((slot, i) => {
+        const key = `${prefix}/${i}`;
         if (slot.kind === 'group') {
-          containers.push(this.resolveSteps(scope, slot.decl, { ...env, where: slot.where }, 'steps'));
-          flatten(slot.slots);
+          containers.push({ key, steps: this.resolveSteps(scope, slot.decl, { ...env, where: slot.where, loops: slot.loops }, 'steps') });
+          flatten(slot.slots, key);
         } else if (slot.kind === 'loop') {
-          slot.iterations.forEach(flatten);
+          for (const iteration of slot.iterations) flatten(iteration, `${key}*`);
         } else {
-          events.push(slot);
+          events.push({ slot, key });
         }
-      }
+      });
     };
-    flatten(slots);
-    const own = containers.flat();
-    const covered = new Set<Node>(own.flatMap((s) => s.show));
-    const anchors = new Map<ResolvedStep, number>();
+    flatten(slots, '');
+    const covered = new Set<Node>(containers.flatMap((container) => container.steps.flatMap((s) => s.show)));
+    const anchored = new Map<number, { key: string; rec: StepRec }[]>();
     for (const container of containers) {
       let floor = -1;
-      for (const step of container) {
-        const first = events.findIndex((event) => step.show.some((n) => event.created.includes(n)));
+      for (const step of container.steps) {
+        const first = events.findIndex((event) => step.show.some((n) => event.slot.created.includes(n)));
         floor = Math.max(floor, first);
-        anchors.set(step, floor);
+        anchored.set(floor, [...(anchored.get(floor) ?? []), { key: `own${container.key}:${step.rec.refs[0].id}`, rec: step.rec }]);
       }
     }
-    const placed = (i: number) => own.filter((step) => anchors.get(step) === i).map((step) => step.rec);
-    const out = placed(-1);
-    events.forEach((event, i) => {
-      if (event.kind === 'child') out.push(...event.steps);
-      else if (!covered.has(event.node)) out.push(this.autoStep(scope, event.name, event.node, covered));
-      out.push(...placed(i));
+    const out = [...(anchored.get(-1) ?? [])];
+    events.forEach(({ slot, key }, i) => {
+      if (slot.kind === 'child') slot.steps.forEach((rec, j) => out.push({ key: `${key}#${j}`, rec }));
+      else if (!covered.has(slot.node)) out.push({ key, rec: this.autoStep(scope, slot.name, slot.node, covered) });
+      out.push(...(anchored.get(i) ?? []));
     });
-    return out;
+    const firsts = new Map<string, StepRec>();
+    const merged: StepRec[] = [];
+    for (const { key, rec } of out) {
+      const first = firsts.get(key);
+      if (first === undefined) {
+        firsts.set(key, rec);
+        merged.push(rec);
+        continue;
+      }
+      first.refs.push(...rec.refs);
+      const union = (a: Node | Node[], b: Node | Node[]) => [...new Set([...list(a), ...list(b)])];
+      if (first.step.active !== undefined || rec.step.active !== undefined) {
+        first.step.active = union(first.step.active ?? first.step.show, rec.step.active ?? rec.step.show);
+      }
+      first.step.show = union(first.step.show, rec.step.show);
+    }
+    return merged;
   }
 
   autoStep(scope: Scope, name: string, node: Node, covered: Set<Node>): StepRec {
@@ -1247,7 +1263,7 @@ class PageCompiler {
       .filter((input) => (input.kind === 'param' || input.kind === 'buffer' || (input.op === 'transpose' && input.inputs[0].kind === 'param')) && !covered.has(input));
     const show = [...new Set([...leaves, ...anon, node])];
     for (const n of leaves) covered.add(n);
-    return { owner: scope.path, id: name, step: { show, title: name, label: name } };
+    return { refs: [{ owner: scope.path, id: name }], step: { show, title: name, label: name } };
   }
 
   moduleBackward(decl: Record<string, unknown>, env: Env): void {
@@ -1278,7 +1294,7 @@ class PageCompiler {
       const dot = path.lastIndexOf('.');
       const owner = dot < 0 ? scope.path : join(scope.path, path.slice(0, dot));
       const id = dot < 0 ? path : path.slice(dot + 1);
-      const target = steps.find((s) => s.owner === owner && s.id === id);
+      const target = steps.find((s) => s.refs.some((ref) => ref.owner === owner && ref.id === id));
       if (target === undefined) fail(at, `step '${path}' does not exist in '${scope.path}'`);
       const fieldEnv = (key: string): Env => ({ ...env, where: child(at, spec, key) });
       if (spec.title !== undefined) target.step.title = c.text(spec.title, fieldEnv('title'));

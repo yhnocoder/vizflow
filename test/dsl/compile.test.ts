@@ -359,7 +359,65 @@ body:
 steps:
   - { id: split, show: 'p[1..H]', title: split }
 `);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['split', 'q[1]', 'q[2]']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['split', 'q[1]']);
+    expect((result.steps.forward[1].show as Node[]).map((n) => n.name)).toEqual(['q[1]', 'q[2]']);
+  });
+
+  it('merges the steps that the iterations of a loop share, including the steps of instances', async () => {
+    const result = await page(`
+title: t
+import: { Norm: ./norm.yaml }
+dims: { H: 3 }
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - for: h
+    in: 1..H
+    body:
+      - p[h]: x * h
+      - n[h]:
+          use: Norm
+          inputs: { x: 'p[h]' }
+          steps: { rms: { append: 'iteration \\of{h}' } }
+      - g[h]:
+          body:
+            - r[h]: n[h].out + 1
+          steps:
+            - { id: plus, show: 'r[h]', active: 'n[h].out', title: 'plus \\of{h}' }
+  - y: 'cat(r[1..H], dim=1)'
+`, { 'mem:/pages/norm.yaml': NORM });
+    const forward = result.steps.forward;
+    expect(forward.map((s) => s.title)).toEqual(['p[1]', 'rms of $\\mathbf{p}^{(1)}$', 'scale', 'plus 1', 'y']);
+    const shown = (i: number) => (forward[i].show as Node[]).map((n) => n.name);
+    expect(shown(0)).toEqual(['p[1]', 'p[2]', 'p[3]']);
+    expect(shown(1)).toEqual(['n[1].ms/1', 'n[1].ms', 'n[2].ms/1', 'n[2].ms', 'n[3].ms/1', 'n[3].ms']);
+    expect(forward[1].text).toBe('iteration 1');
+    expect(shown(3)).toEqual(['r[1]', 'r[2]', 'r[3]']);
+    expect((forward[3].active as Node[]).map((n) => n.name)).toEqual(['n[1].out', 'n[2].out', 'n[3].out']);
+  });
+
+  it('applies a patch for a later iteration to the merged step', async () => {
+    const result = await page(`
+title: t
+import: { Norm: ./norm.yaml }
+dims: { H: 2 }
+modules:
+  Two:
+    params: { H: { type: dim } }
+    inputs: { x: { shape: [T, n] } }
+    outputs: [o]
+    body:
+      - for: h
+        in: 1..H
+        body:
+          - n[h]: { use: Norm, inputs: { x: x } }
+      - o: n[1].out + n[2].out
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - two: { use: Two, params: { H: H }, inputs: { x: x }, steps: { 'n[2].scale': { title: second } } }
+`, { 'mem:/pages/norm.yaml': NORM });
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['rms of $\\mathbf{x}$', 'second', 'o']);
   });
 
   it('rejects patches for steps that do not exist', async () => {
@@ -443,16 +501,16 @@ body:
       'q',
       {
         parallel: [
-          { title: 'head $1$', children: ['p[1]', { title: 'n[1]', children: ['n[1].ms/1', 'n[1].ms', 'n[1].out/1', 'n[1].out/2', 'n[1].out/3', 'n[1].W', 'n[1].out'] }] },
-          { title: 'head $2$', children: ['p[2]', { title: 'n[2]', children: ['n[2].ms/1', 'n[2].ms', 'n[2].out/1', 'n[2].out/2', 'n[2].out/3', 'n[2].W', 'n[2].out'] }] },
+          { title: 'head $1$', children: ['p[1]', { title: 'n', children: ['n[1].ms/1', 'n[1].ms', 'n[1].out/1', 'n[1].out/2', 'n[1].out/3', 'n[1].W', 'n[1].out'] }] },
+          { title: 'head $2$', children: ['p[2]', { title: 'n', children: ['n[2].ms/1', 'n[2].ms', 'n[2].out/1', 'n[2].out/2', 'n[2].out/3', 'n[2].W', 'n[2].out'] }] },
         ],
       },
       { title: 'g', children: ['s'] },
     ]);
     expect(result.modules.map((m) => [m.title, m.subtitle, m.nodes.length])).toEqual([
-      ['n[1]', undefined, 7],
+      ['n', undefined, 7],
       ['head $1$', undefined, 8],
-      ['n[2]', undefined, 7],
+      ['n', undefined, 7],
       ['head $2$', undefined, 8],
       ['g', 'grouped', 1],
     ]);

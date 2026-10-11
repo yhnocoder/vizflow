@@ -262,14 +262,15 @@ steps:
 <ol>
   <li>每个模块的 steps 插在该实例在父模块 body 里的位置。一个 step 放在它 <code>show</code> 的节点里最早创建的那一个之后；同一个模块里后写的 step 不排在先写的 step 前面。这样「按 head 拆开」这类步骤可以写在模块末尾，仍然出现在循环之前。</li>
   <li>body 里没有被任何 step 的 <code>show</code> 覆盖的节点自动生成一步，标题和标签取节点名。这一步同时显示该节点用到的、还没有出现过的权重、权重的转置和 buffer。权重和 buffer 不单独生成步骤。</li>
-  <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm[1].square</code>。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔。id 不存在时报错。</li>
+  <li>同一个 for 的各次迭代生成的步骤合并成一步：id 相同的步骤（包括子实例和 group 的步骤）合并，自动生成的步骤按节点在迭代中的位置合并。合并后的 <code>show</code> 和 <code>active</code> 取所有迭代的并集，<code>label</code>、<code>title</code>、<code>text</code> 用第一次迭代的，位置也是第一次迭代的位置。这样两个 head 的 q_norm 共用一组步骤，步骤数不随 head 数增长，与按 head 并排画出的场景一致。</li>
+  <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm[1].square</code>。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔。循环里合并的步骤用任一次迭代的路径都能找到，例如 <code>q_norm[2].square</code> 也改的是合并后的那一步。id 不存在时报错。</li>
   <li>反向步骤用 <code>createSteps</code> 的 <code>backward: { auto: true }</code> 生成，<code>merge</code> 取每个前向步骤里多于一个可求导节点的组。<code>backward</code> 里按名字或路径写的文字，由编译器按 <code>steps</code> 入口的分组规则算出对应反向步骤的下标，填进 <code>override</code>。</li>
   <li>正文里的 <code>{{ name | matrix }}</code>、<code>{{ name | matrix:3 }}</code>、<code>{{ name.grad | matrix:3 }}</code> 在编译期按节点形状展开成 <code>\begin{pmatrix}...\end{pmatrix}</code>，每个单元格是一个模板 <code>{{节点名[i, j]:3}}</code>。其余 <code>{{...}}</code> 里的名字按作用域换成 graph 上的节点名，再交给步骤的正文模板。</li>
 </ol>
 
 <h3>面板与大括号</h3>
 <p><code>panels</code> 是 <code>PanelItem</code> 的同构写法，凡是节点的位置都写路径或根作用域的名字：<code>tokens</code>、<code>sliders</code>、<code>columns[].node</code>、<code>matrix</code>、<code>highlight</code>、<code>loss.random.nodes</code> 与 <code>loss.sgd.params</code>。<code>sgd.params</code> 与 <code>random.nodes</code> 写 <code>all</code> 表示全部权重。<code>matrix: head.W.T</code> 这类表达式也可以写，转置在建图时已经存在时直接复用。<code>loss</code> 一项单独写 <code>- loss</code> 时用默认选项。</p>
-<p>每个实例、group 和写了 <code>brace</code> 的 for 迭代对应一个 <code>SceneModule</code>：标题是实例名或 <code>brace</code> 的文字（<code>\of{h}</code> 换成值），副标题是模块的 <code>subtitle</code>，节点是它展开出的全部节点。根模块不画。模块标题按纯文本显示，不渲染公式。</p>
+<p>每个实例、group 和写了 <code>brace</code> 的 for 迭代对应一个 <code>SceneModule</code>：标题是实例名、group 名或 <code>brace</code> 的文字（<code>\of{h}</code> 换成值）。for 里的实例和 group 的标题去掉循环下标，<code>attn[1]</code> 与 <code>attn[2]</code> 的标题都是 <code>attn</code>（路径不变），这样 <code>autoLayout</code> 把它们合并成一个大括号，不在同一高度并排几个相同的括号。副标题是模块的 <code>subtitle</code>，节点是它展开出的全部节点。根模块不画。模块标题按纯文本显示，不渲染公式。</p>
 
 <h3>编译接口与布局树</h3>
 <pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
@@ -292,7 +293,7 @@ interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; childr
 <ul>
   <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 是它的第一批 node 条目。</li>
   <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
-  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。</li>
+  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
 </ul>
 
 <h2>模块怎么划分，各入口加载什么</h2>
