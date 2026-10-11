@@ -27,4 +27,6 @@ export {
   type TokenColumn,
 } from './panels';
 export { mountSections, type SectionItem, type SectionRow, type SectionBlock, type SectionsOptions, type JumpButton, type RopeSpec, type RopeCompareSpec } from './sections';
+export { mountStepPanel, type StepPanelOptions, type StepPanelStep } from './step-panel';
+export { mountTimeline, type TimelineSpec, type TimelineSource, type TimelineItem, type TimelineLane, type TimelineKind } from './timeline';
 export type { Mounted } from './mounted';
