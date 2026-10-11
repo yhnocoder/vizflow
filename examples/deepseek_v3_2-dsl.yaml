@@ -27,7 +27,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$；indexer 只决定哪些 key 参与注意力，选择不可导，所以它没有梯度。MoE 层里，每个位置的梯度只进入选中它的那几个路由专家和共享专家，挑选专家的那部分计算没有梯度。
+      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$；indexer 只决定哪些 key 参与注意力，选择不可导，所以它没有梯度。MoE 层里，每个位置的梯度只进入选中它的那几个路由专家和共享专家，挑选专家的那部分计算没有梯度。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -368,7 +368,14 @@ panels:
       # transformers DeepseekV32，first_k_dense_replace = 3
       x0 = layers[:2](model.embed_tokens(input_ids))     # 图里是占位盒子
       dense, moe = model.layers[2], model.layers[3]
-      a = x0 + dense.self_attn(dense.input_layernorm(x0))  # DeepseekV32Attention：MLA + indexer
+      h = dense.input_layernorm(x0)
+      attn = dense.self_attn                             # DeepseekV32Attention：MLA + indexer
+      q_resid = attn.q_a_layernorm(attn.q_a_proj(h))
+      # ... MLA 的 q、k、v 与 V3 相同，RoPE 用 apply_rotary_pos_emb_interleave
+      topk = attn.indexer(h, q_resid, (cos, sin), causal_mask[:, 0])  # no_grad
+      index_mask = ones(T, T, dtype=bool).scatter(-1, topk, False)    # True = 没选中
+      mask = causal_mask.masked_fill(index_mask, finfo(dtype).min)
+      a = x0 + attn.o_proj(eager_attention_forward(q, k, v, mask))
       x1 = a + dense.mlp(dense.post_attention_layernorm(a))  # DeepseekV32MLP
       a = x1 + moe.self_attn(moe.input_layernorm(x1))
       x2 = a + moe.mlp(moe.post_attention_layernorm(a))  # DeepseekV32MoE
