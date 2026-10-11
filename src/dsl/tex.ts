@@ -1,4 +1,4 @@
-import { trailingSubscript } from '../explain/elem';
+import { trailingSubscript } from '../explain';
 
 export const OP_TEX: Readonly<Record<string, { tex: string; def: string }>> = {
   sigmoid: { tex: '\\sigma', def: '\\sigma(v)=\\frac{1}{1+e^{-v}}' },

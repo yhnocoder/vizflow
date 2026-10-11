@@ -1,10 +1,7 @@
 import { type Graph, Node, graph, opDef } from '../autograd';
 import { explainOf } from '../explain';
-import type { LayoutEntry, LayoutTree } from '../scene3d/auto';
-import type { SceneModule } from '../scene3d/modules';
-import type { CameraOptions } from '../scene3d/scene';
-import { type BackwardOverride, type ForwardStep, type StepsSpec } from '../steps';
-import { backwardGroups } from '../steps/steps';
+import type { CameraOptions, LayoutEntry, LayoutTree, SceneModule } from '../scene3d';
+import { type BackwardOverride, type ForwardStep, type StepsSpec, backwardGroups } from '../steps';
 import { type Nested, inferShape } from '../tensor';
 import type { PanelItem } from '../ui';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';

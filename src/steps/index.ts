@@ -1,5 +1,6 @@
 export {
   createSteps,
+  backwardGroups,
   allVisible,
   type Steps,
   type StepsSpec,
