@@ -220,7 +220,34 @@ panels:
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。
 - `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`sdpa`、`lm-head-nll`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
-- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给每次迭代各画一个大括号，迭代的节点已经由实例的大括号标出时不必写。
+- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给迭代加一层大括号，各次迭代的括号合并成一个，标题用 ` · ` 连接（例如 `head 1 · head 2`），迭代的节点已经由实例的大括号标出时不必写。
+- 实例、group 和 for 可以写 `beside: 名字`，让这一项画在前一项的旁边、从同一层开始。名字是紧挨着的前一项的名字，或者是已经 beside 前一项的某一项的名字，几项连成一组，每项一条竖道，从左到右按书写顺序；这一组之后的项从最高的竖道上方继续。for 要被引用时写 `name: 名字`。`beside` 只影响布局，步骤不变。Qwen3 的注意力里，k 的 RMSNorm 和 RoPE 与每个 head 的 q 并排：
+
+  ```yaml
+  - for: h
+    in: 1..H
+    name: q_heads
+    body:
+      - q[h]: narrow(q, 1, (h-1)*dh, dh)
+      - q_norm[h]: { use: RMSNorm, inputs: { x: 'q[h]' }, outputs: { out: 'qn[h]' } }
+      - q_rope[h]: { use: RoPE, inputs: { x: 'qn[h]' }, outputs: { out: 'qr[h]' } }
+  - for: g
+    in: 1..Hkv
+    name: k_heads
+    beside: q_heads
+    body:
+      - k[g]: narrow(k, 1, (g-1)*dh, dh)
+      - k_norm[g]: { use: RMSNorm, inputs: { x: 'k[g]' }, outputs: { out: 'kn[g]' } }
+      - k_rope[g]: { use: RoPE, inputs: { x: 'kn[g]' }, outputs: { out: 'kr[g]' } }
+  - for: h
+    in: 1..H
+    body:
+      - attn[h]:
+          use: SDPA
+          inputs: { q: 'qr[h]', k: 'kr[(h-1)//(H//Hkv)+1]', v: 'v[(h-1)//(H//Hkv)+1]' }
+  ```
+
+  并排的竖道里同一位置的大括号合并成一个，上例画出 `q_norm · k_norm` 和 `q_rope · k_rope`。并排的项不能用同一组里前面一项算出的值（例如 attention 用到 `qr[h]` 和 `kr[g]`，所以写在这一组之后），否则编译报错；名字不是前一项、写在单个节点上时也报错。
 - 全页的路径是实例名逐层拼接，例如 `layer.self_attn.attn[1].P`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
 - 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
 - tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
@@ -785,7 +812,7 @@ mountScene('#stage', g, { steps, layout, modules });
 - 节点自下而上排成一列，每个平面张量占一层。放在层侧面的标量节点和跟在它后面的标量（例如 RMSNorm 的 ms、ms+ε、r）排成一行，相当于 `stack` 的 `scalars: 'row'`。`a @ W.T` 这类右侧是二维节点的矩阵乘画成 `board`，几块共用同一个输入的板并排放在同一层。
 - `parallel` 的每个分支各占一条竖道并排，分支结束后从最高的分支往上继续。
 - 一维权重和 buffer 放在右侧，与第一个用到它的节点同高。
-- 根下面第一层的模块括号在左侧，更深的在右侧；各分支里同名的模块合并成一个括号。
+- 根下面第一层的模块括号在左侧，更深的在右侧；各分支里排在同一位置的模块合并成一个括号，标题不同时用 ` · ` 连接（例如 `q_norm · k_norm`），相同时只写一次。
 - 完整的例子见 `examples/auto-layout-qwen3.html`。
 
 ### 6.7 编辑模式

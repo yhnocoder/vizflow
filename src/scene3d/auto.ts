@@ -24,6 +24,7 @@ export const AUTO_LABEL_ROOM = 1.5;
 export const AUTO_BOARD_GAP = 1.0;
 export const AUTO_LANE_GAP = 1.0;
 export const AUTO_SIDE_GAP = 1.5;
+export const AUTO_TITLE_JOIN = ' · ';
 
 type Step = { kind: 'node'; node: Node } | { kind: 'parallel'; branches: Step[][] };
 
@@ -228,20 +229,24 @@ export function autoLayout(tree: LayoutTree): { layout: LayoutItem[]; modules: S
     entries.flatMap((entry) => {
       if (entry.kind === 'node') return [];
       if (entry.kind === 'module') return moduleOf(entry, depth);
-      const merged = new Map<string, SceneModule>();
+      const merged: { module: SceneModule; titles: string[]; subtitles: string[] }[] = [];
       for (const branch of entry.branches) {
-        const seen = new Map<string, number>();
-        for (const module of moduleOf(branch, depth)) {
-          const name = `${module.title}\n${module.subtitle ?? ''}`;
-          const ordinal = seen.get(name) ?? 0;
-          seen.set(name, ordinal + 1);
-          const key = `${name}\n${ordinal}`;
-          const existing = merged.get(key);
-          if (existing === undefined) merged.set(key, module);
-          else existing.nodes.push(...module.nodes);
-        }
+        moduleOf(branch, depth).forEach((module, position) => {
+          const slot = merged[position];
+          if (slot === undefined) {
+            merged[position] = { module, titles: [module.title], subtitles: module.subtitle === undefined ? [] : [module.subtitle] };
+            return;
+          }
+          slot.module.nodes.push(...module.nodes);
+          if (!slot.titles.includes(module.title)) slot.titles.push(module.title);
+          if (module.subtitle !== undefined && !slot.subtitles.includes(module.subtitle)) slot.subtitles.push(module.subtitle);
+        });
       }
-      return [...merged.values()];
+      return merged.map(({ module, titles, subtitles }) => ({
+        ...module,
+        title: titles.join(AUTO_TITLE_JOIN),
+        subtitle: subtitles.length === 0 ? undefined : subtitles.join(AUTO_TITLE_JOIN),
+      }));
     });
   const modules = modulesOf(tree.children, 0).filter((module) => module.nodes.some((n) => sink.placed.has(n)));
   return { layout: sink.items, modules };

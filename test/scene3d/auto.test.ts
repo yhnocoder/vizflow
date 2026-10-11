@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Node } from '../../src/autograd';
 import { graph } from '../../src/core';
 import '../../src/explain';
-import { AUTO_LEVEL, AUTO_SIDE_GAP, type LayoutEntry, type LayoutTree, autoLayout } from '../../src/scene3d/auto';
+import { AUTO_LEVEL, AUTO_SIDE_GAP, AUTO_TITLE_JOIN, type LayoutEntry, type LayoutTree, autoLayout } from '../../src/scene3d/auto';
 import { type Block, SCALAR_ROW_GAP, classAlignment, resolveLayout, targetColumn } from '../../src/scene3d/layout';
 import { blockSpan } from '../../src/scene3d/modules';
 
@@ -229,5 +229,43 @@ describe('autoLayout', () => {
     const result = autoLayout(tree(undefined, leaves(h, y)));
     expect(result.modules).toEqual([]);
     expect(result.layout).toHaveLength(1);
+  });
+
+  function lanes() {
+    const g = graph({ dims: { T: 2, d: 4 } });
+    const x = g.input('x', ['T', 'd'], values(2, 4, 1));
+    const heads = [1, 2].map((h) => {
+      const a = g.exp(x, { name: `a${h}` });
+      return [a, g.exp(a, { name: `b${h}` })];
+    });
+    const k1 = g.sigmoid(x, { name: 'k1' });
+    const k2 = g.exp(k1, { name: 'k2' });
+    const k3 = g.exp(k2, { name: 'k3' });
+    const z = g.add(k3, heads[0][1], { name: 'z' });
+    const qLane = tree(undefined, [{ kind: 'parallel', branches: heads.map(([a, b]) => tree(undefined, [tree('q_norm', leaves(a), 'RMSNorm'), leaf(b)])) }]);
+    const kLane = tree('k_norm', leaves(k1, k2, k3), 'RMSNorm');
+    const root = tree(undefined, [leaf(x), { kind: 'parallel', branches: [qLane, kLane] }, leaf(z)]);
+    return { g, root, heads, k1, k3, z };
+  }
+
+  it('starts every lane of a parallel at the same level, including the lanes of a parallel nested in a branch', () => {
+    const t = lanes();
+    const { of } = resolve(t.g, t.root);
+    const [[a1, b1], [a2, b2]] = t.heads;
+    for (const n of [a2, t.k1]) expect(baseY(of(n))).toBeCloseTo(baseY(of(a1)), 9);
+    expect(baseY(of(b1))).toBeCloseTo(baseY(of(b2)), 9);
+    const right = (nodes: Node[]) => Math.max(...nodes.map((n) => Math.max(box(of(n)).x1, box(of(n)).px1)));
+    const left = (nodes: Node[]) => Math.min(...nodes.map((n) => Math.min(box(of(n)).x0, box(of(n)).px0)));
+    expect(right([a1, b1])).toBeLessThan(left([a2, b2]));
+    expect(right([a2, b2])).toBeLessThan(left([t.k1]));
+    expect(baseY(of(t.z)) - baseY(of(t.k3))).toBeCloseTo(AUTO_LEVEL, 9);
+  });
+
+  it('merges the modules at the same position of different branches and joins their distinct titles', () => {
+    const t = lanes();
+    const { modules } = resolve(t.g, t.root);
+    expect(modules.map((m) => [m.title, m.subtitle])).toEqual([[`q_norm${AUTO_TITLE_JOIN}k_norm`, 'RMSNorm']]);
+    expect(modules[0].nodes).toEqual(expect.arrayContaining([t.heads[0][0], t.heads[1][0], t.k1, t.k3]));
+    expect(AUTO_TITLE_JOIN).toBe(' · ');
   });
 });

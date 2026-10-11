@@ -23,8 +23,28 @@ body:
   - q: x @ Wq.T
   - k: x @ Wk.T
   - v: x @ Wv.T
+  - for: h
+    in: 1..H
+    name: q_heads
+    body:
+      - q[h]: narrow(q, 1, (h-1)*dh, dh)
+      - q_norm[h]:
+          use: RMSNorm
+          inputs: { x: 'q[h]' }
+          weights: { weight: gq }
+          outputs: { out: 'qn[h]' }
+          suffix: '^{q\of{h}}'
+          tex: { out: '\bar{\mathbf{q}}^{(\of{h})}' }
+      - q_rope[h]:
+          use: RoPE
+          params: { theta: theta }
+          inputs: { x: 'qn[h]' }
+          outputs: { out: 'qr[h]' }
+          tex: { out: "\\mathbf{q}'^{(\\of{h})}" }
   - for: g
     in: 1..Hkv
+    name: k_heads
+    beside: q_heads
     body:
       - k[g]: narrow(k, 1, (g-1)*dh, dh)
       - v[g]: narrow(v, 1, (g-1)*dh, dh)
@@ -44,20 +64,6 @@ body:
   - for: h
     in: 1..H
     body:
-      - q[h]: narrow(q, 1, (h-1)*dh, dh)
-      - q_norm[h]:
-          use: RMSNorm
-          inputs: { x: 'q[h]' }
-          weights: { weight: gq }
-          outputs: { out: 'qn[h]' }
-          suffix: '^{q\of{h}}'
-          tex: { out: '\bar{\mathbf{q}}^{(\of{h})}' }
-      - q_rope[h]:
-          use: RoPE
-          params: { theta: theta }
-          inputs: { x: 'qn[h]' }
-          outputs: { out: 'qr[h]' }
-          tex: { out: "\\mathbf{q}'^{(\\of{h})}" }
       - attn[h]:
           use: SDPA
           inputs: { q: 'qr[h]', k: 'kr[(h-1)//(H//Hkv)+1]', v: 'v[(h-1)//(H//Hkv)+1]' }

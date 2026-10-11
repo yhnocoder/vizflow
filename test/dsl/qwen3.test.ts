@@ -7,6 +7,9 @@ import { type Graph, Tensor, defineOp, graph } from '../../src/core';
 import type { CompiledPage } from '../../src/dsl';
 import { elemTexOf } from '../../src/explain/elem';
 import { createSteps } from '../../src/steps';
+import { autoLayout } from '../../src/scene3d/auto';
+import { classAlignment, resolveLayout, targetColumn } from '../../src/scene3d/layout';
+import { blockSpan } from '../../src/scene3d/modules';
 import { loadExample } from './load';
 
 const WEIGHTS: Record<string, string> = {
@@ -84,5 +87,15 @@ describe('qwen3-dsl.yaml against qwen3-structure.html', () => {
       const got = actual.grad!.data;
       want.forEach((g, i) => expect(Math.abs(got[i] - g), `${path}[${i}]`).toBeLessThan(1e-9));
     }
+  });
+
+  it('starts the k chain beside the per-head q chains and draws one brace for q_norm and k_norm', () => {
+    const { layout, modules } = autoLayout(dsl.tree);
+    const g = dsl.graph;
+    const { blocks } = resolveLayout(layout, { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 });
+    const bottom = (path: string) => blockSpan(blocks.find((b) => b.node === dsl.nodes.get(`layer.self_attn.${path}`))!).bottom;
+    for (const path of ['q[2]', 'k[1]']) expect(bottom(path)).toBeCloseTo(bottom('q[1]'), 9);
+    expect(bottom('kn[1]')).toBeCloseTo(bottom('qn[1]'), 9);
+    expect(modules.map((m) => m.title)).toEqual(expect.arrayContaining(['q_norm · k_norm', 'q_rope · k_rope', 'attn']));
   });
 });

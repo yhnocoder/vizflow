@@ -535,3 +535,85 @@ body:
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });
+
+describe('beside', () => {
+  const files = { 'mem:/pages/norm.yaml': NORM };
+  const head = `
+title: t
+import: { Norm: ./norm.yaml }
+dims: { T: 2, d: 2, H: 2 }
+inputs:
+  x: { value: [[1, 2], [3, 4]] }
+  y: { value: [[5, 6], [7, 8]] }
+body:
+`;
+  const lanes = (grpBeside: string, forBeside: string) => `${head}  - na: { use: Norm, inputs: { x: x }, outputs: { out: a } }
+  - grp:
+      ${grpBeside}
+      body:
+        - s: exp(y)
+  - for: h
+    in: 1..H
+    name: heads
+    ${forBeside}
+    body:
+      - p[h]: y * h
+      - for: j
+        in: 1..h
+        body:
+          - 'r[h][j]': p[h] * j
+  - z: a + s
+`;
+
+  it('turns an item and the items beside it into one parallel entry with a lane each', async () => {
+    const result = await page(lanes('beside: na', 'beside: grp'), files);
+    const norm = ['na.ms/1', 'na.ms', 'na.out/1', 'na.out/2', 'na.out/3', 'na.W', 'na.out'];
+    const heads = {
+      children: [
+        {
+          parallel: [
+            { children: ['p[1]', { parallel: [{ children: ['r[1][1]'] }] }] },
+            { children: ['p[2]', { parallel: [{ children: ['r[2][1]'] }, { children: ['r[2][2]'] }] }] },
+          ],
+        },
+      ],
+    };
+    expect(names(result.tree.children)).toEqual(['x', 'y', { parallel: [{ title: 'na', children: norm }, { title: 'grp', children: ['s'] }, heads] }, 'z']);
+    const plain = await page(lanes('subtitle: grouped', 'brace: head'), files);
+    expect(plain.tree.children.map((entry) => entry.kind)).toEqual(['node', 'node', 'module', 'module', 'parallel', 'node']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(plain.steps.forward.map((s) => s.title));
+    expect(result.graph.findLoss()).toBe(plain.graph.findLoss());
+  });
+
+  it('accepts any member of the group before it as the target', async () => {
+    const result = await page(lanes('beside: na', 'beside: na'), files);
+    expect(result.tree.children[2]).toMatchObject({ kind: 'parallel' });
+    expect((result.tree.children[2] as { branches: unknown[] }).branches).toHaveLength(3);
+  });
+
+  it('rejects a target that is unknown or not right before the item', async () => {
+    await expect(page(lanes('beside: nope', 'brace: head'), files)).rejects.toThrow(
+      /page\.yaml:11:15 body\[1\]\.grp\.beside: beside 'nope': no instance, group or named for item 'nope' comes before this one in the same body/,
+    );
+    const gap = `${head}  - na: { use: Norm, inputs: { x: x } }
+  - b: exp(x)
+  - nb: { use: Norm, inputs: { x: y }, beside: na }
+`;
+    await expect(page(gap, files)).rejects.toThrow(/page\.yaml:11:\d+ body\[2\]\.nb\.beside: beside 'na': 'na' is not the item right before this one/);
+    await expect(page(`${head}  - na: { use: Norm, inputs: { x: x } }\n  - b: { op: exp(x), beside: na }\n`, files)).rejects.toThrow(
+      /body\[1\]\.b\.beside: beside applies to an instance, a group or a for item, not to a single node/,
+    );
+  });
+
+  it('rejects an item that uses a result of an item in the same beside group', async () => {
+    const uses = `${head}  - na: { use: Norm, inputs: { x: x }, outputs: { out: a } }
+  - grp:
+      body:
+        - s: exp(y)
+  - nb: { use: Norm, inputs: { x: a }, beside: grp }
+`;
+    await expect(page(uses.replace('      body:', '      beside: na\n      body:'), files)).rejects.toThrow(
+      /page\.yaml:14:48 body\[2\]\.nb\.beside: 'nb' is beside 'grp' but uses 'na\.out', which 'na' in the same beside group computes; .* Put it after the beside group/,
+    );
+  });
+});

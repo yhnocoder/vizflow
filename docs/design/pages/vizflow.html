@@ -195,9 +195,37 @@ steps:
 <p>body 的每一项是只有一个键的映射，或者一个 for：</p>
 <ul>
   <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex }</code> 同时给出 tex。</li>
-  <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。</li>
-  <li><code>name: { body, steps?, subtitle? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，只用来画大括号和把步骤分组。</li>
-  <li><code>{ for: h, in: '1..H', brace?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。</li>
+  <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。</li>
+  <li><code>name: { body, steps?, subtitle?, beside? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，只用来画大括号和把步骤分组。</li>
+  <li><code>{ for: h, in: '1..H', name?, brace?, beside?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。</li>
+</ul>
+<p><b>并排。</b>实例、group 和 for 可以写 <code>beside: 名字</code>，表示这一项在场景里画在前一项的旁边，从同一层开始。名字是紧挨着的前一项的名字（实例名、group 名或 for 的 <code>name</code>），或者是已经 beside 前一项的某一项的名字，这样几项连成一组，例如 c beside b、b beside a 是三条竖道。一组里的项在编译结果的布局树里合成一个 <code>parallel</code>，每项一个分支，按书写顺序从左到右排列；主列从各分支最高的一层再往上一层继续。<code>beside</code> 只影响布局，不改变建图顺序和步骤。没有写 <code>beside</code> 的项按原来的规则排在主列上。</p>
+<pre><code class="language-yaml">- for: h
+  in: 1..H
+  name: q_heads
+  body:
+    - q[h]: narrow(q, 1, (h-1)*dh, dh)
+    - q_norm[h]: { use: RMSNorm, inputs: { x: 'q[h]' }, outputs: { out: 'qn[h]' } }
+    - q_rope[h]: { use: RoPE, inputs: { x: 'qn[h]' }, outputs: { out: 'qr[h]' } }
+- for: g
+  in: 1..Hkv
+  name: k_heads
+  beside: q_heads
+  body:
+    - k[g]: narrow(k, 1, (g-1)*dh, dh)
+    - k_norm[g]: { use: RMSNorm, inputs: { x: 'k[g]' }, outputs: { out: 'kn[g]' } }
+    - k_rope[g]: { use: RoPE, inputs: { x: 'kn[g]' }, outputs: { out: 'kr[g]' } }
+- for: h
+  in: 1..H
+  body:
+    - attn[h]:
+        use: SDPA
+        inputs: { q: 'qr[h]', k: 'kr[(h-1)//(H//Hkv)+1]', v: 'v[(h-1)//(H//Hkv)+1]' }</code></pre>
+<p>这里 k 的 k_norm 和 RoPE 是一条竖道，排在两个 head 的 q 竖道右边，与 q[1] 同高；每个 head 的注意力在下一个 for 里，从这些竖道的上方开始。以下情况报错，错误信息指向 <code>beside</code> 所在的行：</p>
+<ul>
+  <li>名字不是紧挨着的前一项，也不是与前一项并排的项，例如中间隔了一个节点。错误信息区分「这个名字前面没有」和「这个名字不是前一项」。</li>
+  <li>写在单个节点 <code>name: expr</code> 上。并排的单位是实例、group 和 for。</li>
+  <li>这一项用到了同一组里前面某一项算出的值。并排的项从同一层开始，用到别的竖道的结果的项必须画在那条竖道上方，所以要写在这一组之后。权重、buffer 和只由它们算出的节点（例如权重的转置）不算。</li>
 </ul>
 <p>结构检查手写，不用 JSON Schema。未知的字段、缺少的字段和类型不对的值都报错，错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>bad.yaml:5:8 body[0].y: name 'nope' is not defined in the page</code>。行号和列号来自 <code>yaml</code> 包解析时保留的位置，传入的是 JavaScript 对象时信息里只有路径。YAML 里的重复键同样报错。</p>
 
@@ -270,7 +298,7 @@ steps:
 
 <h3>面板与大括号</h3>
 <p><code>panels</code> 是 <code>PanelItem</code> 的同构写法，凡是节点的位置都写路径或根作用域的名字：<code>tokens</code>、<code>sliders</code>、<code>columns[].node</code>、<code>matrix</code>、<code>highlight</code>、<code>loss.random.nodes</code> 与 <code>loss.sgd.params</code>。<code>sgd.params</code> 与 <code>random.nodes</code> 写 <code>all</code> 表示全部权重。<code>matrix: head.W.T</code> 这类表达式也可以写，转置在建图时已经存在时直接复用。<code>loss</code> 一项单独写 <code>- loss</code> 时用默认选项。</p>
-<p>每个实例、group 和写了 <code>brace</code> 的 for 迭代对应一个 <code>SceneModule</code>：标题是实例名、group 名或 <code>brace</code> 的文字（<code>\of{h}</code> 换成值）。for 里的实例和 group 的标题去掉循环下标，<code>attn[1]</code> 与 <code>attn[2]</code> 的标题都是 <code>attn</code>（路径不变），这样 <code>autoLayout</code> 把它们合并成一个大括号，不在同一高度并排几个相同的括号。副标题是模块的 <code>subtitle</code>，节点是它展开出的全部节点。根模块不画。模块标题按纯文本显示，不渲染公式。</p>
+<p>每个实例、group 和写了 <code>brace</code> 的 for 迭代对应一个 <code>SceneModule</code>：标题是实例名、group 名或 <code>brace</code> 的文字（<code>\of{h}</code> 换成值）。for 里的实例和 group 的标题去掉循环下标，<code>attn[1]</code> 与 <code>attn[2]</code> 的标题都是 <code>attn</code>（路径不变），这样 <code>autoLayout</code> 把它们合并成一个大括号，不在同一高度并排几个相同的括号。<code>beside</code> 并排的几项标题不同，<code>autoLayout</code> 同样把它们合并成一个大括号，标题用 <code> · </code> 连接，例如 <code>q_norm · k_norm</code>。副标题是模块的 <code>subtitle</code>，节点是它展开出的全部节点。根模块不画。模块标题按纯文本显示，不渲染公式。</p>
 
 <h3>编译接口与布局树</h3>
 <pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
@@ -294,6 +322,7 @@ interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; childr
   <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 是它的第一批 node 条目。</li>
   <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
   <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
+  <li>一项和 beside 它的各项合成一个 parallel，每项一个分支。实例和 group 的分支就是它们自己的 LayoutTree；for 的分支是一个 title 为空的 LayoutTree，里面是这个 for 自己的 parallel。</li>
 </ul>
 
 <h2>模块怎么划分，各入口加载什么</h2>
@@ -811,14 +840,14 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 <pre><code class="language-ts">type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
 interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; children: LayoutEntry[] }
 autoLayout(tree: LayoutTree): { layout: LayoutItem[]; modules: SceneModule[] }</code></pre>
-<p><code>children</code> 按计算顺序排列，权重和 buffer 放在第一次用到它的节点前面。<code>parallel</code> 的每个分支是一次重复的计算，例如每个 attention head 一个分支。最外层的树是根，不画大括号；<code>title</code> 为空的树也不画。</p>
+<p><code>children</code> 按计算顺序排列，权重和 buffer 放在第一次用到它的节点前面。<code>parallel</code> 的每个分支是一次重复的计算，例如每个 attention head 一个分支；页面描述文件里 <code>beside</code> 并排的每一项也是一个分支。最外层的树是根，不画大括号；<code>title</code> 为空的树也不画。</p>
 <ul>
   <li>主列自下而上。每行元素数大于 1 的节点占一层，层高 4.2；相邻的这类节点连同它们之间的标量节点放进同一个 <code>stack</code>（<code>back</code> 为 0，<code>scalars</code> 为 <code>'row'</code>），标量节点按 <code>stack</code> 的规则放在两层之间的侧面或目标列上方，跟在侧面节点后面的标量排成一行。主列的中心是 $x=0$，每层的第 0 行在 $z=0$。</li>
   <li>矩阵乘 $\mathbf{z}=\mathbf{a}B$ 的 $B$ 是二维节点、并且还没有被放置时画成 <code>board(a, B, z)</code>，放在主列当前最高一层的上一层，$\mathbf{z}$ 的第 0 行同样在 $z=0$。这包括 $B$ 是权重转置 <code>W.T</code> 的投影，也包括注意力里的 $\mathbf{q}\mathbf{k}^{\top}$ 和 $P\mathbf{v}$；作为 $B$ 的节点只由这块板放置，主列里不再单独放。只通过 <code>W.T</code> 使用的二维权重 <code>W</code> 不放进场景。连续几块板共用同一个 $\mathbf{a}$ 时（q、k、v 投影，gate 和 up 投影）放在同一层，沿 $x$ 方向依次排开，相邻两块的占位范围之间留 1.0，整组以主列中心为中心。</li>
   <li><code>parallel</code> 的每个分支各占一条竖道，从同一层开始往上排，竖道沿 $x$ 方向依次排开，相邻两条的占位范围之间留 1.0，整组以主列中心为中心。分支结束后，主列从各分支最高的一层再往上一层继续。</li>
   <li>一维权重（例如 RMSNorm 的 $\boldsymbol{\gamma}$）和 buffer（cos/sin 表、causal mask）放在侧道上：高度与第一个使用它的节点相同，$x$ 方向放在这一层全部内容的右侧，占位范围之间留 1.5。同一层有几个时依次往右排。</li>
   <li>标签不参与这里的排布，所以占位范围按估计计算：平面张量左侧算到刻度轴再往左 1.5（块名标签的位置），右侧算到底板边缘；有标量节点放在侧面的层，右侧再算到这一行最右的标量节点再往右 1.5；板的左侧算到底板边缘再往左 1.5（行号和块名标签的位置）。</li>
-  <li>大括号：根下面第一层有标题的模块放在左侧，更深的放在右侧，与 Qwen3 页一致。<code>parallel</code> 各个分支里标题和副标题相同的模块（按在分支里出现的次序对应）合并成一个大括号，例如两个 head 的 q_norm 共用一个括号，避免同样高度的几个括号并排。模块的节点包括它的树里的全部节点和这些节点所在板上的 $B$；一个都没有放进场景的模块不输出。</li>
+  <li>大括号：根下面第一层有标题的模块放在左侧，更深的放在右侧，与 Qwen3 页一致。每个分支先按这些规则列出自己的模块，<code>parallel</code> 各个分支里排在同一位置的模块合并成一个大括号，节点取并集，标题取各分支里不同的标题，按分支顺序用 <code> · </code> 连接，副标题同样处理。两个 head 的 q_norm 标题相同，合并后仍是 <code>q_norm</code>；q 竖道和并排的 k 竖道合并成 <code>q_norm · k_norm</code>；for 的 <code>brace</code> 给出的每次迭代的标题（例如 <code>head 1</code>、<code>head 2</code>）也合并成一个括号。这样同样高度不会并排几个括号。模块的节点包括它的树里的全部节点和这些节点所在板上的 $B$；一个都没有放进场景的模块不输出。</li>
 </ul>
 <table>
   <thead>
@@ -830,9 +859,10 @@ autoLayout(tree: LayoutTree): { layout: LayoutItem[]; modules: SceneModule[] }</
     <tr><td>同一层并排的板之间的间距 <code>AUTO_BOARD_GAP</code></td><td>1.0 个单位</td></tr>
     <tr><td><code>parallel</code> 相邻竖道之间的间距 <code>AUTO_LANE_GAP</code></td><td>1.0 个单位</td></tr>
     <tr><td>侧道与这一层内容之间的间距 <code>AUTO_SIDE_GAP</code></td><td>1.5 个单位</td></tr>
+    <tr><td>合并大括号时连接标题的字符串 <code>AUTO_TITLE_JOIN</code></td><td><code>' · '</code>（空格、间隔号、空格）</td></tr>
   </tbody>
 </table>
-<p>对照页 <code>examples/auto-layout-qwen3.html</code> 的建图代码与 <code>examples/qwen3-structure.html</code> 相同，布局和大括号由 <code>autoLayout</code> 生成。两页的差别：自动布局按顺序排主列，k 的 k_norm 和 RoPE 排在两个 head 的竖道下面，手写布局把它们放在 head 的旁边、与 q 同高，所以自动布局的场景更高；$\boldsymbol{\gamma}$ 与使用它的节点同高，手写布局放得更低。</p>
+<p>对照页 <code>examples/auto-layout-qwen3.html</code> 的建图代码与 <code>examples/qwen3-structure.html</code> 相同，布局和大括号由 <code>autoLayout</code> 生成。两页的差别：自动布局按顺序排主列，k 的 k_norm 和 RoPE 排在两个 head 的竖道下面，手写布局把它们放在 head 的旁边、与 q 同高，所以自动布局的场景更高；$\boldsymbol{\gamma}$ 与使用它的节点同高，手写布局放得更低。YAML 写的 <code>examples/qwen3-dsl.yaml</code> 用 <code>beside</code> 把 k 的竖道放在 q 竖道旁边，与手写布局一样从 q 的高度开始。</p>
 
 <h3>相机</h3>
 <p>相机采用正交投影，避免透视变形影响对高度的判断。取景根据所有元素与标签的包围盒在相机坐标下的投影自动计算，元素移动或缩放后不需要手动调整相机：几何体的投影四周留 12px，每个标签按它的像素尺寸和锚点计入，外沿离画布边缘也留 12px，在这个约束下取能放下全部内容的最大缩放，内容尽量填满画布。放在节点上方的节点标签按「翻到节点左侧」的位置计入，所以画布右侧不必为它们预留宽度；放在节点侧面的标签按实际位置计入。节点标签的宽度取前向与反向两种文字中较宽的一种，切换步骤时不需要重新取景。挂载、画布尺寸变化、字体加载完成与「复位视角」时重新取景。柱子按取景时的实际高度计入；读者拖动滑块让柱子变高时不重新取景，避免画面随数值跳动，柱子超出画布时按「复位视角」重新取景。读者可以在小范围内旋转，鼠标右键拖动（触屏双指）在屏幕平面内平移，滚轮按光标位置缩放（three.js OrbitControls 的 <code>zoomToCursor</code>）；场景右上角的「复位视角」回到默认方向和当前的取景。下表是默认值；<code>mountScene</code> 的 <code>camera</code> 选项可以覆盖斜视方向（<code>direction</code>）、相对初始方位角的水平旋转范围（<code>azimuth</code>）和极角范围（<code>polar</code>）。softmax 页用它给出自己的数值：方向 $(0.62,\ 0.5,\ 1)$，水平 $-0.75$ 到 $+0.6$ 弧度，极角 $0.55$ 到 $1.5$ 弧度。</p>

@@ -63,15 +63,21 @@ type Slot =
   | { kind: 'loop'; iterations: Slot[][] }
   | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
 
+interface Lanes {
+  start: number;
+  members: { name: string | undefined; created: Node[] }[];
+  parallel?: { kind: 'parallel'; branches: LayoutTree[] };
+}
+
 interface ResolvedStep {
   rec: StepRec;
   show: Node[];
 }
 
 const ITEM_KEYS = new Set(['op', 'tex']);
-const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps']);
-const GROUP_KEYS = new Set(['body', 'steps', 'subtitle']);
-const FOR_KEYS = new Set(['for', 'in', 'brace', 'body']);
+const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside']);
+const GROUP_KEYS = new Set(['body', 'steps', 'subtitle', 'beside']);
+const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward']);
 const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'weights',
@@ -973,59 +979,130 @@ class PageCompiler {
   items(scope: Scope, items: unknown[], env: Env, entries: LayoutEntry[], counts: Map<ModuleDef, number>, ordinals: Map<ModuleDef, number>): Slot[] {
     const c = this.c;
     const slots: Slot[] = [];
+    const named = new Set<string>();
+    let lanes: Lanes | undefined;
     items.forEach((item, index) => {
       const at = child(env.where, items, index);
-      const itemEnv = { ...env, where: at };
-      const before = c.g.nodes.length;
       if (!isRecord(item)) fail(at, 'a body item must be a mapping');
-      if ('for' in item) {
-        checkKeys(item, FOR_KEYS, at);
-        if (typeof item.for !== 'string') fail(child(at, item, 'for'), 'for needs a variable name');
-        if (!Array.isArray(item.body)) fail(child(at, item, 'body'), 'for needs a body list');
-        const branches: LayoutTree[] = [];
-        const iterations: Slot[][] = [];
-        for (const v of this.range(item.in, { ...itemEnv, where: child(at, item, 'in') })) {
-          const loopEnv: Env = { ...itemEnv, loops: new Map(env.loops).set(item.for, v), where: child(at, item, 'body') };
-          const branch: LayoutTree = { kind: 'module', children: [] };
-          const start = c.g.nodes.length;
-          if (typeof item.brace === 'string') branch.title = c.ofText(item.brace, { ...loopEnv, where: child(at, item, 'brace') });
-          iterations.push(this.items(scope, item.body, loopEnv, branch.children, counts, ordinals));
-          branches.push(branch);
-          if (branch.title !== undefined) this.addModule(branch.title, undefined, c.g.nodes.slice(start));
+      const start = entries.length;
+      const before = c.g.nodes.length;
+      const { name, beside } = this.item(scope, item, { ...env, where: at }, entries, counts, ordinals, slots);
+      const created = c.g.nodes.slice(before);
+      if (beside === undefined) {
+        lanes = name === undefined ? undefined : { start, members: [{ name, created }] };
+      } else {
+        const { target, group } = this.besideGroup(beside, lanes, named);
+        this.checkLaneUse(group, created, name, target, beside.where);
+        const lane = (es: LayoutEntry[]): LayoutTree => (es.length === 1 && es[0].kind === 'module' ? es[0] : { kind: 'module', children: es });
+        const mine = lane(entries.splice(start));
+        if (group.parallel === undefined) {
+          group.parallel = { kind: 'parallel', branches: [lane(entries.splice(group.start))] };
+          entries.push(group.parallel);
         }
-        entries.push({ kind: 'parallel', branches });
-        slots.push({ kind: 'loop', iterations });
-        return;
+        group.parallel.branches.push(mine);
+        group.members.push({ name, created });
       }
-      const keys = Object.keys(item);
-      if (keys.length !== 1) fail(at, `a body item must have exactly one name, got ${keys.length}`);
-      const key = keys[0];
-      const value = item[key];
-      const valueWhere = child(at, item, key);
-      const valueEnv = { ...itemEnv, where: valueWhere };
-      const { name, base, indices } = c.concreteName(key, valueEnv);
-      const braceTitle = env.loops.size > 0 ? base : name;
-      if (isRecord(value) && 'use' in value) {
-        slots.push(this.instance(scope, name, braceTitle, indices, value, valueEnv, entries, counts, ordinals, before));
-        return;
-      }
-      if (isRecord(value) && 'body' in value) {
-        checkKeys(value, GROUP_KEYS, valueWhere);
-        if (!Array.isArray(value.body)) fail(child(valueWhere, value, 'body'), 'body must be a list');
-        if (scope.local(name) !== undefined || scope.groups.has(name)) fail(valueWhere, `name '${name}' is already defined`);
-        scope.groups.add(name);
-        const group: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
-        if (typeof value.subtitle === 'string') group.subtitle = value.subtitle;
-        entries.push(group);
-        const groupSlots = this.items(scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
-        const created = c.g.nodes.slice(before);
-        this.addModule(braceTitle, group.subtitle, created);
-        slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
-        return;
-      }
-      slots.push(this.nodeItem(scope, name, base, indices, value, valueEnv, entries, before));
+      if (name !== undefined) named.add(name);
     });
     return slots;
+  }
+
+  besideGroup(beside: { value: unknown; env: Env; where: Where }, lanes: Lanes | undefined, named: ReadonlySet<string>): { target: string; group: Lanes } {
+    if (typeof beside.value !== 'string') fail(beside.where, 'beside must name an instance, a group or a for item');
+    const target = this.c.concreteName(beside.value, { ...beside.env, where: beside.where }).name;
+    if (lanes !== undefined && lanes.members.some((m) => m.name === target)) return { target, group: lanes };
+    if (named.has(target)) {
+      fail(beside.where, `beside '${target}': '${target}' is not the item right before this one; beside names the item right before it or an item beside that one`);
+    }
+    fail(beside.where, `beside '${target}': no instance, group or named for item '${target}' comes before this one in the same body`);
+  }
+
+  checkLaneUse(lanes: Lanes, created: Node[], name: string | undefined, target: string, where: Where): void {
+    const constant = (n: Node): boolean => n.kind === 'param' || n.kind === 'buffer' || (n.kind === 'op' && n.inputs.every(constant));
+    for (const n of created) {
+      for (const input of n.inputs) {
+        const owner = lanes.members.find((m) => m.created.includes(input));
+        if (owner === undefined || constant(input)) continue;
+        const self = name === undefined ? 'this for item' : `'${name}'`;
+        const source = owner.name === undefined ? 'a for item' : `'${owner.name}'`;
+        fail(
+          where,
+          `${self} is beside '${target}' but uses '${input.name}', which ${source} in the same beside group computes; an item beside another starts at the same level, so it cannot use that item's results. Put it after the beside group`,
+        );
+      }
+    }
+  }
+
+  item(
+    scope: Scope,
+    item: Record<string, unknown>,
+    env: Env,
+    entries: LayoutEntry[],
+    counts: Map<ModuleDef, number>,
+    ordinals: Map<ModuleDef, number>,
+    slots: Slot[],
+  ): { name: string | undefined; beside: { value: unknown; env: Env; where: Where } | undefined } {
+    const c = this.c;
+    const at = env.where;
+    const before = c.g.nodes.length;
+    const besideOf = (owner: Record<string, unknown>, ownerWhere: Where) =>
+      'beside' in owner ? { value: owner.beside, env, where: child(ownerWhere, owner, 'beside') } : undefined;
+    if ('for' in item) {
+      checkKeys(item, FOR_KEYS, at);
+      if (typeof item.for !== 'string') fail(child(at, item, 'for'), 'for needs a variable name');
+      if (!Array.isArray(item.body)) fail(child(at, item, 'body'), 'for needs a body list');
+      let forName: string | undefined;
+      if (item.name !== undefined) {
+        const nameWhere = child(at, item, 'name');
+        if (typeof item.name !== 'string') fail(nameWhere, 'name must be a string');
+        forName = c.concreteName(item.name, { ...env, where: nameWhere }).name;
+        if (scope.local(forName) !== undefined || scope.groups.has(forName)) fail(nameWhere, `name '${forName}' is already defined in ${c.scopeLabel(scope)}`);
+        scope.groups.add(forName);
+      }
+      const branches: LayoutTree[] = [];
+      const iterations: Slot[][] = [];
+      for (const v of this.range(item.in, { ...env, where: child(at, item, 'in') })) {
+        const loopEnv: Env = { ...env, loops: new Map(env.loops).set(item.for, v), where: child(at, item, 'body') };
+        const branch: LayoutTree = { kind: 'module', children: [] };
+        const start = c.g.nodes.length;
+        if (typeof item.brace === 'string') branch.title = c.ofText(item.brace, { ...loopEnv, where: child(at, item, 'brace') });
+        iterations.push(this.items(scope, item.body, loopEnv, branch.children, counts, ordinals));
+        branches.push(branch);
+        if (branch.title !== undefined) this.addModule(branch.title, undefined, c.g.nodes.slice(start));
+      }
+      entries.push({ kind: 'parallel', branches });
+      slots.push({ kind: 'loop', iterations });
+      return { name: forName, beside: besideOf(item, at) };
+    }
+    const keys = Object.keys(item);
+    if (keys.length !== 1) fail(at, `a body item must have exactly one name, got ${keys.length}`);
+    const key = keys[0];
+    const value = item[key];
+    const valueWhere = child(at, item, key);
+    const valueEnv = { ...env, where: valueWhere };
+    const { name, base, indices } = c.concreteName(key, valueEnv);
+    const braceTitle = env.loops.size > 0 ? base : name;
+    if (isRecord(value) && 'use' in value) {
+      slots.push(this.instance(scope, name, braceTitle, indices, value, valueEnv, entries, counts, ordinals, before));
+      return { name, beside: besideOf(value, valueWhere) };
+    }
+    if (isRecord(value) && 'body' in value) {
+      checkKeys(value, GROUP_KEYS, valueWhere);
+      if (!Array.isArray(value.body)) fail(child(valueWhere, value, 'body'), 'body must be a list');
+      if (scope.local(name) !== undefined || scope.groups.has(name)) fail(valueWhere, `name '${name}' is already defined`);
+      scope.groups.add(name);
+      const group: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
+      if (typeof value.subtitle === 'string') group.subtitle = value.subtitle;
+      entries.push(group);
+      const groupSlots = this.items(scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
+      const created = c.g.nodes.slice(before);
+      this.addModule(braceTitle, group.subtitle, created);
+      slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
+      return { name, beside: besideOf(value, valueWhere) };
+    }
+    if (isRecord(value) && 'beside' in value) fail(child(valueWhere, value, 'beside'), 'beside applies to an instance, a group or a for item, not to a single node');
+    slots.push(this.nodeItem(scope, name, base, indices, value, valueEnv, entries, before));
+    return { name: undefined, beside: undefined };
   }
 
   nodeItem(scope: Scope, name: string, base: string, indices: number[], value: unknown, env: Env, entries: LayoutEntry[], before: number): Slot {
