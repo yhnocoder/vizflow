@@ -73,7 +73,7 @@ interface Entry {
   body: (focus: number) => string;
 }
 
-function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto'>): Node[][] {
+export function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto'>): Node[][] {
   const loss = g.findLoss();
   if (loss === undefined) {
     if ((spec.merge?.length ?? 0) > 0 || Object.keys(spec.override ?? {}).length > 0) {

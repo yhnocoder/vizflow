@@ -79,37 +79,6 @@ const P0 = {
 }
 
 defineOp({
-  name: 'rotate_half',
-  args: ['input'],
-  tensors: ['input'],
-  shape: ([a]) => [...a],
-  forward: ([x]) => {
-    const out = new Tensor(x.shape);
-    const half = x.shape[1] / 2;
-    for (let t = 0; t < x.shape[0]; t++) {
-      for (let c = 0; c < x.shape[1]; c++) out.set([t, c], c < half ? -x.get([t, c + half]) : x.get([t, c - half]));
-    }
-    return out;
-  },
-  backward: (gradOut) => {
-    const grad = new Tensor(gradOut.shape);
-    const half = gradOut.shape[1] / 2;
-    for (let t = 0; t < gradOut.shape[0]; t++) {
-      for (let c = 0; c < gradOut.shape[1]; c++) grad.set([t, c], c < half ? gradOut.get([t, c + half]) : -gradOut.get([t, c - half]));
-    }
-    return [grad];
-  },
-  explain: {
-    pattern: 'elementwise',
-    local: (ctx, [, c]) => (c < ctx.out.shape[1] / 2 ? -1 : 1),
-    selected: (ctx, [t, c]) => {
-      const half = ctx.out.shape[1] / 2;
-      return [{ arg: 0, index: [t, c < half ? c + half : c - half] }];
-    },
-    tex: { forward: (s) => `\\mathrm{rotate\\_half}(${s.in[0]})`, local: (s) => (s.outIndex[1] < 2 ? '-1' : '1') },
-  },
-});
-defineOp({
   name: 'decoder_layers',
   args: ['input'],
   tensors: ['input'],

@@ -7,7 +7,7 @@ export function isCell(ref: ElemRef | CellRef): ref is CellRef {
   return 'cell' in ref;
 }
 
-function trailingSubscript(elem: string): { base: string; inner: string } | undefined {
+export function trailingSubscript(elem: string): { base: string; inner: string } | undefined {
   const single = /(?<!\\)_([^{}\\\s])$/.exec(elem);
   if (single !== null) return { base: elem.slice(0, single.index), inner: single[1] };
   if (!elem.endsWith('}')) return undefined;

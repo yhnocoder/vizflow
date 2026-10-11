@@ -10,9 +10,9 @@
 
 ## 1. 安装与引用
 
-### 1.1 八个入口
+### 1.1 九个入口
 
-npm 包名是 `@yhnocoder/vizflow`。包按用途拆成八个入口，页面只引入需要的几个：
+npm 包名是 `@yhnocoder/vizflow`。包按用途拆成九个入口，页面只引入需要的几个：
 
 | 入口 | 内容 | 什么时候引入 |
 |---|---|---|
@@ -24,6 +24,7 @@ npm 包名是 `@yhnocoder/vizflow`。包按用途拆成八个入口，页面只�
 | `@yhnocoder/vizflow/theme` | 颜色变量、字体、布局类 | 只用 core 或 steps 又需要样式时 |
 | `@yhnocoder/vizflow/explain` | 连线、局部导数、卡片内容 | 给自定义运算注册讲解时 |
 | `@yhnocoder/vizflow/element` | `<vizflow-page>` 元素，按示例页面的布局放好 3D 场景、步骤条和面板 | 不想自己写容器和挂载调用时，见 1.6 |
+| `@yhnocoder/vizflow/dsl` | YAML 页面描述文件的解析与编译 | 只要编译结果、不用元素时，见 1.7；用元素的 `src` 时不需要引入 |
 
 `ui` 与 `scene3d` 自动引入 `theme` 和 `formula`，用到它们的页面不需要再引入 `theme`。`steps` 自动引入 `explain`。只引入 `core` 时不会加载 three.js、Solid 和 KaTeX。
 
@@ -168,7 +169,7 @@ page.createdSteps.go(1);
 | `edit` | `true` 时打开场景的编辑模式（6.7），默认 `false` |
 | `createdSteps` | 只读，元素创建的 `Steps`，用来调用 `go`、`next`、`setFocus`、`subscribe` |
 
-- 表里的属性都是 JavaScript 属性，要在脚本里赋值。元素不读取 HTML 属性，写成 `<vizflow-page edit>` 不起作用，要写 `page.edit = true`。
+- 表里的属性都是 JavaScript 属性，要在脚本里赋值。写成 `<vizflow-page edit>` 不起作用，要写 `page.edit = true`。元素只读取一个 HTML 属性 `src`，见 1.7。
 - 设置了 `scene` 时，元素在后台加载 `scene3d` 再画出 3D 场景，步骤条和面板先出现；不设置 `scene` 的页面不会加载 three.js。
 - `graph` 和 `steps` 都设置后元素才挂载。连续设置几个属性只挂载一次；挂载后再设置任何属性，元素释放旧内容，按新属性重新挂载，`createdSteps` 换成新对象。
 - 设置完属性后可以立即读取 `createdSteps`，读取时元素先完成挂载。
@@ -178,6 +179,67 @@ page.createdSteps.go(1);
 - TypeScript 里 `document.querySelector('vizflow-page')` 的类型是 `VizflowPage`，属性有完整的类型。
 
 完整的例子：`examples/element-lmhead.html` 是不用构建工具的写法，`examples/vite-project/` 是用 Vite 和 TypeScript 的写法，两者内容都与 lm_head 页相同。
+
+### 1.7 用 YAML 页面描述文件写页面
+
+由标准模块（RMSNorm、注意力、MLP、lm_head 与损失）拼成的页面，可以不写建图和布局代码，只写一份 YAML 页面描述文件，交给 `<vizflow-page>` 的 `src` 属性：
+
+```html
+<main class="vf-page">
+  <vizflow-page src="my-page.yaml"></vizflow-page>
+</main>
+<script type="module">
+import '@yhnocoder/vizflow/element';
+</script>
+```
+
+元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，标题和导语由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3-dsl.yaml`，页面 `examples/qwen3-dsl.html`。
+
+一个最小的页面文件：
+
+```yaml
+title: RMSNorm 一步
+lede: 输入是 $\mathbf{x}$，形状 $(T, d)$。
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+dims: { T: 2, d: 4 }
+inputs:
+  x: { value: [[0.5, -1, 0.3, 0.8], [1.2, 0.1, -0.4, 0.6]] }
+body:
+  - norm: { use: RMSNorm, inputs: { x: x }, outputs: { out: h } }
+  - loss: mean(h ** 2)
+panels:
+  - loss
+  - { matrix: h, title: h }
+```
+
+写法要点：
+
+- `body` 按顺序建图。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`narrow(q, 1, (h-1)*dh, dh)`、`cat(o[1..H], dim=1)`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
+- 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
+- `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`sdpa`、`lm-head-nll`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
+- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。
+- 全页的路径是实例名逐层拼接，例如 `layer.self_attn.attn[1].P`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
+- 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
+- tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
+- 步骤写在模块和页面的 `steps` 里：`{ id, show, label, title, text }`，放在 `show` 里最早建出的节点之后。没被任何步骤显示的节点自动成一步。使用处的 `steps: { 'q_norm[1].square': { append: ... } }` 改写子模块的步骤。反向步骤自动生成，`backward: { 名字: { title, text } }` 改写某个节点所在的那一步。
+- 正文里 `{{ r | matrix:3 }}`、`{{ a.grad | matrix }}` 展开成整个矩阵，其余 `{{...}}` 与第 4 节的模板相同，名字按作用域查找。
+- 3D 布局由库按 body 的结构自动排布，页面不写布局。
+
+只需要编译结果、不需要元素时，用 `dsl` 入口：
+
+```js
+import { loadPage, compilePage, parseYaml } from '@yhnocoder/vizflow/dsl';
+
+const page = await loadPage('./my-page.yaml');
+page.graph;            // 计算图
+page.nodes.get('h');   // 按路径查节点
+const fromObject = await compilePage({ title: '...', dims: {}, inputs: {}, body: [] });
+```
+
+`compilePage` 接受与 YAML 结构相同的 JavaScript 对象；对象里引用相对路径的模块时，要传 `{ base: 页面地址 }`。字段的完整列表和规则见设计文档的「页面描述文件怎么写」。
 
 ## 2. 建图
 
@@ -247,7 +309,8 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | 运算 | 调用 | 说明 |
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
-| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` | `g.exp(a)` | 逐元素 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量 |
+| `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合 |
 | `transpose` | `g.transpose(a, dim0, dim1)` | 二维节点也可以写 `W.T` |

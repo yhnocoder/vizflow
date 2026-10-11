@@ -531,7 +531,23 @@ def transformer_op_fixtures():
     cases += embedding_cases()
     cases += narrow_cases()
     cases += cat_cases()
+    cases += pointwise_cases("relu", F.relu, randn)
+    cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
+    cases += pointwise_cases("identity", lambda x: x.clone(), randn)
+    cases += rotate_half_cases()
     return cases
+
+
+def rotate_half(x):
+    half = x.shape[-1] // 2
+    return torch.cat((-x[..., half:], x[..., :half]), dim=-1)
+
+
+def rotate_half_cases():
+    return [
+        op_case("rotate_half", f"shape {shape}", rotate_half, [("input", randn(*shape))], [tensor_arg(0)])
+        for shape in [(4,), (3, 4), (2, 2, 6)]
+    ]
 
 
 def write(name, cases):
