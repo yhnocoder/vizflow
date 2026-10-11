@@ -112,7 +112,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 以下内容不写：
 
 - 代码里能直接读到的实现步骤、正则、规则名单的具体条目；
-- 修改历史、实测过程、调研依据，这些写在 issue 与 commit message。
+- 修改历史与实测过程，这些写在 issue 与 commit message；调研依据在 Artifact，见「调研记录」。
 
 章节按读者会问的问题划分。上面列的几类内容写在相关章节里，和它们解释的机制放在一起，不单独成章；常量不在文末另做汇总。
 
@@ -144,6 +144,5 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 调研外部项目、方案或工具时：
 
-1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
-2. 同时开一个 issue，加 `question` 标签，写明调研动机、Artifact 链接与结论摘要。结论确定后关闭 issue。
-3. 调研结论中需要实施的改动，写进 Design Doc 或 feature issue，注明来源 issue 编号。
+1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库，也不为调研开 GitHub issue。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
+2. 调研结论中需要实施的改动，写进 Design Doc 或 feature issue；来源 Artifact 的链接写在 feature issue 或 commit message 里。
