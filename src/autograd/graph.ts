@@ -6,12 +6,14 @@ import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, norma
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
 import { opDef } from './registry';
+import { roundToDtype } from './rounding';
 
 export interface GraphOptions {
   dims?: Record<string, number>;
   real?: { name?: string } & Record<string, number | string>;
   check?: boolean;
   dtype?: string;
+  rounding?: boolean;
 }
 
 export interface OpOptions extends NodeOptions {
@@ -33,6 +35,7 @@ export interface Graph extends BuiltinOps {
   readonly dims: Readonly<Record<string, number>>;
   readonly real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
+  readonly rounding: boolean;
   readonly nodes: readonly Node[];
   readonly version: number;
   input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
@@ -96,6 +99,7 @@ class GraphImpl {
   dims: Readonly<Record<string, number>>;
   real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
+  readonly rounding: boolean;
   readonly nodes: Node[] = [];
   version = 0;
   self!: Graph;
@@ -117,6 +121,7 @@ class GraphImpl {
     this.real = options.real === undefined ? undefined : Object.freeze({ ...options.real });
     this.check = options.check ?? checkByDefault();
     this.dtype = options.dtype === undefined ? DEFAULT_DTYPE : checkDtype(options.dtype, 'graph');
+    this.rounding = options.rounding ?? false;
     if (this.real !== undefined) {
       const numeric: Record<string, number> = { ...this.dims };
       for (const [key, value] of Object.entries(this.real)) {
@@ -307,9 +312,9 @@ class GraphImpl {
   ): Node {
     const shape = resolveShape(shapeSpec, this.dims, name);
     const realShape = this.realDims === undefined ? shape : resolveShape(shapeSpec, this.realDims, name);
-    const value = this.tensorFor(name, shape, values);
+    const dtype = kind === 'label' ? LABEL_DTYPE : options.dtype === undefined ? this.dtype : checkDtype(options.dtype, `node '${name}'`);
+    const value = this.roundedTo(this.tensorFor(name, shape, values), dtype);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: value.clone(), transposed: undefined };
-    const dtype = kind === 'label' ? LABEL_DTYPE : this.dtype;
     return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state);
   }
 
@@ -320,9 +325,9 @@ class GraphImpl {
       this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
     const name = options.name ?? this.autoName(def.name);
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
-    const value = def.forward(inputs.map((n) => n.value), attrs);
-    const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
+    const value = this.roundedTo(def.forward(inputs.map((n) => n.value), attrs), dtype);
+    const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
   }
 
@@ -394,6 +399,11 @@ class GraphImpl {
     }
   }
 
+  private roundedTo(value: Tensor, dtype: Dtype): Tensor {
+    if (!this.rounding || dtype === 'fp64') return value;
+    return new Tensor(value.shape, value.data.map((x) => roundToDtype(x, dtype)));
+  }
+
   private gradOf(id: number): Tensor | null {
     if (CONSTANT_KINDS.has(this.nodes[id].kind) || this.isDetached(id)) return null;
     this.ensureBackward();
@@ -402,7 +412,7 @@ class GraphImpl {
 
   private setLeaf(id: number, values: Nested): void {
     const node = this.nodes[id];
-    const value = this.tensorFor(node.name, [...node.shape], values);
+    const value = this.roundedTo(this.tensorFor(node.name, [...node.shape], values), node.dtype);
     this.replaceLeaf(id, value);
     if (this.batchDepth === 0) this.recompute();
   }
@@ -443,7 +453,7 @@ class GraphImpl {
       this.nodes.forEach((node, i) => {
         if (node.kind !== 'op') return;
         const def = opDef(node.op as string) as AnyOpDef;
-        this.states[i].value = def.forward(node.inputs.map((n) => n.value), node.attrs);
+        this.states[i].value = this.roundedTo(def.forward(node.inputs.map((n) => n.value), node.attrs), node.dtype);
       });
       this.computeBackward();
       if (this.check) {

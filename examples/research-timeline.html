@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>重叠调度时间轴</title>
+<link rel="icon" href="data:,">
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; }
+.lede { color: var(--muted); max-width: 72ch; margin: 0 0 20px; }
+.batches { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.batches th, .batches td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.batches td:first-child { white-space: nowrap; }
+.batches th { color: var(--muted); font-weight: 500; }
+.batches tr.now td { color: var(--fg); font-weight: 500; }
+.batches td { color: var(--muted); }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>重叠调度：CPU 与 GPU 的时间线</h1>
+  <p class="lede">SGLang 的 overlap scheduler 和 vLLM 的异步调度都让 CPU 在 GPU 运行第 N 批时准备第 N+1 批。第 N 批采样出的 token 要晚一步才交到 CPU。时间轴只表示先后与重叠关系，长度不对应实测耗时。这个页面没有 3D 计算图，只有步骤条和两个 2D 面板。</p>
+  <div class="vf-stack">
+    <div id="steps"></div>
+    <div id="timeline"></div>
+    <div id="batches"></div>
+  </div>
+</main>
+<script type="module">
+import { createStepList } from '@yhnocoder/vizflow/steps';
+import { mountStepPanel, mountSteps, mountTimeline } from '@yhnocoder/vizflow/ui';
+
+const BATCHES = 4;
+const SCHEDULE = 2;
+const PROCESS = 2;
+const FORWARD = 6;
+
+const steps = createStepList([
+  {
+    id: 'b1',
+    title: 'CPU 调度第 $1$ 批',
+    label: '调度第 1 批',
+    text: '循环刚开始时没有正在运行的批次，CPU 选出要运行的请求，组好第 $1$ 批的输入后交给 GPU。这段时间 GPU 空闲。',
+  },
+  {
+    id: 'b2',
+    title: 'GPU 运行第 $1$ 批，CPU 调度第 $2$ 批',
+    label: 'GPU 跑第 1 批',
+    text: 'GPU 运行第 $1$ 批的前向和采样。CPU 不等它结束，同时组好第 $2$ 批。第 $2$ 批里继续生成的请求需要第 $1$ 批采样出的 token，这时 CPU 还拿不到，输入里先放一个占位，GPU 在运行第 $2$ 批之前从第 $1$ 批的输出里取到真实的 token。',
+  },
+  {
+    id: 'b3',
+    title: 'GPU 运行第 $2$ 批，CPU 调度第 $3$ 批并处理第 $1$ 批的结果',
+    label: 'GPU 跑第 2 批',
+    text: 'CPU 先组好第 $3$ 批，再处理第 $1$ 批的输出：把采样出的 token 追加到请求，检查是否结束，结束的请求释放 KV cache。第 $1$ 批的 token 在这一步才到 CPU，比第 $1$ 批在 GPU 上算完晚一步。',
+  },
+  {
+    id: 'b4',
+    title: 'GPU 运行第 $3$ 批，CPU 调度第 $4$ 批并处理第 $2$ 批的结果',
+    label: 'GPU 跑第 3 批',
+    text: '之后每一步都重复同样的安排：GPU 运行第 $N$ 批，CPU 调度第 $N+1$ 批并处理第 $N-1$ 批的结果。只要 CPU 这两件事的耗时不超过一批前向，GPU 就不需要等 CPU。',
+  },
+]);
+
+const items = [];
+for (let n = 1; n <= BATCHES; n++) {
+  const gpuStart = SCHEDULE + (n - 1) * FORWARD;
+  const cpuStart = n === 1 ? 0 : gpuStart - FORWARD;
+  items.push({ lane: 'cpu', start: cpuStart, end: cpuStart + SCHEDULE, label: `调度 ${n}`, kind: 'schedule', step: n - 1 });
+  if (n < BATCHES) items.push({ lane: 'gpu', start: gpuStart, end: gpuStart + FORWARD, label: `前向与采样 ${n}`, kind: 'forward', step: n });
+  if (n + 1 < BATCHES) items.push({ lane: 'cpu', start: gpuStart + FORWARD + SCHEDULE, end: gpuStart + FORWARD + SCHEDULE + PROCESS, label: `处理 ${n} 的结果`, kind: 'output', step: n + 1 });
+}
+
+mountSteps('#steps', steps);
+mountTimeline('#timeline', steps, {
+  title: 'CPU 与 GPU 的时间线（示意）',
+  lanes: [
+    { id: 'cpu', label: 'CPU' },
+    { id: 'gpu', label: 'GPU' },
+  ],
+  kinds: {
+    schedule: { label: '调度下一批' },
+    forward: { label: '前向与采样' },
+    output: { label: '处理上一批的结果' },
+  },
+  items,
+});
+
+const stateOf = (batch, step) => {
+  if (batch === step + 1) return step === 0 ? 'CPU 正在调度' : 'CPU 正在调度，输入里上一批的 token 先用占位';
+  if (batch > step + 1) return '还未开始';
+  if (batch === step) return 'GPU 正在运行，采样结果留在 GPU';
+  if (batch === step - 1) return 'CPU 正在处理它的采样结果';
+  return '结果已处理';
+};
+
+mountStepPanel('#batches', steps, {
+  title: '每一批在这一步的位置',
+  render(root, { index }) {
+    const table = document.createElement('table');
+    table.className = 'batches';
+    const head = table.createTHead().insertRow();
+    for (const name of ['批次', '状态']) {
+      const th = document.createElement('th');
+      th.textContent = name;
+      head.append(th);
+    }
+    const body = table.createTBody();
+    for (let batch = 1; batch <= BATCHES; batch++) {
+      const row = body.insertRow();
+      if (batch === index || batch === index + 1) row.className = 'now';
+      row.insertCell().textContent = `第 ${batch} 批`;
+      row.insertCell().textContent = stateOf(batch, index);
+    }
+    root.replaceChildren(table);
+  },
+});
+
+window.vizflow = { steps };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

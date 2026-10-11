@@ -56,8 +56,9 @@ export class CompilerState {
     this.real = page.real !== undefined;
     const dtype = page.dtype;
     if (dtype !== undefined && typeof dtype !== 'string') fail(child(pageWhere, page, 'dtype'), 'dtype must be a string');
+    if (page.rounding !== undefined && typeof page.rounding !== 'boolean') fail(child(pageWhere, page, 'rounding'), 'rounding must be true or false');
     try {
-      this.g = graph({ dims, ...(this.real ? { real } : {}), ...(dtype === undefined ? {} : { dtype }) });
+      this.g = graph({ dims, ...(this.real ? { real } : {}), ...(dtype === undefined ? {} : { dtype }), rounding: page.rounding === true });
     } catch (error) {
       fail(child(pageWhere, page, 'dtype'), (error as Error).message);
     }

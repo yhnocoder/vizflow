@@ -141,6 +141,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     }
     const from = edge.from;
     const to = edge.to;
+    if (backward && edge.constant) continue;
     const copy = levels?.copyFor(from.node, to.node);
     const fromR = copy === undefined ? renderableOf(c, from.node) : renderableFor(c, copy);
     const toR = renderableOf(c, to.node);

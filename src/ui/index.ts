@@ -27,4 +27,25 @@ export {
   type TokenColumn,
 } from './panels';
 export { mountSections, type SectionItem, type SectionRow, type SectionBlock, type SectionsOptions, type JumpButton, type RopeSpec, type RopeCompareSpec } from './sections';
+export { mountStepPanel, type StepPanelOptions, type StepPanelStep } from './step-panel';
+export { mountTimeline, type TimelineSpec, type TimelineSource, type TimelineItem, type TimelineLane, type TimelineKind } from './timeline';
 export type { Mounted } from './mounted';
+export { mountGpuDiagram, type GpuDiagram } from './gpu-diagram';
+export {
+  gpuUnitIds,
+  layoutGpuDiagram,
+  type GpuBadgeLine,
+  type GpuColor,
+  type GpuDiagramProps,
+  type GpuFlow,
+  type GpuFocus,
+  type GpuKind,
+  type GpuLevel,
+  type GpuPacket,
+  type GpuSmOptions,
+  type GpuTileGroup,
+  type GpuTileOwner,
+  type GpuTiles,
+  type GpuTopology,
+} from './gpu-layout';
+export { epTopology, expandedBadges, pipelineState, scheduleTiles, transferState, type GpuState } from './gpu-sim';

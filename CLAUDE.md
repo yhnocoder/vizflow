@@ -46,13 +46,14 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 | 与用户沟通需求并写 Spec | 主 agent | 用户审核通过后才开始开发 |
 | Implement 和 Test | implementer subagent | 不需要 |
 | Review | 主 agent | 不需要；同一个 subagent 两轮未通过时报告用户 |
-| 偏离 Design Doc、新增 Design Doc 没有的字段或选项、Design Doc 没给数值的常量 | 主 agent 提出 | 需要 |
+| 偏离 Design Doc、新增 Design Doc 没有的字段或选项、Design Doc 没给数值的常量 | 主 agent 提出 | 需要，在 PR 末尾一次确认 |
 | 在 issue 中写 comment | 主 agent | 不需要 |
 | Validate | Spec 写明的验收者 | AI 能运行的环境由 AI 验收；其他环境由用户运行，AI 提供测试步骤或脚本 |
 | commit、PR、关闭 issue | 主 agent | 需要 |
 
 补充规则：
 
+- 实现中遇到待决定项和新常量时，先按推荐项继续做，常量标为暂定；把它们列成一张表（每项的选项、采用的推荐与理由）放在 PR 描述末尾，由用户一次确认。只有会改变目标或无法撤销的决定才停下来等用户。
 - Spec 写在 issue 正文，写全文，不只放链接。Spec 描述实际的实现细节，要做到自包含，让 subagent 不需要知道其他背景就可以执行；如果需要其他背景，在 Spec 中引用。几个 Task 共用的规格写在其中一个 issue，其他 issue 引用它。
 - 实现过程中发现 Spec 有误，直接修改 issue 正文，让正文始终是当前要实现的 Spec。
 - Spec 写明验收的环境、命令与执行者。验收使用真实的依赖与环境，替身只用于自动测试。
@@ -67,29 +68,21 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 ## 代码地图
 
-每个目录负责什么、从哪个文件读起。这里只写目录和入口文件，不写函数名和行号；文件改名或移动时同时改这一节，`scripts/check_map.py` 检查这里写到的路径都存在。
+每个目录负责什么、从哪里读起。这里只写目录和入口，不列目录里的单个文件；只有新增、删除或改名目录时才改这一节。目录里的文件按职责命名，在目录内查找即可。`scripts/check_map.py` 检查这里写到的路径都存在。
 
 - `src/tensor/`：张量、形状与广播、数值格式化。入口 `src/tensor/index.ts`。
-- `src/autograd/`：计算图、节点、dtype、运算注册与反向传播，`src/autograd/ops/` 每个文件是一类运算的前向与反向，`src/autograd/check.ts` 做有限差分检查。入口 `src/autograd/index.ts`。
-- `src/explain/`：由运算定义推导讲解内容，包括逐元素公式、连线和悬停卡片，`src/explain/ops/` 与 `src/autograd/ops/` 一一对应。入口 `src/explain/index.ts`。
+- `src/autograd/`：计算图、dtype、运算注册与反向传播；`src/autograd/ops/` 是各类运算的前向与反向。入口 `src/autograd/index.ts`。
+- `src/explain/`：由运算定义推导讲解内容（逐元素公式、连线、悬停卡片）；`src/explain/ops/` 与 `src/autograd/ops/` 对应。入口 `src/explain/index.ts`。
 - `src/formula/`：KaTeX 渲染与公式文本。入口 `src/formula/index.ts`。
 - `src/steps/`：步骤序列与讲解文本模板。入口 `src/steps/index.ts`。
-- `src/ui/`：页面上的 DOM 组件（步骤条、面板、讲解段落、图示），使用 Solid。入口 `src/ui/index.ts`。
+- `src/ui/`：页面上的 DOM 组件，使用 Solid。入口 `src/ui/index.ts`。
 - `src/theme/`：颜色与字体。入口 `src/theme/index.ts`。
-- `src/scene3d/`：3D 场景。入口 `src/scene3d/scene.ts`，控制器是 `src/scene3d/controller.ts`，各部分分在单独的文件：
-  - 布局：`src/scene3d/layout.ts`、`src/scene3d/levels.ts`、`src/scene3d/auto.ts`；
-  - 相机与取景：`src/scene3d/camera.ts`、`src/scene3d/framing.ts`；
-  - 柱子与数值标签：`src/scene3d/renderable.ts`、`src/scene3d/blockview.ts`、`src/scene3d/blocks.ts`；
-  - 连线：`src/scene3d/edges.ts`、`src/scene3d/edgelines.ts`、`src/scene3d/lines.ts`；
-  - 模块大括号、折叠盒子、token 标签：`src/scene3d/moduleview.ts`、`src/scene3d/boxes.ts`、`src/scene3d/chips.ts`；
-  - 悬停与点击：`src/scene3d/pointer.ts`、`src/scene3d/popups.ts`，悬停柱子时的相关连线与同 token 框在 `src/scene3d/hover.ts`；
-  - 场景上的按钮与图例：`src/scene3d/chrome.ts`；
-  - 步骤注释的手绘箭头：`src/scene3d/notes.ts`；当前模块公式的面板：`src/scene3d/formulapanel.ts`；
-  - 交互编辑：`src/scene3d/edit.ts`。
-- `src/dsl/`：YAML 页面描述的加载与编译。入口 `src/dsl/index.ts`，编译从 `src/dsl/compile.ts` 读起，编译器各部分在 `src/dsl/compile/`，其中步骤注释在 `src/dsl/compile/notes.ts`，模块公式在 `src/dsl/compile/formula.ts`；表达式在 `src/dsl/expr.ts`，讲解段落的 Markdown 在 `src/dsl/section-md.ts`。
-- `src/nn/`：内置的 YAML 模块，例如 `src/nn/gqa.yaml`、`src/nn/mla.yaml`、`src/nn/rmsnorm.yaml`、`src/nn/gated-delta-rule.yaml`。
+- `src/scene3d/`：3D 场景，布局、相机、柱子、连线、模块标注、悬停与编辑各在单独的文件。入口 `src/scene3d/index.ts`。
+- `src/dsl/`：YAML 页面描述的加载与编译；编译器各部分在 `src/dsl/compile/`。入口 `src/dsl/index.ts`。
+- `src/nn/`：内置的 YAML 模块。
+- `src/sim/`：DeepGEMM 与 DeepEP 执行过程的纯数据模拟（tile 调度、流水线事件、路由与传输计划），供 GPU 示意图和时间线使用。入口 `src/sim/index.ts`。
 - `src/element/`：自定义元素 `<vizflow-page>`。入口 `src/element/index.ts`。
-- `examples/`：示例页面，`examples/qwen3-dsl.yaml` 是完整的 Qwen3 示例，`examples/qwen3_5-dsl.yaml` 是 Qwen3.5 最后两层的示例，它的模块在 `examples/qwen3_5/`；`examples/deepseek_v3-dsl.yaml` 是 DeepSeek V3 一个 dense 层和一个 MoE 层的示例，MoE 模块在 `examples/deepseek_v3/`。
+- `examples/`：示例页面与它们的 YAML。
 - `test/`：单元测试按 `src/` 的目录划分；`test/e2e/` 是 Playwright 测试。
 
 ## 检查命令
@@ -104,7 +97,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - PR 标题用一句话说明改了什么。PR 描述分两节，末尾写 `Closes #N`：
   - `## Summary`：每项一行，写改了哪个文件或模块、它做什么。文档只写增加或修改了哪个页面。
   - `## Main Takeaway`：这个 PR 带来了什么、有什么变化，用读者能直接看到的形式给出。命令行行为贴命令与实际输出，界面改动贴截图。按 PR 内容选择写法，例如改动文档时给出文档中的预期输出，实现功能时给出当前能运行的命令与输出，完善已有功能时给出前后对比。
-  - 背景、决定、验证过程与环境问题写在 issue 中，不写进 PR。
+  - 背景、决定、验证过程与环境问题写在 issue 中，不写进 PR。例外是「工作流程」中规定的待确认表，它放在 PR 描述末尾。
 
 ## 文档规范
 
@@ -120,7 +113,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 以下内容不写：
 
 - 代码里能直接读到的实现步骤、正则、规则名单的具体条目；
-- 修改历史、实测过程、调研依据，这些写在 issue 与 commit message。
+- 修改历史与实测过程，这些写在 issue 与 commit message；调研依据在 Artifact，见「调研记录」。
 
 章节按读者会问的问题划分。上面列的几类内容写在相关章节里，和它们解释的机制放在一起，不单独成章；常量不在文末另做汇总。
 
@@ -152,6 +145,5 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 调研外部项目、方案或工具时：
 
-1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
-2. 同时开一个 issue，加 `question` 标签，写明调研动机、Artifact 链接与结论摘要。结论确定后关闭 issue。
-3. 调研结论中需要实施的改动，写进 Design Doc 或 feature issue，注明来源 issue 编号。
+1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库，也不为调研开 GitHub issue。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
+2. 调研结论中需要实施的改动，写进 Design Doc 或 feature issue；来源 Artifact 的链接写在 feature issue 或 commit message 里。

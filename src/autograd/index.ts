@@ -16,4 +16,6 @@ export {
   type SumOptions,
   type NllLossOptions,
   type CatOptions,
+  type ScaledMmAccum,
+  type ScaledMmOptions,
 } from './ops';

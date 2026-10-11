@@ -5,7 +5,7 @@ import { DslError } from '../source';
 import { elemOf, numberTex } from '../tex';
 import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
-import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
+import { type BufferValue, type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
 import { isNum, isRecord, num } from './util';
 
 function isOp(value: unknown): value is OpValue {
@@ -174,22 +174,37 @@ export class ExpressionCompiler extends CompilerState {
     if (ast.fn.k !== 'name') this.fail(env, 'only named functions can be called', at);
     const fnName = ast.fn.name;
     const param = env.scope.params.get(fnName);
+    if (env.buffers && fnName in BUFFER_FUNCTIONS) return this.bufferCall(fnName, ast, env, make, offset, at);
     const args = ast.args.map((arg) => this.evaluate(arg, env, make, offset));
     const kwargs: Record<string, Value> = {};
     for (const [key, arg] of ast.kwargs) kwargs[key] = this.evaluate(arg, env, make, offset);
-    if (env.buffers && fnName in BUFFER_FUNCTIONS) {
-      const arity = BUFFER_ARITY[fnName];
-      if ((arity === 'any' ? args.length === 0 : args.length !== arity) || ast.kwargs.length > 0 || !args.every(isNum)) {
-        this.fail(env, `${fnName} takes ${arity === 'any' ? 'one or more' : arity} numbers`, at);
-      }
-      return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
-    }
     if (param !== undefined) {
       if (param.type !== 'op') this.fail(env, `parameter '${fnName}' is not an op`, at);
       return this.apply((param.value as OpValue).op, args, kwargs, env, make, top, at);
     }
     if (opDef(fnName) === undefined) this.fail(env, `unknown function '${fnName}'`, at);
     return this.apply(fnName, args, kwargs, env, make, top, at);
+  }
+
+  bufferCall(fnName: string, ast: Extract<Ast, { k: 'call' }>, env: Env, make: Make | undefined, offset: number, at: number): BufferValue {
+    const arity = BUFFER_ARITY[fnName];
+    const count = typeof arity === 'number' ? arity : arity === 'any' ? undefined : arity.lists + arity.optional;
+    const least = typeof arity === 'number' ? arity : arity === 'any' ? 1 : arity.lists;
+    const usage = typeof arity === 'object' ? arity.usage : `${arity === 'any' ? 'one or more' : arity} numbers`;
+    if (ast.args.length < least || (count !== undefined && ast.args.length > count) || ast.kwargs.length > 0) this.fail(env, `${fnName} takes ${usage}`, at);
+    const args = ast.args.map((arg) => {
+      if (arg.k !== 'list') return this.evaluate(arg, env, make, offset);
+      const items = arg.items.map((item) => this.evaluate(item, env, make, offset));
+      return items.every(isNum) ? (items as Num[]) : this.fail(env, `${fnName} takes ${usage}`, at);
+    });
+    const lists = typeof arity === 'object' ? arity.lists : 0;
+    const shapeOk = args.every((arg, i) => (i < lists ? Array.isArray(arg) : isNum(arg) || (typeof arity === 'object' && Array.isArray(arg))));
+    if (!shapeOk) this.fail(env, `${fnName} takes ${usage}`, at);
+    try {
+      return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as (Num | Num[])[]) };
+    } catch (error) {
+      return this.fail(env, `${fnName}: ${(error as Error).message}`, at);
+    }
   }
 
   apply(op: string, args: Value[], kwargs: Record<string, Value>, env: Env, make: Make | undefined, top: boolean, at: number): Node {

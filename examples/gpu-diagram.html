@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU 结构简图</title>
+<link rel="icon" href="data:,">
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; }
+.lede { color: var(--muted); max-width: 72ch; margin: 0 0 20px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin: 0; padding: 0; list-style: none; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>GPU 结构简图：节点、一张卡、一个 SM</h1>
+  <p class="lede">同一张简图分三层。每一步只高亮用到的单元，数据沿真实的连线流动：节点内经 NVSwitch，跨节点经两端的网卡和 IB 交换机。高亮、连线和每张卡上的数字由 <code>src/sim</code> 的 DeepEP 传输计划与 DeepGEMM 调度、流水线模拟算出。示意 2 个节点、每个节点 8 张卡、32 个专家，每张卡放 2 个专家；动画的快慢不对应实测时间。</p>
+  <div class="vf-stack">
+    <div id="steps"></div>
+    <div>
+      <div class="tools">
+        <button class="vf-btn" type="button" id="replay">重播动画</button>
+        <ul class="legend" id="legend"></ul>
+      </div>
+      <div id="diagram"></div>
+    </div>
+  </div>
+</main>
+<script type="module">
+import { createStepList } from '@yhnocoder/vizflow/steps';
+import { epTopology, expandedBadges, mountGpuDiagram, mountStepPanel, mountSteps, pipelineState, scheduleTiles, transferState } from '@yhnocoder/vizflow/ui';
+import { combinePlan, dispatchPlan, expandedLayout, notify, pipeline, schedule } from '../src/sim/index.ts';
+
+const EP = { numScaleoutRanks: 2, numScaleupRanks: 8, numExperts: 32 };
+const SRC = 2;
+const TOKENS = [[4, 15, 22, 27], [8, 9, 24, 31], [0, 19, 20, 28]];
+const topkIdx = Array.from({ length: 16 }, (_, rank) => (rank === SRC ? TOKENS : []));
+const tokenColor = (t) => t.token + 3;
+const topology = epTopology(EP, { smsPerGpu: 8, smLabel: 'H800 有 132 个 SM，图中画 8 个', gpuLabels: (r) => `e${2 * r} e${2 * r + 1}`, nic: true });
+
+const dispatch = dispatchPlan(EP, topkIdx, { mode: 'hybrid', hidden: 7168, dtype: 'fp8' });
+const combine = combinePlan(EP, topkIdx, { mode: 'hybrid', allowMultipleReduction: true, hidden: 7168 });
+const counts = notify(EP, topkIdx, 'hybrid', 2).numTokensPerRank[SRC];
+const received = expandedBadges(expandedLayout(EP, topkIdx, 2), (row) => row.token + 3);
+const forwarder = SRC + EP.numScaleupRanks;
+const sourceBadges = { [`gpu:${SRC}`]: TOKENS.map((experts, t) => ({ text: `t${t}: ${experts.join(' ')}`, chips: [t + 3] })) };
+
+const GEMM = { type: 'normal', m: 512, n: 1024, k: 1024, blockM: 128, blockN: 128, blockK: 128, numSms: 8, numMulticast: 1, multicastOnA: false };
+const STAGES = 4;
+const tiles = schedule(GEMM);
+const pipe = pipeline({ schedule: GEMM, sm: 0, numStages: STAGES });
+const mid = (row, nth = 0) => {
+  const event = pipe.events.filter((e) => e.row === row)[nth];
+  return (event.start + event.end) / 2;
+};
+const smOptions = { arch: 'sm90', numStages: STAGES, mathWarpgroups: pipe.numMathWarpgroups, note: 'SM90，sm90_fp8_gemm_1d2d.cuh 的结构' };
+const allSms = (kind) => Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`sm:${i}`, kind]));
+
+const node = (state) => ({ topology, level: 'node', ...state });
+const gpuTiles = (wave, extra = {}) => ({
+  topology, level: 'gpu', focus: { gpu: 0 },
+  tiles: { ...scheduleTiles(GEMM, tiles, wave), group: wave === undefined ? { rows: [0, 3], cols: [0, 7], label: '一组 tile 反复读同几段 A 和 B，留在 L2 里' } : undefined },
+  badges: { hbm: ['A [M, K]、B [N, K]、缩放因子、输出 D [M, N]'] },
+  ...extra,
+});
+const smAt = (time) => ({ topology, level: 'sm', focus: { gpu: 0, sm: 0 }, sm: smOptions, ...pipelineState(pipe, STAGES, time) });
+const overlapSms = 20;
+
+const SCENES = [
+  { segment: 'DeepEP dispatch', title: '路由结果：GPU 2 上的 3 个 token', label: '路由',
+    text: '每个 token 选 4 个专家，专家 $e$ 在 GPU $\\lfloor e/2 \\rfloor$ 上。色块是 token，后面是它选中的专家。',
+    props: node({ highlight: { [`gpu:${SRC}`]: 'compute' }, badges: sourceBadges }) },
+  { segment: 'DeepEP dispatch', title: 'notify：按卡去重后计数', label: 'notify',
+    text: 'GPU 2 统计发往每张卡的 token 数，一个 token 去同一张卡上的两个专家只算一次。每张卡上的数字来自 notify 的 numTokensPerRank。',
+    props: node({ highlight: { [`gpu:${SRC}`]: 'reduce' }, badges: Object.fromEntries(counts.map((n, r) => [`gpu:${r}`, [`收 ${n} 个 token`]])) }) },
+  { segment: 'DeepEP dispatch', title: '跨节点：每个 token 只走一次 IB，到同号卡', label: 'RDMA',
+    text: `3 个 token 在节点 1 都有专家，但每个 token 只经 IB 发一份，目标是节点 1 上与 GPU 2 同号的 GPU ${forwarder}。`,
+    props: node({ ...transferState(dispatch.filter((t) => t.via === 'rdma'), tokenColor, 250), badges: sourceBadges, highlight: { [`gpu:${SRC}`]: 'rdma', [`gpu:${forwarder}`]: 'rdma', [`nic:${SRC}`]: 'rdma', [`nic:${forwarder}`]: 'rdma', ib: 'rdma' } }) },
+  { segment: 'DeepEP dispatch', title: '节点内：NVLink 直接发，同号卡转发', label: 'NVLink',
+    text: `节点 0 内的目标卡由 GPU 2 经 NVSwitch 直接写过去；节点 1 上 GPU ${forwarder} 把收到的 token 转发给持有专家的卡。`,
+    props: node({ ...transferState(dispatch.filter((t) => t.via === 'nvlink'), tokenColor), badges: sourceBadges }) },
+  { segment: 'DeepEP dispatch', title: 'copy epilogue：按专家排好', label: '按专家排好',
+    text: '每张卡把收到的 token 按本地专家排好，段尾补零到对齐（示意中对齐为 2 行）。这些行就是 grouped GEMM 的输入。',
+    props: node({ badges: received, highlight: Object.fromEntries(Object.keys(received).filter((id) => received[id].some((l) => l.chips.length > 0)).map((id) => [id, 'compute'])) }) },
+  { segment: 'DeepEP combine', title: '节点 1 内先汇到同号卡做部分求和', label: '部分求和',
+    text: `节点 1 上各卡把乘好路由权重的专家输出经 NVLink 写到 GPU ${forwarder}，按 token 先加起来；节点 0 内的结果直接写回 GPU 2。`,
+    props: (() => { const s = transferState(combine.filter((t) => t.hop === 'send'), tokenColor); return node({ ...s, highlight: { ...s.highlight, [`gpu:${forwarder}`]: 'reduce' } }); })() },
+  { segment: 'DeepEP combine', title: '部分和经 IB 写回源卡', label: '写回',
+    text: `GPU ${forwarder} 把 3 个 token 的部分和经 IB 写回 GPU 2，GPU 2 收齐后按 token 求和。`,
+    props: (() => { const s = transferState(combine.filter((t) => t.hop === 'forward'), tokenColor, 250); return node({ ...s, highlight: { ...s.highlight, [`gpu:${SRC}`]: 'reduce', [`nic:${SRC}`]: 'rdma', [`nic:${forwarder}`]: 'rdma', ib: 'rdma' } }); })() },
+  { segment: 'DeepGEMM 调度', title: '输出矩阵分成 tile，SM 按组领取', label: 'tile',
+    text: '输出 $D = AB^{T}$ 切成 BLOCK_M x BLOCK_N 的 tile。每个 SM 常驻一个 CTA，按调度器的顺序连续处理多个 tile。',
+    props: gpuTiles(undefined) },
+  { segment: 'DeepGEMM 调度', title: '第 1 轮：8 个 SM 各领一个 tile', label: '第 1 轮',
+    text: 'SM $i$ 处理顺序里的第 $i$ 个 tile，下一轮再领第 $i+8$ 个。每格的 SM 编号和轮次来自 schedule()。',
+    props: gpuTiles(0, { highlight: { ...allSms('compute'), l2: 'copy', hbm: 'copy' }, flows: [{ from: 'hbm', to: 'sm:0', kind: 'copy', label: 'A、B 的 k-block' }] }) },
+  { segment: 'DeepGEMM 调度', title: '第 4 轮', label: '第 4 轮',
+    text: '32 个 tile 在 8 个 SM 上分 4 轮做完。',
+    props: gpuTiles(3, { highlight: allSms('compute') }) },
+  { segment: 'DeepGEMM 一个 SM', title: 'TMA 装入共享内存的一级', label: 'TMA',
+    text: 'TMA warpgroup 把 A、B 的一个 k-block 和缩放因子搬进环形缓冲的一级。高亮与每级的内容取自 pipeline() 在这一时刻的事件。',
+    props: smAt(mid('tma', 1)) },
+  { segment: 'DeepGEMM 一个 SM', title: 'WGMMA：两个 math warpgroup 读同一级', label: 'WGMMA',
+    text: '这一级装满后，两个 math warpgroup 各算 64 行，结果先放在 Tensor Core 的累加寄存器里。',
+    props: smAt(mid('wg0', 1)) },
+  { segment: 'DeepGEMM 一个 SM', title: '提升：乘缩放因子，加进 FP32', label: '提升',
+    text: '每个 k-block 结束后，CUDA core 把累加结果乘上两个缩放因子，加进 FP32 的 final_accum。',
+    props: smAt(mid('promote', 1)) },
+  { segment: 'DeepGEMM 一个 SM', title: 'epilogue 写回 HBM', label: 'epilogue',
+    text: '8 个 k-block 做完后，final_accum 转成 BF16，经共享内存写回 HBM。',
+    props: smAt(mid('epilogue')) },
+  { segment: '通信与计算重叠', title: '通信内核也占 SM', label: '重叠',
+    text: `DeepEP 的 dispatch 和 combine 在 SM 上运行，和计算内核分享同一张卡。示意 132 个 SM 中 ${overlapSms} 个给通信。`,
+    props: { topology: { ...topology, smsPerGpu: 132, smLabel: `${132 - overlapSms} 个 SM 运行计算内核，${overlapSms} 个运行通信内核` }, level: 'gpu', focus: { gpu: 0 },
+      highlight: Object.fromEntries(Array.from({ length: 132 }, (_, i) => [`sm:${i}`, i >= 132 - overlapSms ? 'rdma' : 'compute'])) } },
+];
+
+const steps = createStepList(SCENES.map(({ props: _, ...item }) => item));
+mountSteps('#steps', steps);
+
+let diagram;
+mountStepPanel('#diagram', steps, {
+  render(root, { index }) {
+    const props = SCENES[index].props;
+    if (diagram === undefined) diagram = mountGpuDiagram(root, props);
+    else diagram.set(props);
+  },
+});
+document.getElementById('replay').addEventListener('click', () => diagram.replay());
+
+const legend = document.getElementById('legend');
+for (const [series, label] of [[3, '计算'], [1, 'NVLink'], [2, 'RDMA'], [6, '计数、求和、提升'], [5, '拷贝']]) {
+  const li = document.createElement('li');
+  const swatch = document.createElement('i');
+  swatch.style.background = `var(--vf-series-${series})`;
+  li.append(swatch, label);
+  legend.append(li);
+}
+
+window.vizflow = { steps, diagram: () => diagram };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

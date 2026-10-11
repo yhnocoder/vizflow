@@ -11,8 +11,9 @@ describe('LaTeX templates render with KaTeX', () => {
   it('forward and local templates of every builtin op', () => {
     const g = graph();
     const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
+    const group = g.label('group', [1, 0]);
     const node = g.exp(x);
-    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1 } };
+    const ctx = { node, inputs: [x.value, x.value, group.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, block_k: 2, block_n: 2 } };
     for (const def of builtinOps) {
       const ex = builtinExplains[def.name];
       expect(ex, def.name).toBeDefined();
@@ -60,8 +61,8 @@ describe('LaTeX templates render with KaTeX', () => {
       const card = ex.edgeCard(e);
       renders(card.title);
       renders(card.local.tex);
-      renders(card.upstream.tex);
-      renders(card.product.tex);
+      renders(card.upstream!.tex);
+      renders(card.product!.tex);
     }
   });
 
@@ -88,7 +89,7 @@ describe('LaTeX templates render with KaTeX', () => {
       const card = ex.edgeCard(edge);
       renders(card.title);
       renders(card.local.tex);
-      renders(card.product.tex);
+      if (card.product !== undefined) renders(card.product.tex);
     }
   });
 

@@ -6,7 +6,7 @@ export const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'sequen
 export const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'formula', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold', 'cache']);
 export const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'dtype', 'vocab', 'init', 'inputs', 'sequence',
-  'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout', 'generate', 'optimizer',
+  'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout', 'generate', 'optimizer', 'rounding',
 ]);
 export const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward', 'notes']);
 export const BRACE_KEYS = new Set(['title', 'subtitle']);

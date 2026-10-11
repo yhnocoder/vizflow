@@ -1020,3 +1020,346 @@ vf-figure {
 .vf-peek-steps li.vf-peek-more::before {
   display: none;
 }
+
+:root {
+  --vf-series-1: var(--pos);
+  --vf-series-2: var(--neg);
+  --vf-series-3: var(--note);
+  --vf-series-4: #8d6ac9;
+  --vf-series-5: #b8892a;
+  --vf-series-6: #c4648a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --vf-series-4: #a98ad9;
+    --vf-series-5: #d4a64a;
+    --vf-series-6: #d684a4;
+  }
+}
+
+:root[data-theme="dark"] {
+  --vf-series-4: #a98ad9;
+  --vf-series-5: #d4a64a;
+  --vf-series-6: #d684a4;
+}
+
+.vf-step-panel-body {
+  overflow-x: auto;
+}
+
+.vf-gantt {
+  --vf-gantt-row: 30px;
+}
+
+.vf-gantt-scroll {
+  overflow-x: auto;
+}
+
+.vf-gantt-grid {
+  display: grid;
+  grid-template-columns: fit-content(30%) minmax(0, 1fr);
+  column-gap: 10px;
+}
+
+.vf-gantt-lane-label {
+  grid-column: 1;
+  align-self: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.vf-gantt-track {
+  grid-column: 2;
+  border-bottom: 1px solid var(--line);
+}
+
+.vf-gantt-overlay,
+.vf-gantt-items {
+  grid-column: 2;
+  position: relative;
+  min-width: 0;
+}
+
+.vf-gantt-overlay {
+  pointer-events: none;
+}
+
+.vf-gantt-gridline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  margin-left: -1px;
+  border-left: 1px dashed var(--line);
+}
+
+.vf-gantt-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  border-left: 2px solid var(--fg);
+  border-right: 2px solid var(--fg);
+  box-sizing: border-box;
+}
+
+.vf-gantt-item {
+  position: absolute;
+  height: calc(var(--vf-gantt-row) - 8px);
+  margin-top: 4px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border: 0;
+  border-left: 3px solid var(--vf-kind);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--vf-kind) 28%, var(--surface));
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  line-height: calc(var(--vf-gantt-row) - 8px);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  z-index: 1;
+}
+
+button.vf-gantt-item {
+  cursor: pointer;
+}
+
+.vf-gantt-item.vf-dim {
+  opacity: 0.6;
+}
+
+.vf-gantt-item.vf-on {
+  outline: 2px solid var(--vf-kind);
+  outline-offset: -1px;
+  z-index: 2;
+}
+
+button.vf-gantt-item:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 1px;
+  z-index: 3;
+}
+
+.vf-gantt-axis {
+  grid-column: 2;
+  position: relative;
+  height: 22px;
+  min-width: 0;
+}
+
+.vf-gantt-tick {
+  position: absolute;
+  top: 0;
+  height: 4px;
+  margin-left: -1px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.vf-gantt-tick > span {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-gantt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.vf-gantt-legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.vf-gantt-legend li::before {
+  content: "";
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--vf-kind);
+}
+
+.vf-gpu {
+  --vf-gpu-c-compute: var(--vf-series-3);
+  --vf-gpu-c-nvlink: var(--vf-series-1);
+  --vf-gpu-c-rdma: var(--vf-series-2);
+  --vf-gpu-c-reduce: var(--vf-series-6);
+  --vf-gpu-c-copy: var(--vf-series-5);
+  --vf-k: var(--line-strong);
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.vf-gpu .vf-gpu-compute { --vf-k: var(--vf-gpu-c-compute); }
+.vf-gpu .vf-gpu-nvlink { --vf-k: var(--vf-gpu-c-nvlink); }
+.vf-gpu .vf-gpu-rdma { --vf-k: var(--vf-gpu-c-rdma); }
+.vf-gpu .vf-gpu-reduce { --vf-k: var(--vf-gpu-c-reduce); }
+.vf-gpu .vf-gpu-copy { --vf-k: var(--vf-gpu-c-copy); }
+.vf-gpu .vf-gpu-s0 { --vf-k: var(--vf-series-1); }
+.vf-gpu .vf-gpu-s1 { --vf-k: var(--vf-series-2); }
+.vf-gpu .vf-gpu-s2 { --vf-k: var(--vf-series-3); }
+.vf-gpu .vf-gpu-s3 { --vf-k: var(--vf-series-4); }
+.vf-gpu .vf-gpu-s4 { --vf-k: var(--vf-series-5); }
+.vf-gpu .vf-gpu-s5 { --vf-k: var(--vf-series-6); }
+
+.vf-gpu text {
+  fill: var(--fg);
+}
+
+.vf-gpu .vf-gpu-box {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+  stroke-width: 1.2;
+}
+
+.vf-gpu .vf-gpu-frame > .vf-gpu-box {
+  fill: color-mix(in srgb, var(--line) 30%, transparent);
+  stroke: var(--line);
+}
+
+.vf-gpu .vf-gpu-hl > .vf-gpu-box {
+  fill: color-mix(in srgb, var(--vf-k) 18%, var(--surface));
+  stroke: var(--vf-k);
+  stroke-width: 2;
+}
+
+.vf-gpu .vf-gpu-frame.vf-gpu-hl > .vf-gpu-box {
+  fill: color-mix(in srgb, var(--vf-k) 8%, transparent);
+}
+
+.vf-gpu .vf-gpu-muted > .vf-gpu-box {
+  stroke: var(--line);
+}
+
+.vf-gpu .vf-gpu-muted text {
+  fill: var(--muted);
+}
+
+.vf-gpu .vf-gpu-title {
+  font-weight: 600;
+}
+
+.vf-gpu .vf-gpu-frame .vf-gpu-title {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  fill: var(--muted);
+}
+
+.vf-gpu .vf-gpu-note,
+.vf-gpu .vf-gpu-label,
+.vf-gpu .vf-gpu-group text {
+  fill: var(--muted);
+  font-size: 10px;
+}
+
+.vf-gpu .vf-gpu-label {
+  font-family: var(--sans);
+  font-size: 11px;
+}
+
+.vf-gpu .vf-gpu-line {
+  font-size: 10px;
+}
+
+.vf-gpu .vf-gpu-vertical {
+  font-size: 8px;
+  fill: var(--muted);
+}
+
+.vf-gpu .vf-gpu-hl .vf-gpu-vertical {
+  fill: var(--fg);
+}
+
+.vf-gpu .vf-gpu-wire {
+  fill: none;
+  stroke: var(--line-strong);
+  stroke-width: 1.5;
+}
+
+.vf-gpu .vf-gpu-flow path {
+  fill: none;
+  stroke: var(--vf-k);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+}
+
+.vf-gpu .vf-gpu-arrow,
+.vf-gpu .vf-gpu-chip,
+.vf-gpu .vf-gpu-packet {
+  fill: var(--vf-k);
+}
+
+.vf-gpu .vf-gpu-packet {
+  stroke: var(--surface);
+  stroke-width: 1.5;
+}
+
+.vf-gpu .vf-gpu-flowlabel {
+  fill: var(--vf-k);
+  font-size: 10px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+
+.vf-gpu .vf-gpu-tile rect {
+  fill: var(--surface);
+  stroke: var(--line-strong);
+}
+
+.vf-gpu .vf-gpu-tile-done rect {
+  fill: color-mix(in srgb, var(--line) 60%, var(--surface));
+  stroke: var(--line);
+}
+
+.vf-gpu .vf-gpu-tile-current rect {
+  fill: color-mix(in srgb, var(--vf-gpu-c-compute) 18%, var(--surface));
+  stroke: var(--vf-gpu-c-compute);
+  stroke-width: 2;
+}
+
+.vf-gpu .vf-gpu-tile text {
+  font-size: 10px;
+}
+
+.vf-gpu .vf-gpu-tile .vf-gpu-tile-sub,
+.vf-gpu .vf-gpu-tile-done text {
+  fill: var(--muted);
+  font-size: 9px;
+}
+
+.vf-gpu .vf-gpu-group rect {
+  fill: none;
+  stroke: var(--vf-gpu-c-nvlink);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+}
+
+.vf-gpu .vf-gpu-group text {
+  fill: var(--vf-gpu-c-nvlink);
+}
