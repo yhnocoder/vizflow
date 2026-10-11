@@ -45,7 +45,7 @@ import {
   tokenText,
 } from './layout';
 import { LineBatch } from './lines';
-import { type Brace, type SceneModule, blockSpan, bracePoints, braceTip, checkModules, layoutBraces } from './modules';
+import { type Brace, type SceneModule, BRACE_ACTIVE_OPACITY, blockSpan, bracePoints, braceTip, checkModules, layoutBraces } from './modules';
 import { HEIGHT_CAP, barHeight, niceTicks, scaleFor } from './scales';
 import { type EdgeStyle, edgeStyle } from './style';
 import { Transition, easeOut } from './transition';
@@ -533,7 +533,7 @@ class SceneController implements EditHost {
       label.pos = braceTip(brace);
       label.visible = shown;
       label.setFlag('vf-on', on);
-      opacity.push(on ? 1 : 0, shown && !on ? 1 : 0);
+      opacity.push(on ? BRACE_ACTIVE_OPACITY : 0, shown && !on ? 1 : 0);
     });
     this.braceTransition.retarget(opacity, now);
   }

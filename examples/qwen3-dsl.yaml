@@ -1,5 +1,5 @@
 title: Qwen3 一层：从 token 到损失
-lede: 从 token id 开始，经过 embedding、占位的前 $N-1$ 层、最后一个 decoder 层（attention 和 SwiGLU MLP，各带残差）、final norm、lm_head、log_softmax 和 nll_loss 得到损失，前向和反向都逐步画出来。这一页由 YAML 页面描述文件生成，序列长度 $T=3$，词表只画 5 个 token。
+lede: 从 token id 开始，经过 embedding、占位的前 $N-1$ 层、最后一个 decoder 层（attention 和 SwiGLU MLP，各带残差）、final norm、lm_head、log_softmax 和 nll_loss 得到损失，前向和反向都逐步画出来。
 hint: 拖动旋转 · 右键拖动平移 · 滚轮按光标缩放 · 换步骤时相机跟随当前步骤
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:

@@ -13,6 +13,7 @@ export const MODULE_GAP = 1.6;
 export const MODULE_STEP = 2.2;
 export const MODULE_PAD = 0.4;
 export const BRACE_RADIUS = 0.35;
+export const BRACE_ACTIVE_OPACITY = 0.55;
 const ARC_SEGMENTS = 6;
 
 export interface BlockSpan {
