@@ -44,6 +44,13 @@ describe('scales', () => {
     expect(ticks.length).toBeGreaterThanOrEqual(2);
     expect(ticks.every((v) => Math.abs(v) * scaleFor(z) <= HEIGHT_CAP + 1e-9)).toBe(true);
   });
+
+  it('ignores infinite values such as a causal mask', () => {
+    const masked = [0.5, -Infinity, -2, -Infinity];
+    expect(scaleFor(masked)).toBeCloseTo(0.8, 12);
+    expect(niceTicks(masked, scaleFor(masked))).toEqual(niceTicks([0.5, -2], scaleFor([0.5, -2])));
+    expect(barHeight(-Infinity, 0.8, true)).toEqual({ height: -HEIGHT_CAP, clipped: true });
+  });
 });
 
 describe('colors', () => {

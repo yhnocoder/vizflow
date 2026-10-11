@@ -133,6 +133,7 @@ export interface Block {
 export interface BoardGeometry {
   op: Node;
   a: Block;
+  sharedA: boolean;
   b: Block;
   out: Block;
   y: number;
@@ -247,7 +248,8 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
   const rowCenter = (zRow(0) + zRow(B - 1)) / 2;
   const plateWidth = (V - 1) * BOARD_COLUMN_SPACING * s + 2 * PLATE_SIDE_MARGIN;
 
-  const aBlock: Block = {
+  const existingA = placed.get(a);
+  const aBlock: Block = existingA ?? {
     node: a,
     role: 'board-a',
     shape: 'bar',
@@ -303,7 +305,7 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
   placed.set(a, aBlock);
   placed.set(b, bBlock);
   placed.set(out, outBlock);
-  return { op: out, a: aBlock, b: bBlock, out: outBlock, y };
+  return { op: out, a: aBlock, sharedA: existingA !== undefined, b: bBlock, out: outBlock, y };
 }
 
 function shiftBlock(block: Block, [dx, dy, dz]: Vec3): void {
@@ -506,7 +508,8 @@ export function resolveLayout(items: LayoutItem[], ctx: LayoutContext): Resolved
     if (item.template === 'board') {
       const geometry = layoutBoard(item, ctx, placed);
       boards.push(geometry);
-      blocks.push(geometry.a, geometry.b, geometry.out);
+      if (!geometry.sharedA) blocks.push(geometry.a);
+      blocks.push(geometry.b, geometry.out);
     } else if (item.template === 'stack') {
       blocks.push(...layoutStack(item, ctx, placed));
     } else {

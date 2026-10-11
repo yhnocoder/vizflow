@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3 一层的前向与反向</title>
+<link rel="icon" href="data:,">
+<style>
+header { margin-bottom: 20px; max-width: 760px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 64ch; }
+.col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+main { --vf-stage-height: clamp(560px, calc(100vh - 150px), 1400px); }
+#stage { height: var(--vf-stage-height); min-height: 400px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+@media (max-width: 980px) { main { --vf-stage-height: clamp(460px, 78vh, 1100px); } }
+.ctx { font-family: var(--mono); font-size: 12.5px; background: color-mix(in srgb, var(--ink) 5%, var(--surface)); padding: 1px 6px; border-radius: 4px; white-space: pre; }
+.samp { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; font-family: var(--sans); }
+.samp .grp { font-size: 11px; letter-spacing: 0.08em; color: var(--muted); margin-right: 4px; }
+.samp button { font-family: var(--mono); font-size: 12px; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 2px 11px; cursor: pointer; }
+.samp button:hover { border-color: var(--line-strong); }
+.samp button[aria-current="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.samp button:focus-visible { outline: 2px solid var(--pos); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>Qwen3 一层：从 token 到损失</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+  <div class="vf-split">
+    <div class="col">
+      <div id="stage"></div>
+      <div id="steps"></div>
+    </div>
+    <aside class="col">
+      <div id="side-loss"></div>
+      <div class="samp" id="samp"></div>
+      <div id="side"></div>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import { graph, defineOp, Tensor } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountScene, board, stack } from '@yhnocoder/vizflow/scene3d';
+import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
+import { renderText } from '@yhnocoder/vizflow/formula';
+
+const T = 3, D = 4, F = 6, V = 5, HQ = 2, HD = 4, EPS = 1e-6, THETA = 1e6;
+const TOK = ['on', 'mat', 'the', 'sat', 'cat'];
+const SEQ = [2, 4, 3, 0];
+
+function rng(a) {
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const random = rng(20261010);
+const rm = (r, c, s) => [...Array(r)].map(() => [...Array(c)].map(() => Math.round((random() * 2 - 1) * s * 100) / 100));
+const P0 = {
+  E: rm(V, D, 1.2), G1: [1.02, 0.97, 1.0, 1.03], Wq: rm(HQ * HD, D, 0.8), Wk: rm(HD, D, 0.8), Wv: rm(HD, D, 0.9),
+  Gq: [1.0, 0.96, 1.04, 1.0], Gk: [0.98, 1.02, 1.0, 1.01], Wo: rm(D, HQ * HD, 0.5), G2: [1.0, 0.95, 1.05, 1.0],
+  Wg: [[0.6, -0.4, 0.2, 0.5], [-0.5, 0.3, 0.6, -0.2], [0.3, 0.7, -0.4, 0.4], [-0.2, -0.6, 0.5, 0.3], [0.7, 0.1, -0.3, -0.5], [0.1, -0.3, 0.8, 0.6]],
+  Wu: [[0.4, 0.2, -0.5, 0.3], [0.3, -0.6, 0.2, 0.5], [-0.4, 0.5, 0.3, 0.2], [0.6, 0.1, -0.2, -0.4], [-0.3, -0.4, 0.6, 0.1], [0.2, 0.6, 0.1, -0.3]],
+  Wd: [[0.3, -0.2, 0.4, 0.1, 0.2, -0.3], [-0.4, 0.3, -0.1, 0.2, -0.3, 0.1], [0.2, 0.1, 0.3, -0.4, 0.1, 0.2], [0.4, -0.1, 0.2, 0.3, 0.3, 0.2]],
+  G: [0.94, 1.03, 1.04, 1.01],
+  W: [[0.9, -0.6, 0.3, 0.6], [0.2, -0.8, 0.6, 0.2], [-0.4, 0.2, 0.9, 0.3], [0.5, 0.7, -0.6, -0.2], [-0.7, 0.4, -0.3, -0.5]],
+};
+{
+  const OLD = ['the', 'cat', 'sat', 'on', 'mat'];
+  const perm = TOK.map((w) => OLD.indexOf(w));
+  P0.E = perm.map((i) => P0.E[i]);
+  P0.W = perm.map((i) => P0.W[i]);
+}
+
+const map = (a, fn) => new Tensor(a.shape, a.data.map(fn));
+const copyOp = (name, args, shape, source, options = {}) => defineOp({
+  name,
+  args,
+  tensors: options.tensors ?? ['input'],
+  defaults: options.defaults,
+  differentiable: options.differentiable,
+  shape,
+  forward: (inputs, attrs) => {
+    const out = new Tensor(shape(inputs.map((t) => t.shape), attrs));
+    for (let i = 0; i < out.size; i++) {
+      const [arg, index, sign] = source(inputs, attrs, unflat(out.shape, i));
+      out.data[i] = sign * inputs[arg].get(index);
+    }
+    return out;
+  },
+  backward: (gradOut, inputs, _out, attrs) => {
+    const grads = inputs.map((t) => Tensor.zeros(t.shape));
+    for (let i = 0; i < gradOut.size; i++) {
+      const [arg, index, sign] = source(inputs, attrs, unflat(gradOut.shape, i));
+      const g = grads[arg];
+      g.data[flat(g.shape, index)] += sign * gradOut.data[i];
+    }
+    return grads.map((g, i) => (options.differentiable && !options.differentiable[i] ? null : g));
+  },
+  explain: {
+    pattern: 'elementwise',
+    local: (ctx, out) => source(ctx.inputs, ctx.attrs, out)[2],
+    tex: options.tex,
+    selected: (ctx, out) => {
+      const [arg, index] = source(ctx.inputs, ctx.attrs, out);
+      return [{ arg, index }];
+    },
+  },
+});
+function unflat(shape, offset) {
+  const index = [];
+  for (let d = shape.length - 1; d >= 0; d--) {
+    index.unshift(offset % shape[d]);
+    offset = Math.floor(offset / shape[d]);
+  }
+  return index;
+}
+function flat(shape, index) {
+  return index.reduce((acc, i, d) => acc * shape[d] + i, 0);
+}
+
+copyOp('embedding', ['input', 'weight'], ([ids, w]) => [...ids, w[1]], (inputs, _a, [t, c]) => [1, [Math.round(inputs[0].data[t]), c], 1], {
+  tensors: ['input', 'weight'],
+  differentiable: [false, true],
+  tex: { forward: (s) => `${s.in[1]}[${s.in[0]}]`, local: () => '1' },
+});
+copyOp('decoder_layers', ['input'], ([a]) => [...a], (_i, _a, out) => [0, out, 1], {
+  tex: { forward: (s) => `\\mathrm{layers}_{1..N-1}(${s.in[0]})`, local: () => '1' },
+});
+copyOp('narrow', ['input', 'dim', 'start', 'length'], ([a], { dim, length }) => a.map((n, d) => (d === dim ? length : n)), (_i, { dim, start }, out) => {
+  const index = [...out];
+  index[dim] += start;
+  return [0, index, 1];
+}, { tex: { forward: (s) => `${s.in[0]}[\\,:,\\,${s.attrs.start + 1}..${s.attrs.start + s.attrs.length}\\,]`, local: () => '1' } });
+copyOp('rotate_half', ['input'], ([a]) => [...a], (inputs, _a, [t, c]) => {
+  const half = inputs[0].shape[1] / 2;
+  return c < half ? [0, [t, c + half], -1] : [0, [t, c - half], 1];
+}, { tex: { forward: (s) => `\\mathrm{rotate\\_half}(${s.in[0]})`, local: (s) => (s.outIndex[1] < 2 ? '-1' : '1') } });
+copyOp('cat', ['input', 'other', 'dim'], ([a, b], { dim }) => a.map((n, d) => (d === dim ? n + b[d] : n)), (inputs, { dim }, out) => {
+  const split = inputs[0].shape[dim];
+  if (out[dim] < split) return [0, out, 1];
+  const index = [...out];
+  index[dim] -= split;
+  return [1, index, 1];
+}, { tensors: ['input', 'other'], tex: { forward: (s) => `[\\,${s.in[0]}\\,|\\,${s.in[1]}\\,]`, local: () => '1' } });
+
+defineOp({
+  name: 'pow',
+  args: ['input', 'exponent'],
+  tensors: ['input'],
+  shape: ([a]) => [...a],
+  forward: ([a], { exponent }) => map(a, (x) => x ** exponent),
+  backward: (g, [a], _o, { exponent }) => [new Tensor(a.shape, g.data.map((v, i) => v * exponent * a.data[i] ** (exponent - 1)))],
+  explain: {
+    pattern: 'elementwise',
+    local: (ctx, _out, _arg, input) => ctx.attrs.exponent * ctx.inputs[0].get(input) ** (ctx.attrs.exponent - 1),
+    tex: { forward: (s) => `${s.in[0]}^{${s.attrs.exponent}}`, local: (s) => `${s.attrs.exponent}${s.in}` },
+  },
+});
+defineOp({
+  name: 'rsqrt',
+  args: ['input'],
+  tensors: ['input'],
+  defaults: { eps: 0 },
+  shape: ([a]) => [...a],
+  forward: ([a], { eps }) => map(a, (x) => 1 / Math.sqrt(x + eps)),
+  backward: (g, [a], out) => [new Tensor(a.shape, g.data.map((v, i) => v * -0.5 * out.data[i] ** 3))],
+  explain: {
+    pattern: 'elementwise',
+    local: (ctx, out) => -0.5 * ctx.out.get(out) ** 3,
+    tex: { forward: (s) => `(${s.in[0]}+\\epsilon)^{-1/2}`, local: (s) => `-\\tfrac{1}{2}${s.out}^{3}` },
+  },
+});
+defineOp({
+  name: 'mul_scalar',
+  args: ['input', 'other'],
+  tensors: ['input'],
+  shape: ([a]) => [...a],
+  forward: ([a], { other }) => map(a, (x) => x * other),
+  backward: (g, [a], _o, { other }) => [new Tensor(a.shape, g.data.map((v) => v * other))],
+  explain: {
+    pattern: 'elementwise',
+    local: (ctx) => ctx.attrs.other,
+    tex: { forward: (s) => `${s.attrs.other}\\,${s.in[0]}`, local: (s) => `${s.attrs.other}` },
+  },
+});
+const sigmoid = (v) => 1 / (1 + Math.exp(-v));
+const siluGrad = (v) => sigmoid(v) * (1 + v * (1 - sigmoid(v)));
+defineOp({
+  name: 'silu',
+  args: ['input'],
+  tensors: ['input'],
+  shape: ([a]) => [...a],
+  forward: ([a]) => map(a, (v) => v * sigmoid(v)),
+  backward: (g, [a]) => [new Tensor(a.shape, g.data.map((x, i) => x * siluGrad(a.data[i])))],
+  explain: {
+    pattern: 'elementwise',
+    local: (ctx, _out, _arg, input) => siluGrad(ctx.inputs[0].get(input)),
+    tex: { forward: (s) => `\\mathrm{SiLU}(${s.in[0]})`, local: (s) => `\\sigma(${s.in})\\big(1+${s.in}(1-\\sigma(${s.in}))\\big)` },
+  },
+});
+
+const g = graph({
+  dims: { T, d: D, f: F, V, dh: HD, qd: HQ * HD },
+  real: { d: 4096, f: 12288, V: 151936, name: 'Qwen3-8B' },
+});
+const x = g.label('ids', SEQ.slice(0, T), { tokens: TOK });
+const y = g.label('y', SEQ.slice(1), { tokens: TOK });
+const E = g.param('E', ['V', 'd'], P0.E, { tex: 'E', elem: 'E' });
+const G1 = g.param('γ1', ['d'], P0.G1, { tex: '\\boldsymbol{\\gamma}_1', elem: '\\gamma_{1}' });
+const Wq = g.param('Wq', ['qd', 'd'], P0.Wq, { tex: 'W_q', elem: 'W_{q}' });
+const Wk = g.param('Wk', ['dh', 'd'], P0.Wk, { tex: 'W_k', elem: 'W_{k}' });
+const Wv = g.param('Wv', ['dh', 'd'], P0.Wv, { tex: 'W_v', elem: 'W_{v}' });
+const Gq = g.param('γq', ['dh'], P0.Gq, { tex: '\\boldsymbol{\\gamma}_q', elem: '\\gamma_{q}' });
+const Gk = g.param('γk', ['dh'], P0.Gk, { tex: '\\boldsymbol{\\gamma}_k', elem: '\\gamma_{k}' });
+const Wo = g.param('Wo', ['d', 'qd'], P0.Wo, { tex: 'W_o', elem: 'W_{o}' });
+const G2 = g.param('γ2', ['d'], P0.G2, { tex: '\\boldsymbol{\\gamma}_2', elem: '\\gamma_{2}' });
+const Wg = g.param('Wg', ['f', 'd'], P0.Wg, { tex: 'W_g', elem: 'W_{g}' });
+const Wu = g.param('Wu', ['f', 'd'], P0.Wu, { tex: 'W_u', elem: 'W_{u}' });
+const Wd = g.param('Wd', ['d', 'f'], P0.Wd, { tex: 'W_d', elem: 'W_{d}' });
+const G = g.param('γ', ['d'], P0.G, { tex: '\\boldsymbol{\\gamma}', elem: '\\gamma' });
+const W = g.param('W', ['V', 'd'], P0.W, { tex: 'W', elem: 'W' });
+const inv = [...Array(HD / 2).keys()].map((i) => 1 / THETA ** ((2 * i) / HD));
+const angle = (t, c) => t * inv[c % (HD / 2)];
+const cos = g.input('cos', [T, 'dh'], [...Array(T).keys()].map((t) => [...Array(HD).keys()].map((c) => Math.cos(angle(t, c)))), { tex: '\\cos', elem: '\\cos' });
+const sin = g.input('sin', [T, 'dh'], [...Array(T).keys()].map((t) => [...Array(HD).keys()].map((c) => Math.sin(angle(t, c)))), { tex: '\\sin', elem: '\\sin' });
+const M = g.input('M', [T, T], [...Array(T).keys()].map((t) => [...Array(T).keys()].map((s) => (s > t ? -Infinity : 0))), { tex: 'M', elem: 'M' });
+
+function rmsnorm(input, weight, names, tex, groupSize = D) {
+  const sq = g.pow(input, 2, { name: names[0], tex: `{${tex.x}}^{2}`, elem: `{${tex.xe}}^{2}` });
+  const ms = g.mean(sq, -1, { keepdim: true, name: names[1], tex: `\\mathrm{ms}${tex.s}`, elem: `{\\mathrm{ms}${tex.s}}` });
+  const r = g.rsqrt(ms, { eps: EPS, name: names[2], tex: `r${tex.s}`, elem: `{r${tex.s}}` });
+  const xh = g.mul(input, r, { name: names[3], tex: `\\hat{${tex.x}}`, elem: `\\hat{${tex.xe}}` });
+  const out = g.mul(xh, weight, { name: names[4], tex: tex.out, elem: tex.oute });
+  return [sq, ms, r, xh, out];
+}
+
+const e = g.embedding(x, E, { name: 'e', card: { forward: { title: 'embed_tokens', note: '每个位置按 token id 从 E 里取出一行。' } } });
+const x0 = g.decoder_layers(e, { name: 'x0', tex: '\\mathbf{x}_0', elem: 'x^{0}', card: { forward: { title: '前面 N−1 个 decoder 层（占位）', note: '这里没有真实计算，按恒等映射处理，所以数值和 e 相同。' } } });
+const rms1 = rmsnorm(x0, G1, ['x0²', 'ms1', 'r1', 'x̂0', 'n1'], { x: '\\mathbf{x}_0', xe: 'x^{0}', s: '_{1}', out: '\\mathbf{n}_1', oute: 'n^{1}' });
+const n1 = rms1[4];
+const q = g.matmul(n1, Wq.T, { name: 'q' });
+const k = g.matmul(n1, Wk.T, { name: 'k' });
+const v = g.matmul(n1, Wv.T, { name: 'v' });
+const heads = [0, 1].map((h) => g.narrow(q, 1, h * HD, HD, { name: `q${h + 1}`, tex: `\\mathbf{q}^{(${h + 1})}`, elem: `q^{(${h + 1})}` }));
+const qkNorm = (input, gamma, label, texBase) => rmsnorm(input, gamma, [`${label}²`, `ms_${label}`, `r_${label}`, `${label}̂`, `${label}̄`], {
+  x: texBase.x, xe: texBase.xe, s: `^{${texBase.s}}`, out: `\\bar{${texBase.x}}`, oute: `\\bar{${texBase.xe}}`,
+});
+const qn = heads.map((qh, h) => qkNorm(qh, Gq, `q${h + 1}`, { x: `\\mathbf{q}^{(${h + 1})}`, xe: `q^{(${h + 1})}`, s: `q${h + 1}` }));
+const kn = qkNorm(k, Gk, 'k', { x: '\\mathbf{k}', xe: 'k', s: 'k' });
+function rope(input, label, texBase, outTex, outElem) {
+  const c = g.mul(input, cos, { name: `${label}·cos`, tex: `${texBase}\\odot\\cos`, elem: `(${texBase}\\cos)` });
+  const rh = g.rotate_half(input, { name: `rh(${label})`, tex: `\\mathrm{rh}(${texBase})`, elem: `\\mathrm{rh}(${texBase})` });
+  const s = g.mul(rh, sin, { name: `rh(${label})·sin`, tex: `\\mathrm{rh}(${texBase})\\odot\\sin`, elem: `(\\mathrm{rh}\\sin)` });
+  const out = g.add(c, s, { name: `${label}′`, tex: outTex, elem: outElem });
+  return [c, rh, s, out];
+}
+const qr = qn.map((parts, h) => rope(parts[4], `q${h + 1}`, `\\bar{\\mathbf{q}}^{(${h + 1})}`, `\\mathbf{q}'^{(${h + 1})}`, `q'^{(${h + 1})}`));
+const kr = rope(kn[4], 'k', '\\bar{\\mathbf{k}}', "\\mathbf{k}'", "k'");
+const kRep = [0, 1].map((h) => g.narrow(kr[3], 1, 0, HD, { name: `k′${h + 1}`, tex: `\\mathbf{k}'^{(${h + 1})}`, elem: `k'^{(${h + 1})}` }));
+const vRep = [0, 1].map((h) => g.narrow(v, 1, 0, HD, { name: `v${h + 1}`, tex: `\\mathbf{v}^{(${h + 1})}`, elem: `v^{(${h + 1})}` }));
+const attn = [0, 1].map((h) => {
+  const H = h + 1;
+  const kT = g.transpose(kRep[h], 0, 1, { name: `k′${H}ᵀ`, tex: `\\mathbf{k}'^{(${H})\\top}`, elem: `k'^{(${H})\\top}` });
+  const S = g.matmul(qr[h][3], kT, { name: `S${H}`, tex: `S^{(${H})}`, elem: `S^{(${H})}` });
+  const Ss = g.mul_scalar(S, 1 / Math.sqrt(HD), { name: `S̃${H}`, tex: `\\tilde{S}^{(${H})}`, elem: `\\tilde{S}^{(${H})}` });
+  const Sm = g.add(Ss, M, { name: `S̄${H}`, tex: `\\bar{S}^{(${H})}`, elem: `\\bar{S}^{(${H})}` });
+  const ex = g.exp(Sm, { name: `ex${H}`, tex: `\\mathrm{ex}^{(${H})}`, elem: `\\mathrm{ex}^{(${H})}` });
+  const Z = g.sum(ex, -1, { keepdim: true, name: `Z${H}`, tex: `Z^{(${H})}`, elem: `Z^{(${H})}` });
+  const P = g.div(ex, Z, { name: `P${H}`, tex: `P^{(${H})}`, elem: `P^{(${H})}` });
+  const O = g.matmul(P, vRep[h], { name: `o${H}`, tex: `\\mathbf{o}^{(${H})}`, elem: `o^{(${H})}` });
+  return { kT, S, Ss, Sm, ex, Z, P, O };
+});
+const O = g.cat(attn[0].O, attn[1].O, 1, { name: 'o' });
+const att = g.matmul(O, Wo.T, { name: 'att', tex: '\\mathbf{att}', elem: '\\mathrm{att}' });
+const a = g.add(x0, att, { name: 'a' });
+const rms2 = rmsnorm(a, G2, ['a²', 'ms2', 'r2', 'â', 'n'], { x: '\\mathbf{a}', xe: 'a', s: '_{2}', out: '\\mathbf{n}', oute: 'n' });
+const n = rms2[4];
+const gate = g.matmul(n, Wg.T, { name: 'gate', tex: '\\mathbf{gate}', elem: '\\mathrm{gate}' });
+const up = g.matmul(n, Wu.T, { name: 'up', tex: '\\mathbf{up}', elem: '\\mathrm{up}' });
+const s = g.silu(gate, { name: 's' });
+const m = g.mul(s, up, { name: 'm' });
+const down = g.matmul(m, Wd.T, { name: 'down', tex: '\\mathbf{down}', elem: '\\mathrm{down}' });
+const xo = g.add(a, down, { name: 'x' });
+const rmsF = rmsnorm(xo, G, ['x²', 'ms', 'r', 'x̂', 'h'], { x: '\\mathbf{x}', xe: 'x', s: '', out: '\\mathbf{h}', oute: 'h' });
+const h = rmsF[4];
+const z = g.matmul(h, W.T, { name: 'z' });
+const L = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const lt = g.nll_loss(logp, y, { reduction: 'none', name: 'ℓt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+
+const mx = (node, rows, cols, fmt = '') => {
+  const cell = (r, c) => (rows === 1 ? `{{${node}[${c}]${fmt}}}` : cols === 1 ? `{{${node}[${r}]${fmt}}}` : `{{${node}[${r}, ${c}]${fmt}}}`);
+  const lines = [...Array(rows).keys()].map((r) => [...Array(cols).keys()].map((c) => ` ${cell(r, c)} `).join('&'));
+  return `\\begin{pmatrix}${lines.join('\\\\')}\\end{pmatrix}`;
+};
+const mg = (node, rows, cols) => mx(`${node}.grad`, rows, cols, ':3');
+const tok = (i) => `<span class="ctx">${TOK[i]}</span>`;
+
+const forward = [
+  { show: [E, e], label: 'e = E[x]', title: 'embed_tokens', text: String.raw`
+    每个位置按自己的 token id 从 $E$ 里取出一行。它等价于 one-hot 向量乘 $E$，但实现里就是按下标取行，所以每个位置只和被取到的那一行有连线。
+
+    $$\mathbf{e}_t=E[x_t],\qquad \mathbf{e}=${mx('e', T, D)}$$` },
+  { show: x0, label: 'x₀', title: '前面 N−1 个 decoder 层（占位）', text: String.raw`
+    真实模型在 embedding 和最后一层之间还有 $N-1$ 个结构相同的 decoder 层，Qwen3-8B 里 $N=36$。这里只用一个节点示意：没有真实计算，数值按恒等映射处理，所以 $\mathbf{x}_0$ 和 $\mathbf{e}$ 相同。` },
+  { show: rms1[0], label: 'x₀²', title: 'input_layernorm：逐元素平方', text: String.raw`
+    attention 之前先做一次 RMSNorm，也就是 input_layernorm。HF 的实现先把输入转成 float32 再平方。
+
+    $$\mathbf{x}_0^{2}=${mx('x0²', T, D)}$$` },
+  { show: [rms1[1], rms1[2]], label: 'ms₁, r₁', title: '均方根的倒数', text: String.raw`
+    每一行对平方取平均得到 ms，加上 $\epsilon=10^{-6}$ 再取平方根的倒数，得到这一行的 $r$。$T$ 个位置各算各的，所以 ms 和 $r$ 都是每行一个。
+
+    $$\mathrm{ms}_1=${mx('ms1', T, 1, ':3')},\qquad r_1=${mx('r1', T, 1, ':3')}$$` },
+  { show: rms1[3], label: 'x̂₀', title: '归一化', text: String.raw`
+    每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。
+
+    $$\hat{\mathbf{x}}_0=${mx('x̂0', T, D)}$$` },
+  { show: [G1, n1], label: 'n₁', title: '乘上权重 γ₁', text: String.raw`
+    $\boldsymbol{\gamma}_1$ 是长度为 $d$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。$\mathbf{n}_1$ 是 q、k、v 三个投影共同的输入。
+
+    $$\mathbf{n}_1=\boldsymbol{\gamma}_1\odot\hat{\mathbf{x}}_0=${mx('n1', T, D)}$$` },
+  { show: [Wq.T, Wk.T, Wv.T, q, k, v], label: 'q, k, v', title: 'q_proj、k_proj、v_proj', text: String.raw`
+    三个投影的输入都是 $\mathbf{n}_1$。q 有 2 个 head，每个 head 宽 $d_h=4$，一共宽 8；k 和 v 只有 1 个 kv head，各宽 4，两个 query head 共用它，这就是 GQA。Qwen3 的这三个 Linear 都没有 bias。
+
+    $$\mathbf{k}=\mathbf{n}_1W_k^{\top}=${mx('k', T, HD)},\qquad \mathbf{v}=\mathbf{n}_1W_v^{\top}=${mx('v', T, HD)}$$` },
+  { show: heads, label: 'q⁽ʰ⁾', title: '按 head 拆开 q', text: String.raw`
+    代码里的 <code>view(B, T, H, d_h).transpose(1, 2)</code> 把 q 的列按 head 分组。这里的张量最多二维，所以用 <code>narrow</code> 取出每个 head 的 4 列，后面每个 head 各画一列板。` },
+  { show: [qn[0][0], qn[1][0], kn[0]], label: 'q², k²', title: 'q_norm、k_norm：逐元素平方', text: String.raw`
+    Qwen3 比 Qwen2 多了这一步：在 RoPE 之前，对 q 和 k 的每个 head 各做一次 RMSNorm，范围是 $d_h$，而不是整个 hidden size。它让点积的尺度更稳定。` },
+  { show: [qn[0][1], qn[0][2], qn[1][1], qn[1][2], kn[1], kn[2]], label: 'ms, r', title: '每个 head 的均方根倒数', text: String.raw`
+    q 的每个位置、每个 head 各有一个 $r^{q}$，k 只有一个 kv head，每个位置一个 $r^{k}$。
+
+    $$r^{q1}=${mx('r_q1', T, 1, ':3')},\qquad r^{q2}=${mx('r_q2', T, 1, ':3')},\qquad r^{k}=${mx('r_k', T, 1, ':3')}$$` },
+  { show: [qn[0][3], qn[1][3], kn[3]], label: 'q̂, k̂', title: '归一化', text: String.raw`
+    每个分量乘上自己那一组的 $r$。连线只在同一个 head 的同一行之内。` },
+  { show: [Gq, Gk, qn[0][4], qn[1][4], kn[4]], label: 'q̄, k̄', title: '乘上 γ_q 和 γ_k', text: String.raw`
+    $\boldsymbol{\gamma}_q$ 的长度是 $d_h$，两个 query head 和所有位置共用，所以它的每个分量连到 $2\times T$ 个元素。
+
+    $$\bar{\mathbf{k}}=${mx('k̄', T, HD)}$$` },
+  { show: [cos, qr[0][0], qr[1][0], kr[0]], label: '⊙ cos', title: 'RoPE：乘 cos', text: String.raw`
+    RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。
+    cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。
+
+    $$\cos=${mx('cos', T, HD, ':3')}$$` },
+  { show: [qr[0][1], qr[1][1], kr[1]], label: 'rotate_half', title: 'rotate_half', text: String.raw`
+    把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
+
+    $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$` },
+  { show: [sin, qr[0][2], qr[1][2], kr[2]], label: '⊙ sin', title: '乘 sin', text: String.raw`
+    位置 1 的 sin 全是 0，所以第一行在这一步全部变成 0。
+
+    $$\sin=${mx('sin', T, HD, ':3')}$$` },
+  { show: [qr[0][3], qr[1][3], kr[3]], label: 'q′, k′', title: '相加', text: String.raw`
+    每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，被一起转了角度 $t\,\omega_c$。q 和 k 转过的角度只取决于各自的位置，所以 $\mathbf{q}'_t\cdot\mathbf{k}'_s$ 只依赖位置差 $t-s$。
+
+    $$\mathbf{k}'=${mx('k′', T, HD)}$$` },
+  { show: [...kRep, ...vRep], label: 'repeat_kv', title: 'repeat_kv：复制 k 和 v', text: String.raw`
+    GQA 里 kv head 比 query head 少：这里 2 个 query head 共用 1 个 kv head。HF 的 eager 实现先用 <code>repeat_kv</code> 把 k、v 复制 $n_\text{rep}=2$ 份，每个 query head 拿到一份。复制的局部导数是 1。` },
+  { show: attn.map((A) => A.kT), label: 'kᵀ', title: '转置', text: String.raw`
+    <code>key_states.transpose(2, 3)</code> 把 $d_h$ 换到行、位置换到列，接下来就能按「行向量乘板」来算 $\mathbf{q}'\mathbf{k}'^{\top}$。转置只是换轴，局部导数是 1。` },
+  { show: attn.map((A) => A.S), label: 'q kᵀ', title: '打分：q kᵀ', text: String.raw`
+    每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。
+
+    $$S^{(1)}=${mx('S1', T, T)},\qquad S^{(2)}=${mx('S2', T, T)}$$` },
+  { show: attn.map((A) => A.Ss), label: '÷ √d_h', title: '缩放', text: String.raw`
+    乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。` },
+  { show: [M, ...attn.map((A) => A.Sm)], label: '+ mask', title: 'causal mask', text: String.raw`
+    加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 实现里填的是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
+
+    $$M=\begin{pmatrix}0&-\infty&-\infty\\0&0&-\infty\\0&0&0\end{pmatrix}$$` },
+  { show: attn.map((A) => A.ex), label: 'exp', title: 'softmax：取 exp', text: String.raw`
+    softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。
+
+    $$\mathrm{ex}^{(1)}=${mx('ex1', T, T, ':3')}$$` },
+  { show: attn.map((A) => A.Z), label: 'Z', title: '按行求和', text: String.raw`
+    每个 head、每一行各有一个 $Z$。
+
+    $$Z^{(1)}=${mx('Z1', T, 1, ':3')},\qquad Z^{(2)}=${mx('Z2', T, 1, ':3')}$$` },
+  { show: attn.map((A) => A.P), label: 'P', title: '注意力权重', text: String.raw`
+    每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以 $P_{1,1}=1$。
+
+    $$P^{(1)}=${mx('P1', T, T, ':3')},\qquad P^{(2)}=${mx('P2', T, T, ':3')}$$` },
+  { show: attn.map((A) => A.O), active: [...attn.map((A) => A.P), ...vRep, ...attn.map((A) => A.O)], label: 'P v', title: 'P v', text: String.raw`
+    每个 head 用注意力权重对 $\mathbf{v}$ 的各行做加权平均。
+
+    $$\mathbf{o}^{(1)}=P^{(1)}\mathbf{v}^{(1)}=${mx('o1', T, HD)}$$` },
+  { show: O, label: '拼接', title: '拼回 T × 8', text: String.raw`
+    <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code> 把两个 head 的输出并排拼回去，局部导数是 1。` },
+  { show: [Wo.T, att], label: 'o_proj', title: 'o_proj', text: String.raw`
+    投影回 $d$ 维。o_proj 也没有 bias。
+
+    $$\mathbf{att}=\mathbf{o}W_o^{\top}=${mx('att', T, D)}$$` },
+  { show: a, label: 'a = x₀ + att', title: '残差相加', text: String.raw`
+    attention 算出来的只是一个增量，加回 residual stream。$\mathbf{x}_0$ 到 $\mathbf{a}$ 的那组长连线就是残差连接，它绕过了整个 attention。
+
+    $$\mathbf{a}=\mathbf{x}_0+\mathbf{att}=${mx('a', T, D)}$$` },
+  { show: rms2[0], label: 'a²', title: 'post_attention_layernorm：逐元素平方', text: String.raw`
+    MLP 之前再做一次 RMSNorm，计算和 input_layernorm 相同。` },
+  { show: [rms2[1], rms2[2]], label: 'ms₂, r₂', title: '均方根的倒数', text: String.raw`$$r_2=${mx('r2', T, 1, ':3')}$$` },
+  { show: rms2[3], label: 'â', title: '归一化' },
+  { show: [G2, n], label: 'n', title: '乘上权重 γ₂', text: String.raw`
+    $\mathbf{n}$ 是 MLP 的输入。
+
+    $$\mathbf{n}=${mx('n', T, D)}$$` },
+  { show: [Wg.T, Wu.T, gate, up], label: 'gate, up', title: 'gate_proj 和 up_proj', text: String.raw`
+    两个投影的输入都是 $\mathbf{n}$。维度从 $d$ 扩大到 $f$，Qwen3-8B 里是 4096 到 12288。` },
+  { show: s, label: 'SiLU', title: 'SiLU', text: String.raw`
+    gate 逐元素经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。正数基本原样通过，负数被压到接近 0。` },
+  { show: m, label: 's ⊙ up', title: '门控相乘', text: String.raw`
+    $\mathbf{s}$ 和 $\mathbf{up}$ 逐元素相乘，$\mathbf{s}$ 决定 $\mathbf{up}$ 的每个分量放行多少。` },
+  { show: [Wd.T, down], label: 'down', title: 'down_proj', text: String.raw`
+    再投影回 $d$ 维，摆法和 lm_head 一样。
+
+    $$\mathbf{down}=\mathbf{m}W_d^{\top}=${mx('down', T, D)}$$` },
+  { show: xo, label: 'x = a + down', title: '残差相加', text: String.raw`
+    MLP 的输出加回 residual stream，得到这一层的输出。
+
+    $$\mathbf{x}=\mathbf{a}+\mathbf{down}=${mx('x', T, D)}$$` },
+  { show: rmsF[0], label: 'x²', title: 'final norm：逐元素平方', text: String.raw`
+    从这里开始是 final norm（<code>model.norm</code>），在所有 decoder 层之后、lm_head 之前。` },
+  { show: [rmsF[1], rmsF[2]], label: 'ms, r', title: '均方根的倒数' },
+  { show: rmsF[3], label: 'x̂', title: '归一化' },
+  { show: [G, h], label: 'h', title: '乘上权重 γ', text: String.raw`$$\mathbf{h}=${mx('h', T, D)}$$` },
+  { show: [W.T, z], label: 'z', title: 'lm_head', text: String.raw`
+    每个位置的 $\mathbf{h}_t$ 都乘同一块 $W^{\top}$，得到这个位置对下一个 token 的 logits。
+
+    $$\mathbf{z}=\mathbf{h}W^{\top}=${mx('z', T, V)}$$` },
+  { show: L, label: 'LSE', title: 'log-sum-exp', text: String.raw`
+    每个位置各算一个 LSE。实现里先减去这一行的最大值再取指数，不会溢出。
+
+    $$\mathrm{LSE}=${mx('LSE', T, 1, ':3')}$$` },
+  { show: logp, label: 'log p', title: 'log_softmax', text: String.raw`每个 logit 减去自己那一行的 LSE。` },
+  { show: lt, label: 'ℓₜ', title: 'nll_loss（逐位置）', text: String.raw`
+    每个位置按标签取出目标 token 的 log p，取负号。标签是输入右移一位：位置 1 的标签是 ${tok(SEQ[1])}，位置 2 是 ${tok(SEQ[2])}，位置 3 是 ${tok(SEQ[3])}。
+
+    $$\ell_t=-\log p_{t,y_t}:\quad ({{ℓt[0]:3}},\; {{ℓt[1]:3}},\; {{ℓt[2]:3}})$$` },
+  { show: loss, label: 'ℓ', title: '取平均', text: String.raw`
+    <code>F.nll_loss</code> 默认 <code>reduction='mean'</code>，对 $T$ 个位置取平均。它在一个算子里同时做了取格、取负和平均，这里分成两步画。
+
+    $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$` },
+];
+
+const nodeGroups = forward.map((f) => (Array.isArray(f.show) ? f.show : [f.show]).filter((node) => node.kind !== 'label'));
+const backwardTexts = new Map([
+  [loss, { title: '从损失出发', text: String.raw`平均值把梯度 $1/T$ 分给每个位置；每一行只有标签那一格收到 $-1/T$。` }],
+  [L, { title: '传到 LSE', text: String.raw`每行的 LSE 收到 $1/T$。$$\frac{\partial\ell}{\partial\,\mathrm{LSE}}=${mg('LSE', T, 1)}$$` }],
+  [z, { title: '传到 logits', text: String.raw`两条路加起来，每一行都是 $(\mathbf{p}_t-\mathbf{e}_{y_t})/T$。$$\frac{\partial\ell}{\partial\mathbf{z}}=${mg('z', T, V)}$$` }],
+  [a, { title: '穿过 attention 的残差', text: String.raw`相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\mathbf{att}$，进入 attention；一份沿残差直接交给 $\mathbf{x}_0$。$$\frac{\partial\ell}{\partial\mathbf{a}}=${mg('a', T, D)}$$` }],
+  [xo, { title: '穿过 MLP 的残差', text: String.raw`梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\mathbf{a}$。$$\frac{\partial\ell}{\partial\mathbf{x}}=${mg('x', T, D)}$$` }],
+  [kr[3], { title: 'repeat_kv 反向：两份加回一份', text: String.raw`k 被复制给了两个 query head，反向时两份梯度在这里相加，回到唯一的 kv head。$$\frac{\partial\ell}{\partial\mathbf{k}'}=${mg('k′', T, HD)}$$` }],
+  [E, { title: '传到 embedding 表', text: String.raw`取行的反向是把梯度加回被取到的那一行（scatter-add）。没有出现在输入里的 token，那一行的梯度是 0。$$\frac{\partial\ell}{\partial E}=${mg('E', V, D)}$$` }],
+]);
+
+function buildSteps(override) {
+  return createSteps(g, {
+    overview: { title: '整张图', text: String.raw`
+      这一页从 token id 一直画到损失。embedding 按 id 取出每个位置的向量，中间的 $N-1$ 个 decoder 层用一个节点占位，最后一层完整展开：attention 和 SwiGLU MLP 各带一个残差，之后是 final norm、lm_head、log_softmax 和 nll_loss。
+      序列长度 $T=3$，每个激活都是 $T$ 行的板。输入是 ${tok(SEQ[0])} ${tok(SEQ[1])} ${tok(SEQ[2])}，标签右移一位，是 ${tok(SEQ[1])} ${tok(SEQ[2])} ${tok(SEQ[3])}。
+      尺寸用 $d=4$、$f=6$、$V=5$，2 个 query head、1 个 kv head，$d_h=4$。
+
+      $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+    ` },
+    forward,
+    backward: { auto: true, merge: nodeGroups.filter((group) => group.length > 1), override },
+  });
+}
+const probe = buildSteps({});
+const override = {};
+probe.list.forEach((info) => {
+  if (info.dir !== 'backward') return;
+  for (const node of info.nodes) {
+    const text = backwardTexts.get(node);
+    if (text !== undefined) override[info.index] = text;
+  }
+});
+probe.dispose();
+const steps = buildSteps(override);
+
+const LV = 2.6;
+const BACK = -40;
+const col = (x, y, z = 0) => ({ at: [x, y * LV, z], level: LV, back: 0 });
+const boardAt = (x, y, z = 0) => ({ at: [x, y * LV, z - 5.7] });
+const layout = [
+  stack(E, e, x0, ...rms1.slice(0, 4), n1, col(-52, 0)),
+  stack(G1, col(-44, 4)),
+  board(n1, Wq.T, q, boardAt(-28, 5)),
+  board(n1, Wk.T, k, boardAt(-10, 5)),
+  board(n1, Wv.T, v, boardAt(2, 5)),
+  ...[0, 1].map((hh) => stack(q, heads[hh], ...qn[hh], ...qr[hh], col(-33 + hh * 10, 0))),
+  stack(k, ...kn, ...kr, kRep[0], kRep[1], { ...col(-10, 0), offsets: { 'k′2': [6, -LV, 0] } }),
+  stack(Gq, col(-28, 9, 5)),
+  stack(Gk, col(-10, 9, 5)),
+  stack(cos, col(-42, 10)),
+  stack(sin, col(-42, 12)),
+  ...[0, 1].map((hh) => board(qr[hh][3], attn[hh].kT, attn[hh].S, boardAt(14 + hh * 12, 0))),
+  ...[0, 1].map((hh) => stack(attn[hh].S, attn[hh].Ss, attn[hh].Sm, attn[hh].ex, attn[hh].Z, attn[hh].P, col(0, 0))),
+  stack(M, col(20, 2, 5)),
+  ...[0, 1].map((hh) => board(attn[hh].P, vRep[hh], attn[hh].O, boardAt(14 + hh * 12, 6))),
+  stack(O, col(-30, 0, BACK)),
+  board(O, Wo.T, att, boardAt(-17, 1, BACK)),
+  stack(a, ...rms2.slice(0, 4), n, col(-6, 0, BACK)),
+  stack(G2, col(1, 3, BACK)),
+  board(n, Wg.T, gate, boardAt(8, 4, BACK)),
+  board(n, Wu.T, up, boardAt(19, 4, BACK)),
+  stack(gate, s, m, col(0, 0, BACK)),
+  board(m, Wd.T, down, boardAt(8, 7, BACK)),
+  stack(xo, ...rmsF.slice(0, 4), h, col(30, 0, BACK)),
+  stack(G, col(37, 3, BACK)),
+  board(h, W.T, z, boardAt(46, 4, BACK)),
+  stack(z, L, logp, lt, loss, col(0, 0, BACK)),
+];
+
+renderText(String.raw`从 token id 开始，经过 embedding、占位的前 $N-1$ 层、最后一个 decoder 层（attention 和 SwiGLU MLP，各带残差）、final norm、lm_head、log_softmax 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，词表只画 5 个 token。`, document.getElementById('lede'));
+
+mountSteps('#steps', steps);
+const scene = mountScene('#stage', g, {
+  steps,
+  layout,
+  hint: '拖动旋转 · 滚轮缩放 · 悬停层名看 shape · 反向时悬停连线',
+  camera: { direction: [0.25, 1.5, 1], polar: [0.2, 1.45] },
+});
+
+const PARAMS = [E, G1, Wq, Wk, Wv, Gq, Gk, Wo, G2, Wg, Wu, Wd, G, W];
+mountPanels('#side-loss', g, [{ loss: { sgd: { params: PARAMS, lr: 0.5, label: '更新一步全部参数' }, reset: true, text: '位置 {{b+1}}：输入 {{ids[b]:token}}，标签 {{y[b]:token}}' } }], { steps });
+mountPanels('#side', g, [
+  { tokens: y, columns: [{ node: z, title: 'z' }, logp, { node: z, grad: true, title: '∂ℓ/∂z' }], title: '当前位置的 logits 与标签' },
+  { matrix: attn[0].P, title: '注意力权重 P⁽¹⁾', note: '行是 query 的位置，列是 key 的位置。右上角被 causal mask 挡住，是 0。' },
+  { matrix: attn[1].P, title: '注意力权重 P⁽²⁾' },
+  { matrix: W.T, highlight: y, title: 'lm_head 权重 Wᵀ，(d, V) = (4, 5)' },
+  { matrix: W.T, grad: true, highlight: y, title: '∂ℓ/∂Wᵀ = hᵀ ∂ℓ/∂z，(4, 5)' },
+  { code: `e = model.embed_tokens(input_ids)
+x0 = layers[:-1](e)          # 图里是占位节点
+layer = model.layers[-1]
+n1 = layer.input_layernorm(x0)
+attn = layer.self_attn       # Qwen3Attention
+q = attn.q_norm(attn.q_proj(n1).view(B,T,Hq,dh)).transpose(1,2)
+k = attn.k_norm(attn.k_proj(n1).view(B,T,Hkv,dh)).transpose(1,2)
+v = attn.v_proj(n1).view(B,T,Hkv,dh).transpose(1,2)
+q, k = apply_rotary_pos_emb(q, k, cos, sin)
+k, v = repeat_kv(k, Hq//Hkv), repeat_kv(v, Hq//Hkv)
+w = softmax(q @ k.transpose(2,3) * dh**-0.5 + mask, -1)
+o = (w @ v).transpose(1,2).reshape(B,T,-1)
+a = x0 + attn.o_proj(o)
+n = layer.post_attention_layernorm(a)
+x = a + mlp.down_proj(F.silu(mlp.gate_proj(n)) * mlp.up_proj(n))
+h = model.norm(x)
+logp = F.log_softmax(lm_head(h).float(), -1)
+loss = F.nll_loss(logp.view(-1, V), labels.view(-1))`, title: '对应的 PyTorch',
+    note: 'Qwen3-8B：d = 4096，32 个 query head、8 个 kv head，head_dim = 128，intermediate_size = 12288，V = 151936，36 层。这里用 d = 4、2 个 query head、1 个 kv head、head_dim = 4、f = 6、V = 5、T = 3。' },
+], { steps });
+
+const samp = document.getElementById('samp');
+function drawSamples() {
+  samp.replaceChildren();
+  const label = document.createElement('span');
+  label.className = 'grp';
+  label.textContent = '位置';
+  samp.appendChild(label);
+  for (let b = 0; b < T; b++) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `${b + 1} ${TOK[SEQ[b]]}`;
+    button.setAttribute('aria-current', String(b === steps.focus));
+    button.addEventListener('click', () => steps.setFocus(b));
+    samp.appendChild(button);
+  }
+}
+drawSamples();
+steps.subscribe(drawSamples);
+
+window.vizflow = { g, steps, scene };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

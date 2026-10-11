@@ -108,6 +108,19 @@ describe('board layout', () => {
     expect(blockOf(blocks, 'h').classLabels[0].z).toBeGreaterThan(2.9 + 0.3);
     expect(blockOf(blocks, 'h').classLabels.map((l) => l.text)).toEqual(['k=1', 'k=2', 'k=3', 'k=4']);
   });
+
+  it('reuses an input that is already placed and shared by several boards', () => {
+    const { g, h, W, z, ctx } = build();
+    const U = g.param('U', [3, 'd'], [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]]);
+    const u = g.matmul(h, U.T, { name: 'u' });
+    const all = { ...ctx, visible: g.nodes };
+    const { blocks, boards } = resolveLayout([stack(h, { at: [-10, 0, 0] }), board(h, W.T, z, { at: [0, 3, 0] }), board(h, U.T, u, { at: [10, 3, 0] })], all);
+    expect(blocks.filter((b) => b.node === h)).toHaveLength(1);
+    expect(boards.map((b) => b.sharedA)).toEqual([true, true]);
+    expect(boards[0].a).toBe(blockOf(blocks, 'h'));
+    expect(elementAt(blockOf(blocks, 'h'), [0, 0]).y).toBe(0);
+    expect(elementAt(blockOf(blocks, 'u'), [0, 0]).y).toBe(3);
+  });
 });
 
 describe('stack layout', () => {

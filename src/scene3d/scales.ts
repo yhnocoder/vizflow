@@ -10,7 +10,7 @@ const SCALE_FLOOR = 1e-6;
 
 export function scaleFor(values: ArrayLike<number>): number {
   let max = 0;
-  for (let i = 0; i < values.length; i++) max = Math.max(max, Math.abs(values[i]));
+  for (let i = 0; i < values.length; i++) if (Number.isFinite(values[i])) max = Math.max(max, Math.abs(values[i]));
   return UNIT_HEIGHT / Math.max(max, SCALE_FLOOR);
 }
 
@@ -52,6 +52,7 @@ export function niceTicks(values: ArrayLike<number>, scale: number, count = TICK
   let lo = 0;
   let hi = 0;
   for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) continue;
     lo = Math.min(lo, values[i]);
     hi = Math.max(hi, values[i]);
   }

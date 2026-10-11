@@ -619,9 +619,13 @@ class SceneController implements EditHost {
         rows = [board.out.batched ? r : undefined];
         if (edge.arg === 0) {
           const aElement = board.a.elements.find((e) => e.row === r && e.col === k)!;
-          const from: Vec3 = i === 0 ? [aElement.x, y, aElement.z - board.a.footprint[1] / 2 - 0.02] : [tile(k, i - 1).x + tileW / 2 + 0.01, y, tile(k, i - 1).z];
           const to: Vec3 = [tile(k, i).x - tileW / 2 - 0.01, y, tile(k, i).z];
-          entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, toLoss: false, endpoints: () => [from, to], flat: true };
+          if (i === 0 && board.sharedA) {
+            entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, toLoss: false, endpoints: () => [this.anchorOut(board.a.node, aElement.index)!, to], flat: false };
+          } else {
+            const from: Vec3 = i === 0 ? [aElement.x, y, aElement.z - board.a.footprint[1] / 2 - 0.02] : [tile(k, i - 1).x + tileW / 2 + 0.01, y, tile(k, i - 1).z];
+            entry = { edge, fromNode: board.a.node, toNode: edge.op, contract: true, toLoss: false, endpoints: () => [from, to], flat: true };
+          }
         } else {
           const last = k === board.b.rows - 1;
           const from: Vec3 = [tile(k, i).x, y, tile(k, i).z + tileD / 2 + 0.01];
