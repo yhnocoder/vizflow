@@ -322,7 +322,9 @@ class Plan implements LevelPlan {
     if (n.shape.length === 0) return [1, 1];
     if (n.shape.length === 1) {
       const main = n.inputs[0];
-      return !isLeafLike(n) && main !== undefined && main.shape.length === 2 && main.shape[0] === n.shape[0] ? [n.shape[0], 1] : [1, n.shape[0]];
+      const rowsOf = (u: Node) => u.shape.length === 2 && u.shape[0] === n.shape[0];
+      const column = (main !== undefined && rowsOf(main)) || this.consumers(n).some((u) => u.op !== 'view' && rowsOf(u));
+      return !isLeafLike(n) && column ? [n.shape[0], 1] : [1, n.shape[0]];
     }
     return rowsCols(n.shape);
   }
