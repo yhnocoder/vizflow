@@ -106,3 +106,55 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
     return [gA, gB];
   },
 };
+
+function groupedShape(x: readonly number[], w: readonly number[], group: readonly number[]): number[] {
+  if (x.length !== 2 || w.length !== 3 || group.length !== 1 || w[2] !== x[1] || group[0] !== x[0]) {
+    throw new Error(`grouped_mm: x ${formatShape(x)} must be (R, d), w ${formatShape(w)} must be (E, n, d) and group ${formatShape(group)} must be (R)`);
+  }
+  return [x[0], w[1]];
+}
+
+export function groupOf(group: Tensor, experts: number, row: number): number {
+  const e = Math.round(group.data[row]);
+  if (e < 0 || e >= experts) throw new Error(`grouped_mm: group ${e} at [${row}] is out of range for ${experts} experts`);
+  return e;
+}
+
+export const groupedMmOp: OpDef<NoAttrs> = {
+  name: 'grouped_mm',
+  args: ['x', 'w', 'group'],
+  tensors: ['x', 'w', 'group'],
+  differentiable: [true, true, false],
+  shape: ([x, w, group]) => groupedShape(x, w, group),
+  forward: ([x, w, group]) => {
+    const [R, n] = groupedShape(x.shape, w.shape, group.shape);
+    const d = x.shape[1];
+    const out = new Tensor([R, n]);
+    for (let r = 0; r < R; r++) {
+      const base = groupOf(group, w.shape[0], r) * n * d;
+      for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let k = 0; k < d; k++) s += w.data[base + i * d + k] * x.data[r * d + k];
+        out.data[r * n + i] = s;
+      }
+    }
+    return out;
+  },
+  backward: (gradOut, [x, w, group]) => {
+    const [R, n] = gradOut.shape;
+    const d = x.shape[1];
+    const gx = new Tensor(x.shape);
+    const gw = new Tensor(w.shape);
+    for (let r = 0; r < R; r++) {
+      const base = groupOf(group, w.shape[0], r) * n * d;
+      for (let i = 0; i < n; i++) {
+        const g = gradOut.data[r * n + i];
+        for (let k = 0; k < d; k++) {
+          gx.data[r * d + k] += g * w.data[base + i * d + k];
+          gw.data[base + i * d + k] += g * x.data[r * d + k];
+        }
+      }
+    }
+    return [gx, gw, null];
+  },
+};

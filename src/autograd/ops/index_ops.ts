@@ -410,3 +410,99 @@ export const topkMaskOp: OpDef<TopkMaskAttrs> = {
   },
   backward: () => [null],
 };
+
+export interface RouteAttrs {
+  k: number;
+}
+
+export interface RoutedPair {
+  token: number;
+  expert: number;
+}
+
+function routeShape(sel: readonly number[], name: string, attrs: RouteAttrs): number[] {
+  if (sel.length !== 2) throw new Error(`${name}: sel ${formatShape(sel)} must be (T, E)`);
+  if (!Number.isInteger(attrs.k) || attrs.k < 1 || attrs.k > sel[1]) {
+    throw new Error(`${name}: k ${attrs.k} is out of range for sel ${formatShape(sel)}`);
+  }
+  return [sel[0] * attrs.k];
+}
+
+export function routeOrder(sel: Tensor, name: string, k: number): RoutedPair[] {
+  const [T, E] = sel.shape;
+  for (let t = 0; t < T; t++) {
+    let count = 0;
+    for (let e = 0; e < E; e++) {
+      const v = sel.data[t * E + e];
+      if (v !== 0 && v !== 1) throw new Error(`${name}: sel[${t}, ${e}] is ${v}, expected 0 or 1`);
+      count += v;
+    }
+    if (count !== k) throw new Error(`${name}: row ${t} of sel has ${count} ones, expected k = ${k}`);
+  }
+  const pairs: RoutedPair[] = [];
+  for (let e = 0; e < E; e++) {
+    for (let t = 0; t < T; t++) if (sel.data[t * E + e] === 1) pairs.push({ token: t, expert: e });
+  }
+  return pairs;
+}
+
+function routeOp(name: string, pick: (pair: RoutedPair) => number): OpDef<RouteAttrs> {
+  return {
+    name,
+    args: ['sel', 'k'],
+    tensors: ['sel'],
+    sizes: ['k'],
+    differentiable: [false],
+    shape: ([sel], attrs) => routeShape(sel, name, attrs),
+    forward: ([sel], attrs) => new Tensor(routeShape(sel.shape, name, attrs), Float64Array.from(routeOrder(sel, name, attrs.k), pick)),
+    backward: () => [null],
+  };
+}
+
+export const routeRowsOp = routeOp('route_rows', (pair) => pair.token);
+export const routeExpertsOp = routeOp('route_experts', (pair) => pair.expert);
+
+export interface IndexAddAttrs {
+  size: number;
+}
+
+function indexAddShape(src: readonly number[], index: readonly number[], attrs: IndexAddAttrs): number[] {
+  if (src.length === 0 || index.length !== 1 || index[0] !== src[0]) {
+    throw new Error(`index_add: index ${formatShape(index)} must be one-dimensional with one entry per row of src ${formatShape(src)}`);
+  }
+  if (!Number.isInteger(attrs.size) || attrs.size < 1) throw new Error(`index_add: size ${attrs.size} must be a positive integer`);
+  return [attrs.size, ...src.slice(1)];
+}
+
+export function indexAddTarget(index: Tensor, row: number, size: number): number {
+  const target = Math.round(index.data[row]);
+  if (target < 0 || target >= size) throw new Error(`index_add: index ${target} at [${row}] is out of range for size ${size}`);
+  return target;
+}
+
+export const indexAddOp: OpDef<IndexAddAttrs> = {
+  name: 'index_add',
+  args: ['src', 'index', 'size'],
+  tensors: ['src', 'index'],
+  sizes: ['size'],
+  differentiable: [true, false],
+  shape: ([src, index], attrs) => indexAddShape(src, index, attrs),
+  forward: ([src, index], attrs) => {
+    const out = new Tensor(indexAddShape(src.shape, index.shape, attrs));
+    const width = src.size / src.shape[0];
+    for (let r = 0; r < src.shape[0]; r++) {
+      const t = indexAddTarget(index, r, attrs.size);
+      for (let c = 0; c < width; c++) out.data[t * width + c] += src.data[r * width + c];
+    }
+    return out;
+  },
+  backward: (gradOut, [src, index], _out, attrs) => {
+    const grad = new Tensor(src.shape);
+    const width = src.size / src.shape[0];
+    for (let r = 0; r < src.shape[0]; r++) {
+      const t = indexAddTarget(index, r, attrs.size);
+      grad.data.set(gradOut.data.subarray(t * width, (t + 1) * width), r * width);
+    }
+    return [grad, null];
+  },
+};

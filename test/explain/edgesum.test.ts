@@ -224,6 +224,37 @@ const cases: Case[] = [
       return { out: g.where(keep, x, -1e9), inputs: [x] };
     },
   },
+  {
+    op: 'route_rows',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.route_rows(g.topk_mask(x, 2, -1), 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'route_experts',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.route_experts(g.topk_mask(x, 2, -1), 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'grouped_mm',
+    build: (g, r) => {
+      const x = g.input('x', [5, 3], randomValues(r, [5, 3]));
+      const w = g.input('w', [3, 2, 3], randomValues(r, [3, 2, 3]));
+      const group = g.label('group', [0, 0, 2, 2, 2]);
+      return { out: g.grouped_mm(x, w, group), inputs: [x, w] };
+    },
+  },
+  {
+    op: 'index_add',
+    build: (g, r) => {
+      const src = g.input('src', [5, 2], randomValues(r, [5, 2]));
+      const index = g.label('index', [1, 0, 1, 3, 1]);
+      return { out: g.index_add(src, index, 4), inputs: [src] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { convTaps } from '../../autograd/ops/index_ops';
+import { convTaps, indexAddTarget, routeOrder } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -153,5 +153,41 @@ export const topkMaskExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{topk\\_mask}(${s.in[0]},${(s.attrs as { k: number }).k})`,
     local: () => '0',
+  },
+};
+
+function routeExplain(name: string): OpExplain {
+  return {
+    pattern: 'select',
+    local: () => 0,
+    tex: {
+      forward: (s) => `\\operatorname{${name.replace('_', '\\_')}}(${s.in[0]},${(s.attrs as { k: number }).k})`,
+      local: () => '0',
+    },
+    selected: (ctx, out) => {
+      const pair = routeOrder(ctx.inputs[0], name, (ctx.attrs as { k: number }).k)[out[0]];
+      return [{ arg: 0, index: [pair.token, pair.expert] }];
+    },
+  };
+}
+
+export const routeRowsExplain = routeExplain('route_rows');
+export const routeExpertsExplain = routeExplain('route_experts');
+
+export const indexAddExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{index\\_add}(${s.in[0]},${s.in[1]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [src, index] = ctx.inputs;
+    const size = (ctx.attrs as { size: number }).size;
+    const picks: { arg: number; index: number[] }[] = [];
+    for (let r = 0; r < src.shape[0]; r++) {
+      if (indexAddTarget(index, r, size) === out[0]) picks.push({ arg: 0, index: [r, ...out.slice(1)] });
+    }
+    return picks;
   },
 };

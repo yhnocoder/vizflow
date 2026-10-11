@@ -558,6 +558,33 @@ def routing_cases():
     return cases
 
 
+def route_pairs(sel):
+    return [(t, e) for e in range(sel.shape[1]) for t in range(sel.shape[0]) if sel[t, e] == 1]
+
+
+def grouped_mm(x, w, group):
+    return torch.stack([w[int(group[r])] @ x[r] for r in range(x.shape[0])])
+
+
+def sorted_moe_cases():
+    cases = []
+    for shape, k in [((4, 4), 2), ((3, 6), 3), ((5, 3), 1)]:
+        sel = topk_mask(distinct(*shape), k, -1)
+        rows = lambda s: torch.tensor([float(t) for t, _ in route_pairs(s)])
+        experts = lambda s: torch.tensor([float(e) for _, e in route_pairs(s)])
+        cases.append(op_case("route_rows", f"{shape} k {k}", rows, [("label", sel)], [tensor_arg(0), k]))
+        cases.append(op_case("route_experts", f"{shape} k {k}", experts, [("label", sel)], [tensor_arg(0), k]))
+    for (R, d), (E, n), group in [((5, 3), (3, 2), [0, 0, 2, 2, 2]), ((4, 4), (4, 2), [1, 3, 3, 0]), ((2, 2), (1, 3), [0, 0])]:
+        cases.append(
+            op_case("grouped_mm", f"x ({R}, {d}) w ({E}, {n}, {d}) group {group}", grouped_mm, [("input", randn(R, d)), ("input", randn(E, n, d)), ("label", torch.tensor(group, dtype=torch.float64))], [tensor_arg(0), tensor_arg(1), tensor_arg(2)])
+        )
+    for (R, d), size, index in [((5, 2), 4, [1, 0, 1, 3, 1]), ((8, 3), 4, [0, 1, 1, 2, 0, 3, 2, 3]), ((3, 1), 2, [1, 1, 1])]:
+        cases.append(
+            op_case("index_add", f"src ({R}, {d}) size {size} index {index}", lambda src, idx, size=size: torch.zeros(size, src.shape[1]).index_add(0, idx.long(), src), [("input", randn(R, d)), ("label", torch.tensor(index, dtype=torch.float64))], [tensor_arg(0), tensor_arg(1), size])
+        )
+    return cases
+
+
 def causal_conv1d(x, w):
     T, C = x.shape
     K = w.shape[1]
@@ -621,7 +648,8 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops)
+    sorted_moe_ops = sorted_moe_cases()
+    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops)
     write("pages.json", pages + stable_pages)
 
 
