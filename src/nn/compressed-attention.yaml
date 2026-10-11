@@ -62,7 +62,7 @@ body:
         text: |
           计算和 decoder 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
           $$\bar{\mathbf{c}}_{q}={{ cqn | matrix:2 }}$$
-  - qp: { op: cqn @ Wqb.T, tex: '\bar{\mathbf{c}}_{q}W_{qb}^{\top}' }
+  - qp: { op: cqn @ Wqb.T, tex: '\mathbf{q}_{\mathrm{b}}' }
   - q: { op: 'view(qp, T, H, D)', tex: '\mathbf{q}' }
   - q_b_norm:
       use: UnweightedRMSNorm
@@ -86,7 +86,7 @@ body:
       inputs: { x: qn }
       outputs: { out: qr }
       tex: { out: "\\mathbf{q}'" }
-  - kvp: { op: x @ Wkv.T, tex: '\of{x}W_{kv}^{\top}' }
+  - kvp: { op: x @ Wkv.T, tex: '\mathbf{kv}_{\mathrm{proj}}' }
   - kv_norm:
       use: RMSNorm
       suffix: kv
@@ -118,7 +118,7 @@ body:
   - compressor:
       use: Compressor
       when: compress
-      subtitle: '每 $m=\of{m}$ 个 token 压成一个条目'
+      subtitle: '每 $m$ 个 token 压成一个条目'
       params: { m: m, c: D, rd: rd, theta: theta, overlap: sparse, eps: eps }
       inputs: { x: x }
       outputs: { C: C, mask: Mc }
@@ -176,7 +176,7 @@ body:
     brace: 'group \of{j}'
     body:
       - Wa[j]: { op: 'narrow(Woa, 0, (j-1) * dg, dg)', tex: 'W_{a,\of{j}}' }
-      - z[j]:  { op: 'select_matmul(og, Wa[j].T, j-1)', tex: '\mathbf{o}_{\of{j}}W_{a,\of{j}}^{\top}' }
+      - z[j]:  { op: 'select_matmul(og, Wa[j].T, j-1)', tex: '\mathbf{z}_{\of{j}}' }
   - zc: { op: 'cat(z[1..g], dim=1)', tex: '\mathbf{u}' }
   - att: { op: zc @ Wob.T, tex: '\mathbf{att}' }
 steps:
@@ -268,11 +268,11 @@ steps:
       title: 拼回去
   - id: group_proj
     show: ['Wa[1..g]', 'z[1..g]']
-    label: '$\mathbf{o}_{g}W_{a,g}^{\top}$'
+    label: '$\mathbf{z}_{j}=\mathbf{o}_{j}W_{a,j}^{\top}$'
     title: o_a_proj：每组单独投影
     text: |
       o_a_proj 的权重有 $g\cdot d_g$ 行，第 $j$ 组只用其中第 $j$ 段 $d_g=\of{dg}$ 行，组与组之间不混合，相当于一个块对角的矩阵。HF 用 <code>torch.bmm</code> 一次算完所有组。真实模型每组从 4096 维投影到 1024 维。
-      $$\mathbf{o}_{1}W_{a,1}^{\top}={{ z[1] | matrix:2 }}$$
+      $$\of{z[1]}=\mathbf{o}_{1}W_{a,1}^{\top}={{ z[1] | matrix:2 }}$$
     backward:
       label: '$\partial W_{a},\ \partial\mathbf{o}^{\mathrm{grp}}$'
       title: 传到 o_a_proj 的权重和各组的输出
@@ -283,7 +283,7 @@ steps:
     text: |
       对应 <code>.flatten(2)</code>，得到 $g d_g=\of{g*dg}$ 维。
     backward:
-      label: '$\partial\mathbf{o}_{g}W_{a,g}^{\top}$'
+      label: '$\partial\mathbf{z}_{j}$'
       title: 按组切开
   - id: o_b
     show: [Wob.T, att]

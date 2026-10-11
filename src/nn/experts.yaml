@@ -101,7 +101,7 @@ steps:
     label: '$\of{expert_idx},\ \of{top_k_pos},\ \of{token_idx}$'
     title: 专家、槽位和位置三列
     text: |
-      把 $\of{nz}$ 的三列分开：第 $r$ 行由专家 $\of{expert_idx}_r$ 计算，它是位置 $\of{token_idx}_r$ 选中的第 $\of{top_k_pos}_r$ 个专家（槽位从 0 开始）。HF 循环里 <code>expert_idx</code> 是循环变量，<code>top_k_pos</code>、<code>token_idx</code> 是 <code>torch.where</code> 的两个输出。
+      把 $\of{nz}$ 的三列分开：第 $r$ 行由专家 ${ \of{expert_idx}}_r$ 计算，它是位置 ${ \of{token_idx}}_r$ 选中的第 ${ \of{top_k_pos}}_r$ 个专家（槽位从 0 开始）。HF 循环里 <code>expert_idx</code> 是循环变量，<code>top_k_pos</code>、<code>token_idx</code> 是 <code>torch.where</code> 的两个输出。
       $$\of{expert_idx}={{ expert_idx | matrix }},\quad \of{top_k_pos}={{ top_k_pos | matrix }},\quad \of{token_idx}={{ token_idx | matrix }}$$
   - id: gather
     show: current_state
@@ -121,7 +121,7 @@ steps:
     label: '$\of{gate_up}$'
     title: 每个专家的 gate_up_proj
     text: |
-      <code>F.linear(current_state, gate_up_proj[expert_idx])</code>。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $(E, 2m_f, d)$，$\of{Wgu}[e]$ 是第 $e$ 个专家的一块 $(2m_f, d)$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 $\of{Wgu}[\of{expert_idx}_r]^{\top}$，和逐个专家算的结果相同。悬停 $\of{gate_up}$ 的名字可以看到每一行用了哪一块。
+      <code>F.linear(current_state, gate_up_proj[expert_idx])</code>。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $(E, 2m_f, d)$，$\of{Wgu}[e]$ 是第 $e$ 个专家的一块 $(2m_f, d)$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 $\of{Wgu}[{ \of{expert_idx}}_r]^{\top}$，和逐个专家算的结果相同。悬停 $\of{gate_up}$ 的名字可以看到每一行用了哪一块。
       $$\of{gate_up}={{ gate_up | matrix:2 }}$$
     backward:
       label: '$\partial W_{gu},\ \partial\of{current_state}$'
@@ -198,7 +198,7 @@ steps:
     label: '$\of{down}$'
     title: 每个专家的 down_proj
     text: |
-      <code>F.linear(current_hidden_states, down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $(E, d, m_f)$。第 $r$ 行乘 $\of{Wd}[\of{expert_idx}_r]^{\top}$，回到 $d$ 维。
+      <code>F.linear(current_hidden_states, down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $(E, d, m_f)$。第 $r$ 行乘 $\of{Wd}[{ \of{expert_idx}}_r]^{\top}$，回到 $d$ 维。
       $$\of{down}={{ down | matrix:2 }}$$
     backward:
       label: '$\partial W_{d},\ \partial\of{hidden}$'
@@ -211,7 +211,7 @@ steps:
     label: '$\of{weight}=\of{w}[\of{token_idx},\of{top_k_pos}]$'
     title: 查出每一行的路由权重
     text: |
-      <code>top_k_weights[token_idx, top_k_pos, None]</code>：第 $r$ 行取位置 $\of{token_idx}_r$、槽位 $\of{top_k_pos}_r$ 的路由权重，也就是这个位置给这个专家的权重。
+      <code>top_k_weights[token_idx, top_k_pos, None]</code>：第 $r$ 行取位置 ${ \of{token_idx}}_r$、槽位 ${ \of{top_k_pos}}_r$ 的路由权重，也就是这个位置给这个专家的权重。
       $$\of{weight}={{ weight | matrix:3 }}$$
     backward:
       label: '$\partial\of{w}$'
@@ -237,11 +237,11 @@ steps:
     label: '$\of{out}$'
     title: 加回各个位置
     text: |
-      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states)</code>：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
+      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states)</code>：第 $r$ 行加到第 ${ \of{token_idx}}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
       $$\of{out}={{ out | matrix:3 }}$$
     backward:
       label: '$\partial\of{scaled}$'
       title: 从各个位置取回梯度
       text: |
-        index_add 的反向是按 $\of{token_idx}$ 取行：第 $r$ 行收到的梯度就是位置 $\of{token_idx}_r$ 的输出梯度。$\of{final}$ 是常量全 0，没有梯度。
+        index_add 的反向是按 $\of{token_idx}$ 取行：第 $r$ 行收到的梯度就是位置 ${ \of{token_idx}}_r$ 的输出梯度。$\of{final}$ 是常量全 0，没有梯度。
         $$\frac{\partial\ell}{\partial\of{scaled}}={{ scaled.grad | matrix:3 }}$$
