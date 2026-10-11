@@ -8,7 +8,8 @@ export interface SceneModule {
   title: string;
   subtitle?: string;
   nodes: Node[];
-  side?: 'left' | 'right';
+  side?: 'left' | 'right' | 'outer';
+  inner?: boolean;
 }
 
 export const MODULE_GAP = 1.6;
@@ -33,6 +34,7 @@ export interface BlockSpan {
 export interface Brace {
   module: SceneModule;
   side: 'left' | 'right';
+  thick?: boolean;
   nodes: Node[];
   column: number;
   x: number;
@@ -80,7 +82,7 @@ export function layoutBraces(modules: readonly SceneModule[], spans: readonly Bl
     const own = spans.filter((s) => module.nodes.includes(s.node));
     return {
       module,
-      side: module.side ?? 'left',
+      side: module.side === 'right' ? 'right' : 'left',
       nodes: own.map((s) => s.node),
       column: 0,
       x: 0,
@@ -105,6 +107,23 @@ export function layoutBraces(modules: readonly SceneModule[], spans: readonly Bl
     assigned.push(brace);
   }
   return braces;
+}
+
+export const BRACE_THICK_OFFSET = 0.016;
+
+export function levelBraces(
+  modules: readonly SceneModule[],
+  ranges: ReadonlyMap<string, [number, number]>,
+  bounds: SceneBounds & { z: number; cx: number; cz: number },
+  gaps: { left: number; right: number; outer: number },
+): Brace[] {
+  return modules.flatMap((module): Brace[] => {
+    const range = module.id === undefined ? undefined : ranges.get(module.id);
+    if (range === undefined) return [];
+    const side = module.side ?? 'left';
+    const x = side === 'left' ? bounds.xMin - gaps.left : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
+    return [{ module, side: side === 'left' ? 'left' : 'right', thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz }];
+  });
 }
 
 function outward(brace: Brace): number {

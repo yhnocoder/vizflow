@@ -139,14 +139,14 @@ export class VizflowPage extends HTMLElement {
       const [{ loadPage }, { autoLayout }] = await Promise.all([import('../dsl'), import('../scene3d')]);
       const compiled = await loadPage(new URL(src, document.baseURI).href);
       if (loading !== this.#loading) return;
-      const { layout, modules } = autoLayout(compiled.tree);
+      const { layout, modules, levels } = autoLayout(compiled.tree, compiled.steps);
       this.#compiled = compiled;
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
       this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
-      this.#scene = { layout, modules, hint: compiled.page.hint, camera: compiled.page.camera };
+      this.#scene = { layout, modules, levels, sequence: this.#sequence, hint: compiled.page.hint, camera: compiled.page.camera };
       this.#schedule();
       this.#flush();
       this.dispatchEvent(new Event('load'));

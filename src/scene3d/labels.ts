@@ -2,7 +2,7 @@ import { type Camera, Vector3 } from 'three';
 import { type Placement, avoidOverlaps } from './avoid';
 import type { Vec3 } from './layout';
 
-export type LabelKind = 'val' | 'tick' | 'ttl' | 'ntl' | 'nv' | 'cls' | 'kk' | 'colh' | 'mod';
+export type LabelKind = 'val' | 'tick' | 'ttl' | 'ntl' | 'nv' | 'cls' | 'kk' | 'colh' | 'mod' | 'tok' | 'boxlb';
 
 const ANCHORS: Record<string, [number, number]> = {
   'top-center': [-0.5, -1],
@@ -31,6 +31,8 @@ const DEFAULT_ANCHOR: Record<LabelKind, AnchorName> = {
   kk: 'right-middle',
   colh: 'top-center',
   mod: 'right-middle',
+  tok: 'left-middle',
+  boxlb: 'above-right',
 };
 
 export const PRIORITY = { title: 5, node: 4, value: 3, category: 2, minor: 1 } as const;
@@ -57,9 +59,9 @@ export class Label {
     this.el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
     this.anchor = DEFAULT_ANCHOR[kind];
     this.priority =
-      kind === 'ttl' || kind === 'mod' ? PRIORITY.title : kind === 'ntl' ? PRIORITY.node : kind === 'val' || kind === 'nv' ? PRIORITY.value : kind === 'cls' || kind === 'colh' ? PRIORITY.category : PRIORITY.minor;
+      kind === 'ttl' || kind === 'mod' || kind === 'boxlb' ? PRIORITY.title : kind === 'ntl' ? PRIORITY.node : kind === 'val' || kind === 'nv' ? PRIORITY.value : kind === 'cls' || kind === 'colh' || kind === 'tok' ? PRIORITY.category : PRIORITY.minor;
     this.movable = kind === 'ttl' || kind === 'ntl' || kind === 'mod';
-    this.hideOnOverlap = !this.movable;
+    this.hideOnOverlap = !this.movable && kind !== 'tok' && kind !== 'boxlb';
   }
 
   setText(text: string): void {
