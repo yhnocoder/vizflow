@@ -1,0 +1,619 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepEP 与 DeepGEMM 的执行过程</title>
+<link rel="icon" href="data:,">
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; }
+.lede { color: var(--muted); max-width: 76ch; margin: 0 0 12px; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--muted); margin: 0; padding: 0; list-style: none; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.tools { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 10px; }
+.facts { margin: 0 0 12px; overflow-x: auto; }
+.facts:empty { display: none; }
+.facts p { margin: 0 0 6px; color: var(--muted); font-size: 13.5px; }
+.facts table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.facts th, .facts td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.facts th { color: var(--muted); font-weight: 500; }
+.facts td.num { text-align: right; }
+.facts tr.now td { font-weight: 600; }
+.facts .chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>DeepEP 与 DeepGEMM 的执行过程</h1>
+  <p class="lede">一个 MoE 层在多卡上的执行顺序：DeepEP 的 notify 与 dispatch 把 token 送到专家所在的卡，DeepGEMM 的 grouped GEMM 在每张卡上计算专家，combine 把结果送回并求和，两个 micro-batch 让通信与计算重叠。简图、表格和时间线上的数字都由 <code>src/sim</code> 的模拟器算出：<code>notify</code>、<code>dispatchPlan</code>、<code>expandedLayout</code>、<code>combinePlan</code> 按 DeepEP V2.5 的源码给出每份数据的去向和字节数，<code>schedule</code> 与 <code>pipeline</code> 按 DeepGEMM 的 SM90 FP8 内核给出 tile 顺序和一个 SM 上的流水线，<code>overlapSchedule</code> 排出两个 micro-batch 的时间线。</p>
+  <p class="lede">模型的简化：DeepEP 的模拟只给出去向和字节数，不模拟 channel 的时序，所以图中把 RDMA 和 NVLink 两跳分成两步画；DeepGEMM 的流水线只模拟一个 CTA，TMA 发出拷贝不占时间，各阶段的时长是假设值。每一步在文字里说明用到的假设。</p>
+  <div class="vf-stack">
+    <div id="steps"></div>
+    <div>
+      <div class="tools">
+        <button class="vf-btn" type="button" id="replay">重播动画</button>
+        <ul class="legend" id="legend"></ul>
+      </div>
+      <div id="diagram"></div>
+    </div>
+    <div id="timeline"></div>
+  </div>
+</main>
+<script type="module">
+import { createStepList } from '@yhnocoder/vizflow/steps';
+import { renderText } from '@yhnocoder/vizflow/formula';
+import { epTopology, expandedBadges, mountGpuDiagram, mountStepPanel, mountSteps, mountTimeline, pipelineState, scheduleTiles, transferState } from '@yhnocoder/vizflow/ui';
+import {
+  WGMMA_M,
+  bytesByVia,
+  combinePlan,
+  combineTokenBytes,
+  dispatchPlan,
+  dispatchTokenBytes,
+  expandedLayout,
+  isComputationValid,
+  maxBytesPerRank,
+  nodeLimitedRouter,
+  notify,
+  numBlocksPerGroup,
+  overlapSchedule,
+  pipeline,
+  rankOfExpert,
+  scaleoutOf,
+  scaleupOf,
+  schedule,
+} from '../src/sim/index.ts';
+
+const EP = { numScaleoutRanks: 4, numScaleupRanks: 4, numExperts: 32 };
+const TOPK = 4;
+const MAX_NODES = 2;
+const SEED = 1;
+const SOURCES = [1, 6];
+const TOKENS_PER_SOURCE = 3;
+const HIDDEN = 7168;
+const SMALL_ALIGNMENT = 4;
+const BIG_TOKENS = 256;
+const ALIGNMENT = 128;
+const GEMM_RANK = 5;
+const GEMM_N = 512;
+const GEMM_K = 1024;
+const GEMM_SMS = 8;
+const STAGES = 4;
+const NVLINK_GBPS = 160;
+const IB_GBPS = 50;
+const TOTAL_SMS = 132;
+const COMM_SMS = 20;
+const ATTENTION_US = 100;
+const MOE_US = 130;
+const LAYERS = 2;
+
+const range = (n) => Array.from({ length: n }, (_, i) => i);
+const perRank = EP.numExperts / (EP.numScaleoutRanks * EP.numScaleupRanks);
+const ranks = range(EP.numScaleoutRanks * EP.numScaleupRanks);
+const int = (x) => x.toLocaleString('en-US');
+const mb = (x) => `${(x / 1e6).toFixed(2)} MB`;
+const microseconds = (bytes, gbps) => bytes / (gbps * 1e3);
+const localOf = (rank) => `${scaleoutOf(EP, rank)} 号节点的 ${scaleupOf(EP, rank)} 号卡`;
+
+const routed = nodeLimitedRouter(EP, TOKENS_PER_SOURCE, TOPK, MAX_NODES, SEED);
+const topkIdx = routed.map((tokens, rank) => (SOURCES.includes(rank) ? tokens : []));
+const tokens = SOURCES.flatMap((rank) => topkIdx[rank].map((experts, token) => ({ rank, token, experts })));
+const colorOf = (rank, token) => SOURCES.indexOf(rank) * TOKENS_PER_SOURCE + token;
+const tokenColor = (t) => colorOf(t.tokenRank, t.token);
+const nodesOf = (experts) => [...new Set(experts.map((e) => scaleoutOf(EP, rankOfExpert(EP, e))))].sort((a, b) => a - b);
+const gpusOf = (experts) => [...new Set(experts.map((e) => rankOfExpert(EP, e)))].sort((a, b) => a - b);
+
+const counts = notify(EP, topkIdx, 'hybrid', SMALL_ALIGNMENT);
+const dispatchOpts = { hidden: HIDDEN, dtype: 'fp8' };
+const hybrid = dispatchPlan(EP, topkIdx, { ...dispatchOpts, mode: 'hybrid' });
+const direct = dispatchPlan(EP, topkIdx, { ...dispatchOpts, mode: 'direct' });
+const rdmaCount = (plan) => plan.filter((t) => t.via === 'rdma').length;
+const layout = expandedLayout(EP, topkIdx, SMALL_ALIGNMENT);
+const combineHybrid = combinePlan(EP, topkIdx, { mode: 'hybrid', allowMultipleReduction: true, hidden: HIDDEN });
+const combineHybridSingle = combinePlan(EP, topkIdx, { mode: 'hybrid', allowMultipleReduction: false, hidden: HIDDEN });
+const combineDirect = combinePlan(EP, topkIdx, { mode: 'direct', allowMultipleReduction: true, hidden: HIDDEN });
+const combineDirectSingle = combinePlan(EP, topkIdx, { mode: 'direct', allowMultipleReduction: false, hidden: HIDDEN });
+const fp8Bytes = dispatchTokenBytes(HIDDEN, 'fp8', TOPK);
+const bf16Bytes = dispatchTokenBytes(HIDDEN, 'bf16', TOPK);
+const combineBytes = combineTokenBytes(HIDDEN, TOPK);
+
+const dedupToken = tokens.find((t) => gpusOf(t.experts).length < t.experts.length);
+const dedupGpu = dedupToken === undefined ? undefined : gpusOf(dedupToken.experts).find((g) => dedupToken.experts.filter((e) => rankOfExpert(EP, e) === g).length > 1);
+const dedupExperts = dedupToken === undefined ? [] : dedupToken.experts.filter((e) => rankOfExpert(EP, e) === dedupGpu);
+const mixedToken = tokens.find((t) => nodesOf(t.experts).includes(scaleoutOf(EP, t.rank)) && nodesOf(t.experts).length > 1);
+const tokenName = (t) => `GPU ${t.rank} 的 t${t.token}`;
+const forwarders = [...new Set(hybrid.filter((t) => t.hop === 'forward' && t.via !== 'local').map((t) => t.srcRank))].sort((a, b) => a - b);
+const receivers = ranks.filter((r) => counts.ranks[r].numRecvTokens > 0);
+
+const big = nodeLimitedRouter(EP, BIG_TOKENS, TOPK, MAX_NODES, SEED);
+const bigLayout = expandedLayout(EP, big, ALIGNMENT);
+const bigCounts = notify(EP, big, 'hybrid', ALIGNMENT).ranks[GEMM_RANK];
+const gemmRows = bigLayout[GEMM_RANK];
+const GEMM = {
+  type: 'm_grouped_contiguous',
+  groupIdxPerRow: gemmRows.map((row) => (row.kind === 'token' ? row.expert - GEMM_RANK * perRank : -1)),
+  m: gemmRows.length, n: GEMM_N, k: GEMM_K, blockM: 128, blockN: 128, blockK: 128,
+  numSms: GEMM_SMS, numMulticast: 2, multicastOnA: false,
+};
+const tiles = schedule(GEMM);
+const mBlocks = GEMM.m / GEMM.blockM;
+const nBlocks = GEMM.n / GEMM.blockN;
+const kBlocks = GEMM.k / GEMM.blockK;
+const blocksPerGroup = numBlocksPerGroup(GEMM.blockM, GEMM.blockN, GEMM.numSms, GEMM.multicastOnA);
+const pipes = range(GEMM_SMS).map((sm) => pipeline({ schedule: GEMM, sm, numStages: STAGES }));
+const numWaves = Math.max(...tiles.map((list) => list.length));
+const secondGroupWave = tiles[0].findIndex((tile) => tile.mBlock >= blocksPerGroup);
+const halfIdle = (tile) => !isComputationValid(GEMM, tile, WGMMA_M);
+const PIPE_SM = tiles.findIndex((list) => list.some((tile, i) => i > 0 && halfIdle(tile)));
+const pipe = pipes[PIPE_SM];
+const idleTile = pipe.tiles.findIndex((tile, i) => i > 0 && halfIdle(tile));
+const expertName = (group) => (group < 0 ? '补零' : `e${GEMM_RANK * perRank + group}`);
+const segments = range(perRank).map((e) => ({
+  expert: GEMM_RANK * perRank + e,
+  count: bigCounts.numUnalignedRecvTokensPerExpert[e],
+  start: bigCounts.psumNumRecvTokensPerExpertExclusive[e],
+  end: bigCounts.psumNumRecvTokensPerExpertExclusive[e + 1],
+}));
+const noMulticast = tiles.flat().filter((tile) => !tile.multicast);
+const noMulticastBlocks = [...new Set(noMulticast.map((tile) => tile.mBlock))].sort((a, b) => a - b);
+
+const bigHybrid = dispatchPlan(EP, big, { ...dispatchOpts, mode: 'hybrid' });
+const bigCombine = combinePlan(EP, big, { mode: 'hybrid', allowMultipleReduction: true, hidden: HIDDEN });
+const linkTime = (plan) => {
+  const peak = (via) => {
+    const m = maxBytesPerRank(EP, plan, [via]);
+    return Math.max(m.sent, m.received);
+  };
+  const rdma = peak('rdma');
+  const nvlink = peak('nvlink');
+  return { rdma, nvlink, rdmaUs: microseconds(rdma, IB_GBPS), nvlinkUs: microseconds(nvlink, NVLINK_GBPS) };
+};
+const dispatchTime = linkTime(bigHybrid);
+const combineTime = linkTime(bigCombine);
+const durations = {
+  attention: ATTENTION_US,
+  dispatch: Math.max(dispatchTime.rdmaUs, dispatchTime.nvlinkUs),
+  moe: MOE_US,
+  combine: Math.max(combineTime.rdmaUs, combineTime.nvlinkUs),
+};
+const overlap = overlapSchedule(durations, LAYERS);
+const overlapEnd = Math.max(...overlap.map((item) => item.end));
+const sequentialEnd = 2 * LAYERS * (durations.attention + durations.dispatch + durations.moe + durations.combine);
+const computeItems = overlap.filter((item) => item.stream === 'compute');
+const computeIdle = computeItems.slice(1).reduce((sum, item, i) => sum + item.start - computeItems[i].end, 0);
+const phaseAt = (phase, batch, layer = 0) => overlap.find((item) => item.phase === phase && item.batch === batch && item.layer === layer);
+
+const topology = epTopology(EP, { smsPerGpu: GEMM_SMS, smLabel: `H800 有 ${TOTAL_SMS} 个 SM，示意按 ${GEMM_SMS} 个 SM 调度`, gpuLabels: (r) => `e${perRank * r} e${perRank * r + 1}`, nic: true });
+const node = (state) => ({ topology, level: 'node', ...state });
+const sourceBadges = Object.fromEntries(SOURCES.map((rank) => [`gpu:${rank}`, topkIdx[rank].map((experts, token) => ({ text: `t${token} ${experts.join(' ')}`, chips: [colorOf(rank, token)] }))]));
+const mergeHighlight = (...maps) => Object.assign({}, ...maps);
+const rdmaHighlight = (plan) => {
+  const map = {};
+  for (const t of plan) {
+    if (t.via !== 'rdma') continue;
+    map[`nic:${t.srcRank}`] = 'rdma';
+    map[`nic:${t.dstRank}`] = 'rdma';
+    map.ib = 'rdma';
+  }
+  return map;
+};
+
+const smOptions = { arch: 'sm90', numStages: STAGES, mathWarpgroups: pipe.numMathWarpgroups, note: 'sm90_fp8_gemm_1d2d.cuh 的结构' };
+const smAt = (time) => ({ topology, level: 'sm', focus: { gpu: GEMM_RANK, sm: PIPE_SM }, sm: smOptions, ...pipelineState(pipe, STAGES, time) });
+const firstEvent = (row, tile = 0) => pipe.events.find((e) => e.row === row && e.tile === tile);
+const mid = (event) => (event.start + event.end) / 2;
+const tileName = (tile) => `m${tile.mBlock} n${tile.nBlock}`;
+
+const hbmBadge = [`A [${GEMM.m}, ${GEMM.k}] FP8：${segments.map((s) => `e${s.expert} ${s.count} 行 + ${s.end - s.start - s.count} 行补零`).join('，')}`, `B [${perRank}, ${GEMM.n}, ${GEMM.k}] FP8，每个本地专家一份；D [${GEMM.m}, ${GEMM.n}] BF16`];
+const gpuTiles = (wave, extra = {}) => ({
+  topology, level: 'gpu', focus: { gpu: GEMM_RANK },
+  tiles: {
+    ...scheduleTiles(GEMM, tiles, wave),
+    title: `输出 D：${mBlocks} x ${nBlocks} 个 tile，行块 0 到 ${segments[0].end / GEMM.blockM - 1} 属于 e${segments[0].expert}，其余属于 e${segments[1].expert}`,
+    group: { rows: [0, Math.min(blocksPerGroup, mBlocks) - 1], cols: [0, nBlocks - 1], label: `第一个 swizzle 组：${blocksPerGroup} 个行块` },
+  },
+  badges: { hbm: hbmBadge },
+  ...extra,
+});
+const waveState = (wave) => {
+  const highlight = {};
+  const badges = { hbm: hbmBadge };
+  tiles.forEach((list, sm) => {
+    const tile = list.find((t) => t.iter === wave);
+    if (tile === undefined) return;
+    highlight[`sm:${sm}`] = 'compute';
+    badges[`sm:${sm}`] = [tileName(tile), tile.multicast ? 'B 组播' : 'B 单独读', ...(halfIdle(tile) ? ['WG 1 空闲'] : [])];
+  });
+  return { highlight, badges };
+};
+
+const table = (headers, rows, now = () => false) =>
+  `<table><thead><tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows
+    .map((row, i) => `<tr${now(i) ? ' class="now"' : ''}>${row.map((cell) => (typeof cell === 'number' ? `<td class="num">${int(cell)}</td>` : `<td>${cell}</td>`)).join('')}</tr>`)
+    .join('')}</tbody></table>`;
+const chip = (color) => `<span class="chip" style="background: var(--vf-series-${(color % 6) + 1})"></span>`;
+const viaRow = (name, plan) => {
+  const b = bytesByVia(plan);
+  return [name, rdmaCount(plan), b.rdma, b.nvlink, b.local];
+};
+const viaHeaders = ['方式', 'RDMA 份数', 'RDMA 字节', 'NVLink 字节', '本卡拷贝字节'];
+
+const routeTable = () =>
+  table(
+    ['token', '选中的专家', '专家所在的卡', '涉及的节点'],
+    tokens.map((t) => [`${chip(colorOf(t.rank, t.token))}${tokenName(t)}`, t.experts.map((e) => `e${e}`).join(' '), gpusOf(t.experts).join(', '), nodesOf(t.experts).join(', ')]),
+  );
+const notifyTable = () =>
+  table(
+    ['', ...ranks.map((r) => `GPU ${r}`)],
+    SOURCES.flatMap((src) => [
+      [`GPU ${src} 发往每张卡`, ...counts.numTokensPerRank[src]],
+    ]).concat(SOURCES.map((src) => [`GPU ${src} 发往每张卡上的专家`, ...ranks.map((r) => counts.numTokensPerExpert[src].slice(r * perRank, (r + 1) * perRank).join('+'))])),
+  );
+const psumTable = () =>
+  table(
+    ['卡', '经节点内 0 到 3 号卡转入', '前缀和', '总数', '每个专家的行数', '对齐后的段起点', 'psum_num_recv_tokens_per_expert'],
+    receivers.map((r) => {
+      const c = counts.ranks[r];
+      return [`GPU ${r}`, c.numRecvTokensPerScaleupRank.join(', '), c.psumNumRecvTokensPerScaleupRank.join(', '), c.numRecvTokens, c.numUnalignedRecvTokensPerExpert.join(', '), c.psumNumRecvTokensPerExpertExclusive.join(', '), c.psumNumRecvTokensPerExpert.join(', ')];
+    }),
+  );
+const expandRank = dedupGpu ?? receivers[0];
+const expandTable = () =>
+  `<p>GPU ${expandRank} 的展开输出，每行一个（token，专家）：</p>` +
+  table(
+    ['行', '专家', '内容'],
+    layout[expandRank].map((row, i) => [i, `e${row.expert}`, row.kind === 'token' ? `${chip(colorOf(row.srcRank, row.token))}GPU ${row.srcRank} 的 t${row.token}` : '补零']),
+  );
+const bytesTable = () =>
+  `<p>这一批 6 个 token 的 dispatch，每份数据 ${int(fp8Bytes)} 字节（FP8）：</p>` + table(viaHeaders, [viaRow('hybrid', hybrid), viaRow('direct', direct)]);
+const tokenBytesTable = () =>
+  table(
+    ['用途', '数据', '缩放因子', '元数据', '对齐后每个 token'],
+    [
+      ['dispatch，FP8', `${int(HIDDEN)}`, `${int((HIDDEN / 128) * 4)}`, `${TOPK * 8 + (1 + TOPK) * 4}`, fp8Bytes],
+      ['dispatch，BF16', `${int(HIDDEN * 2)}`, '0', `${TOPK * 8 + (1 + TOPK) * 4}`, bf16Bytes],
+      ['combine，BF16', `${int(HIDDEN * 2)}`, '0', `${TOPK * 8}`, combineBytes],
+    ],
+  );
+const gemmTable = () =>
+  table(
+    ['行块', '行', '专家', '有效行', 'WG 1 的 64 行', '与相邻行块组播 B'],
+    range(mBlocks).map((m) => {
+      const first = m * GEMM.blockM;
+      const valid = GEMM.groupIdxPerRow.slice(first, first + GEMM.blockM).filter((g) => g >= 0).length;
+      const tile = tiles.flat().find((t) => t.mBlock === m);
+      return [m, `${first} 到 ${first + GEMM.blockM - 1}`, expertName(GEMM.groupIdxPerRow[first]), valid, halfIdle(tile) ? '全是补零，跳过' : '计算', tile.multicast ? '是' : '否'];
+    }),
+  );
+const combineTable = () =>
+  `<p>这一批 6 个 token 的 combine，BF16：</p>` +
+  table(viaHeaders, [
+    viaRow('hybrid，allow_multiple_reduction=True', combineHybrid),
+    viaRow('hybrid，allow_multiple_reduction=False', combineHybridSingle),
+    viaRow('direct，allow_multiple_reduction=True', combineDirect),
+    viaRow('direct，allow_multiple_reduction=False', combineDirectSingle),
+  ]);
+const overlapTable = () =>
+  `<p>每个 micro-batch 每张卡 ${BIG_TOKENS} 个 token，按每张卡收发字节数的最大值计算：</p>` +
+  table(
+    ['阶段', '依据', '时长 µs'],
+    [
+      ['dispatch', `RDMA ${mb(dispatchTime.rdma)} / ${IB_GBPS} GB/s = ${dispatchTime.rdmaUs.toFixed(1)}；NVLink ${mb(dispatchTime.nvlink)} / ${NVLINK_GBPS} GB/s = ${dispatchTime.nvlinkUs.toFixed(1)}；取较大者`, durations.dispatch.toFixed(1)],
+      ['combine', `RDMA ${mb(combineTime.rdma)} / ${IB_GBPS} GB/s = ${combineTime.rdmaUs.toFixed(1)}；NVLink ${mb(combineTime.nvlink)} / ${NVLINK_GBPS} GB/s = ${combineTime.nvlinkUs.toFixed(1)}；取较大者`, durations.combine.toFixed(1)],
+      ['attention', '假设值', durations.attention.toFixed(1)],
+      ['MoE 专家计算', '假设值', durations.moe.toFixed(1)],
+      [`${LAYERS} 层合计`, `重叠：${overlapEnd.toFixed(1)}；两个 micro-batch 依次执行、不重叠：${sequentialEnd.toFixed(1)}`, ''],
+    ],
+  );
+
+const dispatchWindow = [phaseAt('dispatch', 0).start, phaseAt('dispatch', 0).end];
+const combineWindow = [phaseAt('combine', 0).start, phaseAt('combine', 0).end];
+const tileSpan = (sm, i) => {
+  const own = pipes[sm].events.filter((e) => e.tile === i);
+  const math = own.filter((e) => e.row === 'wg0' || e.row === 'wg1');
+  return [Math.min(...math.map((e) => e.start)), Math.max(...own.map((e) => e.end))];
+};
+const waveSpan = (wave) => {
+  const spans = tiles.flatMap((list, sm) => list.filter((t) => t.iter === wave).map((t) => tileSpan(sm, list.indexOf(t))));
+  return [Math.min(...spans.map((s) => s[0])), Math.max(...spans.map((s) => s[1]))];
+};
+const at = (time) => [time - 0.4, time + 0.4];
+
+const t0 = tokens[0];
+const idle = pipe.tiles[idleTile];
+const sendNvlink = combineHybrid.filter((t) => t.hop === 'send');
+const forwardRdma = combineHybrid.filter((t) => t.hop === 'forward');
+
+const SCENES = [
+  {
+    id: 'route', segment: '路由与 notify', label: '路由', title: `路由：每个 token 选 ${TOPK} 个专家，最多落在 ${MAX_NODES} 个节点`,
+    text: `示意拓扑是 ${EP.numScaleoutRanks} 个节点、每个节点 ${EP.numScaleupRanks} 张卡，共 ${EP.numExperts} 个专家，专家 $e$ 放在 GPU $\\lfloor e/${perRank} \\rfloor$ 上。图中只有 GPU ${SOURCES[0]} 和 GPU ${SOURCES[1]} 各有 ${TOKENS_PER_SOURCE} 个 token，色块是 token，后面是它选中的专家编号。
+
+路由分值是按种子 ${SEED} 生成的随机数，选法与 DeepSeek V3 的按节点限制路由相同：每个节点取本节点最高的 $K/M = ${TOPK / MAX_NODES}$ 个分值相加作为节点分值，先选节点分值最高的 $M = ${MAX_NODES}$ 个节点，再在这些节点的专家里取分值最高的 $K = ${TOPK}$ 个。限制节点数是为了限制跨节点的 IB 流量。DeepSeek V3 是 256 个专家、$K = 8$、$M = 4$。`,
+    props: node({ highlight: Object.fromEntries(SOURCES.map((r) => [`gpu:${r}`, 'compute'])), badges: sourceBadges }),
+    facts: routeTable, time: dispatchWindow,
+  },
+  {
+    id: 'notify', segment: '路由与 notify', label: 'notify', title: 'notify：按卡去重后计数',
+    text: `dispatch 的第一步是 notify。notify warp 读 \`topk_idx\`，在共享内存里用 \`atomicAdd_block\` 统计发往每个专家的 token 数和发往每张卡的 token 数。按卡计数前用 \`ptx::deduplicate\` 去重：${dedupToken ? `${tokenName(dedupToken)} 选的 ${dedupExperts.map((e) => `e${e}`).join(' 和 ')} 都在 GPU ${dedupGpu} 上，数据只需要传一份，所以发往 GPU ${dedupGpu} 只算 1 个，发往 ${dedupExperts.map((e) => `e${e}`).join('、')} 各算 1 个。` : ''}
+
+图中每张卡上的数字是它从 GPU ${SOURCES[0]} 和 GPU ${SOURCES[1]} 各收到几个 token，来自 \`notify()\` 的 \`numTokensPerRank\`。表格的后两行是按专家的计数，写成「这张卡上两个专家各自的个数」。各 SM 的计数归约后写给所有对端。`,
+    props: node({
+      highlight: Object.fromEntries(SOURCES.map((r) => [`gpu:${r}`, 'reduce'])),
+      badges: Object.fromEntries(ranks.map((r) => [`gpu:${r}`, SOURCES.filter((src) => counts.numTokensPerRank[src][r] > 0).map((src) => `GPU ${src} 来 ${counts.numTokensPerRank[src][r]} 个`)])),
+    }),
+    facts: notifyTable, time: dispatchWindow,
+  },
+  {
+    id: 'psum', segment: '路由与 notify', label: '前缀和', title: '前缀和：每张卡算出接收缓冲和每个专家的起点',
+    text: `每张卡收到对端的计数后算两组前缀和。第一组按节点内编号计数：hybrid 模式下，发往这张卡的 token 都经本节点的某一号卡转进来（下一步说明），\`psum_num_recv_tokens_per_scaleup_rank\` 是按转入的卡去重计数后的前缀和，最后一项是收到的 token 总数。第二组按本地专家计数：每个专家的行数先补齐到 \`expert_alignment\` 的整数倍（示意取 ${SMALL_ALIGNMENT}），补齐后的前缀和就是每个专家的段在输出里的起点。展开布局下 \`psum_num_recv_tokens_per_expert\` 的第 $i$ 项等于第 $i$ 段的起点加上第 $i$ 个专家的实际行数。
+
+\`do_cpu_sync=True\` 时这些计数会写进主机可读的内存，CPU 拿到准确的大小再分配输出，训练和 prefill 用这种方式；decode 用 \`False\`，输出按容量预先分配，GEMM 从 GPU 上的 \`psum_num_recv_tokens_per_expert\` 读出每个专家的有效范围。`,
+    props: node({
+      highlight: Object.fromEntries(receivers.map((r) => [`gpu:${r}`, 'reduce'])),
+      badges: Object.fromEntries(receivers.map((r) => {
+        const c = counts.ranks[r];
+        return [`gpu:${r}`, [`收 ${c.numRecvTokens} 个 token`, range(perRank).map((e) => `e${r * perRank + e} 起 ${c.psumNumRecvTokensPerExpertExclusive[e]}`).join('，')]];
+      })),
+    }),
+    facts: psumTable, time: dispatchWindow,
+  },
+  {
+    id: 'rdma', segment: 'dispatch', label: 'RDMA', title: 'hybrid 第一跳：每个目标节点经 IB 发一份，发到同号卡',
+    text: `hybrid 模式下，scale-out warp 把 token 经 RDMA 发到目标节点上与源卡同号的卡，例如 GPU 1 是 0 号节点的 1 号卡，它发往 $n$ 号节点的 token 都先到 GPU $4n+1$。一个 token 在同一个节点上选了几个专家，IB 上也只传一份。${mixedToken ? `${tokenName(mixedToken)} 选中的专家有一部分在本节点，这部分不走 IB。` : ''}这一批共 ${rdmaCount(hybrid)} 份数据经过 IB。
+
+源码里 RDMA 和下一步的 NVLink 转发按 channel 交替进行，同号卡收到一批就转发一批。模拟器只给出每份数据的去向，不模拟 channel 的时序，所以这里分成两步画，动画的快慢也不对应实际时间。`,
+    props: (() => {
+      const s = transferState(hybrid.filter((t) => t.via === 'rdma'), tokenColor, 220);
+      return node({ ...s, badges: sourceBadges, highlight: mergeHighlight(s.highlight, rdmaHighlight(hybrid)) });
+    })(),
+    time: dispatchWindow,
+  },
+  {
+    id: 'nvlink', segment: 'dispatch', label: 'NVLink 转发', title: 'hybrid 第二跳：同号卡经 NVLink 转发到持有专家的卡',
+    text: `同号卡上的 forward warp 轮询各源节点到达的数据，按目标卡去重后用 TMA 经 NVLink 写到持有专家的卡。图中转发的卡是 ${forwarders.map((r) => `GPU ${r}`).join('、')}。源卡所在节点里的目标卡由源卡自己经 NVLink 写过去，在模拟器里这条路径也记作一次转发，源卡转发给自己。同号卡自己持有选中的专家时，这一跳是本卡拷贝，图中不画。`,
+    props: node({ ...transferState(hybrid.filter((t) => t.via === 'nvlink'), tokenColor), badges: sourceBadges }),
+    time: dispatchWindow,
+  },
+  {
+    id: 'direct', segment: 'dispatch', label: 'direct 对比', title: `direct 模式：每张目标卡单独发一份，IB 上 ${rdmaCount(direct)} 份，hybrid 是 ${rdmaCount(hybrid)} 份`,
+    text: `\`EPBuffer\` 的 \`allow_hybrid_mode\` 关闭时，多节点通信用 direct 模式：源卡直接写给每张目标卡，同节点的走 NVLink，其他节点的走 RDMA，没有转发这一跳。一个 token 在另一个节点上选了两张卡的专家时，IB 上就要传两份。表格是两种模式下这一批的字节数，hybrid 少走的 IB 字节换成了目标节点内的 NVLink 转发。DeepSeek V3 报告给出 NVLink 约 ${NVLINK_GBPS} GB/s、IB 约 ${IB_GBPS} GB/s，IB 的带宽约为 NVLink 的三分之一。`,
+    props: (() => {
+      const s = transferState(direct, tokenColor, 220);
+      return node({ ...s, badges: sourceBadges, highlight: mergeHighlight(s.highlight, rdmaHighlight(direct)) });
+    })(),
+    facts: bytesTable, time: dispatchWindow,
+  },
+  {
+    id: 'bytes', segment: 'dispatch', label: '每个 token 的字节', title: `每个 token 的字节数：FP8 dispatch ${int(fp8Bytes)}，BF16 combine ${int(combineBytes)}`,
+    text: `一个 token 在缓冲里按 \`TokenLayout\` 排列：数据、缩放因子、元数据三段各自对齐到 32 字节，总数再对齐到 64 字节。
+
+$$B = \\mathrm{align}_{64}\\big(\\mathrm{align}_{32}(b_x) + \\mathrm{align}_{32}(b_s) + \\mathrm{align}_{32}(b_m)\\big)$$
+
+FP8 dispatch 时 $b_x = d$，缩放因子是每 128 个通道一个 FP32，$b_s = 4d/128$；元数据是 $K$ 个 int32 的专家编号和 $K$ 个 FP32 的权重，dispatch 再加 $1+K$ 个 int32 的源 token 编号与链表下标。combine 的输入必须是 BF16，$b_x = 2d$，没有缩放因子。$d = ${HIDDEN}$、$K = ${TOPK}$ 时 combine 每个 token 是 FP8 dispatch 的 ${(combineBytes / fp8Bytes).toFixed(2)} 倍。`,
+    props: node({ highlight: Object.fromEntries(SOURCES.map((r) => [`gpu:${r}`, 'copy'])), badges: Object.fromEntries(SOURCES.map((r) => [`gpu:${r}`, [`dispatch 每个 token ${int(fp8Bytes)} B`, `combine 每个 token ${int(combineBytes)} B`]])) }),
+    facts: tokenBytesTable, time: dispatchWindow,
+  },
+  {
+    id: 'expand', segment: 'dispatch', label: '按专家排好', title: 'copy epilogue：按专家排好，段尾补零',
+    text: `每张卡把收到的 token 从接收缓冲搬进按本地专家排好的输出（\`do_expand=True\`，一个 token 选中本卡的每个专家各占一行），每段从上一步算出的起点开始，补齐的行由 \`do_zero_padding=True\` 清零。${dedupToken ? `${tokenName(dedupToken)} 在 GPU ${dedupGpu} 上占 ${dedupExperts.length} 行，传输只有一份。` : ''}\`defer_epilogue=True\` 时这一步推迟到计算流调用 \`.wait()\` 时才运行。
+
+\`expert_alignment\` 在示意里取 ${SMALL_ALIGNMENT}。真实部署设成 DeepGEMM 的 \`get_mk_alignment_for_contiguous_layout()\`（默认 ${ALIGNMENT}），这样每个专家的段正好是 GEMM 的整数个行块。`,
+    props: (() => {
+      const badges = expandedBadges(layout, (row) => colorOf(row.srcRank, row.token));
+      return node({ badges, highlight: Object.fromEntries(receivers.map((r) => [`gpu:${r}`, 'compute'])) });
+    })(),
+    facts: expandTable, time: dispatchWindow,
+  },
+  {
+    id: 'gemm-input', segment: 'DeepGEMM 调度', label: 'grouped GEMM 的输入', title: `grouped GEMM：GPU ${GEMM_RANK} 的 ${GEMM.m} 行按专家分段`,
+    text: `上面的例子每张卡只有几个 token。为了让 GEMM 有足够的行，从这一步起换成每张卡 ${BIG_TOKENS} 个 token（同一个路由器和种子），\`expert_alignment\` 取 ${ALIGNMENT}。GPU ${GEMM_RANK} 上 ${segments.map((s) => `e${s.expert} 收到 ${s.count} 行`).join('，')}，各补齐到 ${ALIGNMENT} 的整数倍，A 共 ${GEMM.m} 行。
+
+这些行交给 \`m_grouped_fp8_gemm_nt_contiguous\`：\`grouped_layout\` 给出每一行属于哪个本地专家，补齐的行记为 $-1$。DeepGEMM 只在 M 上分组，每个专家的 N 和 K 相同。输出 $D = AB^{\\top}$ 切成 ${GEMM.blockM} x ${GEMM.blockN} 的 tile，对齐值等于 BLOCK_M，所以一个行块只属于一个专家。示意取 $N = ${GEMM.n}$、$K = ${GEMM.k}$，比真实的专家小。`,
+    props: gpuTiles(undefined),
+    facts: gemmTable, timeline: 'tiles',
+  },
+  {
+    id: 'gemm-wave', segment: 'DeepGEMM 调度', label: '第 1 轮', title: `第 1 轮：${GEMM_SMS} 个 SM 各领一个 tile`,
+    text: `每个 SM 上常驻一个 CTA，按调度器给的顺序连续处理多个 tile。第 $j$ 轮 SM $i$ 拿顺序里的第 $${GEMM_SMS}j+i$ 个 tile。调度器把 ${blocksPerGroup} 个行块分成一组（\`get_swizzled_block_idx\`，组的大小由 \`get_num_1d_blocks_per_group\` 按 BLOCK_M、BLOCK_N 和 SM 数从 8 和 16 里选），组内先沿 M 走，所以这一轮 ${GEMM_SMS} 个 SM 读的是同一列 B，A 的各段在后面几轮反复用到，留在 L2 里。
+
+相邻两个 SM 组成一个 cluster，它们的行块是 $m$ 和 $m \\oplus 1$，列相同，B 的同一块用 TMA multicast 读一次送给两个 SM。两个行块属于不同专家时 B 不同，\`is_tma_multicast_valid\` 返回 false，各读各的：行块 ${noMulticastBlocks.join('、')} 就是这种情况。下方时间线是 ${GEMM_SMS} 个 SM 各自的 tile，由 \`pipeline()\` 逐个 SM 模拟。`,
+    props: gpuTiles(0, waveState(0)),
+    facts: gemmTable, timeline: 'tiles', time: waveSpan(0),
+  },
+  {
+    id: 'gemm-group', segment: 'DeepGEMM 调度', label: `第 ${secondGroupWave + 1} 轮`, title: `第 ${secondGroupWave + 1} 轮：进入第二个 swizzle 组`,
+    text: `第一组的 ${Math.min(blocksPerGroup, mBlocks) * nBlocks} 个 tile 在前 ${secondGroupWave} 轮做完，第 ${secondGroupWave + 1} 轮进入只有 ${mBlocks - blocksPerGroup} 个行块的第二组。行块 ${segments.map((s) => s.end / GEMM.blockM - 1).join(' 和 ')} 的后半部分全是补零，\`is_computation_valid\` 对第二个 math warpgroup 的 64 行返回 false，这部分 WGMMA 直接跳过。
+
+时间线上每个 tile 的时长相同：模型不模拟 L2 和显存带宽的争用，WG 1 跳过时 WG 0 的耗时不变。共 ${numWaves} 轮。`,
+    props: gpuTiles(secondGroupWave, waveState(secondGroupWave)),
+    facts: gemmTable, timeline: 'tiles', time: waveSpan(secondGroupWave),
+  },
+  {
+    id: 'sm-load', segment: '一个 SM 内部', label: 'TMA 装入', title: `SM ${PIPE_SM}：TMA 把前 ${STAGES} 个 k-block 装进 ${STAGES} 级缓冲`,
+    text: `展开 SM ${PIPE_SM}。TMA warpgroup 只用一个线程发拷贝（它的寄存器数降到 \`kNumTMARegisters = 40\`），把 A、B 的一个 k-block（宽 128）和 A 的缩放因子搬进共享内存环形缓冲的一级，到达后在这一级的 full barrier 上报到。一个 tile 沿 K 有 ${kBlocks} 个 k-block。
+
+下方时间线是 \`pipeline()\` 对这个 SM 前两个 tile 的模拟。时长取 \`DEFAULT_PIPELINE_DURATIONS\` 的假设值（TMA 装入 4、WGMMA 3、提升 1、epilogue 6，单位任意），不是实测。模型里发出拷贝不占时间，所以 ${STAGES} 级同时开始装入。`,
+    props: smAt(mid(firstEvent('tma'))), timeline: 'pipe', pipeTiles: [0, 1], time: at(mid(firstEvent('tma'))),
+  },
+  {
+    id: 'sm-wgmma', segment: '一个 SM 内部', label: 'WGMMA', title: '两个 math warpgroup 读同一级，各算 64 行',
+    text: `stage 0 装满后，两个 math warpgroup 在 full barrier 上等到数据，各自对 64 行发 4 条 WGMMA（每条 $K = 32$），结果在 Tensor Core 的累加寄存器 \`accum\` 里。这时 ${STAGES} 级缓冲都装满了，TMA 要装第 ${STAGES + 1} 个 k-block 只能等 stage 0 被读完，时间线上 stage 0 这一行要到 WGMMA 读完 k0 之后才开始装 k${STAGES}。WGMMA 是这个 SM 上的瓶颈，TMA 一直跑在前面。`,
+    props: smAt(mid(firstEvent('wg0'))), timeline: 'pipe', pipeTiles: [0, 1], time: at(mid(firstEvent('wg0'))),
+  },
+  {
+    id: 'sm-promote', segment: '一个 SM 内部', label: '提升', title: '提升：乘缩放因子，加进 FP32 的 final_accum',
+    text: `WGMMA 做完，math warpgroup 先在 empty barrier 上报到，把 stage 0 交还给 TMA，然后用 CUDA core 做提升：
+
+$$\\text{final\\_accum}_{m,n} \\mathrel{+}= s^{A}_{m,j}\\, s^{B}_{\\lfloor n/128 \\rfloor, j} \\cdot \\text{accum}$$
+
+$j$ 是 k-block 的编号。提升和 TMA 装入第 ${STAGES + 1} 个 k-block 同时进行。FP8 累加精度的问题见 <a href="deepgemm-fp8.html">FP8 分块缩放页面</a>，这里只看时序。`,
+    props: smAt(mid(firstEvent('promote'))), timeline: 'pipe', pipeTiles: [0, 1], time: at(mid(firstEvent('promote'))),
+  },
+  {
+    id: 'sm-epilogue', segment: '一个 SM 内部', label: 'epilogue', title: 'epilogue 写回，TMA 已经在装下一个 tile',
+    text: `${kBlocks} 个 k-block 做完后，final_accum 转成 BF16，经共享内存写回 HBM。TMA 不等 epilogue：缓冲一有空级就开始装这个 SM 的下一个 tile（${tileName(pipe.tiles[1])}），所以 epilogue 结束时 ${STAGES} 级里已经是下一个 tile 的前几个 k-block。`,
+    props: smAt(mid(firstEvent('epilogue'))), timeline: 'pipe', pipeTiles: [0, 1], time: at(mid(firstEvent('epilogue'))),
+  },
+  {
+    id: 'sm-idle', segment: '一个 SM 内部', label: 'WG 1 跳过', title: `第 ${idleTile + 1} 个 tile（${tileName(idle)}）：后 64 行全是补零，WG 1 空闲`,
+    text: `这个 tile 的行块 ${idle.mBlock} 只有前 ${GEMM.groupIdxPerRow.slice(idle.mBlock * GEMM.blockM, (idle.mBlock + 1) * GEMM.blockM).filter((g) => g >= 0).length} 行属于 ${expertName(idle.group)}，后 64 行全是补零，WG 1 的 \`is_computation_valid\` 为 false，跳过 WGMMA 和提升，每个 k-block 只等 full barrier、再在 empty barrier 上报到。跳过的部分不占用 Tensor Core，但 WG 0 仍要算完前 64 行，这个 tile 的耗时与其他 tile 相同。简图里 stage 的编号用 tile 在这个 SM 上的序号，从 0 开始，所以这里写作 tile ${idleTile}。`,
+    props: smAt(mid(firstEvent('wg0', idleTile))), timeline: 'pipe', pipeTiles: [idleTile - 1, idleTile], time: at(mid(firstEvent('wg0', idleTile))),
+  },
+  {
+    id: 'combine-nvlink', segment: 'combine', label: '节点内汇总', title: 'combine 第一跳：节点内经 NVLink 汇到同号卡，做部分求和',
+    text: `回到 6 个 token 的小例子。专家计算已经把路由权重乘进输出（DeepEP 的 README：expert computation applies these router weights before combine），combine 只做求和，方向与 dispatch 相反：
+
+$$y_t = \\sum_{e \\in \\operatorname{topk}(t)} O_{(t,e)}, \\qquad O_{(t,e)} = p_{t,e}\\, \\mathrm{FFN}_e(x_t)$$
+
+hybrid 模式下，每个目标节点里各卡先把同一个 token 的结果经 NVLink 写到与 token 源卡同号的卡，同一张卡上的两个专家先在本卡加起来。\`allow_multiple_reduction=True\`（默认）时同号卡把收到的结果先加成一份部分和。`,
+    props: (() => {
+      const s = transferState(sendNvlink, tokenColor);
+      return node({ ...s, highlight: mergeHighlight(s.highlight, Object.fromEntries(forwardRdma.map((t) => [`gpu:${t.srcRank}`, 'reduce']))) });
+    })(),
+    time: combineWindow,
+  },
+  {
+    id: 'combine-rdma', segment: 'combine', label: 'IB 写回', title: 'combine 第二跳：部分和经 IB 写回源卡，源卡求和',
+    text: `同号卡把每个 token 的部分和经 IB 写回 token 所在的卡，每个节点每个 token 一份；源卡所在节点的部分和已经在源卡上。源卡收齐后按 token 求和，\`bias\` 参数可以在这一步加上共享专家的输出或残差。这一批 IB 上共 ${rdmaCount(combineHybrid)} 份，每份 ${int(combineBytes)} 字节。`,
+    props: (() => {
+      const s = transferState(forwardRdma.filter((t) => t.via !== 'local'), tokenColor, 220);
+      return node({ ...s, highlight: mergeHighlight(s.highlight, rdmaHighlight(forwardRdma), Object.fromEntries(SOURCES.map((r) => [`gpu:${r}`, 'reduce']))) });
+    })(),
+    time: combineWindow,
+  },
+  {
+    id: 'combine-single', segment: 'combine', label: '只求和一次', title: 'allow_multiple_reduction=False：每个专家的结果单独传回',
+    text: `关掉 \`allow_multiple_reduction\` 后不做部分求和，每个专家的结果原样传回，只在源卡的 combine epilogue 里求和一次。BF16 只在最后舍入一次，精度更好，代价是 IB 上的份数变多。图中是这种设置下 IB 上的传输，表格比较四种设置的字节数。`,
+    props: (() => {
+      const plan = combineHybridSingle.filter((t) => t.via === 'rdma');
+      const s = transferState(plan, tokenColor, 160);
+      return node({ ...s, highlight: mergeHighlight(s.highlight, rdmaHighlight(plan)) });
+    })(),
+    facts: combineTable, time: combineWindow,
+  },
+  {
+    id: 'ov-sms', segment: '通信与计算重叠', label: 'SM 划分', title: `通信内核也占 SM：${TOTAL_SMS} 个里 ${COMM_SMS} 个给通信`,
+    text: `DeepEP 的 dispatch 和 combine 是在 SM 上运行的内核（README：EP dispatch and combine require GPU SMs）。DeepSeek V3 报告写明 ${COMM_SMS} 个 SM 足以用满 IB 和 NVLink 的带宽，这里沿用这个划分：${TOTAL_SMS - COMM_SMS} 个 SM 运行 attention 和专家 GEMM，${COMM_SMS} 个运行通信内核。现在的 DeepEP 用 \`get_theoretical_num_sms\` 按拓扑和通信量估算 SM 数。
+
+下方时间线的通信时长由每张卡收发字节数的最大值除以报告给出的带宽（IB ${IB_GBPS} GB/s，NVLink ${NVLINK_GBPS} GB/s）得到，取 RDMA 和 NVLink 中较慢的一个，假设两者完全并行。attention 和专家计算没有模拟，时长是假设值（${ATTENTION_US} µs 和 ${MOE_US} µs），假设它们在 ${TOTAL_SMS - COMM_SMS} 个 SM 上运行，并且两条流互不拖慢。`,
+    props: { topology: { ...topology, smsPerGpu: TOTAL_SMS, smLabel: `${TOTAL_SMS - COMM_SMS} 个 SM 运行计算内核，${COMM_SMS} 个运行通信内核` }, level: 'gpu', focus: { gpu: GEMM_RANK },
+      highlight: Object.fromEntries(range(TOTAL_SMS).map((i) => [`sm:${i}`, i >= TOTAL_SMS - COMM_SMS ? 'rdma' : 'compute'])) },
+    facts: overlapTable, timeline: 'overlap',
+  },
+  {
+    id: 'ov-dispatch', segment: '通信与计算重叠', label: 'dispatch 0', title: 'micro-batch 1 做 attention 时，micro-batch 0 在 dispatch',
+    text: `一个 batch 分成两个 micro-batch。计算流上 attention 0 做完，通信流开始 dispatch 0，计算流同时做 attention 1。DeepEP 用 \`async_with_compute_stream=True\` 让计算流不等通信，用 \`defer_epilogue=True\` 把 copy epilogue 推迟到计算流调用 \`.wait()\` 的地方。`,
+    props: null, facts: overlapTable, timeline: 'overlap',
+  },
+  {
+    id: 'ov-moe', segment: '通信与计算重叠', label: 'MoE 0', title: 'micro-batch 0 做专家计算时，micro-batch 1 在 dispatch',
+    text: `MoE 0 要等 dispatch 0 结束才能开始，这一点在时间线上就是 MoE 0 的起点。它运行时通信流上是 dispatch 1。这一段就是前面 grouped GEMM 运行的位置。`,
+    props: null, facts: overlapTable, timeline: 'overlap',
+  },
+  {
+    id: 'ov-combine', segment: '通信与计算重叠', label: 'combine', title: 'combine 被另一个 micro-batch 的计算遮住',
+    text: `MoE 1 和 combine 0 同时进行，下一层的 attention 0 要等 combine 0 结束，它和 combine 1 同时进行。combine 传的是 BF16，按字节数推算比 dispatch 慢。在这组假设下，计算流在第一个 attention 之后共空闲 ${computeIdle.toFixed(1)} µs，都是在等另一个 micro-batch 的 dispatch 或 combine 结束。${LAYERS} 层合计 ${overlapEnd.toFixed(1)} µs，两个 micro-batch 依次执行、不重叠是 ${sequentialEnd.toFixed(1)} µs。`,
+    props: null, facts: overlapTable, timeline: 'overlap',
+  },
+];
+for (const scene of SCENES) if (scene.props === null) scene.props = SCENES.find((s) => s.id === 'ov-sms').props;
+
+const OVERLAP_STEPS = {
+  'ov-dispatch': [['attention', 1, 0], ['dispatch', 0, 0]],
+  'ov-moe': [['moe', 0, 0], ['dispatch', 1, 0]],
+  'ov-combine': [['moe', 1, 0], ['combine', 0, 0], ['attention', 0, 1], ['combine', 1, 0]],
+};
+const stepOf = (item) => Object.keys(OVERLAP_STEPS).find((id) => OVERLAP_STEPS[id].some(([phase, batch, layer]) => item.phase === phase && item.batch === batch && item.layer === layer));
+const PHASE_LABELS = { attention: 'attn', dispatch: 'dispatch', moe: 'MoE', combine: 'combine' };
+const overlapSpec = {
+  title: `两个 micro-batch、${LAYERS} 层的时间线（µs；通信由字节数和报告的带宽推算，计算是假设值）`,
+  unit: 'µs',
+  lanes: [{ id: 'compute', label: `计算流（${TOTAL_SMS - COMM_SMS} 个 SM）` }, { id: 'comm', label: `通信流（${COMM_SMS} 个 SM）` }],
+  kinds: { attention: { label: 'attention' }, dispatch: { label: 'dispatch' }, moe: { label: 'MoE 专家计算' }, combine: { label: 'combine' } },
+  items: overlap.map((item) => ({ lane: item.stream, start: Number(item.start.toFixed(2)), end: Number(item.end.toFixed(2)), label: `${PHASE_LABELS[item.phase]} ${item.batch}`, kind: item.phase, step: stepOf(item) })),
+  times: Object.fromEntries(SCENES.filter((s) => s.time && !s.timeline).map((s) => [s.id, s.time.map((x) => Number(x.toFixed(2)))])),
+};
+const tilesSpec = {
+  title: `GPU ${GEMM_RANK} 上 ${GEMM_SMS} 个 SM 处理的 tile（pipeline() 的假设时长，单位任意）`,
+  lanes: range(GEMM_SMS).map((sm) => ({ id: `sm${sm}`, label: `SM ${sm}` })),
+  kinds: Object.fromEntries(range(perRank).map((g) => [`g${g}`, { label: `${expertName(g)} 的行块` }])),
+  items: tiles.flatMap((list, sm) => list.map((tile, i) => {
+    const [start, end] = tileSpan(sm, i);
+    return { lane: `sm${sm}`, start, end, label: tileName(tile), kind: `g${tile.group}` };
+  })),
+  times: Object.fromEntries(SCENES.filter((s) => s.timeline === 'tiles' && s.time).map((s) => [s.id, s.time])),
+};
+const pipeSpec = ([from, to]) => {
+  const items = [];
+  for (const event of pipe.events) {
+    if (event.tile < from || event.tile > to) continue;
+    if (event.row === 'tma') {
+      const release = pipe.releases.find((r) => r.tile === event.tile && r.kBlock === event.kBlock);
+      items.push({ lane: `s${event.stage}`, start: event.start, end: event.end, label: `k${event.kBlock}`, kind: 'tma' });
+      items.push({ lane: `s${event.stage}`, start: event.end, end: release.time, kind: 'held' });
+    } else if (event.row === 'promote') {
+      items.push({ lane: `p${event.wg}`, start: event.start, end: event.end, kind: 'promote' });
+    } else if (event.row === 'epilogue') {
+      items.push({ lane: 'epilogue', start: event.start, end: event.end, label: tileName(pipe.tiles[event.tile]), kind: 'epilogue' });
+    } else {
+      items.push({ lane: `w${event.wg}`, start: event.start, end: event.end, label: `k${event.kBlock}`, kind: 'wgmma' });
+    }
+  }
+  return {
+    title: `SM ${PIPE_SM} 的第 ${from + 1} 到第 ${to + 1} 个 tile（pipeline() 的假设时长，单位任意）`,
+    lanes: [
+      ...range(STAGES).map((s) => ({ id: `s${s}`, label: `stage ${s}` })),
+      ...range(pipe.numMathWarpgroups).flatMap((wg) => [{ id: `w${wg}`, label: `WG ${wg} WGMMA` }, { id: `p${wg}`, label: `WG ${wg} 提升` }]),
+      { id: 'epilogue', label: 'epilogue' },
+    ],
+    kinds: { tma: { label: 'TMA 装入' }, held: { label: '已装满，等待或正在被读' }, wgmma: { label: 'WGMMA' }, promote: { label: '提升' }, epilogue: { label: 'epilogue' } },
+    items,
+    times: Object.fromEntries(SCENES.filter((s) => s.timeline === 'pipe').map((s) => [s.id, s.time])),
+  };
+};
+
+const steps = createStepList(SCENES.map(({ id, segment, label, title, text }) => ({ id, segment, label, title, text: text.replace(/`([^`]+)`/g, '<code>$1</code>') })));
+mountSteps('#steps', steps);
+
+let diagram;
+let facts;
+mountStepPanel('#diagram', steps, {
+  render(root, { index }) {
+    const scene = SCENES[index];
+    if (diagram === undefined) {
+      facts = document.createElement('div');
+      facts.className = 'facts';
+      const host = document.createElement('div');
+      root.append(facts, host);
+      diagram = mountGpuDiagram(host, scene.props);
+    } else {
+      diagram.set(scene.props);
+    }
+    if (scene.facts) renderText(scene.facts(), facts);
+    else facts.replaceChildren();
+  },
+});
+mountTimeline('#timeline', steps, ({ index }) => {
+  const scene = SCENES[index];
+  if (scene.timeline === 'pipe') return pipeSpec(scene.pipeTiles);
+  if (scene.timeline === 'tiles') return tilesSpec;
+  return overlapSpec;
+});
+document.getElementById('replay').addEventListener('click', () => diagram.replay());
+
+const legend = document.getElementById('legend');
+for (const [series, label] of [[3, '计算'], [1, 'NVLink'], [2, 'RDMA'], [6, '计数、求和、提升'], [5, '拷贝']]) {
+  const li = document.createElement('li');
+  const swatch = document.createElement('i');
+  swatch.style.background = `var(--vf-series-${series})`;
+  li.append(swatch, label);
+  legend.append(li);
+}
+
+window.vizflow = { steps, diagram: () => diagram };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
