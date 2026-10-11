@@ -1,26 +1,18 @@
-import { type Node, linkKind, messageBytes, placementText } from '../autograd';
+import { DTYPE_BYTES, type Node, linkKind, messageBytes, placementText } from '../autograd';
 import type { CardRow } from '../explain';
 import type { StepInfo, StepNote } from '../steps';
 import type { Tensor } from '../tensor';
 import type { LinearRgb, ThemeColors } from '../theme';
 import type { SceneController } from './controller';
-import { MODE_TOKENS, type ParallelMode } from './modes';
+import { MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, type ParallelMode, byteSize, gradReduces, stepMode } from './modes';
 
 export const PARTIAL_LEGEND_TEXT = '细柱 = 各卡的部分值，虚线框 = 和';
 export const ALL_REDUCE_NOTE = 'all_reduce：两张卡的部分值相加，结果回到每张卡';
 export const NO_COMM_NOTE = 'all_reduce 的反向不通信';
 
-export const MODE_TOKEN_TEXT: Readonly<Record<ParallelMode, string>> = {
-  train: '训练序列的长度',
-  prefill: '提示的长度',
-  decode: '同时 decode 的序列数，每条序列这一步只有 1 个新 token',
-};
-
 export function parallelMode(c: SceneController): ParallelMode {
-  if (c.options.parallel?.infer !== true) return 'train';
   const steps = c.steps;
-  const info = steps?.list[steps.current];
-  return info?.segment?.startsWith('decode') === true ? 'decode' : 'prefill';
+  return stepMode(c.options.parallel?.infer === true, steps?.list[steps.current]);
 }
 
 export function rankColor(theme: ThemeColors, rank: number): LinearRgb {
@@ -42,15 +34,21 @@ export function partialParts(c: SceneController, node: Node): Tensor[] | undefin
 }
 
 function bytesText(bytes: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB'];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit++;
+  const { value, unit } = byteSize(bytes);
+  return `${value}\\,\\mathrm{${unit}}`;
+}
+
+function sizeRows(node: Node, mode: ParallelMode, T: number, S: number): CardRow[] {
+  const bytes = DTYPE_BYTES[node.dtype];
+  if (node.kind === 'param') {
+    const shape = node.realShape.join('\\times ');
+    return [{ label: '消息大小', value: `参数的梯度，与 token 数无关：$S=${shape}\\times ${bytes}\\,\\mathrm{B}=${bytesText(S)}$` }];
   }
-  const digits = Number.isInteger(value) ? 0 : 1;
-  return `${value.toFixed(digits)}\\,\\mathrm{${units[unit]}}`;
+  const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
+  return [
+    { label: 'token 数', value: `$T=${T}$，${MODE_TOKEN_TEXT[mode]}` },
+    { label: '消息大小', value: `$S=T\\times h\\times ${bytes}\\,\\mathrm{B}=${T}\\times ${width}\\times ${bytes}\\,\\mathrm{B}=${bytesText(S)}$` },
+  ];
 }
 
 function commRows(c: SceneController, node: Node, title: string): CardRow[] {
@@ -58,17 +56,15 @@ function commRows(c: SceneController, node: Node, title: string): CardRow[] {
   const mode = parallelMode(c);
   const T = MODE_TOKENS[mode];
   const n = mesh.real.size;
-  const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
   const S = messageBytes(node, T);
-  const bytes = S / T / width;
   const ring = (2 * (n - 1) * S) / n;
   return [
     { label: '通信', value: title },
     { label: '通信组', value: `${mesh.axis}，$n=${n}$ 张卡（这一页画 ${mesh.size} 张）` },
     { label: '链路', value: linkText(mesh.real) },
-    { label: 'token 数', value: `$T=${T}$，${MODE_TOKEN_TEXT[mode]}` },
-    { label: '消息大小', value: `$S=T\\times h\\times ${bytes}\\,\\mathrm{B}=${T}\\times ${width}\\times ${bytes}\\,\\mathrm{B}=${bytesText(S)}$` },
-    { label: '每卡发送', value: `环形算法 $2\\frac{n-1}{n}S=${bytesText(ring)}$` },
+    ...sizeRows(node, mode, T, S),
+    { label: '每卡发送', value: `扁平环形算法 $2\\frac{n-1}{n}S=${bytesText(ring)}$` },
+    { label: '算法假设', value: RING_NOTE },
   ];
 }
 
@@ -95,12 +91,6 @@ export function parallelRows(c: SceneController, node: Node): CardRow[] {
   return rows;
 }
 
-function lastReceiving(steps: readonly StepInfo[], node: Node): StepInfo | undefined {
-  let found: StepInfo | undefined;
-  for (const info of steps) if (info.dir === 'backward' && info.kind !== 'overview' && info.nodes.includes(node)) found = info;
-  return found;
-}
-
 export function parallelNotes(c: SceneController, info: StepInfo | undefined): StepNote[] {
   const parallel = c.options.parallel;
   const steps = c.steps;
@@ -109,11 +99,8 @@ export function parallelNotes(c: SceneController, info: StepInfo | undefined): S
   if (info.dir === 'forward') {
     return info.nodes.filter((node) => node.op === 'all_reduce').map((node) => ({ nodes: [node], text: ALL_REDUCE_NOTE }));
   }
-  const notes: StepNote[] = [];
+  const notes: StepNote[] = gradReduces(placements, steps.list, info).map((node) => ({ nodes: [node], text: `$\\partial ${node.tex}$ 是 Partial，反向做 all_reduce` }));
   for (const node of info.nodes) {
-    if (placements.grad(node).reduce && lastReceiving(steps.list, node) === info) {
-      notes.push({ nodes: [node], text: `$\\partial ${node.tex}$ 是 Partial，反向做 all_reduce` });
-    }
     if (c.g.nodes.some((use) => use.op === 'all_reduce' && use.inputs[0] === node)) notes.push({ nodes: [node], text: NO_COMM_NOTE });
   }
   return notes;

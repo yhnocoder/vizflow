@@ -8,17 +8,259 @@
 <style>
 main { --vf-stage-height: clamp(480px, calc((100vh - 150px) * 0.85), 1190px); }
 @media (max-width: 980px) { main { --vf-stage-height: clamp(400px, 66vh, 940px); } }
+#devices { margin-top: 18px; }
+.vf-side > #devices { margin: 0 0 var(--vf-gap, 16px); }
+#devices .vf-gpu { max-width: 760px; }
+#devices .vf-gpu .vf-gpu-s0 { --vf-k: var(--rank0); }
+#devices .vf-gpu .vf-gpu-s1 { --vf-k: var(--rank1); }
+#devices [data-unit="gpu:0"]:not(.vf-gpu-hl) > .vf-gpu-box { stroke: var(--rank0); stroke-width: 2; }
+#devices [data-unit="gpu:1"]:not(.vf-gpu-hl) > .vf-gpu-box { stroke: var(--rank1); stroke-width: 2; }
+.tp-meta { margin: 0 0 6px; font-size: 13.5px; }
+.tp-note { margin: 12px 0 0; font-size: 12.5px; color: var(--muted); }
+.tp-detail { overflow-x: auto; }
+.tp-detail table { border-collapse: collapse; font-size: 13px; margin-top: 8px; min-width: 100%; }
+.tp-detail th, .tp-detail td { text-align: left; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tp-detail th { font-weight: 500; color: var(--muted); }
+.tp-detail p { margin: 8px 0 0; font-size: 13.5px; }
+.tp-rank { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
 </style>
 </head>
 <body>
 <main class="vf-page">
   <vizflow-page src="qwen3-tp-dsl.yaml"></vizflow-page>
+  <div id="devices"></div>
 </main>
 <script type="module">
 import '@yhnocoder/vizflow/element';
+import { commTransfers, messageBytes, placementText, ringAllReduce } from '@yhnocoder/vizflow/core';
+import { renderText } from '@yhnocoder/vizflow/formula';
+import { MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, byteSize, gradReduces, stepMode } from '@yhnocoder/vizflow/scene3d';
+import { mountGpuDiagram, mountStepPanel } from '@yhnocoder/vizflow/ui';
+
+const NODE_LINES = 4;
+const NAME_CHARS = 9;
+const PHASE_DELAY = 1600;
+const MODE_TEXT = { train: '训练', prefill: '推理 prefill', decode: '推理 decode' };
+const PHASE_TEXT = { reduce_scatter: 'reduce_scatter', all_gather: 'all_gather' };
+const LINK_TEXT = { nvlink: 'NVLink', rdma: 'RDMA', local: '本卡' };
 
 const page = document.querySelector('vizflow-page');
+const box = document.getElementById('devices');
+
+const bytesLabel = (bytes) => {
+  const { value, unit } = byteSize(bytes);
+  return `${value} ${unit}`;
+};
+const shortName = (node) => {
+  const parts = node.name.split('.');
+  return parts.slice(['weight', 'out', 'T'].includes(parts.at(-1)) ? -2 : -1).join('.');
+};
+const badgeName = (node) => {
+  const name = shortName(node);
+  return name.length > NAME_CHARS ? `${name.slice(0, NAME_CHARS - 1)}…` : name;
+};
+const span = (a, b) => (a === b ? `${a}` : `${a} 到 ${b}`);
+
+function shardSpan(node, dim, rank, size) {
+  const count = node.shape[dim] / size;
+  const unit = node.shape.length >= 3 && dim < node.shape.length - 1 ? 'head' : dim === node.shape.length - 1 ? '列' : '行';
+  return { unit, text: span(rank * count + 1, (rank + 1) * count) };
+}
+
+function shardPart(node, dim, rank, size) {
+  const { unit, text } = shardSpan(node, dim, rank, size);
+  return unit === 'head' ? `第 ${text} 个 head` : `第 ${text} ${unit}`;
+}
+
+function badgePart(node, placement, rank, size) {
+  if (placement.kind === 'replicate') return '完整';
+  if (placement.kind === 'partial') return '部分和';
+  if (placement.kind === 'shard') {
+    const { unit, text } = shardSpan(node, placement.dim, rank, size);
+    return `${unit} ${text}`;
+  }
+  if (placement.kind === 'local') return placement.rank === rank ? '整个' : '';
+  return placementText(placement);
+}
+
+function heldPart(node, placement, rank, size) {
+  if (placement.kind === 'replicate') return '完整的一份';
+  if (placement.kind === 'partial') return '完整形状，只是部分和';
+  if (placement.kind === 'shard') return shardPart(node, placement.dim, rank, size);
+  if (placement.kind === 'local') return placement.rank === rank ? '整个张量' : '';
+  return placementText(placement);
+}
+
+function rankChip(rank) {
+  const chip = document.createElement('i');
+  chip.className = 'tp-rank';
+  chip.style.background = `var(--rank${rank})`;
+  return chip;
+}
+
+function cell(row, tag, content) {
+  const el = document.createElement(tag);
+  if (typeof content === 'string') renderText(content, el);
+  else el.append(...content);
+  row.append(el);
+  return el;
+}
+
+function table(head, rows) {
+  const t = document.createElement('table');
+  const top = document.createElement('tr');
+  for (const h of head) cell(top, 'th', h);
+  t.append(top);
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    for (const c of r) cell(tr, 'td', c);
+    t.append(tr);
+  }
+  return t;
+}
+
+function paragraph(text) {
+  const p = document.createElement('p');
+  renderText(text, p);
+  return p;
+}
+
+function mount(steps, placements) {
+  const mesh = placements.mesh;
+  const ranks = Array.from({ length: mesh.size }, (_, r) => r);
+  const topology = { nodes: mesh.nodes, gpusPerNode: mesh.size / mesh.nodes, smsPerGpu: 1, nic: mesh.nodes > 1 };
+  const rankLine = (r) => ({ text: `rank ${r}`, chips: [r] });
+  let diagram;
+
+  const commView = (nodes, tokens, dir) => {
+    const lists = nodes.map((node) => ({ node, transfers: dir === 'forward' ? commTransfers(placements, node, { tokens }) : ringAllReduce(mesh, messageBytes(node, tokens)) }));
+    const flows = [];
+    const flowIndex = new Map();
+    const packets = [];
+    const badges = Object.fromEntries(ranks.map((r) => [`gpu:${r}`, [rankLine(r)]]));
+    const highlight = {};
+    lists.forEach(({ node, transfers }, n) => {
+      for (const t of transfers) {
+        const key = `${t.src}>${t.dst}`;
+        if (!flowIndex.has(key)) {
+          flowIndex.set(key, flows.length);
+          flows.push({ from: `gpu:${t.src}`, to: `gpu:${t.dst}`, kind: t.link });
+        }
+        const phase = t.phase === 'all_gather' ? 1 : 0;
+        packets.push({ flow: flowIndex.get(key), color: t.src, delay: phase * PHASE_DELAY + n * 200 });
+        if (n === 0) badges[`gpu:${t.src}`].push(PHASE_TEXT[t.phase], `${bytesLabel(t.bytes)} → rank ${t.dst}`);
+        highlight[`gpu:${t.src}`] = t.link;
+        highlight[`gpu:${t.dst}`] = t.link;
+      }
+    });
+    for (const r of ranks) {
+      const links = [...new Set(lists[0].transfers.filter((t) => t.src === r).map((t) => LINK_TEXT[t.link]))].join('、');
+      badges[`gpu:${r}`].splice(1, 0, `经 ${links} 发送`);
+      if (lists.length > 1) badges[`gpu:${r}`].push(`另有 ${lists.length - 1} 个张量见下表`);
+    }
+    if (flows.some((f) => f.kind === 'nvlink')) for (let n = 0; n < mesh.nodes; n++) highlight[`nvswitch:${n}`] = 'nvlink';
+    return { props: { topology, level: 'node', highlight, flows, packets, badges }, lists };
+  };
+
+  const placementView = (info) => {
+    const forward = info.dir === 'forward';
+    const nodes = info.kind === 'overview' ? [] : info.nodes.filter((node) => forward || node.grad !== null);
+    const placementOf = (node) => (forward ? placements.of(node) : placements.grad(node).placement);
+    const badges = Object.fromEntries(ranks.map((r) => {
+      const lines = [rankLine(r)];
+      for (const node of nodes.slice(0, NODE_LINES)) {
+        const part = badgePart(node, placementOf(node), r, mesh.size);
+        if (part !== '') lines.push(`${forward ? '' : '∂'}${badgeName(node)}：${part}`);
+      }
+      if (nodes.length > NODE_LINES) lines.push(`另有 ${nodes.length - NODE_LINES} 个张量见下表`);
+      return [`gpu:${r}`, lines];
+    }));
+    return { props: { topology, level: 'node', badges }, nodes, placementOf };
+  };
+
+  const panel = mountStepPanel(box, steps, {
+    title: '两张卡上的数据与通信',
+    render(root, { info }) {
+      if (diagram === undefined) {
+        root.replaceChildren(document.createElement('p'), document.createElement('div'), document.createElement('div'), document.createElement('p'));
+        root.children[0].className = 'tp-meta';
+        root.children[2].className = 'tp-detail';
+        root.children[3].className = 'tp-note';
+        renderText(`图里的字节数按公式算出，不是实测：激活的消息大小 $S=T\\times h\\times$ 每个元素的字节数，$h$ 取页面 YAML 里 real 给出的真实模型维度，$T$ 是这一档的 token 数，和 3D 图里 all_reduce 卡片上的数一致；参数梯度的消息大小是参数的元素数乘每个元素的字节数。${RING_NOTE}。小方块的移动快慢不对应传输时间。`, root.children[3]);
+        diagram = mountGpuDiagram(root.children[1], placementView(info).props);
+      }
+      const [meta, , detail] = root.children;
+      const mode = stepMode(page.mode === 'infer', info);
+      const tokens = MODE_TOKENS[mode];
+      renderText(`${MODE_TEXT[mode]}：$T=${tokens}$，${MODE_TOKEN_TEXT[mode]}。${mesh.real.size} 张卡在真实规模下组成通信组，这里画 ${mesh.size} 张，都在同一个节点上。`, meta);
+      detail.replaceChildren();
+      if (info.id.endsWith(':nocache')) {
+        diagram.set(placementView({ ...info, kind: 'overview' }).props);
+        detail.replaceChildren(paragraph('这一步讲不用缓存时要重算哪些位置，是假设的情形，面板不画通信。如果真的重算，重算的部分里包含 attention 之后的 all_reduce，通信量随重算的位置数一起增长。'));
+        return;
+      }
+      const comm = info.kind === 'overview' || info.kind === 'inputs' ? [] : info.dir === 'forward' ? info.nodes.filter((node) => node.op === 'all_reduce') : gradReduces(placements, steps.list, info);
+      if (comm.length > 0) {
+        const { props, lists } = commView(comm, tokens, info.dir);
+        diagram.set(props);
+        const what = info.dir === 'forward' ? '前向 all_reduce' : '反向 all_reduce（梯度是 Partial）';
+        detail.append(paragraph(`这一步是${what}。环形算法分两段：reduce_scatter 时每张卡把部分和的 $\\frac{n-1}{n}$ 发给环上的下一张卡，并加上收到的那一份；all_gather 时把加好的那一份再转一圈。图里 $n=${mesh.size}$，每段每张卡发送 $S/${mesh.size}$；真实的 $n=${mesh.real.size}$ 时每张卡一共发送 $2\\frac{n-1}{n}S$，见 3D 图里的卡片。`));
+        detail.append(table(['张量', '消息大小 $S$', '每段每张卡发送', '链路'], lists.map(({ node, transfers }) => [
+          `$${info.dir === 'forward' ? '' : '\\partial '}${node.tex}$`,
+          bytesLabel(messageBytes(node, tokens)),
+          bytesLabel(transfers[0].bytes),
+          [...new Set(transfers.map((t) => LINK_TEXT[t.link]))].join('、'),
+        ])));
+        return;
+      }
+      const { props, nodes, placementOf } = placementView(info);
+      diagram.set(props);
+      if (nodes.length === 0) {
+        detail.append(paragraph('总览步骤没有单独的张量。走到一个运算步骤，图里列出每张卡持有这个张量的哪一部分；走到 all_reduce 时画出两张卡之间的传输。'));
+        return;
+      }
+      detail.append(paragraph(info.dir === 'forward' ? '这一步不通信。下表是每张卡持有的部分，行号、列号和 head 号按这一页的小规模维度计。' : '这一步不通信。下表是每张卡持有的梯度部分，行号和列号按这一页的小规模维度计；Partial 的梯度要等最后一个用到它的步骤才 all_reduce。'));
+      detail.append(table(['张量', '放置', ...ranks.map((r) => [rankChip(r), `rank ${r}`])], nodes.map((node) => {
+        const placement = placementOf(node);
+        const reduce = info.dir === 'backward' && placements.grad(node).reduce;
+        return [`$${info.dir === 'forward' ? '' : '\\partial '}${node.tex}$`, reduce ? 'Partial，之后 all_reduce' : placementText(placement), ...ranks.map((r) => heldPart(node, placement, r, mesh.size) || '无')];
+      })));
+    },
+  });
+  return {
+    dispose: () => {
+      diagram?.dispose();
+      panel.dispose();
+    },
+  };
+}
+
+const wide = matchMedia('(min-width: 1200px)');
+const place = () => {
+  const side = page.querySelector('.vf-side');
+  if (wide.matches && side !== null) {
+    if (box.parentElement !== side) side.prepend(box);
+  } else if (box.previousElementSibling !== page) {
+    page.after(box);
+  }
+};
+wide.addEventListener('change', place);
+
+let mounted;
+let mountedSteps;
+const remount = () => {
+  place();
+  const steps = page.createdSteps;
+  if (steps === mountedSteps) return;
+  mounted?.dispose();
+  mounted = undefined;
+  mountedSteps = steps;
+  if (steps !== undefined && page.compiled?.placements !== undefined) mounted = mount(steps, page.compiled.placements);
+};
+
 page.addEventListener('load', () => {
+  remount();
+  new MutationObserver(remount).observe(page, { childList: true });
   window.vizflow = { page, g: page.compiled.graph, nodes: page.compiled.nodes, steps: page.createdSteps };
   document.body.dataset.ready = 'true';
 });
