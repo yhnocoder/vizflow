@@ -7,7 +7,20 @@ import { type Env, type Resolved, Scope } from './types';
 import { checkKeys, isRecord } from './util';
 
 function scopeNodes(scope: Scope): Node[] {
-  return [...scope.entries.values(), ...[...scope.children.values()].flatMap(scopeNodes)];
+  const inputs = isRecord(scope.def.decl.inputs) ? new Set(Object.keys(scope.def.decl.inputs)) : new Set<string>();
+  const own = [...scope.entries].filter(([name]) => !inputs.has(name)).map(([, node]) => node);
+  return [...own, ...[...scope.children.values()].flatMap(scopeNodes)];
+}
+
+function resolvedNodes(text: string, found: Resolved, env: Env): Node[] | undefined {
+  if (found instanceof Node) return [found];
+  if (Array.isArray(found)) return found;
+  if (found instanceof Scope) {
+    const nodes = scopeNodes(found).filter((n) => !isLeafLike(n));
+    if (nodes.length === 0) fail(env.where, `module instance '${text}' has no computed tensors to point at`);
+    return nodes;
+  }
+  return undefined;
 }
 
 function noteTarget(c: Compiler, text: string, env: Env): { nodes: Node[]; index?: number[] } {
@@ -19,7 +32,8 @@ function noteTarget(c: Compiler, text: string, env: Env): { nodes: Node[]; index
     } catch (error) {
       if (!(error instanceof DslError)) throw error;
     }
-    if (whole instanceof Node) return { nodes: [whole] };
+    const wholeNodes = whole === undefined ? undefined : resolvedNodes(text, whole, env);
+    if (wholeNodes !== undefined) return { nodes: wholeNodes };
     const base = element[1].trim();
     const node = c.node(base, env);
     const index = element[2].split(',').map((part) => Number(part.trim()));
@@ -29,14 +43,8 @@ function noteTarget(c: Compiler, text: string, env: Env): { nodes: Node[]; index
     });
     return { nodes: [node], index };
   }
-  const found = c.reference(text, env);
-  if (found instanceof Node) return { nodes: [found] };
-  if (Array.isArray(found)) return { nodes: found };
-  if (found instanceof Scope) {
-    const nodes = scopeNodes(found).filter((n) => !isLeafLike(n));
-    if (nodes.length === 0) fail(env.where, `module instance '${text}' has no computed tensors to point at`);
-    return { nodes };
-  }
+  const nodes = resolvedNodes(text, c.reference(text, env), env);
+  if (nodes !== undefined) return { nodes };
   return fail(env.where, `'${text}' is not a tensor or a module instance`);
 }
 

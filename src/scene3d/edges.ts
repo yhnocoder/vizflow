@@ -3,6 +3,7 @@ import { type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
 import { LONG_EDGE } from './edgelines';
+import { tokenAxes } from './hover';
 import { type Block, type Element, LINE_HEIGHT, type Vec3, elementAt } from './layout';
 import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
@@ -34,6 +35,23 @@ export interface DrawnEdge {
 
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
 
+const crossRowCache = new WeakMap<object, Set<Node>>();
+
+function crossRowOps(c: SceneController): Set<Node> {
+  const known = crossRowCache.get(c.explainer);
+  if (known !== undefined) return known;
+  const axes = tokenAxes(c.g.nodes);
+  const ops = new Set<Node>();
+  for (const edge of c.explainer.edges()) {
+    if (!('index' in edge.from) || !('index' in edge.to)) continue;
+    const fromAxis = axes.get(edge.from.node);
+    const toAxis = axes.get(edge.to.node);
+    if (fromAxis !== undefined && toAxis !== undefined && edge.from.index[fromAxis] !== edge.to.index[toAxis]) ops.add(edge.op);
+  }
+  crossRowCache.set(c.explainer, ops);
+  return ops;
+}
+
 export function buildEdges(c: SceneController): DrawnEdge[] {
   const drawn: DrawnEdge[] = [];
   if (c.lod) return drawn;
@@ -55,8 +73,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     });
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
   };
-  const crossRow = new Set<Node>();
-  if (c.frontRowOnly) for (const edge of c.explainer.edges()) if ('index' in edge.from && 'index' in edge.to && edge.from.index[0] !== edge.to.index[0]) crossRow.add(edge.op);
+  const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
   const frontZ = new Map<Block, number>();
   const frontOf = (block: Block) => frontZ.get(block) ?? frontZ.set(block, Math.max(...block.elements.map((e) => e.z))).get(block)!;
   const isBackRow = (op: Node, fromIndex: number[], toIndex: number[], block: Block, element: Element) =>
