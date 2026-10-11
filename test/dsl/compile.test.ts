@@ -959,3 +959,29 @@ body:
     expect(result.modules.map((m) => m.id)).toEqual(['attn']);
   });
 });
+
+describe('module formula', () => {
+  const formulaPage = (formula: string) => `
+title: t
+import: { Norm: ./norm.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2], [3, 4]] }
+body:
+  - n: { use: Norm, inputs: { x: x }, outputs: { out: y }, formula: '${formula}' }
+`;
+  const files = { 'mem:/pages/norm.yaml': NORM };
+
+  it('marks each part with the forward step that reveals it', async () => {
+    const result = await page(formulaPage('\\step{scale}{\\of{y}=\\of{n.W}\\odot}\\frac{\\of{x}}{\\step{rms, scale}{\\sqrt{\\step{rms}{\\mathrm{ms}}}}}'), files);
+    const markOf = (title: string) => result.steps.forward.find((s) => s.title.startsWith(title))?.marks?.[0];
+    const rms = markOf('rms');
+    const scale = markOf('scale');
+    const formula = result.modules.find((m) => m.id === 'n')?.formula;
+    expect(formula).toBe(`\\htmlData{vf-step=${scale}}{\\mathbf{y}=W\\odot}\\frac{\\mathbf{x}}{\\htmlData{vf-step=${rms}.${scale}}{\\sqrt{\\htmlData{vf-step=${rms}}{\\mathrm{ms}}}}}`);
+  });
+
+  it('rejects a step id the module does not have', async () => {
+    await expect(page(formulaPage('\\step{square}{x}'), files)).rejects.toThrow(/formula: \\step\{square\}: 'n' has no step 'square'; its steps are rms, scale/);
+  });
+});

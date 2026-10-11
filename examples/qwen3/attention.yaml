@@ -1,5 +1,6 @@
 module: Qwen3Attention
 subtitle: Qwen3Attention
+formula: '\begin{aligned}\step{apply_rotary_pos_emb.*}{\of{qr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{qkv}{\of{x}{\of{Wq}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{apply_rotary_pos_emb.*}{\of{kr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{qkv}{\of{x}{\of{Wk}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{qkv}{\of{v}}&\step{qkv}{=\of{x}{\of{Wv}}^{\top}}\\\step{o_proj}{\of{att}}&\step{o_proj}{=}\step{eager_attention_forward.*}{\operatorname{Attn}(\of{qr},\of{kr},\of{v})}\step{o_proj}{{\of{Wo}}^{\top}}\end{aligned}'
 import:
   RMSNorm: vizflow/nn/rmsnorm
   RoPE: vizflow/nn/rope
@@ -38,6 +39,7 @@ body:
   - qk_norm:
       title: q_norm $\cdot$ k_norm
       subtitle: Qwen3RMSNorm，按 head_dim
+      formula: '\step{q_norm.scale}{\of{qn}=\of{q_norm.weight}\odot}\step{q_norm.normalize}{\of{q}\big/}\step{q_norm.rms}{\sqrt{\operatorname{mean}\big(\step{q_norm.square}{{\of{q}}^{2}}\big)+\epsilon}}'
       fold:
         label: '$\of{qn},\ \of{kn}$'
         title: q_norm 和 k_norm（已折叠）

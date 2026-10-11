@@ -647,9 +647,9 @@ class Plan implements LevelPlan {
       if (!m.nodes.some((n) => this.computed.has(n))) continue;
       const parent = m.parent === null ? undefined : this.byId.get(m.parent);
       const side = m.parent === null && (this.split(m) || m.fixed) ? 'outer' : parent !== undefined && !this.split(parent) ? 'left' : 'right';
-      this.modules.push({ id: m.id, fixed: m.fixed, title: m.title, subtitle: m.subtitle || undefined, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
+      this.modules.push({ id: m.id, fixed: m.fixed, title: m.title, subtitle: m.subtitle || undefined, formula: m.formula, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
     }
-    const runs: { title: string; subtitle?: string; nodes: Node[]; inside: boolean }[] = [];
+    const runs: { title: string; subtitle?: string; formula?: string; nodes: Node[]; inside: boolean }[] = [];
     let last: string | undefined;
     for (const step of this.spec.forward) {
       const owner = step.module === undefined ? undefined : this.byId.get(step.module);
@@ -661,7 +661,7 @@ class Plan implements LevelPlan {
       }
       const nodes = list(step.show);
       if (last === title) runs[runs.length - 1].nodes.push(...nodes);
-      else runs.push({ title, subtitle: step.brace?.subtitle, nodes: [...nodes], inside: step.brace !== undefined && isModule });
+      else runs.push({ title, subtitle: step.brace?.subtitle, formula: step.brace?.formula, nodes: [...nodes], inside: step.brace !== undefined && isModule });
       last = title;
     }
     runs.forEach((run, i) => {
@@ -670,7 +670,7 @@ class Plan implements LevelPlan {
       const copies = this.copies.filter((c) => c.board === undefined && c.consumers.some((u) => run.nodes.includes(u))).map((c) => c.node);
       const side = params && !run.inside ? 'right' : 'left';
       this.segments.push({ title: run.title, nodes: run.nodes, params, nested });
-      this.modules.push({ id: `segment:${i}`, title: run.title, subtitle: run.subtitle, nodes: [...run.nodes, ...copies], side, inner: side === 'left' && (nested || run.inside) });
+      this.modules.push({ id: `segment:${i}`, title: run.title, subtitle: run.subtitle, formula: run.formula, nodes: [...run.nodes, ...copies], side, inner: side === 'left' && (nested || run.inside) });
     });
   }
 

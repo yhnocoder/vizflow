@@ -9,7 +9,7 @@ import { type Ast, ParseError, parseExpr, parseRange } from './expr';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
 import { sectionRows } from './section-md';
 import { DslError, type Where, child, fail } from './source';
-import { OP_TEX, addMark, defaultTex, elemOf, numberTex, opTex } from './tex';
+import { OP_TEX, addMark, defaultTex, elemOf, markSteps, numberTex, opTex } from './tex';
 
 export interface CompiledPage {
   graph: Graph;
@@ -36,6 +36,7 @@ interface ModuleRec {
   parent: string | null;
   title: string;
   subtitle: string;
+  formula?: string;
   fixed: boolean;
   folded: boolean;
   split: boolean;
@@ -103,10 +104,10 @@ interface ResolvedStep {
 
 const ITEM_KEYS = new Set(['op', 'tex']);
 const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
-const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', 'brace', ...MODULE_ITEM_KEYS]);
-const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
+const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', 'brace', 'formula', ...MODULE_ITEM_KEYS]);
+const GROUP_KEYS = new Set(['body', 'steps', 'beside', 'formula', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
-const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
+const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'formula', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
 const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
@@ -824,6 +825,7 @@ class PageCompiler {
   readonly c: Compiler;
   private readonly root: Scope;
   private readonly pendingPatches: (() => void)[][] = [];
+  private readonly formulas: { owner: string; tex: string; env: Env; target: { formula?: string } }[] = [];
 
   constructor(
     private readonly page: Record<string, unknown>,
@@ -884,6 +886,7 @@ class PageCompiler {
       if (target === undefined) fail(entry.where, `node '${entry.node.name}' is not computed in any forward step`);
       target.backward = { ...target.backward, ...entry.text };
     }
+    this.markFormulas(steps);
     const modules = this.pageModules();
     this.placeSteps(forward, modules);
     const leavesStep = this.leavesStep(env);
@@ -1056,6 +1059,7 @@ class PageCompiler {
         backward: m.fold.backward,
       };
       if (sub !== undefined) module.sub = sub;
+      if (m.formula !== undefined) module.formula = m.formula;
       return module;
     });
   }
@@ -1369,6 +1373,7 @@ class PageCompiler {
       entries.push(group);
       const rec = this.openModule(join(scope.path, name), group.title as string, group.subtitle, value, valueEnv);
       const groupSlots = this.items(scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
+      this.formula(scope.path, [{ decl: value, env: valueEnv }], rec);
       this.closeModule(rec, c.g.nodes.slice(before));
       slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
       return { name, beside: besideOf(value, valueWhere) };
@@ -1499,11 +1504,16 @@ class PageCompiler {
       if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
     }
     const steps = this.moduleSteps(scope, decl, childEnv, slots);
+    const formulaSources = [{ decl, env: childEnv }, { decl: use, env }];
     if (use.brace !== undefined) {
       if (!inline) fail(child(env.where, use, 'brace'), 'only an inline instance takes brace; a module with a box has its own brace');
       const brace = this.braceOf(use.brace, { ...env, where: child(env.where, use, 'brace') });
+      this.formula(scope.path, formulaSources, brace);
       for (const rec of steps) rec.step.brace ??= brace;
+    } else if (inline && use.formula !== undefined) {
+      fail(child(env.where, use, 'formula'), 'an inline instance shows a formula only under its brace, so formula needs brace');
     }
+    if (rec !== undefined) this.formula(scope.path, formulaSources, rec);
     this.moduleBackward(decl, childEnv);
     for (const [output, target, at] of bindings) this.define(parent, target, scope.entries.get(output) as Node, { ...env, where: at });
     this.pendingPatches[this.pendingPatches.length - 1].push(() => this.patch(scope, steps, use, env));
@@ -1534,7 +1544,56 @@ class PageCompiler {
     });
   }
 
-  braceOf(value: unknown, env: Env): { title: string; subtitle?: string } {
+  formula(owner: string, sources: { decl: Record<string, unknown>; env: Env }[], target: { formula?: string }): void {
+    const source = sources.filter((s) => s.decl.formula !== undefined).pop();
+    if (source === undefined) return;
+    const where = child(source.env.where, source.decl, 'formula');
+    if (typeof source.decl.formula !== 'string') fail(where, 'formula must be a string');
+    this.formulas.push({ owner, tex: source.decl.formula, env: { ...source.env, where }, target });
+  }
+
+  markFormulas(steps: StepRec[]): void {
+    const marks = new Map<StepRec, string>();
+    const markOf = (rec: StepRec): string => {
+      let name = marks.get(rec);
+      if (name === undefined) {
+        name = `s${marks.size}`;
+        marks.set(rec, name);
+        rec.step.marks = [...(rec.step.marks ?? []), name];
+      }
+      return name;
+    };
+    for (const { owner, tex, env, target } of this.formulas) {
+      const where = env.where;
+      const recsOf = (path: string): StepRec[] => {
+        if (path === '*' || path.endsWith('.*')) {
+          const base = path === '*' ? owner : join(owner, path.slice(0, -2));
+          const inside = (ref: { owner: string }) => ref.owner === base || ref.owner.startsWith(`${base}.`);
+          const found = steps.filter((s) => s.refs.some(inside));
+          if (found.length === 0) fail(where, `\\step{${path}}: '${base || 'page'}' has no steps`);
+          return found;
+        }
+        const dot = path.lastIndexOf('.');
+        const stepOwner = dot < 0 ? owner : join(owner, path.slice(0, dot));
+        const id = dot < 0 ? path : path.slice(dot + 1);
+        const rec = steps.find((s) => s.refs.some((ref) => ref.owner === stepOwner && ref.id === id));
+        if (rec === undefined) {
+          const known = steps.flatMap((s) => s.refs).filter((ref) => ref.owner === owner).map((ref) => ref.id);
+          fail(where, `\\step{${path}}: '${owner || 'page'}' has no step '${path}'; its steps are ${known.join(', ') || '(none)'}`);
+        }
+        return [rec];
+      };
+      const mark = (spec: string): string => [...new Set(spec.split(',').flatMap((path) => recsOf(path.trim())).map(markOf))].join('.');
+      try {
+        target.formula = markSteps(this.c.ofText(tex, env), mark);
+      } catch (error) {
+        if (error instanceof DslError) throw error;
+        fail(where, (error as Error).message);
+      }
+    }
+  }
+
+  braceOf(value: unknown, env: Env): { title: string; subtitle?: string; formula?: string } {
     const spec = record(value, env.where, 'brace');
     checkKeys(spec, BRACE_KEYS, env.where);
     if (typeof spec.title !== 'string') fail(env.where, 'brace needs a title');

@@ -37,6 +37,7 @@ leaves:
 modules:
   Qwen3DecoderLayer:
     subtitle: Qwen3DecoderLayer
+    formula: '\begin{aligned}\step{res1}{\of{a}}&\step{res1}{=\of{x}+}\step{self_attn.*}{\mathrm{attn}\big(}\step{input_layernorm.*}{\mathrm{norm}(\of{x})}\step{self_attn.*}{\big)}\\\step{res2}{\of{x_out}}&\step{res2}{=\of{a}+}\step{mlp.*}{\mathrm{mlp}\big(}\step{post_attention_layernorm.*}{\mathrm{norm}(\of{a})}\step{mlp.*}{\big)}\end{aligned}'
     params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, f: { type: dim }, theta: { type: float, default: 1e6 } }
     inputs: { x: { shape: [T, d] } }
     outputs: [x_out]

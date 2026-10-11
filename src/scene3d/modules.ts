@@ -7,6 +7,7 @@ export interface SceneModule {
   fixed?: boolean;
   title: string;
   subtitle?: string;
+  formula?: string;
   nodes: Node[];
   side?: 'left' | 'right' | 'outer';
   inner?: boolean;

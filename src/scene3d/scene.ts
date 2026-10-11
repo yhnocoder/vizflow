@@ -142,6 +142,9 @@ const LEVEL_PRECISION = 1000;
 const BOX_MIN_HEIGHT = 0.01;
 const BOX_LABEL_OFFSET: [number, number] = [0.2, 0.15];
 const BOX_OPACITY = 0.3;
+const FORMULA_MIN_FIT = 0.84;
+const FORMULA_FIT_STEP = 0.04;
+const FORMULA_BRACE_GAP = 14;
 const BOX_EDGE_OPACITY = 0.6;
 export const BOX_FOLDED_TEXT = '已折叠';
 export const BOX_FIXED_TEXT = '占位';
@@ -772,8 +775,9 @@ class SceneController implements EditHost {
     const action = folded === undefined ? '' : folded ? '▸ 展开' : '▾ 折叠';
     const brief = this.lod;
     const subtitle = brief ? undefined : module.subtitle;
+    const formula = brief ? undefined : module.formula;
     const act = brief ? '' : action;
-    label.setContent(`${module.title}\n${subtitle ?? ''}\n${act}`, () => {
+    label.setContent(`${module.title}\n${subtitle ?? ''}\n${formula ?? ''}\n${act}`, () => {
       const fragment = document.createDocumentFragment();
       const title = document.createElement('span');
       title.className = 'vf-mod-title';
@@ -784,6 +788,11 @@ class SceneController implements EditHost {
         sub.className = 'vf-mod-sub';
         renderText(subtitle, sub);
         fragment.appendChild(sub);
+      }
+      if (formula !== undefined) {
+        const tex = render(formula);
+        tex.classList.add('vf-mod-formula');
+        fragment.appendChild(tex);
       }
       if (act !== '') {
         const el = document.createElement('span');
@@ -819,6 +828,60 @@ class SceneController implements EditHost {
       this.moduleContent(label, brace.module);
       if (label.pos === undefined) label.pos = braceTip(brace);
     });
+    this.paintFormulas();
+  }
+
+  private fitFormulas(): void {
+    const modules = this.options.modules ?? [];
+    const outer = this.braces.find((b) => b.thick === true);
+    const screenX = (p: Vec3) => ((tmpVector.set(...p).project(this.camera).x + 1) / 2) * this.width;
+    for (const brace of this.braces) {
+      const label = this.moduleLabels[modules.indexOf(brace.module)];
+      const formula = label.el.querySelector<HTMLElement>('.vf-mod-formula');
+      if (formula === null || label.pos === undefined || !label.visible) continue;
+      const fit = Number(formula.style.getPropertyValue('--vf-fit') || 1);
+      const natural = formula.offsetWidth / fit;
+      if (natural === 0) continue;
+      const x = screenX(label.pos);
+      const blocked = brace.side === 'right' && brace.thick !== true && outer !== undefined && outer.x > brace.x;
+      const room = brace.side === 'left' ? x - LABEL_SAFE_MARGIN : blocked ? screenX([outer.x, label.pos[1], outer.z]) - x - FORMULA_BRACE_GAP : this.width - x - LABEL_SAFE_MARGIN;
+      const next = Math.max(FORMULA_MIN_FIT, Math.min(1, Math.floor(room / natural / FORMULA_FIT_STEP) * FORMULA_FIT_STEP));
+      const overflow = Math.max(0, natural * next - room);
+      const shift = blocked ? 0 : brace.side === 'left' ? overflow : -overflow;
+      formula.style.translate = shift === 0 ? '' : `${shift.toFixed(0)}px 0`;
+      formula.classList.toggle('vf-mod-formula-over', overflow > 0);
+      if (Math.abs(next - fit) < FORMULA_FIT_STEP / 2) continue;
+      formula.style.setProperty('--vf-fit', String(next));
+      label.forgetSizes();
+    }
+  }
+
+  private paintFormulas(): void {
+    const steps = this.options.steps;
+    const info = this.currentInfo();
+    const forward = steps !== undefined && info?.dir === 'forward';
+    const reached = new Set(forward ? steps.list.slice(0, steps.current + 1).flatMap((step) => step.marks ?? []) : []);
+    const now = new Set(forward ? (info.marks ?? []) : []);
+    const backward = steps !== undefined && info?.dir === 'backward';
+    const mirror = backward ? steps.list.find((step) => step.dir === 'forward' && step.id === info.id.replace(/^b:/, 'f:').replace(/^B:/, 'F:')) : undefined;
+    const grad = new Set(mirror?.marks ?? []);
+    for (const label of this.moduleLabels) {
+      const formula = label.el.querySelector<HTMLElement>('.vf-mod-formula');
+      if (formula === null) continue;
+      let started = !forward;
+      for (const part of formula.querySelectorAll<HTMLElement>('[data-vf-step]')) {
+        const marks = (part.dataset.vfStep ?? '').split('.');
+        const state = !forward ? (marks.some((m) => grad.has(m)) ? 'grad' : 'on') : marks.some((m) => now.has(m)) ? 'now' : marks.some((m) => reached.has(m)) ? 'on' : 'off';
+        if (state !== 'off') started = true;
+        if (part.dataset.vfState === 'off' && state !== 'off') {
+          part.classList.remove('vf-f-in');
+          void part.offsetWidth;
+          part.classList.add('vf-f-in');
+        }
+        part.dataset.vfState = state;
+      }
+      formula.dataset.vfState = started ? 'on' : 'off';
+    }
   }
 
   private placeBraces(): void {
@@ -1435,6 +1498,7 @@ class SceneController implements EditHost {
     if (this.labelsDirty || moved || following) this.placeBraces();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
+      this.fitFormulas();
       this.labels.project(this.camera, this.width, this.height, !this.follow);
       this.labelsDirty = false;
       this.screenVersion++;

@@ -20,8 +20,9 @@ export interface ForwardStep {
   segment?: string;
   sub?: string;
   module?: string;
-  brace?: { title: string; subtitle?: string };
+  brace?: { title: string; subtitle?: string; formula?: string };
   backward?: BackwardOverride;
+  marks?: string[];
 }
 
 export type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };
@@ -31,6 +32,7 @@ export interface PageModule {
   parent: string | null;
   title: string;
   subtitle: string;
+  formula?: string;
   inputs: Node[];
   outputs: Node[];
   nodes: Node[];
@@ -65,6 +67,7 @@ export interface StepInfo {
   segment: string;
   sub?: string;
   module?: string;
+  marks?: string[];
 }
 
 export interface StepState {
@@ -267,6 +270,7 @@ class StepsImpl implements Steps {
       };
       if (step.sub !== undefined) info.sub = step.sub;
       if (step.module !== undefined) info.module = step.module;
+      if (step.marks !== undefined) info.marks = step.marks;
       entries.push(this.entry(info, new Set(shown), active));
     });
     const revealed = new Set<Node>();
@@ -333,6 +337,8 @@ class StepsImpl implements Steps {
           module: m.id,
         };
         if (m.sub !== undefined) info.sub = m.sub;
+        const marks = this.units.filter((u) => this.outerFolded(u.step.module) === m).flatMap((u) => u.step.marks ?? []);
+        if (marks.length > 0) info.marks = marks;
       } else {
         const unit = group.unit as Unit;
         const step = unit.step;
@@ -351,6 +357,7 @@ class StepsImpl implements Steps {
         };
         if (step.sub !== undefined) info.sub = step.sub;
         if (step.module !== undefined) info.module = step.module;
+        if (step.marks !== undefined) info.marks = step.marks;
       }
       prod.forEach((n) => revealed.add(n));
       entries.push(this.entry(info, new Set(revealed), new Set(active)));
