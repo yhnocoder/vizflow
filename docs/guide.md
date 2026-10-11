@@ -585,6 +585,31 @@ cannot parse template '{{q[0]}}': no node name matches 'q[0]'
 
 下标越界在求值时才发现（例如 label 改变后），同样抛出带模板原文的错误。
 
+### 4.5 在正文里放内置小图
+
+步骤正文和图文段落的 text 里可以放库自带的小图，标题里不能放。小图单独占一段，前后各空一行。
+
+YAML 里写成模板加小图名，参数用冒号隔开：
+
+```yaml
+text: |
+  cos 表的每一行对应一个位置。下图把位置延长到 24。
+
+  {{ apply_rotary_pos_emb.cos | rope_wave:cos }}
+
+  $$\cos={{ apply_rotary_pos_emb.cos | matrix:3 }}$$
+```
+
+编译时这一项换成 `<vf-figure name="rope_wave" node="graph 上的节点名" args="cos"></vf-figure>`。用 JavaScript 写步骤时直接写这个标签，`node` 写 graph 上的节点名。步骤条和图文段落渲染正文后，把每个 `vf-figure` 换成对应的小图；数值都从节点读取，换模型尺寸时不用改正文。
+
+现有的小图：
+
+| 名字 | 节点 | 参数 | 画什么 |
+|---|---|---|---|
+| `rope_wave` | RoPE 的 cos 或 sin 表，形状 $(T, d_h)$，至少 2 行，$d_h$ 为偶数 | 第一个是 `cos` 或 `sin`；第二个是横轴的位置数，默认 24 | 每个频率一条曲线，第一个频率画实线，其余画虚线；表里实际用到的 $T$ 个位置画大点并加阴影。频率 $\omega_i$ 从表的第 2 行（$t=1$）反算，所以不需要另写 $\theta$ 和 $d_h$。图下方有一行说明，列出阴影里的位置和每个频率对应的两列。 |
+
+小图名不存在、参数不对、节点形状不符时，编译报错，例如 `rope_wave needs cos or sin as its first argument, got 'tan' in '{{ cos | rope_wave:tan }}'`。
+
 ## 5. 面板与步骤条（ui）
 
 ```js

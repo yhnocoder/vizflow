@@ -3,6 +3,7 @@ import { render } from 'solid-js/web';
 import type { Graph, Node } from '../autograd';
 import { renderMarkdown } from '../formula';
 import { compileTemplate, type Steps } from '../steps';
+import { renderFigures } from './figures';
 import { resolveElement, trackGraph } from './mount';
 import type { Mounted } from './mounted';
 import { RopeCompare, RopeCurve, RopeDial, createRopeState } from './rope';
@@ -60,6 +61,7 @@ function Markdown(props: { g: Graph; version: () => number; text: string; class:
   createEffect(() => {
     props.version();
     renderMarkdown(evaluate(0), target);
+    renderFigures(target, props.g);
   });
   return <div class={props.class} ref={(el) => (target = el)} />;
 }

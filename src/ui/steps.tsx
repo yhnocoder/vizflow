@@ -2,6 +2,7 @@ import { For, Show, createMemo, onCleanup, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
 import type { StepInfo, Steps } from '../steps';
+import { renderFigures } from './figures';
 import { resolveElement, trackSteps } from './mount';
 import type { Mounted } from './mounted';
 
@@ -24,6 +25,7 @@ function StepsView(props: { steps: Steps }) {
     const text = steps.text();
     renderText(text.title, title);
     renderText(text.body, body);
+    renderFigures(body, steps.graph);
   };
   const schedule = () => {
     if (frame === undefined) frame = requestAnimationFrame(draw);

@@ -540,6 +540,33 @@ sections:
   });
 });
 
+describe('figure filters in step text', () => {
+  const base = (text: string) => `
+title: t
+dims: { T: 3, d: 4 }
+inputs: {}
+buffers:
+  cos: { value: 'rope_cos(T, d, 10)' }
+weights:
+  x: { shape: [T, d], init: ones }
+body:
+  - y: x * cos
+  - l: mean(y)
+steps:
+  - { id: s, show: y, title: s, text: '${text}' }
+`;
+
+  it('expands a figure filter into a vf-figure tag with the graph name', async () => {
+    const result = await page(base('a {{ cos | rope_wave:cos:12 }} b'));
+    expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('a <vf-figure name="rope_wave" node="cos" args="cos:12"></vf-figure> b');
+  });
+
+  it('reports a bad figure argument where it is written', async () => {
+    await expect(page(base('{{ cos | rope_wave:tan }}'))).rejects.toThrow(/rope_wave needs cos or sin as its first argument, got 'tan' in '\{\{ cos \| rope_wave:tan \}\}'/);
+    await expect(page(base('{{ cos | chart }}'))).rejects.toThrow(/unknown template filter 'chart'/);
+  });
+});
+
 describe('page structure', () => {
   it('builds the layout tree, modules and real dimensions', async () => {
     const files = { 'mem:/pages/norm.yaml': NORM };

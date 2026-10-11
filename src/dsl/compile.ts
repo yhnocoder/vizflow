@@ -4,6 +4,7 @@ import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
 import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { type Nested, inferShape } from '../tensor';
 import type { PanelItem, SectionBlock, SectionItem, SectionRow } from '../ui';
+import { checkFigure, figureNames, figureTag } from '../ui/figures';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
 import { DslError, type Where, child, fail } from './source';
@@ -638,8 +639,15 @@ class Compiler {
     if (pipe >= 0) {
       const filter = source.slice(pipe + 1).trim();
       const match = /^matrix(?::(\d+))?$/.exec(filter);
-      if (match === null) this.fail(env, `unknown template filter '${filter}' in '{{${source}}}'`);
       let target = source.slice(0, pipe).trim();
+      if (match === null) {
+        const [name, ...args] = filter.split(':').map((part) => part.trim());
+        if (!figureNames.includes(name)) this.fail(env, `unknown template filter '${filter}' in '{{${source}}}'`);
+        const node = this.node(target, env);
+        const problem = checkFigure(name, node.shape, args);
+        if (problem !== undefined) this.fail(env, `${problem} in '{{${source}}}'`);
+        return figureTag(name, node.name, args);
+      }
       let grad = '';
       if (target.endsWith('.grad')) {
         grad = '.grad';
