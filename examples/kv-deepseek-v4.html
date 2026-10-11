@@ -78,7 +78,7 @@ let kind = params.get('kind') in KINDS ? params.get('kind') : 'csa';
 const pos = document.getElementById('pos');
 if (params.get('t')) pos.value = params.get('t');
 
-renderText(String.raw`DeepSeek V4 每一层的注意力属于三种之一：只看最近 128 个 token 的滑动窗口层（SWA），每 4 个 token 压成一个条目、再由 Lightning Indexer 挑 512 个条目来读的 CSA 层，每 128 个 token 压成一个条目、全部都读的 HCA 层。三种层都把窗口与压缩条目放在同一块 cache 里。下面的计算图逐行对应官方 <code>inference/model.py</code> 里 <code>Attention.forward</code> 的 decode 分支，数值来自用同一份代码跑出来的 cache 状态（权重随机，float64），每一步都与官方代码逐值对照过。尺寸是 toy：hidden ${c.dim}，${c.n_heads} 个 head，head\_dim ${c.head_dim}（rope ${c.rope_head_dim} 维），窗口 ${c.window_size}，CSA 压缩比 4（与真实相同），HCA 压缩比 8（真实 128），indexer ${c.index_n_heads} 个 head、${c.index_head_dim} 维、top-${c.index_topk}。先用 ${fixture.prefill} 个 token 做 prefill，之后每步 decode 一个 token。`, document.getElementById('lede'));
+renderText(String.raw`DeepSeek V4 每一层的注意力属于三种之一：只看最近 128 个 token 的滑动窗口层（SWA），每 4 个 token 压成一个条目、再由 Lightning Indexer 挑 512 个条目来读的 CSA 层，每 128 个 token 压成一个条目、全部都读的 HCA 层。三种层都把窗口与压缩条目放在同一块 cache 里。下面的计算图逐行对应官方 <code>inference/model.py</code> 里 <code>Attention.forward</code> 的 decode 分支，数值来自用同一份代码跑出来的 cache 状态（权重随机，float64），每一步都与官方代码逐值对照过。尺寸是 toy：hidden ${c.dim}，${c.n_heads} 个 head，<code>head_dim</code> ${c.head_dim}（rope ${c.rope_head_dim} 维），窗口 ${c.window_size}，CSA 压缩比 4（与真实相同），HCA 压缩比 8（真实 128），indexer ${c.index_n_heads} 个 head、${c.index_head_dim} 维、top-${c.index_topk}。先用 ${fixture.prefill} 个 token 做 prefill，之后每步 decode 一个 token。`, document.getElementById('lede'));
 
 const SIZES = [
   ['SWA 窗口 K=V（每层 128 行，长度无关）', '每层 585 B × 128'],

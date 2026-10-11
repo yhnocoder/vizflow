@@ -16,7 +16,7 @@ export function stepTexts(kind, t, info, c) {
     title: `位置 t = ${t} 的输入与这一层的 cache`,
     text: String.raw`$\mathbf{x}_t$ 是这一步新 token 在这一层的输入，形状 $(1, ${c.dim})$。$\mathcal{C}$ 是这一层唯一的主 cache，官方代码在 <code>Attention.__init__</code> 里一次分配好：$(\text{max\_batch}, \text{window\_size} + \text{max\_seq\_len}/m, \text{head\_dim})$，这里是 $(${info.nCache}, ${c.head_dim})$。前 ${win} 行是滑动窗口的环形缓冲区，位置 $p$ 写在第 $p \bmod ${win}$ 行${ratio ? String.raw`；后 ${info.nCache - win} 行存压缩条目，第 $i$ 个条目在第 $${win}+i$ 行` : '；这一层不压缩，cache 只有窗口'}。
 
-K 与 V 是同一个张量（shared K=V，单个 kv head），所以 cache 只存一份。真实的 V4-Flash 是 window 128、head\_dim 512${ratio ? String.raw`、$m=${realM}$` : ''}。toy 尺寸见页面上方的说明。`,
+K 与 V 是同一个张量（shared K=V，单个 kv head），所以 cache 只存一份。真实的 V4-Flash 是 window 128、<code>head_dim</code> 512${ratio ? String.raw`、$m=${realM}$` : ''}。toy 尺寸见页面上方的说明。`,
   };
   S.qa = {
     label: String.raw`$\mathbf{q}^{a}$`,
@@ -36,7 +36,7 @@ K 与 V 是同一个张量（shared K=V，单个 kv head），所以 cache 只�
   S.qrope = {
     label: 'RoPE(q)',
     title: 'query 的最后几维加 RoPE',
-    text: String.raw`只有最后 rope\_head\_dim 维旋转（真实 64，这里 ${c.rope_head_dim}），其余维度不动。官方代码用 <code>view_as_complex</code> 把相邻两维当一个复数相乘，这里只有一对，相邻配对与前后两半配对的写法结果相同，真实尺寸下两者不同，这一页按官方的相邻配对理解。${kind === 'swa' ? '滑动窗口层用 $\\theta=10000$、不加 YaRN。' : 'CSA 与 HCA 层用 compress\\_rope\\_theta $=160000$ 并加 YaRN（factor 16），与它们的压缩器共用同一张表。'}`,
+    text: String.raw`只有最后 <code>rope_head_dim</code> 维旋转（真实 64，这里 ${c.rope_head_dim}），其余维度不动。官方代码用 <code>view_as_complex</code> 把相邻两维当一个复数相乘，这里只有一对，相邻配对与前后两半配对的写法结果相同，真实尺寸下两者不同，这一页按官方的相邻配对理解。${kind === 'swa' ? '滑动窗口层用 $\\theta=10000$、不加 YaRN。' : 'CSA 与 HCA 层用 <code>compress_rope_theta</code> $=160000$ 并加 YaRN（factor 16），与它们的压缩器共用同一张表。'}`,
   };
   S.kv = {
     label: String.raw`$\mathbf{kv}$`,
