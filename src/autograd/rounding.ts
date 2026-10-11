@@ -57,9 +57,25 @@ export function roundToFormat(x: number, f: FloatFormat): number {
 export function roundToDtype(x: number, dtype: Dtype): number {
   if (dtype === 'fp64') return x;
   if (dtype === 'fp32') return Math.fround(x);
-  if (dtype === 'bf16' || dtype === 'fp16' || dtype === 'fp8_e4m3' || dtype === 'fp8_e5m2') return roundToFormat(Math.fround(x), FLOAT_FORMATS[dtype]);
+  if (dtype === 'bf16' || dtype === 'fp16' || dtype === 'fp8_e4m3' || dtype === 'fp8_e5m2' || dtype === 'fp4_e2m1') return roundToFormat(Math.fround(x), FLOAT_FORMATS[dtype]);
+  if (dtype === 'e8m0') return roundToE8m0(x);
   if (dtype === 'bool') return x !== 0 ? 1 : 0;
+  if (dtype === 'int4') return Math.min(Math.max(Math.trunc(x), INT4_MIN), INT4_MAX) + 0;
   return Math.trunc(x);
+}
+
+const INT4_MIN = -8;
+const INT4_MAX = 7;
+const E8M0_MIN_EXPONENT = -127;
+const E8M0_MAX_EXPONENT = 127;
+
+function roundToE8m0(x: number): number {
+  const a = Math.abs(Math.fround(x));
+  if (!Number.isFinite(a)) return NaN;
+  if (a < 2 ** E8M0_MIN_EXPONENT) return 2 ** E8M0_MIN_EXPONENT;
+  const e = exponentOf(a);
+  const up = a / 2 ** e >= 1.5 ? e + 1 : e;
+  return up > E8M0_MAX_EXPONENT ? NaN : 2 ** up;
 }
 
 export function roundUpToPowerOfTwo(x: number): number {

@@ -325,7 +325,9 @@ class GraphImpl {
       this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
     const name = options.name ?? this.autoName(def.name);
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
-    const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
+    const inputDtypes = inputs.map((n) => n.dtype);
+    const inferred = () => (def.dtype === undefined ? promoteDtypes(inputDtypes, this.dtype, `${def.name} '${name}'`) : def.dtype(attrs, inputDtypes));
+    const dtype = options.dtype === undefined ? inferred() : checkDtype(options.dtype, `node '${name}'`);
     const value = this.roundedTo(def.forward(inputs.map((n) => n.value), attrs), dtype);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);

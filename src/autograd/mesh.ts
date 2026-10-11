@@ -1,5 +1,5 @@
 import { type EpMode, type EpTopology, type Transfer, type Via, combinePlan, dispatchPlan } from '../sim/deepep';
-import { DTYPE_BYTES } from './dtype';
+import { DTYPE_BITS } from './dtype';
 import type { Node } from './node';
 import type { Placements } from './placement';
 
@@ -67,7 +67,7 @@ export function ringAllReduce(topology: MeshTopology, bytes: number): CommTransf
 
 export function messageBytes(node: Node, tokens: number): number {
   const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
-  return tokens * width * DTYPE_BYTES[node.dtype];
+  return tokens * width * (DTYPE_BITS[node.dtype] / 8);
 }
 
 function topkIdx(placements: Placements, x: Node, sel: Node): number[][][] {

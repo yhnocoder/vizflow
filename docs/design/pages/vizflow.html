@@ -225,7 +225,8 @@ mountPanels('#side', g, [
   dtype?: Dtype;
 }): Graph
 
-type Dtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
+type Dtype = 'bool' | 'int4' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp4_e2m1' | 'e8m0' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
+const DTYPE_BITS: Record&lt;Dtype, number&gt;;
 
 interface NodeOptions {
   tex?: string;
@@ -302,7 +303,7 @@ interface Graph {
 }</code></pre>
 <ul>
   <li><code>tex</code> 是张量级的 LaTeX，例如 <code>\mathbf{h}</code>；<code>elem</code> 是元素级的底，元素写作 <code>elem</code> 加下标，下标从 1 开始，例如 <code>h_{2}</code>、<code>W^{\top}_{2,3}</code>。<code>elem</code> 本身以下标结尾时（<code>_{...}</code>，或 <code>_</code> 加一个字符），元素下标并进这个下标：<code>\mathrm{ms}_{1}</code> 的元素写作 <code>\mathrm{ms}_{1,2}</code>，<code>r_1</code> 写作 <code>r_{1,2}</code>。直接在后面再加一个下标会得到双下标，KaTeX 报错。卡片、连线卡片和 3D 标签都经过同一个函数拼元素名，规则只在这一处；判断 <code>elem</code> 是否以下标结尾的 <code>trailingSubscript</code> 由 <code>explain</code> 入口导出，页面描述文件的编译器用它合并实例下标。默认值：名字是单个字母时 <code>elem</code> 为该字母，<code>tex</code> 对非标量为粗体字母、对标量为字母本身；名字更长时两者都是 <code>\mathrm{名字}</code>。</li>
-  <li><code>dtype</code> 是这个张量在真实模型里的 dtype，悬停提示、层名卡片和连线卡片都显示它。选项里给了 <code>dtype</code> 时用给出的值，否则：label 是 <code>int64</code>；input、param、buffer 取 <code>graph({ dtype })</code>；运算节点按输入推导，整数和 bool 输入不参与，浮点输入取位数最大的那个，位数相同但类型不同（<code>bf16</code> 与 <code>fp16</code>）时取高一级的 <code>fp32</code>，没有浮点输入时按位数取最宽的整数类型（<code>bool</code> 最窄，<code>uint8</code> 与 <code>int8</code> 混用得到 <code>int16</code>）；<code>fp8_e4m3</code> 与 <code>fp8_e5m2</code> 混用时抛错 <code>add 'x': cannot promote fp8_e4m3 with fp8_e5m2, give the dtype explicitly</code>，torch 对这种组合也报错。这条规则与 torch 的类型提升一致，所以只有模型显式转换类型的地方需要写 <code>dtype</code>，例如 RMSNorm 先转成 float32 计算、最后转回输入的 dtype。</li>
+  <li><code>dtype</code> 是这个张量在真实模型里的 dtype，悬停提示、层名卡片和连线卡片都显示它。选项里给了 <code>dtype</code> 时用给出的值，否则：label 是 <code>int64</code>；input、param、buffer 取 <code>graph({ dtype })</code>；运算定义给了 <code>dtype</code> 函数时（见「定义新运算」）用它的结果；否则按输入推导，整数和 bool 输入不参与，浮点输入取位数最大的那个，位数相同但类型不同（<code>bf16</code> 与 <code>fp16</code>）时取高一级的 <code>fp32</code>，没有浮点输入时按位数取最宽的整数类型（<code>bool</code> 最窄，然后是 <code>int4</code>，<code>uint8</code> 与 <code>int8</code> 混用得到 <code>int16</code>）。浮点类型从窄到宽是 <code>fp4_e2m1</code> 与 <code>e8m0</code>、两种 fp8、<code>fp16</code> 与 <code>bf16</code>、<code>fp32</code>、<code>fp64</code>。8 位及以下的两种浮点格式混用时抛错，例如 <code>add 'x': cannot promote fp8_e4m3 with fp8_e5m2, give the dtype explicitly</code>，torch 对 fp8 的这种组合也报错；<code>fp4_e2m1</code> 与 <code>e8m0</code> 混用同样报错。<code>DTYPE_BITS</code> 给出每个 dtype 的位宽，<code>bool</code> 按存储记 8 位，<code>int4</code> 与 <code>fp4_e2m1</code> 记 4 位，用于按真实尺寸估算显存与通信量。<code>e8m0</code> 是只有 8 位指数的缩放因子格式（OCP Microscaling），值都是 2 的整数次幂。<code>roundToDtype(x, dtype)</code> 把一个数舍入到 dtype 能表示的值，页面开启 <code>rounding</code> 时节点的前向值按它舍入：<code>fp4_e2m1</code> 按 <code>FLOAT_FORMATS.fp4_e2m1</code> 舍入，超过 6 时饱和；<code>int4</code> 与其他整数 dtype 一样向零截断，再截到 $[-8, 7]$；<code>e8m0</code> 与 torch 转换到 <code>float8_e8m0fnu</code> 的结果一致，先舍入到 fp32 再取绝对值（格式没有符号位），写成 $m \cdot 2^e$（$1 \le m &lt; 2$）后 $m \ge 1.5$ 时得到 $2^{e+1}$，否则得到 $2^e$，0 和小于 $2^{-127}$ 的值得到 $2^{-127}$（格式没有零），超过 $2^{127}$ 的结果、无穷和 NaN 得到 NaN。这条规则与 torch 的类型提升一致，所以只有模型显式转换类型的地方需要写 <code>dtype</code>，例如 RMSNorm 先转成 float32 计算、最后转回输入的 dtype。</li>
   <li><code>grad</code> 对 label 和 buffer 为 <code>null</code>。运算节点在两种情况下 <code>grad</code> 也为 <code>null</code>，与 torch 里不求梯度或梯度为 <code>None</code> 的张量对应：它的每个可求导参数都不依赖 param 或 input（例如 <code>topk_mask</code> 的输出），或者从它到损失没有一条只经过可求导参数的路径（例如只用来挑选专家的分数，以及损失之后创建的节点）。这样的节点不进入自动生成的反向步骤，3D 场景里也不画它的反向连线。param 和 input 总有梯度，不在损失上游时为全零。</li>
   <li><code>W.T</code> 是二维节点的转置。第一次访问时创建 transpose 节点并缓存，之后返回同一个节点。<code>g.matmul(h, W.T)</code> 和 <code>board(h, W.T, z)</code> 各取一次 <code>W.T</code>，布局必须找到计算图里的同一个节点，所以缓存不能去掉。转置节点名为 <code>W.T</code>，<code>tex</code> 与 <code>elem</code> 默认在原节点的写法后加 <code>^{\top}</code>；原写法含 <code>^</code>、<code>'</code> 或 <code>_</code> 时先整体加花括号，例如 <code>{W_{q}}^{\top}</code>，否则追加元素下标时会出现双下标。</li>
   <li><code>set</code> 只允许 input、param、label、buffer 调用。<code>index</code> 返回 label 的整数值，等于 <code>Math.round(value.get(idx))</code>。</li>
@@ -388,12 +389,16 @@ interface Graph {
   forward(inputs: Tensor[], attrs: A): Tensor;
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
+  ste?: boolean;
+  dtype?(attrs: A, inputDtypes: Dtype[]): Dtype;
   explain?: OpExplain;
 }
 defineOp(def: OpDef): void</code></pre>
 <ul>
   <li><code>name</code> 与 torch 同名；<code>args</code> 是 torch 的位置参数名，按 torch 的顺序；<code>tensors</code> 列出其中哪些是张量参数；<code>defaults</code> 是放进选项对象的关键字参数及默认值。</li>
   <li><code>differentiable</code> 标出每个张量参数是否求梯度，默认全部求。<code>nll_loss</code> 的 target、<code>gather</code> 的 index、<code>embedding</code> 的 input、<code>where</code> 的 condition、<code>topk_mask</code> 的 input 为 <code>false</code>。label 与 buffer 本身没有梯度，作为任何运算的输入都不求梯度。</li>
+  <li><code>ste</code> 为 <code>true</code> 表示反向用直通估计器，例如量化的舍入。这类运算的前向是阶跃函数，数值导数没有意义，有限差分检查只核对 <code>backward</code> 返回的形状，不比较数值。</li>
+  <li><code>dtype</code> 由属性和输入的 dtype 给出输出的 dtype，例如量化运算的输出 dtype 由格式参数决定，与输入无关。没有给出时按类型提升推导；节点选项里写了 <code>dtype</code> 时用选项的值。</li>
   <li><code>list</code> 是一个张量参数的名字，这个参数接受节点数组，例如 <code>cat</code> 的 <code>tensors</code>。数组里的节点按顺序展开成运算的输入，<code>forward</code>、<code>backward</code>、<code>shape</code> 收到的输入个数等于数组长度，讲解里的 <code>arg</code> 是节点在数组里的位置。为了让输入下标与参数一一对应，<code>list</code> 必须是唯一的张量参数，并且不能与 <code>differentiable</code> 同时使用；违反时 <code>defineOp</code> 抛错。有限差分报错时这类输入写作 <code>tensors[1]</code>。</li>
   <li><code>scalars</code> 列出可以传数的张量参数，例如 <code>add</code> 的 <code>other</code>。传了数时它不成为输入，存进 <code>attrs</code> 的同名字段，<code>forward</code> 收到的输入少一个，运算自己按 <code>attrs</code> 计算。</li>
   <li><code>sizes</code> 列出可以写维度名的非张量参数，例如 <code>narrow</code> 的 <code>length</code>。计算 shape 前按 <code>dims</code> 换成数，计算 realShape 前按 <code>real</code> 换成数，规则见上文「尺寸参数可以写维度名」。值是数组时逐个元素换算（<code>view</code> 的 <code>shape</code>）。<code>sizes</code> 也可以列出只在 <code>defaults</code> 里出现的关键字参数（<code>cat</code> 的 <code>pieces</code>）。</li>
@@ -433,6 +438,7 @@ defineOp(def: OpDef): void</code></pre>
   <li>构建工具产物（<code>dist/module/</code>）：默认值为 <code>process.env.NODE_ENV !== 'production'</code>。Vite、webpack 等构建工具在构建页面时把 <code>process.env.NODE_ENV</code> 替换成常量，所以 <code>vite</code> 开发服务器下检查打开，<code>vite build</code> 的生产产物里检查关闭。运行环境里既没有替换也没有 <code>process</code> 时，读取出错，默认值为关闭。</li>
   <li>直接引用的产物（<code>dist/*.js</code>）：默认关闭。浏览器直接加载这份产物，读不到构建环境的「开发模式」变量，要检查时页面写 <code>check: true</code>。</li>
 </ul>
+<p>定义里 <code>ste</code> 为 <code>true</code> 的运算只核对反向返回的形状，见「定义新运算」。</p>
 <p>检查函数也单独导出为 <code>checkOp(def, inputs, attrs)</code>，测试对所有内置运算调用它。</p>
 
 <h3>PyTorch 对拍</h3>

@@ -48,6 +48,7 @@ export function checkOpNamed<A extends object>(
         `gradient check failed: ${what}: backward returned ${formatShape(grad.shape)} for shape ${formatShape(input.shape)}`,
       );
     }
+    if (def.ste) return;
     for (let j = 0; j < input.size; j++) {
       const original = input.data[j];
       input.data[j] = original + CHECK_EPSILON;
