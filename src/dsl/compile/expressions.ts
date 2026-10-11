@@ -5,7 +5,7 @@ import { DslError } from '../source';
 import { elemOf, numberTex } from '../tex';
 import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
-import { type Env, type Make, NeedDim, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
+import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
 import { isNum, isRecord, num } from './util';
 
 function isOp(value: unknown): value is OpValue {
@@ -232,7 +232,7 @@ export class ExpressionCompiler extends CompilerState {
       const dtype = top && make.dtype !== undefined ? { dtype: make.dtype } : {};
       node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem, ...dtype });
     } catch (error) {
-      if (error instanceof NeedDim || error instanceof DslError) throw error;
+      if (error instanceof DslError) throw error;
       this.fail(env, (error as Error).message, at);
     }
     if (!top) make.anon.push(node);

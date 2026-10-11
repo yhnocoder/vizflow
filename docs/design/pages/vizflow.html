@@ -369,7 +369,7 @@ interface Graph {
   </tbody>
 </table>
 <p>logsumexp、softmax 这类运算在 vizflow 里是原子运算，不拆成基础运算组合，因为读者要在图上看到 LSE 是一个节点。</p>
-<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
+<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
 
 <h3>定义新运算</h3>
 <p>每个运算定义四件事，反向传播和全部讲解内容都由它们推导。数值部分是前向怎么算、反向怎么算（给定输出梯度，求每个输入的梯度）；讲解部分是元素级的连线模式，以及每条边的局部导数（一个数值函数加一段公式模板）。讲解部分放在 <code>explain</code> 模块，只需要数值的场合不会加载。</p>

@@ -72,13 +72,6 @@ export type Slot =
   | { kind: 'loop'; iterations: Slot[][]; sequential: boolean }
   | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
 
-export class NeedDim {
-  constructor(
-    readonly name: string,
-    readonly value: Num,
-  ) {}
-}
-
 export class Scope {
   readonly entries = new Map<string, Node>();
   readonly children = new Map<string, Scope>();

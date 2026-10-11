@@ -6,7 +6,7 @@ import { parseExpr } from '../expr';
 import { child } from '../source';
 import { OP_TEX, defaultTex, numberTex, opTex } from '../tex';
 import { ExpressionCompiler } from './expressions';
-import { type Env, NeedDim, type Num, type OpValue } from './types';
+import { type Env, type Num, type OpValue } from './types';
 import { checkKeys, isNum, record } from './util';
 
 function matrixTemplate(name: string, shape: readonly number[], format: string): string {
@@ -178,7 +178,6 @@ export class Compiler extends ExpressionCompiler {
       const found = this.resolve(ast, env, undefined, 0);
       return found instanceof Node ? found : undefined;
     } catch (error) {
-      if (error instanceof NeedDim) throw error;
       return undefined;
     }
   }

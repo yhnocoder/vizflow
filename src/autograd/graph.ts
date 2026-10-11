@@ -42,6 +42,7 @@ export interface Graph extends BuiltinOps {
   split(tensor: Node, split_size: number | string, dim?: number | SplitOptions, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
+  addDim(name: string, value: number, real?: number): void;
   node(name: string): Node | undefined;
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
@@ -92,14 +93,14 @@ function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Read
 }
 
 class GraphImpl {
-  readonly dims: Readonly<Record<string, number>>;
-  readonly real: Readonly<Record<string, number | string>> | undefined;
+  dims: Readonly<Record<string, number>>;
+  real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
   readonly nodes: Node[] = [];
   version = 0;
   self!: Graph;
   private readonly states: NodeState[] = [];
-  private readonly realDims: Readonly<Record<string, number>> | undefined;
+  private realDims: Readonly<Record<string, number>> | undefined;
   private readonly check: boolean;
   private readonly subscribers: (() => void)[] = [];
   private readonly opCounters = new Map<string, number>();
@@ -120,6 +121,19 @@ class GraphImpl {
         if (typeof value === 'number') numeric[key] = value;
       }
       this.realDims = numeric;
+    }
+  }
+
+  addDim(name: string, value: number, real = value): void {
+    const known = this.dims[name];
+    if (known !== undefined) {
+      if (known !== value || (this.realDims?.[name] ?? known) !== real) throw new Error(`addDim: dimension '${name}' is already defined`);
+      return;
+    }
+    this.dims = Object.freeze({ ...this.dims, [name]: value });
+    if (this.real !== undefined && this.realDims !== undefined) {
+      this.real = Object.freeze({ ...this.real, [name]: real });
+      this.realDims = Object.freeze({ ...this.realDims, [name]: real });
     }
   }
 

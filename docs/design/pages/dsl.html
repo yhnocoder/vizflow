@@ -169,7 +169,7 @@ steps:
   </tbody>
 </table>
 <p>模块把 softmax 拆成 exp、求和、相除三步，把 repeat_kv 画成 <code>select</code>，因为读者要在图上看到这些中间张量；数值与 torch 的融合实现相同。</p>
-<p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度、<code>view</code> 的形状这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参。页面没有 <code>real</code> 时不加。<code>cat</code> 的列表参数来自范围 <code>o[a..b]</code>、并且范围的真实个数与示例个数不同时（例如 $H$ 的示例值 2、真实值 32），编译器给 <code>cat</code> 加上 <code>pieces</code> 选项，值是表示个数的维度，拼接结果的真实尺寸按「一块的真实尺寸 × 真实个数」计算，后面的 o_proj 因此按 4096 显示。</p>
+<p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度、<code>view</code> 的形状这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器第一次遇到这个尺寸时用 <code>g.addDim</code> 在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参，编译只进行一遍。页面没有 <code>real</code> 时不加。<code>cat</code> 的列表参数来自范围 <code>o[a..b]</code>、并且范围的真实个数与示例个数不同时（例如 $H$ 的示例值 2、真实值 32），编译器给 <code>cat</code> 加上 <code>pieces</code> 选项，值是表示个数的维度，拼接结果的真实尺寸按「一块的真实尺寸 × 真实个数」计算，后面的 o_proj 因此按 4096 显示。</p>
 <p><b>初值。</b>权重按路径在 <code>values</code> 里查固定数值，没有时按 <code>init</code> 生成。<code>values</code> 里多出的路径报错。</p>
 <table>
   <thead>

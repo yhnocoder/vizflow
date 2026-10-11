@@ -25,6 +25,7 @@ export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'split',
   'loss',
   'findLoss',
+  'addDim',
   'node',
   'subscribe',
   'batch',

@@ -2,7 +2,7 @@ import { PAGE_KEYS } from './compile/keys';
 import { type CompiledPage, assemblePage } from './compile/page';
 import type { SectionSources } from './compile/sections';
 import { Compiler } from './compile/text';
-import { NeedDim, type Num } from './compile/types';
+import { type Num } from './compile/types';
 import { checkKeys, isRecord, record } from './compile/util';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
 import { sectionRows } from './section-md';
@@ -55,14 +55,5 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
   }
   const rootDef: ModuleDef = { name: String(spec.title), file, decl: spec, where, namespace };
   const rootDims = rootDimsOf(spec, where);
-  const extra = new Map<string, Num>();
-  for (;;) {
-    try {
-      return assemblePage(new Compiler(spec, where, rootDef, rootDims, extra), sectionSources);
-    } catch (error) {
-      if (!(error instanceof NeedDim)) throw error;
-      if (extra.has(error.name)) throw new Error(`dsl: dimension ${error.name} could not be registered`);
-      extra.set(error.name, error.value);
-    }
-  }
+  return assemblePage(new Compiler(spec, where, rootDef, rootDims), sectionSources);
 }

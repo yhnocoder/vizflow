@@ -381,7 +381,7 @@ const [q1, q2] = g.split(q, 'dh', 1, {
 });
 ```
 
-**尺寸参数写维度名**：`narrow` 的 `length`、`view` 的形状、`cat` 的 `pieces` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。
+**尺寸参数写维度名**：`narrow` 的 `length`、`view` 的形状、`cat` 的 `pieces` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。建图以后需要新的维度名时，用 `g.addDim('w', 8, 8192)` 加上，第三个参数是真实值，省略时等于第二个参数。
 
 `W.T` 是二维节点的转置。第一次访问时创建名为 `W.T` 的 transpose 节点，之后每次访问返回同一个节点，所以 `g.matmul(h, W.T)` 和 `board(h, W.T, z)` 里的 `W.T` 是同一个节点。
 

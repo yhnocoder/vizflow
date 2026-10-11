@@ -4,7 +4,7 @@ import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { reshapeNested } from './buffer-functions';
 import type { Compiler } from './text';
-import { type BufferValue, type Env, NeedDim, type Num, type OpValue, type ParamType, type Scope } from './types';
+import { type BufferValue, type Env, type Num, type OpValue, type ParamType, type Scope } from './types';
 import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
 
 const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'tex', 'text']);
@@ -111,7 +111,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
     try {
       node = c.g.param(path, leafSpec(c, shape), values, { tex, elem: elemOf(tex), ...dtypeOption(weightDecl, at) });
     } catch (error) {
-      if (error instanceof DslError || error instanceof NeedDim) throw error;
+      if (error instanceof DslError) throw error;
       fail(at, (error as Error).message);
     }
     define(c, scope, name, node, { ...env, where: at });
@@ -148,7 +148,6 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
         c.setOwner(created, entries);
         return created;
       } catch (error) {
-        if (error instanceof NeedDim) throw error;
         return fail(at, (error as Error).message);
       }
     });
