@@ -4,10 +4,6 @@ import type { SceneController } from './controller';
 
 type PartState = 'off' | 'on' | 'now' | 'grad';
 
-function mirrorId(id: string): string {
-  return id.replace(/^b:/, 'f:').replace(/^B:/, 'F:');
-}
-
 export class FormulaPanel {
   private readonly el: HTMLDivElement;
   private readonly title: HTMLDivElement;
@@ -39,7 +35,7 @@ export class FormulaPanel {
     const steps = this.c.steps;
     const info = this.c.currentInfo();
     const forward = info?.dir === 'forward';
-    const base = info === undefined || forward ? info : (steps?.list.find((s) => s.dir === 'forward' && s.id === mirrorId(info.id) && s.nodes.some((n) => info.nodes.includes(n))) ?? info);
+    const base = info === undefined || forward ? info : (steps?.list.find((s) => s.dir === 'forward' && s.id === info.forwardId) ?? info);
     const owner = steps === undefined || base === undefined || this.c.lod || info?.kind === 'overview' || info?.kind === 'inputs' ? undefined : this.owner(base);
     this.el.hidden = owner === undefined;
     if (owner === undefined || steps === undefined || info === undefined) return;

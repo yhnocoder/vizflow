@@ -77,6 +77,7 @@ export interface StepInfo {
   segment: string;
   sub?: string;
   module?: string;
+  forwardId?: string;
   notes?: StepNote[];
   marks?: string[];
   formula?: { title: string; tex: string };
@@ -339,6 +340,7 @@ class StepsImpl implements Steps {
       else if (groups[groups.length - 1]?.module !== folded) groups.push({ module: folded });
     }
     const moduleUse = (m: StepModule) => unique([...m.inputs, ...m.params]);
+    const forwardIds = new Map<(typeof groups)[number], string>();
     for (const group of groups) {
       const index = entries.length;
       let info: StepInfo;
@@ -384,6 +386,7 @@ class StepsImpl implements Steps {
         withNotes(withMarks(info, step), step.notes);
       }
       prod.forEach((n) => revealed.add(n));
+      forwardIds.set(group, info.id);
       entries.push(this.entry(info, new Set(revealed), new Set(active)));
     }
     const received = new Set<Node>();
@@ -400,6 +403,7 @@ class StepsImpl implements Steps {
         const m = group.module;
         const info: Omit<StepInfo, 'index' | 'dir'> = {
           id: `B:${m.id}`,
+          forwardId: forwardIds.get(group),
           kind: 'module',
           title: m.backward.title ?? `穿过 ${m.title}（已折叠）`,
           label: m.backward.label ?? `$\\partial$ ${m.title}`,
@@ -420,6 +424,7 @@ class StepsImpl implements Steps {
       const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;
       const info: Omit<StepInfo, 'index' | 'dir'> = {
         id: `b:${unit.index}`,
+        forwardId: forwardIds.get(group),
         kind: 'op',
         title,
         label: override.label ?? `$\\partial ${subject.tex}$`,

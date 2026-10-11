@@ -303,7 +303,10 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
     }
     const moved = this.controls.update();
-    if ((moved || stepped || following || this.labelsDirty) && markSeeThrough(this)) this.refresh();
+    if ((moved || stepped || following || this.labelsDirty) && markSeeThrough(this)) {
+      for (const renderable of this.renderables) refreshBlock(this, renderable, now, this.rig.zoomNow());
+      this.labelsDirty = true;
+    }
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {

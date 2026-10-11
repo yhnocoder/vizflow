@@ -378,6 +378,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       expect(s.folded(id), id).toBe(true);
       const own = s.list.filter((x) => x.kind === 'module' && x.module === id);
       expect(own.map((x) => [x.dir, visible(x.label)]), id).toEqual([['forward', visible(ref.MODF[key][0])], ['backward', visible(ref.MODF[key][1])]]);
+      expect(own[1].forwardId, id).toBe(own[0].id);
       const inside = page.modules.find((m) => m.id === id)!.nodes;
       expect(s.list.some((x) => x.dir === 'forward' && x.kind === 'op' && x.nodes.some((n) => inside.includes(n) && n.kind === 'op')), id).toBe(false);
       for (const info of own) {
