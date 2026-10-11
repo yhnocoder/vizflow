@@ -21,7 +21,7 @@ import {
   transposeExplain,
   whereExplain,
 } from './elementwise';
-import { allReduceExplain } from './comm';
+import { allReduceExplain, combineExplain, dispatchExplain } from './comm';
 import {
   catExplain,
   causalConv1dExplain,
@@ -88,3 +88,5 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
 registerExplain('all_reduce', allReduceExplain);
+registerExplain('dispatch', dispatchExplain);
+registerExplain('combine', combineExplain);

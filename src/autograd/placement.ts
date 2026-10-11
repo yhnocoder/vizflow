@@ -2,9 +2,10 @@ import { Tensor, forEachIndex, normDims } from '../tensor';
 import type { Graph } from './graph';
 import type { Mesh } from './mesh';
 import type { Node } from './node';
+import { routedPairs } from './ops/comm';
 import { opDef } from './registry';
 
-export type Placement = { kind: 'replicate' } | { kind: 'shard'; dim: number } | { kind: 'partial' } | { kind: 'local'; rank: number };
+export type Placement = { kind: 'replicate' } | { kind: 'shard'; dim: number } | { kind: 'partial' } | { kind: 'local'; rank: number } | { kind: 'routed'; sel: Node };
 
 export interface GradPlacement {
   placement: Placement;
@@ -31,13 +32,14 @@ const LINEAR_UNARY = new Set(['identity', 'neg']);
 const NONLINEAR_UNARY = new Set(['exp', 'log', 'rsqrt', 'sqrt', 'sigmoid', 'silu', 'softplus', 'relu', 'gelu', 'pow']);
 const MOVEMENT = new Set(['transpose', 'view', 'select', 'narrow', 'cat', 'repeat_interleave', 'rotate_half']);
 const SUMS = new Set(['sum', 'mean']);
-const ROW_WISE = new Set(['softmax', 'log_softmax', 'logsumexp', 'max']);
-const KEEP_DIM = new Set(['softmax', 'log_softmax']);
+const ROW_WISE = new Set(['softmax', 'log_softmax', 'logsumexp', 'max', 'topk_mask']);
+const KEEP_DIM = new Set(['softmax', 'log_softmax', 'topk_mask']);
 
 export function placementText(p: Placement): string {
   if (p.kind === 'replicate') return 'Replicate';
   if (p.kind === 'partial') return 'Partial';
   if (p.kind === 'shard') return `Shard(${p.dim})`;
+  if (p.kind === 'routed') return '每行在它的专家所在的卡上';
   return `只在 rank ${p.rank} 上`;
 }
 
@@ -45,6 +47,7 @@ function same(a: Placement, b: Placement): boolean {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'shard') return a.dim === (b as { dim: number }).dim;
   if (a.kind === 'local') return a.rank === (b as { rank: number }).rank;
+  if (a.kind === 'routed') return a.sel === (b as { sel: Node }).sel;
   return true;
 }
 
@@ -82,7 +85,12 @@ class PlacementsImpl implements Placements {
   private ownerAt(node: Node, p: Placement, index: readonly number[]): number | undefined {
     if (p.kind === 'local') return p.rank;
     if (p.kind === 'shard') return Math.floor(index[p.dim] / (node.shape[p.dim] / this.mesh.size));
+    if (p.kind === 'routed') return this.expertRank(p.sel, routedPairs(p.sel.value, node.shape[0], 'dispatch')[index[0]].expert);
     return undefined;
+  }
+
+  private expertRank(sel: Node, expert: number): number {
+    return Math.floor(expert / (sel.shape[1] / this.mesh.size));
   }
 
   ranks(node: Node): Tensor[] | undefined {
@@ -158,6 +166,8 @@ class PlacementsImpl implements Placements {
   private rule(node: Node, ins: Placement[]): Placement {
     const op = node.op as string;
     if (op === 'all_reduce') return this.allReduce(node, ins[0]);
+    if (op === 'dispatch') return this.dispatch(node, ins);
+    if (op === 'combine') return this.combine(node, ins);
     if (ins.every((p) => p.kind === 'replicate')) return REPLICATE;
     if (LINEAR_UNARY.has(op)) return ins[0];
     if (NONLINEAR_UNARY.has(op)) {
@@ -173,6 +183,8 @@ class PlacementsImpl implements Placements {
       return this.matmul(node, head, ins[1], 2);
     }
     if (SUMS.has(op) || ROW_WISE.has(op)) return this.reduction(node, ins[0]);
+    if (op === 'route_rows' || op === 'route_experts') return this.route(node, ins[0]);
+    if (op === 'grouped_mm') return this.groupedMm(node, ins);
     throw this.error(node, `运算 ${op} 没有放置规则，它的输入只能是 Replicate`);
   }
 
@@ -189,6 +201,40 @@ class PlacementsImpl implements Placements {
   private checkGroup(node: Node): void {
     const group = node.attrs.group;
     if (group !== this.mesh.axis) throw this.error(node, `通信组 '${String(group)}' 不是 mesh 的轴，mesh 只有 '${this.mesh.axis}'`);
+  }
+
+  private checkExperts(node: Node, sel: Node, p: Placement): void {
+    if (p.kind === 'partial') throw this.error(node, '专家选择不能是 Partial');
+    if (sel.shape[1] % this.mesh.size !== 0) throw this.error(node, `${sel.shape[1]} 个专家不能平均分到 ${this.mesh.size} 张卡上`);
+  }
+
+  private dispatch(node: Node, [x, sel]: Placement[]): Placement {
+    this.checkGroup(node);
+    if (x.kind !== 'shard' || x.dim !== 0) throw this.error(node, `dispatch 的输入要按 token 切分，也就是 Shard(0)，这里是 ${placementText(x)}`);
+    this.checkExperts(node, node.inputs[1], sel);
+    return { kind: 'routed', sel: node.inputs[1] };
+  }
+
+  private combine(node: Node, [y, sel, w]: Placement[]): Placement {
+    this.checkGroup(node);
+    const selNode = node.inputs[1];
+    if (y.kind !== 'routed' || y.sel !== selNode) throw this.error(node, `combine 的输入要是同一次 dispatch 之后按专家分行的张量，这里是 ${placementText(y)}`);
+    this.checkExperts(node, selNode, sel);
+    if (w.kind === 'partial' || (w.kind !== 'replicate' && !(w.kind === 'shard' && w.dim === 0))) throw this.error(node, `combine 的权重要是 Replicate 或 Shard(0)，这里是 ${placementText(w)}`);
+    if (node.shape[0] % this.mesh.size !== 0) throw this.error(node, `${node.shape[0]} 个 token 不能平均分回 ${this.mesh.size} 张卡`);
+    return { kind: 'shard', dim: 0 };
+  }
+
+  private route(node: Node, sel: Placement): Placement {
+    this.checkExperts(node, node.inputs[0], sel);
+    return { kind: 'routed', sel: node.inputs[0] };
+  }
+
+  private groupedMm(node: Node, [x, w, group]: Placement[]): Placement {
+    if (x.kind !== 'routed') throw this.error(node, `grouped_mm 的输入要按专家分行，这里是 ${placementText(x)}`);
+    if (!(w.kind === 'replicate' || (w.kind === 'shard' && w.dim === 0))) throw this.error(node, `专家权重要按专家维切分，也就是 Shard(0)，这里是 ${placementText(w)}`);
+    if (!same(group, x)) throw this.error(node, '专家编号和输入的行不是同一次路由');
+    return x;
   }
 
   private elementwise(node: Node, ins: Placement[]): Placement {
