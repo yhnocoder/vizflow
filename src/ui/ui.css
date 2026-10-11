@@ -238,6 +238,39 @@
   padding: 2px 10px;
 }
 
+.vf-st .katex,
+.vf-tl-inner .katex,
+.vf-caption h3 .katex,
+.vf-card h2 .katex,
+.vf-lossrows .katex,
+.vf-seqrow label .katex,
+.vf-btn .katex,
+.vf-attn .katex,
+.vf-wcap .katex,
+.vf-wmat .katex,
+.vf-card th .katex,
+.vf-seg .katex,
+.vf-ropectl .katex,
+.vf-ropekv .katex,
+.vf-rope-svg .katex,
+.vf-cap .katex,
+.vf-wave .katex,
+.vf-wave-note .katex,
+.vf-rope-curve .katex {
+  font-size: 1em;
+}
+
+.vf-caption .ctx,
+.vf-md .ctx,
+.vf-note .ctx {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  background: color-mix(in srgb, var(--ink) 5%, var(--surface));
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: pre;
+}
+
 .vf-tl-sub .vf-st[aria-current="step"] {
   background: color-mix(in srgb, var(--pos) 16%, var(--surface));
   color: var(--fg);
@@ -330,6 +363,10 @@
   font-size: 24px;
   color: var(--muted);
   margin-right: 6px;
+}
+
+.vf-big .katex {
+  line-height: 1;
 }
 
 .vf-sub {
@@ -691,6 +728,10 @@ table.vf-cls {
   margin: 0 0 8px;
 }
 
+.vf-md .katex-display {
+  margin: 18px 0;
+}
+
 .vf-md h3 {
   font-family: var(--serif);
   font-weight: 400;
@@ -752,7 +793,7 @@ table.vf-cls {
   min-width: 0;
 }
 
-.vf-ropectl label span {
+.vf-ropectl label > span:last-child {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--fg);
