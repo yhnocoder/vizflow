@@ -264,8 +264,5 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
 }
 
 export function rowStates(c: SceneController, block: Block): (RowState | undefined)[] {
-  const axis = c.positionAxis(block.node);
-  const row = c.state.row;
-  if (axis === undefined || row === undefined) return block.elements.map(() => undefined);
-  return block.elements.map((e) => row(block.node, e.index[axis]));
+  return block.elements.map((e) => c.rowAt(block.node, e.index));
 }

@@ -90,8 +90,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
   };
   const blocked = (node: Node, index: number[], target: boolean) => {
-    const axis = c.positionAxis(node);
-    const state = axis === undefined ? undefined : c.state.row?.(node, index[axis]);
+    const state = c.rowAt(node, index);
     return state === 'hidden' || (target && state === 'inactive');
   };
   const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
