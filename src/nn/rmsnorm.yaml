@@ -27,8 +27,8 @@ body:
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
   - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
   - r:  { op: rsqrt(mse), tex: r }
-  - xh: { op: x * r, tex: '\hat{\of{x}}' }
-  - out: { op: xh * weight, dtype: x }
+  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
+  - out: xh * weight
 steps:
   - id: square
     show: sq
@@ -87,7 +87,7 @@ steps:
     label: '$\of{xh}$'
     title: 归一化
     text: |
-      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。
+      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。
       $$\of{xh}={{ xh | matrix:2 }}$$
     backward:
       label: '$\partial\of{r},\ \partial\of{x}$'

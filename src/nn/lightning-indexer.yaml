@@ -41,7 +41,6 @@ body:
       inputs: { x: kx }
       outputs: { out: k }
       tex: { out: '\bar{\of{kx}}' }
-      folded: true
   - k_rot: { op: 'view(narrow(k, -1, 0, dr), T, 1, dr)', tex: '\mathbf{k}^{I}_{\mathrm{rot}}' }
   - k_pass: { op: 'narrow(k, -1, dr, dI - dr)', tex: '\mathbf{k}^{I}_{\mathrm{pass}}' }
   - apply_rotary_pos_emb:

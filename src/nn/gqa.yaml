@@ -91,7 +91,7 @@ steps:
     label: '$+\,\mathrm{mask}$'
     title: causal mask
     text: |
-      加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。
+      加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 填的是这个 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，取 exp 以后和 $-\infty$ 一样是 0，这里写成 $-\infty$。
       $$\of{mask}={{ mask | matrix:2 }}$$
     backward:
       label: '$\partial\tilde{S}$'
@@ -101,7 +101,7 @@ steps:
     show: 'ex[1..H]'
     label: '$\exp$'
     title: softmax：取 exp
-    text: softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。
+    text: softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。HF 调用的是 <code>softmax(..., dtype=torch.float32)</code>，kernel 会先给每一行减去这一行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
     backward:
       label: '$\partial\bar{S}$'
       title: 穿过 exp
@@ -122,7 +122,7 @@ steps:
     label: '$P$'
     title: 注意力权重
     text: |
-      每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。
+      每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。HF 接着把 $P$ 转回 q 的 dtype，再做 <code>nn.functional.dropout(attn_weights, p=dropout)</code>；Qwen3、Qwen3.5 和 DeepSeek V3 的 attention_dropout 都是 0，dropout 什么也不做，图里没有这一步。
       $$P^{(1)}={{ P[1] | matrix:3 }}$$
     backward:
       label: '$\partial\,\mathrm{ex},\ \partial Z$'

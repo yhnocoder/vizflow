@@ -1,6 +1,6 @@
 module: Qwen3Attention
 subtitle: Qwen3Attention
-formula: '\begin{aligned}\step{apply_rotary_pos_emb.*}{\of{qr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{qkv}{\of{x}{\of{Wq}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{apply_rotary_pos_emb.*}{\of{kr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{qkv}{\of{x}{\of{Wk}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{qkv}{\of{v}}&\step{qkv}{=\of{x}{\of{Wv}}^{\top}}\\\step{o_proj}{\of{att}}&\step{o_proj}{=}\step{eager_attention_forward.*}{\operatorname{Attn}(\of{qr},\of{kr},\of{v})}\step{o_proj}{{\of{Wo}}^{\top}}\end{aligned}'
+formula: '\begin{aligned}\step{apply_rotary_pos_emb.*}{\of{qr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{q_proj}{\of{x}{\of{Wq}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{apply_rotary_pos_emb.*}{\of{kr}}&\step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}\step{q_norm.*}{\mathrm{norm}(}\step{k_proj}{\of{x}{\of{Wk}}^{\top}}\step{q_norm.*}{)}\step{apply_rotary_pos_emb.*}{\big)}\\\step{v_proj}{\of{v}}&\step{v_proj}{=\of{x}{\of{Wv}}^{\top}}\\\step{o_proj}{\of{att}}&\step{o_proj}{=}\step{eager_attention_forward.*}{\operatorname{Attn}(\of{qr},\of{kr},\of{v})}\step{o_proj}{{\of{Wo}}^{\top}}\end{aligned}'
 import:
   RMSNorm: vizflow/nn/rmsnorm
   RoPE: vizflow/nn/rope
@@ -287,21 +287,45 @@ body:
             text: 拼接的反向是把梯度按列切回去。
   - att: { op: o @ Wo.T, tex: '\mathbf{att}' }
 steps:
-  - id: qkv
-    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: 'nn.Linear $\times$ 3' }
-    show: [Wq.T, Wk.T, Wv.T, q, k, v]
-    label: '$\of{q},\ \of{k},\ \of{v}$'
-    title: q_proj、k_proj、v_proj
+  - id: q_proj
+    brace: { title: q_proj, subtitle: nn.Linear }
+    show: [Wq.T, q]
+    label: '$\of{q}$'
+    title: q_proj
     text: |
-      三个投影的输入都是 $\of{x}$，所以三块权重拼成一块板来画：$n_{t,k}$ 沿第 $k$ 行依次穿过 $W_q^{\top}$、$W_k^{\top}$、$W_v^{\top}$。q 有 \of{H} 个 head，每个 head 宽 $d_h=\of{dh}$，一共宽 \of{H*dh}；k 和 v 只有 \of{Hkv} 个 kv head，各宽 \of{Hkv*dh}，两个 query head 共用它，这就是 GQA。Qwen3 的这三个 Linear 都没有 bias。代码里接下来的 <code>view</code> 只是把列按 head 分组，不移动数据，图里用列之间的空隙表示 head 的分界；q_norm、k_norm 之后的 <code>transpose(1, 2)</code> 也只是换轴。
+      q_proj 把 $\of{x}$ 投影成 query。q 有 \of{H} 个 head，每个 head 宽 $d_h=\of{dh}$，一共宽 \of{H*dh}。Qwen3 的 q_proj、k_proj、v_proj 都没有 bias。代码里接下来的 <code>view</code> 只是把列按 head 分组，不移动数据，图里用列之间的空隙表示 head 的分界；q_norm、k_norm 之后的 <code>transpose(1, 2)</code> 也只是换轴。
       $$\mathbf{q}=\of{x}W_q^{\top}={{ q | matrix:2 }}$$
-      $$\mathbf{k}=\of{x}W_k^{\top}={{ k | matrix:2 }},\qquad \mathbf{v}=\of{x}W_v^{\top}={{ v | matrix:2 }}$$
     backward:
-      label: '$\partial W,\ \partial\of{x}$'
-      title: 传到三个投影的权重和 $\of{x}$
+      label: '$\partial W_q,\ \partial\of{x}$'
+      title: 传到 q_proj 权重和 $\of{x}$
       text: |
-        三块权重的梯度都是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。$n_{t,k}$ 沿第 $k$ 行穿过三块板，一共 $\of{H*dh}+\of{Hkv*dh}+\of{Hkv*dh}$ 段，全部相加。
-        $$\frac{\partial\ell}{\partial W_q^{\top}}=\of{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}},\qquad \frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
+        权重的梯度是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。
+        $$\frac{\partial\ell}{\partial W_q^{\top}}=\of{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}}$$
+  - id: k_proj
+    brace: { title: k_proj, subtitle: nn.Linear }
+    show: [Wk.T, k]
+    label: '$\of{k}$'
+    title: k_proj
+    text: |
+      k_proj 的输入也是 $\of{x}$。k 只有 \of{Hkv} 个 kv head，宽 \of{Hkv*dh}，几个 query head 共用一个 kv head，这就是 GQA。HF 先算 q_proj 和 q_norm，再算 k_proj 和 k_norm；两条路互不依赖，这里先画三个投影，再一起画两个 norm。
+      $$\mathbf{k}=\of{x}W_k^{\top}={{ k | matrix:2 }}$$
+    backward:
+      label: '$\partial W_k,\ \partial\of{x}$'
+      title: 传到 k_proj 权重和 $\of{x}$
+  - id: v_proj
+    brace: { title: v_proj, subtitle: nn.Linear }
+    show: [Wv.T, v]
+    label: '$\of{v}$'
+    title: v_proj
+    text: |
+      v_proj 的输入还是 $\of{x}$，宽度和 k 相同。value 不做 norm。
+      $$\mathbf{v}=\of{x}W_v^{\top}={{ v | matrix:2 }}$$
+    backward:
+      label: '$\partial W_v,\ \partial\of{x}$'
+      title: 传到 v_proj 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 用在三个投影里，它的梯度是三条路相加：$n_{t,k}$ 沿第 $k$ 行穿过三块权重，一共 $\of{H*dh}+\of{Hkv*dh}+\of{Hkv*dh}$ 段。
+        $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]

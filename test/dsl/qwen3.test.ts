@@ -113,7 +113,7 @@ const MODULES: Record<string, string> = {
   rms: 'norm',
 };
 
-const EXPANDED: Record<string, number> = { r1rs: 3, qkrs: 3, rh: 3, r2rs: 3, silu: 5, frs: 3, lse: 3, lp: 1, nll: 2, mean: 1 };
+const EXPANDED: Record<string, number> = { qkv: 3, gu: 1, r1rs: 3, qkrs: 3, rh: 3, r2rs: 3, silu: 6, frs: 3, lse: 3, lp: 1, nll: 2, mean: 1 };
 const EXPANSION_NODES = [
   ...Object.values(RMS).map((path) => `${path}.mse`),
   `${NORMS.q}.mse`,
@@ -131,6 +131,9 @@ const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: 
 const BODY_CHANGES: Record<string, [string, string]> = {
   qkc: ['这里按代码的顺序拆成四步', '这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加'],
   F_rope: ['四步合成一个旋转', '这几步合成一个旋转'],
+  r1ah: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
+  r2ah: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
+  fxh: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
 };
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 const LABEL_CHANGES: Record<string, string> = {
@@ -298,10 +301,10 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     expect(ops.map((n) => n.name).sort()).toEqual([...new Set([...outs, ...EXPANSION_NODES])].sort());
   });
 
-  it('lists 65 forward and 64 backward steps with the reference labels, titles and texts where no op was expanded', () => {
+  it('lists 68 forward and 67 backward steps with the reference labels, titles and texts where no op was expanded', () => {
     const expected = refSteps(ref);
-    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(65);
-    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(64);
+    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(68);
+    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(67);
     expect(steps.list).toHaveLength(expected.length);
     steps.list.forEach((info, i) => {
       const want = expected[i];
@@ -437,7 +440,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     s.subscribe(() => notified++);
     s.setFolded(ATTN, true);
     expect(notified).toBeGreaterThan(0);
-    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(65 - 25 + 1);
+    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(68 - 27 + 1);
     expect(visible(s.list[s.current].label)).toBe(visible('att = self_attn(n₁)'));
     s.setAllFolded(true);
     expect(s.list.map((x) => visible(x.label))).toEqual([
@@ -446,7 +449,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     ].map(visible));
     expect(visible(s.list[s.current].label)).toBe(visible('x = layer(x₀)'));
     s.setAllFolded(false);
-    expect(s.list).toHaveLength(129);
+    expect(s.list).toHaveLength(135);
     expect(s.folded('layers')).toBe(true);
     s.dispose();
   });
