@@ -1,0 +1,119 @@
+import type { Object3D } from 'three';
+import type { Node } from '../autograd';
+import { offsetOf } from '../tensor';
+import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
+import type { SceneController } from './controller';
+import type { Label } from './labels';
+import { type Block, type Element, type Vec3, elementAt, targetColumn } from './layout';
+import { TICK_COUNT, capFor, niceTicks, scaleFor } from './scales';
+import { Transition } from './transition';
+
+export interface Renderable {
+  block: Block;
+  bars?: BarMesh;
+  nodes?: NodeMesh;
+  plate?: PlateMesh;
+  transition: Transition;
+  clipped: boolean[];
+  cap: number;
+  far: boolean;
+  scale: { forward: number; backward: number };
+  ticks: { forward: number[]; backward: number[] };
+  title: Label | undefined;
+  values: Label[];
+  classes: Label[];
+  rows: Label[];
+  tickLabels: Label[];
+  pickables: Object3D[];
+}
+
+export function createRenderable(c: SceneController, block: Block): Renderable {
+  const node = block.node;
+  const grad = node.grad;
+  const cap = capFor(block.shape, node.shape.length);
+  const scale = {
+    forward: block.scales.forward ?? scaleFor(node.value.data, cap),
+    backward: block.scales.backward ?? scaleFor(grad === null ? [] : grad.data, cap),
+  };
+  const renderable: Renderable = {
+    block,
+    transition: new Transition(block.elements.length, () => c.reduceMotion.matches),
+    clipped: block.elements.map(() => false),
+    cap,
+    far: false,
+    scale,
+    ticks: {
+      forward: block.axis === undefined ? [] : niceTicks(node.value.data, scale.forward, TICK_COUNT, cap),
+      backward: block.axis === undefined || grad === null ? [] : niceTicks(grad.data, scale.backward, TICK_COUNT, cap),
+    },
+    title: undefined,
+    values: [],
+    classes: [],
+    rows: [],
+    tickLabels: [],
+    pickables: [],
+  };
+  if (block.shape === 'bar' || block.shape === 'tile') {
+    renderable.bars = new BarMesh(block, c.theme);
+    renderable.pickables.push(renderable.bars.mesh);
+    if (block.shape === 'bar') renderable.values = block.elements.map(() => c.labels.add('val'));
+    renderable.title = c.labels.add('ttl');
+  } else {
+    renderable.nodes = new NodeMesh(block, c.theme);
+    renderable.pickables.push(...renderable.nodes.meshes);
+    renderable.values = block.elements.map(() => c.labels.add('nv'));
+    renderable.title = c.labels.add('ntl');
+  }
+  c.popups.bindCard(renderable.title, node);
+  if (block.plate !== undefined) renderable.plate = new PlateMesh(block, c.theme);
+  renderable.classes = block.classLabels.map((text) => {
+    const label = c.labels.add(block.role === 'board-b' || text.anchor === 'above' ? 'colh' : 'cls');
+    if (block.role === 'planar' && text.anchor === 'below') label.under = renderable.values.filter((_, i) => block.elements[i].col === text.col);
+    return label;
+  });
+  renderable.rows = block.rowLabels.map(() => c.labels.add('kk'));
+  if (block.axis !== undefined) renderable.tickLabels = Array.from({ length: Math.max(renderable.ticks.forward.length, renderable.ticks.backward.length) }, () => c.labels.add('tick'));
+  return renderable;
+}
+
+export function renderableOf(c: SceneController, node: Node): Renderable | undefined {
+  const source = c.levelLayout?.sourceOf.get(node) ?? node;
+  return c.renderables.find((r) => r.block.node === source && r.block.copyOf === undefined);
+}
+
+export function renderableFor(c: SceneController, block: Block): Renderable | undefined {
+  return c.renderables.find((r) => (r.block.key ?? r.block.node) === (block.key ?? block.node));
+}
+
+export function elementOf(block: Block, node: Node, index: readonly number[]): Element {
+  return block.node === node ? elementAt(block, index) : block.elements[offsetOf(node.shape, index as number[])];
+}
+
+export function shown(block: Block | undefined): boolean {
+  return block !== undefined && block.hidden !== true;
+}
+
+export function targetOf(c: SceneController, block: Block, row: number): number | undefined {
+  const label = c.aligned.get(block.node);
+  return label === undefined ? undefined : targetColumn(label, row);
+}
+
+export function valuesOf(c: SceneController, node: Node): ArrayLike<number> {
+  if (c.state.dir === 'forward') return node.value.data;
+  const grad = node.grad;
+  return grad === null ? new Float64Array(node.value.size) : grad.data;
+}
+
+export function anchorOut(c: SceneController, node: Node, index: number[], renderable = renderableOf(c, node)): Vec3 | undefined {
+  if (renderable === undefined) return undefined;
+  const element = elementOf(renderable.block, node, index);
+  if (renderable.nodes !== undefined) return renderable.nodes.anchorOut(element);
+  return barTop(element, renderable.transition.current[offsetOf(node.shape, index)]);
+}
+
+export function anchorIn(c: SceneController, node: Node, index: number[], renderable = renderableOf(c, node)): Vec3 | undefined {
+  if (renderable === undefined) return undefined;
+  const element = elementOf(renderable.block, node, index);
+  if (renderable.nodes !== undefined) return renderable.nodes.anchorIn(element);
+  return barBottom(element, renderable.transition.current[offsetOf(node.shape, index)]);
+}
