@@ -64,6 +64,8 @@ export function simulateSglang(config: ServingConfig): EngineRun {
   const running: Req[] = [];
   let chunked: Req | null = null;
   let lastBatch: Batch | null = null;
+  let batchFull = false;
+  let shrunk = false;
   let inflight: Batch | null = null;
   const steps: EngineStep[] = [];
 
@@ -133,7 +135,10 @@ export function simulateSglang(config: ServingConfig): EngineRun {
         if (active(r)) insert(r, r.computed);
         r.owned = 0;
         r.locked = 0;
-        if (running.includes(r)) running.splice(running.indexOf(r), 1);
+        if (running.includes(r)) {
+          running.splice(running.indexOf(r), 1);
+          shrunk = true;
+        }
         if (waiting.includes(r)) waiting.splice(waiting.indexOf(r), 1);
         r.status = 'finished';
         r.finished = step;
@@ -191,7 +196,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
       if (n === rest) chunked = null;
       addRow(r, r.computed, n);
     }
-    if (remaining <= 0 || chunked !== null || waiting.length === 0) return rows;
+    if (remaining <= 0 || chunked !== null || waiting.length === 0 || (batchFull && rows.length === 0)) return rows;
     let kvBudget = available() + evictable() - decodeHeadroom();
     for (const r of orderWaiting()) {
       if (remaining <= 0) break;
@@ -200,6 +205,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
       const truncated = extend > remaining;
       const cost = truncated ? remaining : extend + Math.min(r.out - r.outputs, CLIP_MAX_NEW_TOKENS);
       if (cost >= kvBudget) {
+        batchFull = true;
         events.push({ kind: 'blocked', ids: [r.seq.id] });
         break;
       }
@@ -221,6 +227,8 @@ export function simulateSglang(config: ServingConfig): EngineRun {
 
   function buildDecode(events: EngineEvent[]): BatchRow[] {
     const needsToken = (r: Req) => r.outputs + r.inflight < r.out;
+    if (shrunk || running.some((r) => !needsToken(r))) batchFull = false;
+    shrunk = false;
     if (!running.some(needsToken)) return [];
     if (available() + evictable() < running.filter(needsToken).length) {
       const order = [...running].sort((a, b) => b.outputs - a.outputs || a.prompt - b.prompt);
@@ -233,6 +241,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
         victim.hit = 0;
         victim.status = 'waiting';
         victim.evictions += 1;
+        batchFull = false;
         waiting.push(victim);
         events.push({ kind: 'retract', ids: [victim.seq.id] });
       }
@@ -263,6 +272,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
     const pendingChunk = chunked as Req | null;
     if (pendingChunk !== null) insert(pendingChunk, pendingChunk.computed);
     if (lastBatch?.mode === 'extend') {
+      if (lastBatch.rows.some((row) => byId.get(row.id)!.status !== 'prefill' || byId.get(row.id) === chunked)) batchFull = false;
       for (const row of lastBatch.rows) {
         const r = byId.get(row.id)!;
         if (r !== chunked && r.status === 'prefill') {
