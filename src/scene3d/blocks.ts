@@ -38,6 +38,9 @@ const NODE_ANCHOR_X = 0.2;
 const NODE_ANCHOR_Y = 0.08;
 const DISC_SEGMENTS = 32;
 const VISIBLE_HEIGHT = 0.004;
+export const PART_FILL = 0.8;
+export const DASH_LENGTH = 0.06;
+export const DASH_GAP = 0.05;
 export const SEE_THROUGH_FILL = 0.15;
 export const SEE_THROUGH_INK = 0.35;
 
@@ -65,6 +68,8 @@ export interface BarUpdate {
   colors: LinearRgb[];
   outlineOpacity: ArrayLike<number>;
   seeThrough: boolean;
+  parts?: (readonly number[] | undefined)[];
+  partColors?: LinearRgb[][];
 }
 
 export class BarMesh {
@@ -76,16 +81,26 @@ export class BarMesh {
   private readonly geometry: BoxGeometry;
   private readonly breakGeometry: BoxGeometry;
   private readonly material: MeshLambertMaterial;
+  readonly parts: InstancedMesh | undefined;
+  private readonly partMaterial: MeshLambertMaterial;
 
   constructor(
     readonly block: Block,
     theme: ThemeColors,
+    private readonly ranks = 0,
   ) {
     this.geometry = new BoxGeometry(1, 1, 1);
     this.geometry.translate(0, 0.5, 0);
     this.material = new MeshLambertMaterial({ side: DoubleSide });
     this.mesh = new InstancedMesh(this.geometry, this.material, block.elements.length);
     this.mesh.userData.block = block;
+    this.partMaterial = new MeshLambertMaterial({ side: DoubleSide });
+    if (ranks > 0) {
+      this.parts = new InstancedMesh(this.geometry, this.partMaterial, block.elements.length * ranks);
+      this.parts.userData.block = block;
+      this.parts.userData.ranks = ranks;
+      this.group.add(this.parts);
+    }
     this.breakGeometry = new BoxGeometry(BREAK_SIZE, BREAK_THICKNESS, BREAK_SIZE);
     this.breakMaterial = new MeshBasicMaterial({ color: new Color(...theme.surface) });
     this.breaks = new InstancedMesh(this.breakGeometry, this.breakMaterial, block.elements.length);
@@ -104,19 +119,40 @@ export class BarMesh {
     seeThroughFill(this.material, data.seeThrough);
     this.breaks.visible = !data.seeThrough;
     const ink = inkFactor(data.seeThrough);
+    seeThroughFill(this.partMaterial, data.seeThrough);
     const lines = [];
     for (let i = 0; i < elements.length; i++) {
       const { x, y, z } = elements[i];
       const h = data.heights[i];
       const shown = Math.abs(h) > VISIBLE_HEIGHT;
-      if (!shown) matrix.makeScale(0, 0, 0).setPosition(x, y, z);
+      const parts = shown ? data.parts?.[i] : undefined;
+      if (!shown || parts !== undefined) matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       else matrix.makeScale(w, h, d).setPosition(x, y, z);
       this.mesh.setMatrixAt(i, matrix);
       this.mesh.setColorAt(i, color.setRGB(...data.colors[i]));
-      if (shown && data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
+      if (shown && parts === undefined && data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
       else matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       this.breaks.setMatrixAt(i, matrix);
-      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i] * ink });
+      const opacity = data.outlineOpacity[i] * ink;
+      for (let k = 0; k < this.ranks; k++) {
+        const ph = parts?.[k] ?? 0;
+        const slot = w / this.ranks;
+        const px = x - w / 2 + (k + 0.5) * slot;
+        if (parts === undefined || Math.abs(ph) <= VISIBLE_HEIGHT) matrix.makeScale(0, 0, 0).setPosition(px, y, z);
+        else {
+          matrix.makeScale(slot * PART_FILL, ph, d * PART_FILL).setPosition(px, y, z);
+          for (const points of boxEdges(px, y, z, slot * PART_FILL, ph, d * PART_FILL)) lines.push({ points, opacity });
+        }
+        this.parts?.setMatrixAt(i * this.ranks + k, matrix);
+        this.parts?.setColorAt(i * this.ranks + k, color.setRGB(...(data.partColors?.[i]?.[k] ?? data.colors[i])));
+      }
+      if (parts !== undefined) for (const points of boxEdges(x, y, z, w, h, d).flatMap(dashed)) lines.push({ points, opacity });
+      else if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity });
+    }
+    if (this.parts !== undefined) {
+      this.parts.instanceMatrix.needsUpdate = true;
+      if (this.parts.instanceColor) this.parts.instanceColor.needsUpdate = true;
+      this.parts.computeBoundingSphere();
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -129,6 +165,8 @@ export class BarMesh {
     this.geometry.dispose();
     this.breakGeometry.dispose();
     this.material.dispose();
+    this.partMaterial.dispose();
+    this.parts?.dispose();
     this.breakMaterial.dispose();
     this.mesh.dispose();
     this.breaks.dispose();
@@ -144,6 +182,20 @@ function boxEdges(x: number, y: number, z: number, w: number, h: number, d: numb
   const y1 = y + h;
   const ring = (yy: number) => [x0, yy, z0, x1, yy, z0, x1, yy, z1, x0, yy, z1, x0, yy, z0];
   return [ring(y), ring(y1), [x0, y, z0, x0, y1, z0], [x1, y, z0, x1, y1, z0], [x1, y, z1, x1, y1, z1], [x0, y, z1, x0, y1, z1]];
+}
+
+function dashed(points: number[]): number[][] {
+  const out: number[][] = [];
+  for (let i = 0; i + 5 < points.length; i += 3) {
+    const [x0, y0, z0, x1, y1, z1] = points.slice(i, i + 6);
+    const length = Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+    for (let s = 0; s < length; s += DASH_LENGTH + DASH_GAP) {
+      const a = s / length;
+      const b = Math.min(s + DASH_LENGTH, length) / length;
+      out.push([x0 + (x1 - x0) * a, y0 + (y1 - y0) * a, z0 + (z1 - z0) * a, x0 + (x1 - x0) * b, y0 + (y1 - y0) * b, z0 + (z1 - z0) * b]);
+    }
+  }
+  return out;
 }
 
 export function barTop(element: Element, height: number): Vec3 {

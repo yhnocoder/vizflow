@@ -17,6 +17,7 @@
   <li><a href="qwen3-structure.html">Qwen3 一层的前向与反向</a>：从 token id 到损失，一个 decoder 层完整展开。页面代码按 HF 的模块层级写成嵌套函数，每个模块在场景侧面有一个大括号，相机跟随当前步骤。</li>
   <li><a href="auto-layout-qwen3.html">Qwen3 一层：自动布局</a>：建图代码与上一页相同，布局由 <code>autoLayout</code> 按模块层级生成，用来和手写布局对比。</li>
   <li><a href="qwen3-dsl.html">Qwen3 一层（YAML 页面描述）</a>：和上一页同样的模型与数值，用 <code>qwen3-dsl.yaml</code> 页面描述文件写成，由 <code>&lt;vizflow-page src&gt;</code> 在浏览器里编译。</li>
+  <li><a href="qwen3-tp-dsl.html">Qwen3 一层，两张卡的张量并行（YAML 页面描述）</a>：同一个 decoder 层按 Megatron 的张量并行切到两张卡上，柱子按所在的卡着色，Partial 画成两根细柱，工具栏可以切换训练、prefill 和 decode。用 <code>qwen3-tp-dsl.yaml</code> 写成。</li>
   <li><a href="qwen3_5-dsl.html">Qwen3.5 最后两层（YAML 页面描述）</a>：Qwen3.5 的混合结构，倒数第二层是 Gated DeltaNet 线性注意力，按位置展开状态的递推；最后一层是带输出门、只转部分维度 RoPE 的 softmax 注意力。用 <code>qwen3_5-dsl.yaml</code> 写成。</li>
   <li><a href="deepseek_v3-dsl.html">DeepSeek V3：MLA 与 MoE（YAML 页面描述）</a>：第 3 层（最后一个 dense 层）和第 4 层（第一个 MoE 层）。注意力是 multi-head latent attention，q 和 kv 先压缩成 latent 再展开；MoE 用 sigmoid 亲和度、按组限制的 top-k 路由和一个共享专家。用 <code>deepseek_v3-dsl.yaml</code> 写成。</li>
   <li><a href="serving-schedulers.html">推理调度：vLLM 与 SGLang</a>：同一组请求按两个引擎的调度规则逐步推演，看连续批处理、分块 prefill、前缀缓存、抢占与撤回、CUDA graph 填充和重叠调度。两个模拟器与真实调度器在 CPU 上跑出的轨迹逐步一致。</li>

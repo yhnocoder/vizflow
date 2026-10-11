@@ -32,6 +32,8 @@ const lightTokens = {
   '--line-strong': '#b4b1a6',
   '--pos': '#d97757',
   '--neg': '#6a9bcc',
+  '--rank0': '#9a62b8',
+  '--rank1': '#3f9a6b',
 };
 
 function setTokens(tokens: Record<string, string>) {
@@ -54,7 +56,7 @@ describe('readTheme', () => {
     setTokens(lightTokens);
     const theme = readTheme();
     expect(Object.keys(theme).sort()).toEqual(
-      ['bg', 'fg', 'ink', 'line', 'lineStrong', 'muted', 'neg', 'pos', 'surface'].sort(),
+      ['bg', 'fg', 'ink', 'line', 'lineStrong', 'muted', 'neg', 'pos', 'rank0', 'rank1', 'surface'].sort(),
     );
     expect(theme.pos[0]).toBeCloseTo(srgbToLinear(0xd9), 10);
     expect(theme.pos[1]).toBeCloseTo(srgbToLinear(0x77), 10);

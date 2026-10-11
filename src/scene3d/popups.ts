@@ -10,6 +10,7 @@ import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
 import { rowsCols, tokenText } from './layout';
+import { elementRank, parallelRows, partialParts } from './parallel';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
@@ -94,6 +95,30 @@ export class ScenePopups {
     line.className = 'vf-m';
     line.appendChild(render(`= ${value === -Infinity ? '-\\infty' : formatNumber(value, { digits: TIP_DIGITS, tex: true })}`));
     fragment.appendChild(line);
+    const parts = partialParts(c, node);
+    if (parts !== undefined) {
+      const offset = offsetOf(node.shape, element.index);
+      const values = parts.map((t) => t.data[offset]);
+      const number = (v: number) => formatNumber(v, { digits: TIP_DIGITS, tex: true });
+      values.forEach((v, r) => {
+        const row = document.createElement('div');
+        row.className = 'vf-s';
+        row.appendChild(render(`\\text{rank ${r}}:\\ ${number(v)}`));
+        fragment.appendChild(row);
+      });
+      const total = document.createElement('div');
+      total.className = 'vf-s';
+      const terms = values.map((v, r) => (r > 0 && v >= 0 ? `+${number(v)}` : number(v))).join('');
+      total.appendChild(render(`\\text{和}:\\ ${terms}=${number(values.reduce((a, b) => a + b, 0))}`));
+      fragment.appendChild(total);
+    }
+    const rank = elementRank(c, node, element.index);
+    if (rank !== undefined) {
+      const owner = document.createElement('div');
+      owner.className = 'vf-s';
+      owner.textContent = `在 rank ${rank} 上`;
+      fragment.appendChild(owner);
+    }
     const name = document.createElement('div');
     name.className = 'vf-s';
     name.textContent = `${node.name} · ${node.dtype}`;
@@ -123,7 +148,8 @@ export class ScenePopups {
   showNodeCard(node: Node, el: HTMLElement): void {
     const c = this.c;
     this.pinned = { node, el };
-    const card = nodeCardElement(c.explainer.nodeCard(node, c.state.dir), this.gridOf(node));
+    const base = c.explainer.nodeCard(node, c.state.dir);
+    const card = nodeCardElement({ ...base, rows: [...base.rows, ...parallelRows(c, node)] }, this.gridOf(node));
     const wave = c.state.dir === 'forward' && node.kind === 'buffer' ? ropeKind(node) : undefined;
     if (wave !== undefined) {
       const figure = document.createElement('div');

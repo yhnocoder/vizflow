@@ -1,7 +1,24 @@
 import './ops';
 
 export { graph, type Graph, type GraphOptions, type OpOptions, type LabelOptions, type SplitOptions } from './graph';
-export { DTYPES, DEFAULT_DTYPE, LABEL_DTYPE, type Dtype } from './dtype';
+export { DTYPES, DTYPE_BYTES, DEFAULT_DTYPE, LABEL_DTYPE, type Dtype } from './dtype';
+export { placements, placementText, PlacementError, REPLICATE, type Placement, type Placements, type GradPlacement } from './placement';
+export {
+  commTransfers,
+  epTopology,
+  gpusPerNode,
+  linkKind,
+  messageBytes,
+  rankDevice,
+  ringAllReduce,
+  type CommOptions,
+  type CommPhase,
+  type CommTransfer,
+  type Device,
+  type Mesh,
+  type MeshTopology,
+} from './mesh';
+export { routedPairs } from './ops/comm';
 export { Node, type NodeKind, type NodeOptions, type CardText } from './node';
 export type { OpDef, OpExplain, OpCtx, Pattern, ForwardTexArgs, LocalTexArgs } from './op';
 export { defineOp, opDef } from './registry';

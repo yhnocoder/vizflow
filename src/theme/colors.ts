@@ -10,6 +10,8 @@ export interface ThemeColors {
   lineStrong: LinearRgb;
   pos: LinearRgb;
   neg: LinearRgb;
+  rank0: LinearRgb;
+  rank1: LinearRgb;
 }
 
 const variables: Record<keyof ThemeColors, string> = {
@@ -22,6 +24,8 @@ const variables: Record<keyof ThemeColors, string> = {
   lineStrong: '--line-strong',
   pos: '--pos',
   neg: '--neg',
+  rank0: '--rank0',
+  rank1: '--rank1',
 };
 
 function srgbToLinear(channel: number): number {

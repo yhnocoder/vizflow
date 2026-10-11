@@ -1,0 +1,97 @@
+module: Qwen3TPMLP
+subtitle: SwiGLU，按中间维切到各张卡
+params:
+  f: { type: dim }
+inputs:
+  x: { shape: [T, d] }
+outputs: [down]
+weights:
+  Wg: { shape: [f, d], place: { tp: shard(0) } }
+  Wu: { shape: [f, d], place: { tp: shard(0) } }
+  Wd: { shape: [d, f], place: { tp: shard(1) } }
+fold:
+  label: '$\of{down}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    gate_proj、up_proj、SiLU、门控相乘、down_proj 和最后的 all_reduce 收进了盒子。中间的 $f$ 维切在两张卡上，盒子的输入和输出都是 Replicate。
+    $$\of{down}=\mathrm{mlp}(\of{x})={{ down | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 mlp（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - gate: x @ Wg.T
+  - up:   x @ Wu.T
+  - a:    { op: silu(gate), tex: '\mathrm{SiLU}(\mathbf{gate})' }
+  - m:    a * up
+  - down_partial: { op: m @ Wd.T, tex: '\mathbf{down}^{\mathrm{part}}' }
+  - down: { op: 'all_reduce(down_partial, tp)', tex: '\mathbf{down}' }
+steps:
+  - id: proj
+    brace: { title: 'gate_proj $\cdot$ up_proj', subtitle: '按输出列切开' }
+    show: [Wg.T, Wu.T, gate, up]
+    label: '$\mathbf{gate},\ \mathbf{up}$'
+    title: gate_proj、up_proj：按列切开
+    text: |
+      和 q、k、v 一样，两个投影按输出的列切开：中间维 $f=6$ 的前 3 列在 rank 0，后 3 列在 rank 1（Qwen3-8B 的 12288 列在 8 张卡上各 1536 列）。输入 $\of{x}$ 是 Replicate，前向不需要通信，这里又是一个 $f$。
+      $$\mathbf{gate}=\of{x}W_g^{\top}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: $f$ 的反向：$\partial\of{x}$ 要 all_reduce
+      text: |
+        每张卡只能用自己的那几列算出 $\partial\of{x}$ 的一部分，两张卡的结果相加才完整，所以这里做一次 all_reduce。
+        $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{gate}}W_g+\frac{\partial\ell}{\partial\mathbf{up}}W_u={{ x.grad | matrix:3 }}$$
+  - id: act
+    show: a
+    label: '$\mathrm{SiLU}$'
+    title: SiLU：每张卡各算自己的列
+    text: |
+      SiLU 是逐元素运算，每个元素只看自己，所以每张卡对自己那几列直接算，不需要通信。这也是 gate_proj 选择按列切的原因：如果按行切，这里拿到的是 Partial，非线性运算之前必须先通信。
+      $$\of{a}={{ a | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过 SiLU
+      text: |
+        逐元素的反向同样留在各自的卡上。
+        $$\frac{\partial\ell}{\partial\mathbf{gate}}={{ gate.grad | matrix:3 }}$$
+  - id: gate
+    show: m
+    label: '$\of{a}\odot\mathbf{up}$'
+    title: 门控相乘
+    text: |
+      $\of{a}$ 和 $\mathbf{up}$ 的切法相同，同一列在同一张卡上，逐元素相乘不需要通信。
+      $$\of{m}={{ m | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{a},\ \partial\mathbf{up}$'
+      title: 传到 $\of{a}$ 和 up
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{up}}={{ up.grad | matrix:3 }}$$
+  - id: down
+    brace: { title: down_proj, subtitle: '按输入行切开' }
+    show: [Wd.T, down_partial]
+    label: down_proj
+    title: down_proj：按行切开，得到 Partial
+    text: |
+      $W_d^{\top}$ 按行切开，每张卡用自己那 3 列 $\of{m}$ 乘自己那 3 行权重，得到完整形状的部分和。两根细柱是两张卡的部分值，虚线框是它们的和。
+      $$\of{m}W_d^{\top}=\underbrace{\of{m}^{[0]}{W_d^{[0]}}^{\top}}_{\text{rank 0}}+\underbrace{\of{m}^{[1]}{W_d^{[1]}}^{\top}}_{\text{rank 1}}={{ down_partial | matrix:2 }}$$
+    backward:
+      label: '$\partial W_d,\ \partial\of{m}$'
+      title: 传到 down_proj 权重和 $\of{m}$
+      text: |
+        $\frac{\partial\ell}{\partial\of{down}}$ 是 Replicate，每张卡乘上自己那几行权重就得到自己那几列的 $\partial\of{m}$，不需要通信。
+        $$\frac{\partial\ell}{\partial\of{m}}={{ m.grad | matrix:3 }}$$
+  - id: g
+    brace: { title: all_reduce, subtitle: '$g$：前向通信' }
+    show: down
+    label: '$\mathrm{all\_reduce}$'
+    title: $g$：前向 all_reduce
+    text: |
+      两张卡的部分和相加，结果回到每一张卡，$\of{down}$ 恢复成 Replicate。一层 decoder 的前向一共两次 all_reduce，attention 和 MLP 各一次。
+      $$\of{down}={{ down | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{down}^{\mathrm{part}}$'
+      title: $g$ 的反向：不通信
+      text: |
+        梯度原样复制给每张卡上的部分和，不需要通信。
+        $$\frac{\partial\ell}{\partial\mathbf{down}^{\mathrm{part}}}={{ down.grad | matrix:3 }}$$

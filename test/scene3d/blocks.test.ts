@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { graph } from '../../src/core';
 import '../../src/explain';
-import { PlateMesh } from '../../src/scene3d/blocks';
+import { Matrix4, Vector3 } from 'three';
+import { BarMesh, PART_FILL, PlateMesh } from '../../src/scene3d/blocks';
 import { classAlignment, resolveLayout, stack, targetColumn } from '../../src/scene3d/layout';
 import type { ThemeColors } from '../../src/theme';
 
@@ -15,6 +16,8 @@ const theme: ThemeColors = {
   lineStrong: [0.6, 0.6, 0.6],
   pos: [1, 0.4, 0.2],
   neg: [0.2, 0.5, 1],
+  rank0: [0.6, 0.4, 0.7],
+  rank1: [0.2, 0.6, 0.4],
 };
 
 describe('PlateMesh axis', () => {
@@ -44,5 +47,36 @@ describe('PlateMesh axis', () => {
     plate.update({ revealed: false, far: false, seeThrough: false }, [0], [-1, 0, 1], 1);
     expect(plate.axis!.visible).toBe(false);
     plate.dispose();
+  });
+});
+
+describe('BarMesh partial cells', () => {
+  it('draws a Partial cell as one thin bar per device instead of the full bar', () => {
+    const g = graph();
+    const x = g.input('x', [2], [1, -2]);
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const [block] = resolveLayout([stack(x)], ctx).blocks;
+    const bars = new BarMesh(block, theme, 2);
+    bars.update(block.elements, {
+      heights: [0.5, -0.8],
+      clipped: [false, false],
+      colors: [theme.pos, theme.neg],
+      outlineOpacity: [1, 1],
+      seeThrough: false,
+      parts: [[0.2, 0.3], undefined],
+      partColors: [[theme.rank0, theme.rank1], []],
+    });
+    const scale = (mesh: typeof bars.mesh, i: number) => {
+      const m = new Matrix4();
+      mesh.getMatrixAt(i, m);
+      return new Vector3().setFromMatrixScale(m);
+    };
+    expect(scale(bars.mesh, 0).y).toBe(0);
+    expect(scale(bars.mesh, 1).y).toBeCloseTo(0.8);
+    const [w] = block.footprint;
+    expect([scale(bars.parts!, 0).y, scale(bars.parts!, 1).y]).toEqual([0.2, 0.3].map((h) => expect.closeTo(h)));
+    expect(scale(bars.parts!, 0).x).toBeCloseTo((w / 2) * PART_FILL);
+    expect([scale(bars.parts!, 2).y, scale(bars.parts!, 3).y]).toEqual([0, 0]);
+    bars.dispose();
   });
 });

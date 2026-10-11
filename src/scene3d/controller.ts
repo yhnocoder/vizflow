@@ -22,6 +22,7 @@ import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { keyAxes, tokenAxes } from './hover';
 import { blockAt, bindPointer } from './pointer';
+import { parallelNotes } from './parallel';
 import { ScenePopups } from './popups';
 import { type Renderable, createRenderable, renderableFor } from './renderable';
 import type { SceneOptions } from './scene';
@@ -117,7 +118,7 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
       this.requestFrame();
     });
-    buildChrome(root, options.hint);
+    buildChrome(root, options.hint, options.parallel !== undefined);
     this.popups = new ScenePopups(this);
     this.rig = new CameraRig(this);
 
@@ -281,7 +282,7 @@ export class SceneController implements EditHost {
     this.edgeLines.edges = buildEdges(this);
     if (this.nav !== undefined) updateNav(this, this.nav);
     this.formula?.update();
-    this.notes.update(info?.notes ?? [], info?.id ?? 'all');
+    this.notes.update([...(info?.notes ?? []), ...parallelNotes(this, info)], info?.id ?? 'all');
     this.geometryDirty = true;
     this.labelsDirty = true;
     this.popups.repin();

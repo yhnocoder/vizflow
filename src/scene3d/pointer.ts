@@ -36,7 +36,7 @@ function hit(c: SceneController, ev: PointerEvent): { renderable: Renderable; in
   const object = hits[0].object;
   const block = object.userData.block as Block;
   const renderable = renderableFor(c, block)!;
-  const index = (object as InstancedMesh).isInstancedMesh ? (hits[0].instanceId ?? 0) : (object.userData.element as number);
+  const index = (object as InstancedMesh).isInstancedMesh ? Math.floor((hits[0].instanceId ?? 0) / ((object.userData.ranks as number | undefined) ?? 1)) : (object.userData.element as number);
   return { renderable, index };
 }
 
