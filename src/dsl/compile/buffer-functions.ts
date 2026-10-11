@@ -1,7 +1,9 @@
 import type { Nested } from '../../tensor';
 import type { Num } from './types';
 
-export const BUFFER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: Nested }> = {
+type BufferArg = Num | Num[];
+
+const NUMBER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: Nested }> = {
   rope_cos: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.cos) }),
   rope_sin: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.sin) }),
   zeros: (shape) => ({ shape, values: zerosOf(shape.map((n) => n.toy)) }),
@@ -11,7 +13,63 @@ export const BUFFER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; v
   }),
 };
 
-export const BUFFER_ARITY: Record<string, number | 'any'> = { rope_cos: 3, rope_sin: 3, zeros: 'any', causal_mask: 1 };
+export const BUFFER_ARITY: Record<string, number | 'any' | { lists: number; optional: number; usage: string }> = {
+  rope_cos: 3,
+  rope_sin: 3,
+  zeros: 'any',
+  causal_mask: 1,
+  packed_mask: { lists: 1, optional: 2, usage: 'a list of new-token counts, then optionally a list of cached lengths and a window size' },
+  packed_positions: { lists: 1, optional: 1, usage: 'a list of new-token counts, then optionally a list of cached lengths' },
+  packed_segments: { lists: 1, optional: 0, usage: 'a list of new-token counts' },
+};
+
+interface Packed {
+  seq: number;
+  pos: number;
+}
+
+function packedLayout(args: BufferArg[]): { queries: Packed[]; keys: Packed[] } {
+  const lens = (args[0] as Num[]).map((n) => n.toy);
+  const cachedArg = args[1];
+  if (cachedArg !== undefined && !Array.isArray(cachedArg)) throw new Error('the cached lengths must be a list');
+  const cached = cachedArg === undefined ? lens.map(() => 0) : cachedArg.map((n) => n.toy);
+  if (cached.length !== lens.length) throw new Error(`got ${lens.length} new-token counts but ${cached.length} cached lengths`);
+  const counts = [...lens, ...cached];
+  if (counts.some((n) => !Number.isInteger(n) || n < 0) || lens.some((n) => n === 0)) throw new Error('new-token counts must be positive integers and cached lengths non-negative integers');
+  const queries: Packed[] = [];
+  const keys: Packed[] = [];
+  lens.forEach((n, seq) => {
+    for (let j = 0; j < cached[seq] + n; j++) keys.push({ seq, pos: j });
+    for (let j = 0; j < n; j++) queries.push({ seq, pos: cached[seq] + j });
+  });
+  return { queries, keys };
+}
+
+const fixed = (n: number): Num => ({ toy: n, real: n });
+
+const PACKED_FUNCTIONS = {
+  packed_mask(args: BufferArg[]): { shape: Num[]; values: Nested } {
+    const { queries, keys } = packedLayout(args);
+    const windowArg = args[2];
+    if (windowArg !== undefined && (Array.isArray(windowArg) || !Number.isInteger(windowArg.toy) || windowArg.toy < 1)) throw new Error('the window size must be a positive integer');
+    const window = windowArg === undefined ? Infinity : (windowArg as Num).toy;
+    const values = queries.map((q) => keys.map((k) => (k.seq === q.seq && k.pos <= q.pos && q.pos - k.pos < window ? 0 : -Infinity)));
+    return { shape: [fixed(queries.length), fixed(keys.length)], values };
+  },
+  packed_positions(args: BufferArg[]): { shape: Num[]; values: Nested } {
+    const { queries } = packedLayout(args);
+    return { shape: [fixed(queries.length)], values: queries.map((q) => q.pos) };
+  },
+  packed_segments(args: BufferArg[]): { shape: Num[]; values: Nested } {
+    const { queries } = packedLayout(args);
+    return { shape: [fixed(queries.length)], values: queries.map((q) => q.seq) };
+  },
+};
+
+export const BUFFER_FUNCTIONS: Record<string, (args: BufferArg[]) => { shape: Num[]; values: Nested }> = {
+  ...(NUMBER_FUNCTIONS as Record<string, (args: BufferArg[]) => { shape: Num[]; values: Nested }>),
+  ...PACKED_FUNCTIONS,
+};
 
 function zerosOf(shape: number[]): Nested {
   return shape.length === 0 ? 0 : Array.from({ length: shape[0] }, () => zerosOf(shape.slice(1)));

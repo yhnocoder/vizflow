@@ -2,7 +2,7 @@ import { type Node, opDef } from '../../autograd';
 import type { LayoutEntry } from '../../scene3d';
 import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
-import { reshapeNested } from './buffer-functions';
+import { BUFFER_FUNCTIONS, reshapeNested } from './buffer-functions';
 import type { Compiler } from './text';
 import { type BufferValue, type Env, type Num, type OpValue, type ParamType, type Scope } from './types';
 import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
@@ -129,7 +129,7 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
     const bufferDtype = dtypeOption(bufferDecl, at);
     const valueWhere = child(at, bufferDecl, 'value');
     const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
-    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
+    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, `a buffer value must call one of ${Object.keys(BUFFER_FUNCTIONS).join(', ')}`);
     let buffer = value as BufferValue;
     if (bufferDecl.shape !== undefined) {
       const shapeWhere = child(at, bufferDecl, 'shape');
