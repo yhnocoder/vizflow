@@ -52,7 +52,8 @@ td input.short { width: 3.8rem; }
   <div id="serving"></div>
 </main>
 <script type="module">
-import { mountServing, SERVING_PRESETS } from '@yhnocoder/vizflow/serving';
+import { mountServing } from '@yhnocoder/vizflow/ui';
+import { SERVING_PRESETS } from '../src/sim/index.ts';
 
 const $ = (id) => document.getElementById(id);
 let config = structuredClone(SERVING_PRESETS[0].config);

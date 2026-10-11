@@ -1,9 +1,9 @@
 import { For, Index, Show, createMemo, createSignal, onCleanup, type Accessor } from 'solid-js';
 import { render } from 'solid-js/web';
-import { simulateSglang } from './sglang';
-import { describeEvent, ENGINE_LABEL, graphText, MODE_LABEL, narrate } from './text';
-import type { BatchRow, EngineName, EngineRun, EngineStep, RequestView, ServingConfig } from './types';
-import { simulateVllm } from './vllm';
+import { simulateSglang } from '../sim/serve/sglang';
+import { describeEvent, ENGINE_LABEL, graphText, MODE_LABEL, narrate } from '../sim/serve/text';
+import type { BatchRow, EngineName, EngineRun, EngineStep, RequestView, ServingConfig } from '../sim/serve/types';
+import { simulateVllm } from '../sim/serve/vllm';
 
 export type TokenState = 'wait' | 'done' | 'now' | 'hit' | 'duplicate' | 'inflight';
 

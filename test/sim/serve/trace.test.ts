@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { simulateSglang, simulateVllm, type EngineRun, type ServingConfig } from '../../src/serving/sim';
+import { simulateSglang, simulateVllm, type EngineRun, type ServingConfig } from '../../../src/sim/serve';
 
 const three: ServingConfig = {
   budget: 512, kvTokens: 65536, overlap: true, policy: 'lpm',

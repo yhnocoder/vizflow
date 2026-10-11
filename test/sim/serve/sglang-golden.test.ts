@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SERVING_PRESETS, simulateSglang, type EngineRun } from '../../src/serving/sim';
+import { SERVING_PRESETS, simulateSglang, type EngineRun } from '../../../src/sim/serve';
 
 type GoldenPass = [number, string, [string, number, number][], string[], string[], number];
-const golden: Record<string, GoldenPass[]> = JSON.parse(readFileSync(new URL('../fixtures/serving/sglang-golden.json', import.meta.url), 'utf8'));
+const golden: Record<string, GoldenPass[]> = JSON.parse(readFileSync(new URL('../../fixtures/serve/sglang-golden.json', import.meta.url), 'utf8'));
 
 function actual(run: EngineRun) {
   return run.steps.map((s) => ({

@@ -1,4 +1,5 @@
 import '../theme';
+import servingCss from './serving.css?inline';
 import uiCss from './ui.css?inline';
 
 const styleId = 'vf-ui-style';
@@ -6,7 +7,7 @@ const styleId = 'vf-ui-style';
 if (!document.getElementById(styleId)) {
   const style = document.createElement('style');
   style.id = styleId;
-  style.textContent = uiCss;
+  style.textContent = uiCss + servingCss;
   document.head.append(style);
 }
 
@@ -49,3 +50,4 @@ export {
   type GpuTopology,
 } from './gpu-layout';
 export { epTopology, expandedBadges, pipelineState, scheduleTiles, transferState, type GpuState } from './gpu-sim';
+export { mountServing, tokenState, cellSize, type ServingViewOptions, type ServingHandle, type TokenState } from './serving';

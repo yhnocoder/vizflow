@@ -125,7 +125,7 @@ describe('build output', () => {
   });
 
   test('every package entry has its module build file, standalone file and type declarations', () => {
-    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './dsl', './element', './explain', './formula', './scene3d', './serving', './steps', './theme', './ui']);
+    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './dsl', './element', './explain', './formula', './scene3d', './steps', './theme', './ui']);
     for (const [entry, { types, import: module }] of Object.entries(exportsMap)) {
       expect(module, entry).toBe(`./dist/module/${entry.slice(2)}.js`);
       expect(existsSync(join(workspace, module)), `${entry} module`).toBe(true);
@@ -161,7 +161,7 @@ function packageImports(entry: string): string[] {
 
 describe('module build output', () => {
   test('no entry bundles three.js, Solid or KaTeX', () => {
-    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js', 'dsl.js', 'serving.js']) {
+    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js', 'dsl.js']) {
       expect(bundledLibraries(entry, moduleDirectory()), entry).toEqual([]);
     }
   });
@@ -208,7 +208,7 @@ describe('package.json sideEffects', () => {
       .filter((entry) => entry.isDirectory() && existsSync(join('src', entry.name, 'index.ts')))
       .map((entry) => join('src', entry.name, 'index.ts'))
       .filter((file) => /createElement\('style'\)|import '\.\.\/theme'/.test(readFileSync(file, 'utf8')));
-    expect(injecting).toContain(join('src', 'serving', 'index.ts'));
+    expect(injecting).toContain(join('src', 'ui', 'index.ts'));
     for (const file of injecting) expect(packageJson.sideEffects, file).toContain(`./${file}`);
   });
 });

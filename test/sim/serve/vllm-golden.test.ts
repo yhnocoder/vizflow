@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { SERVING_PRESETS, simulateVllm, type EngineRun } from '../../src/serving/sim';
+import { SERVING_PRESETS, simulateVllm, type EngineRun } from '../../../src/sim/serve';
 
 type GoldenStep = [number, [string, number, number][], string[], Record<string, number>, number];
-const golden: Record<string, GoldenStep[]> = JSON.parse(readFileSync(new URL('../fixtures/serving/vllm-golden.json', import.meta.url), 'utf8'));
+const golden: Record<string, GoldenStep[]> = JSON.parse(readFileSync(new URL('../../fixtures/serve/vllm-golden.json', import.meta.url), 'utf8'));
 
 function actual(run: EngineRun) {
   return run.steps.map((s) => {
