@@ -1,10 +1,10 @@
 import type { Node } from '../../autograd';
 import { type ForwardStep, type StepModule, isLeafLike } from '../../steps';
 import { child, fail } from '../source';
-import { FOLD_KEYS, TEXT_KEYS } from './keys';
+import { FOLD_KEYS, REPEAT_KEYS, TEXT_KEYS } from './keys';
 import type { Compiler } from './text';
 import type { Env, ModuleRec } from './types';
-import { list, record } from './util';
+import { checkKeys, join, list, record } from './util';
 
 export function openModule(c: Compiler, id: string, title: string, subtitle: string | undefined, decl: Record<string, unknown>, env: Env): ModuleRec {
   const flag = (key: string) => {
@@ -22,6 +22,7 @@ export function openModule(c: Compiler, id: string, title: string, subtitle: str
     fixed,
     folded: fixed || flag('folded'),
     split: flag('split'),
+    repeat: repeatsOf(id, decl, env),
     nodes: [],
     fold: { forward: {}, backward: {} },
     decl,
@@ -30,6 +31,21 @@ export function openModule(c: Compiler, id: string, title: string, subtitle: str
   c.modules.push(rec);
   c.moduleStack.push(rec);
   return rec;
+}
+
+function repeatsOf(id: string, decl: Record<string, unknown>, env: Env): ModuleRec['repeat'] {
+  if (decl.repeat === undefined) return [];
+  const where = child(env.where, decl, 'repeat');
+  if (!Array.isArray(decl.repeat)) fail(where, 'repeat must be a list of { like, count }');
+  const base = id.includes('.') ? id.slice(0, id.lastIndexOf('.')) : '';
+  return decl.repeat.map((item, i) => {
+    const at = child(where, decl.repeat as unknown[], i);
+    const entry = record(item, at, 'repeat');
+    checkKeys(entry, REPEAT_KEYS, at);
+    if (typeof entry.like !== 'string') fail(child(at, entry, 'like'), 'like must name a module instance');
+    if (typeof entry.count !== 'number' || !Number.isInteger(entry.count) || entry.count < 1) fail(child(at, entry, 'count'), 'count must be a positive integer');
+    return { like: join(base, entry.like), count: entry.count, where: child(at, entry, 'like') };
+  });
 }
 
 export function closeModule(c: Compiler, rec: ModuleRec, created: Node[]): void {
@@ -86,6 +102,12 @@ export function pageModules(c: Compiler): StepModule[] {
       backward: m.fold.backward,
     };
     if (sub !== undefined) module.sub = sub;
+    if (m.repeat.length > 0) {
+      for (const r of m.repeat) {
+        if (!byId.has(r.like)) fail(r.where, `repeat: '${r.like}' is not a module instance with operations on this page`);
+      }
+      module.repeat = m.repeat.map(({ like, count }) => ({ like, count }));
+    }
     if (m.formula !== undefined) module.formula = m.formula;
     return module;
   });

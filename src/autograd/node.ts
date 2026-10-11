@@ -24,6 +24,11 @@ export interface NodeInternals {
   transpose(): Node;
 }
 
+export interface NodeCopies {
+  drawn: number;
+  real: readonly (number | string)[];
+}
+
 export interface NodeInit {
   id: number;
   graph: Graph;
@@ -39,6 +44,7 @@ export interface NodeInit {
   elem: string;
   tokens: readonly string[] | undefined;
   card: NodeOptions['card'];
+  copies: NodeCopies;
   internals: NodeInternals;
 }
 
@@ -57,6 +63,7 @@ export class Node {
   readonly elem: string;
   readonly tokens: readonly string[] | undefined;
   readonly card: NodeOptions['card'];
+  readonly copies: NodeCopies;
   private readonly internals: NodeInternals;
 
   constructor(init: NodeInit) {
@@ -74,6 +81,7 @@ export class Node {
     this.elem = init.elem;
     this.tokens = init.tokens;
     this.card = init.card;
+    this.copies = init.copies;
     this.internals = init.internals;
   }
 

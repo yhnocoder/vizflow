@@ -177,7 +177,7 @@ export function matchShape(c: Compiler, scope: Scope, pattern: unknown, node: No
   pattern.forEach((entry, at) => {
     if (at === rest) return;
     const i = rest >= 0 && at > rest ? at - 1 + extra : at;
-    const actual: Num = { toy: node.shape[i], real: node.realShape[i] };
+    const actual: Num = { toy: node.shape[i], real: node.realShape[i], derive: (_, shapes) => shapes[node.id][i] };
     if (typeof entry === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry) && !scope.dims.has(entry) && !scope.params.has(entry)) {
       scope.dims.set(entry, actual);
       return;

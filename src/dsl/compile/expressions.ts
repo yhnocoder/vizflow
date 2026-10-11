@@ -6,7 +6,7 @@ import { elemOf, numberTex } from '../tex';
 import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
 import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
-import { isNum, isRecord, num } from './util';
+import { combine, isNum, isRecord, num } from './util';
 
 function isOp(value: unknown): value is OpValue {
   return isRecord(value) && typeof value.op === 'string' && !(value instanceof Node);
@@ -77,7 +77,7 @@ export class ExpressionCompiler extends CompilerState {
           if (!(found instanceof Node)) this.fail(env, `'${target?.key ?? '?'}' is not a node`, offset + ast.pos);
           nodes.push(found);
         }
-        this.rangeCounts.set(nodes, { toy: to - from + 1, real: toNum.real - fromNum.real + 1 });
+        this.rangeCounts.set(nodes, { ...combine([toNum, fromNum], (b, a) => b - a + 1), toy: to - from + 1 });
         return nodes;
       }
       const target = this.keyOf(ast, env, offset);
@@ -124,7 +124,7 @@ export class ExpressionCompiler extends CompilerState {
         return ast.v;
       case 'neg': {
         const arg = this.evaluate(ast.arg, env, make, offset);
-        if (isNum(arg)) return { toy: -arg.toy, real: -arg.real };
+        if (isNum(arg)) return combine([arg], (x) => -x);
         if (arg instanceof Node) return this.apply('mul', [arg, num(-1)], {}, env, make, top, offset + ast.pos);
         return this.fail(env, 'cannot negate this value', offset + ast.pos);
       }
@@ -157,7 +157,7 @@ export class ExpressionCompiler extends CompilerState {
     const b = this.evaluate(ast.b, env, make, offset);
     const at = offset + ast.pos;
     if (isNum(a) && isNum(b)) {
-      const both = (fn: (x: number, y: number) => number): Num => ({ toy: fn(a.toy, b.toy), real: fn(a.real, b.real) });
+      const both = (fn: (x: number, y: number) => number): Num => combine([a, b], fn);
       switch (ast.op) {
         case '+': return both((x, y) => x + y);
         case '-': return both((x, y) => x - y);
@@ -200,7 +200,7 @@ export class ExpressionCompiler extends CompilerState {
     }
     if ((fnName === 'min' || fnName === 'max') && param === undefined && args.length >= 2 && args.every(isNum) && ast.kwargs.length === 0) {
       const pick = fnName === 'min' ? Math.min : Math.max;
-      return { toy: pick(...args.map((a) => a.toy)), real: pick(...args.map((a) => a.real)) };
+      return combine(args as Num[], pick);
     }
     if (param !== undefined) {
       if (param.type !== 'op') this.fail(env, `parameter '${fnName}' is not an op`, at);

@@ -314,7 +314,7 @@ const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'
 ```
 
 - `g.input(name, shape, values, options?)` 与 `g.param(...)` 创建数值叶子。`values` 可以是扁平数组，也可以是嵌套数组，元素个数必须等于 shape 的元素个数。两者在计算上没有区别，都有梯度，都可以 `set`，都可以放进损失面板的 `sgd.params`、`random.nodes` 和滑块。区分它们是为了表达含义：模型权重用 `param`，输入数据和 logits 用 `input`。只有一个 logits 输入的小部件把它放进 `sgd.params`，「梯度下降一步」就直接更新 logits（见 9.3）。
-- `g.label(name, values, options?)` 创建整数标签，shape 从 `values` 推断：`0` 是 `()`，`[0]` 是 `(1,)`，`[0, 1, 2]` 是 `(3,)`，`[[0], [1], [2]]` 是 `(3, 1)`。`tokens` 是每个类别的显示名，`classes` 是类别数，默认等于 `tokens.length`。没有 `tokens` 时必须给 `classes`，否则 tokens 面板和 3D 场景的目标列无法工作。
+- `g.label(name, values, options?)` 创建整数标签，shape 从 `values` 推断：`0` 是 `()`，`[0]` 是 `(1,)`，`[0, 1, 2]` 是 `(3,)`，`[[0], [1], [2]]` 是 `(3, 1)`。`shape` 可以写维度名，例如 `{ shape: ['T'] }`，这时真实尺寸按 `real` 里的 `T` 计算。`tokens` 是每个类别的显示名，`classes` 是类别数，默认等于 `tokens.length`。没有 `tokens` 时必须给 `classes`，否则 tokens 面板和 3D 场景的目标列无法工作。
 
 - `g.buffer(name, shape, values, options?)` 创建常量叶子，对应 torch 的 `register_buffer`，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 `-Infinity`，causal mask 写成 `s > t ? -Infinity : 0`。buffer 没有梯度：`grad` 为 `null`，不进入自动生成的反向步骤，不能放进损失面板的 `sgd.params` 和 `random.nodes`，模板里对它取 `.grad` 报错。它可以 `set`，`g.reset()` 时恢复创建时的值。3D 场景照常画出它，但它与 label 一样，到运算节点的边不画。
 
@@ -659,6 +659,24 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 `sgd.params` 与 `random.nodes` 可以是 input 或 param 节点。所有字段都可以省略；只要读数时写 `'loss'`。读数保留 3 位小数。图里没有损失节点时挂载 loss 面板会抛错 `graph has no loss node`。`sgd.label` 省略时为「更新一步 节点名」，`random.label` 省略时为「随机 节点名」。
 
+**cost**：显存与计算量，需要传入 `steps`。
+
+```js
+'cost'
+{ cost: { title: '显存与计算量', dims: 'real' } }
+```
+
+卡片显示当前步骤已分配的显存和峰值，按参数、输入、缓冲区、为反向保存的激活、临时激活、参数梯度、激活梯度分类堆叠成一根横条；指针移到一段上列出这一类的张量、shape 和大小。下面是本步的 FLOP 与前向、反向累计，指针移到「本步」上列出这一步的运算和 FLOP 公式；再下面是每一步一根柱子的 FLOP 图，叠一条显存折线，点柱子跳到那一步。点击会固定弹出的列表，触屏也能查看。图有 `real` 时卡片上可以在页面尺寸和真实尺寸之间切换，`dims` 是初始选择，默认用真实尺寸。统计方式（按 PyTorch eager 的 autograd 推算哪些张量还活着，FLOP 计数表）在卡片底部的「怎么统计的」里，自定义运算要给 `cost` 才计入，见 2.3。YAML 页面写 `- cost`。真实尺寸下的序列长度取 `real` 里的 `T`，例如 `real: { name: Qwen3-8B, T: 4096, d: 4096, ... }`。真实尺寸下卡片上有 $B$（批大小）和 $T$（序列长度）两个滑块，数字随之重算。`for` 循环在图里只画几份（例如 2 个 head）时，真实尺寸按 `real` 里的份数统计，列表里标出倍数。占位盒子写 `repeat` 后，盒子里的层按画出的同类层推算并画斜线标出，例如：
+
+```yaml
+- layers:
+    title: $\cdots$ 第 1 到 $N-1$ 层
+    fixed: true
+    repeat: [{ like: layer, count: 35 }]
+```
+
+不写 `repeat` 的占位盒子不计入。
+
 **sliders**：一个节点的每个元素一个滑块。
 
 ```js
@@ -1002,6 +1020,7 @@ const y = g.square(x, { name: 'y' });
 - `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`；参数是数组时逐个元素换算；只按关键字传的参数也可以列在这里，例如内置的 `cat` 写 `sizes: ['pieces']`，`pieces` 只出现在 `defaults` 里。
 - `rest` 写最后一个参数名，调用时从这个位置起的位置参数收集成一个数组，例如内置的 `view` 写 `args: ['input', 'shape']`、`rest: 'shape'`，`g.view(a, T, H, dh)` 与 `g.view(a, [T, H, dh])` 相同。规则见 2.3 的「尺寸参数写维度名」。
 - 讲解部分（`explain`）可以写在 `defineOp` 的 `explain` 字段里，也可以用 `registerExplain` 单独注册。`pattern` 从 `'elementwise'`、`'reduce'`、`'dense'`、`'contract'`、`'select'` 中选一个，决定连线怎么画。`local` 返回一条边的局部导数，`tex.forward` 与 `tex.local` 给出卡片上的公式。接口定义见设计文档「定义新运算」与「连线模式」两节。
+- `cost` 给显存与计算量面板用：`{ saves: [[0]], flops: (inputs, out) => ({ forward: [n], backward: [[2, n]] }) }` 表示输入 0 的梯度需要保存输入 0，前向计 $n$ 次、反向计 $2n$ 次（`n` 是输出的元素个数，每一项写成因子列表，面板把因子连乘写成公式）。`saves` 里的数字是输入下标，`'out'` 是输出；与输入共用存储的运算写 `view: true`。不写 `cost` 时按反向保存全部输入、FLOP 为 0 统计。上面的 `square` 可以写 `cost: { saves: [[0]], flops: (_, out) => { const n = out.reduce((a, b) => a * b, 1); return { forward: [n], backward: [[2, n]] }; } }`。
 - 只有数值、没有讲解的运算可以用在只引入 core 的场合。用到 steps 或 scene3d 时必须有讲解，否则抛错 `explain: op '<名字>' of node '<节点>' has no explain definition`。
 - 同名运算只能注册一次。运算名不能与计算图已有的成员同名（例如 `input`、`loss`、`node`）。
 - 写自定义运算时打开 `graph({ check: true })`，`backward` 写错会立即抛出 `gradient check failed`。

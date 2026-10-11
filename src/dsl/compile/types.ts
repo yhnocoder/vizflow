@@ -4,9 +4,13 @@ import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import type { Where } from '../source';
 
+export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
+
 export interface Num {
   toy: number;
   real: number;
+  dim?: string;
+  derive?: RealSize;
 }
 
 export interface OpValue {
@@ -47,6 +51,7 @@ export interface ModuleRec {
   fixed: boolean;
   folded: boolean;
   split: boolean;
+  repeat: { like: string; count: number; where: Where }[];
   nodes: Node[];
   fold: { forward: BackwardOverride; backward: BackwardOverride };
   decl: Record<string, unknown>;
