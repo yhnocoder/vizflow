@@ -1,0 +1,165 @@
+:root[data-vf-theme="catppuccin-latte"] {
+  color-scheme: light;
+  --bg: #e6e9ef;
+  --surface: #eff1f5;
+  --ink: #4c4f69;
+  --fg: #4c4f69;
+  --muted: #6c6f85;
+  --line: #ccd0da;
+  --line-strong: #9ca0b0;
+  --pos: #fe640b;
+  --neg: #1e66f5;
+  --note: #40a02b;
+}
+
+:root[data-vf-theme="liquid-glass"] {
+  color-scheme: light;
+  --bg: #eef1f7;
+  --surface: #fbfcfe;
+  --ink: #1d1d1f;
+  --fg: #1d1d1f;
+  --muted: #5f6470;
+  --line: #d8dde6;
+  --line-strong: #a3a9b5;
+  --pos: #f2622e;
+  --neg: #0a7cff;
+  --note: #1f8a4c;
+  --vf-glass-tint: rgba(255, 255, 255, 0.42);
+  --vf-glass-edge: inset 0 1px 0 rgba(255, 255, 255, 0.85), inset 0 -1px 0 rgba(255, 255, 255, 0.35), inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  --vf-glass-drop: 0 10px 32px rgba(30, 40, 70, 0.12), 0 1px 3px rgba(30, 40, 70, 0.08);
+}
+
+.vf-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-color: var(--bg);
+  background-position: center;
+  background-size: cover;
+}
+
+.vf-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 38%, transparent);
+}
+
+:root[data-vf-theme="liquid-glass"] .vf-backdrop:not(.vf-backdrop-image) {
+  background-image:
+    radial-gradient(circle at center, rgba(40, 50, 80, 0.13) 1px, transparent 1.6px),
+    radial-gradient(38% 46% at 10% 14%, rgba(255, 138, 190, 0.55), transparent 72%),
+    radial-gradient(42% 50% at 92% 8%, rgba(110, 176, 255, 0.6), transparent 72%),
+    radial-gradient(48% 56% at 74% 88%, rgba(120, 225, 190, 0.55), transparent 72%),
+    radial-gradient(40% 48% at 16% 86%, rgba(255, 206, 110, 0.55), transparent 72%),
+    radial-gradient(34% 40% at 50% 46%, rgba(178, 150, 255, 0.35), transparent 72%);
+  background-size: 22px 22px, auto, auto, auto, auto, auto;
+  background-position: 0 0, center, center, center, center, center;
+}
+
+:root[data-vf-theme="liquid-glass"] .vf-backdrop:not(.vf-backdrop-image)::after {
+  content: none;
+}
+
+:root[data-vf-backdrop] body,
+:root[data-vf-theme="liquid-glass"] body {
+  background: transparent;
+}
+
+:root[data-vf-backdrop]:not([data-vf-theme="liquid-glass"]) :is(.vf-card, .vf-stepper, .vf-settings-section, .vf-settings-link) {
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+:root[data-vf-backdrop]:not([data-vf-theme="liquid-glass"]) :is(.vf-page > header, vizflow-page > .vf-header) {
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+:root[data-vf-theme="liquid-glass"] :is(.vf-card, .vf-stepper, .vf-settings-section, .vf-settings-link, [data-vf-glass]) {
+  background: var(--vf-glass-tint);
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: var(--vf-glass-edge), var(--vf-glass-drop);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+}
+
+:root[data-vf-refract] :is(.vf-card, .vf-stepper, .vf-settings-section, .vf-settings-link, [data-vf-glass]) {
+  isolation: isolate;
+  box-shadow: var(--vf-glass-drop);
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-vf-refract] :is(.vf-card, .vf-stepper, .vf-settings-section, [data-vf-glass]) {
+  position: relative;
+}
+
+:root[data-vf-refract] :is(.vf-card, .vf-stepper, .vf-settings-section, .vf-settings-link, [data-vf-glass])::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--vf-glass-tint);
+  box-shadow: var(--vf-glass-edge);
+  backdrop-filter: var(--vf-glass-filter, blur(20px) saturate(170%));
+  pointer-events: none;
+}
+
+:root[data-vf-theme="liquid-glass"] :is(.vf-stage, #stage) {
+  border-color: rgba(255, 255, 255, 0.7);
+  box-shadow: var(--vf-glass-edge), var(--vf-glass-drop);
+}
+
+:root[data-vf-theme="liquid-glass"] :is(.vf-page > header, vizflow-page > .vf-header) {
+  text-shadow: 0 1px 12px rgba(255, 255, 255, 0.9);
+}
+
+:root.vf-theme-fading,
+:root.vf-theme-fading * {
+  transition: background-color 480ms ease, color 480ms ease, border-color 480ms ease, box-shadow 480ms ease !important;
+}
+
+:root.vf-theme-revealing::view-transition-old(root) {
+  animation: none;
+}
+
+:root.vf-theme-revealing::view-transition-new(root) {
+  mix-blend-mode: normal;
+  animation: vf-theme-reveal 620ms cubic-bezier(0.3, 0.7, 0.2, 1) both;
+}
+
+@keyframes vf-theme-reveal {
+  from {
+    clip-path: circle(0 at var(--vf-reveal-x, 50%) var(--vf-reveal-y, 50%));
+  }
+  to {
+    clip-path: circle(var(--vf-reveal-r, 150vmax) at var(--vf-reveal-x, 50%) var(--vf-reveal-y, 50%));
+  }
+}
+
+.vf-settings-link {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 20;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg);
+  font-family: var(--sans);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.vf-settings-link:hover {
+  border-color: var(--line-strong);
+}
