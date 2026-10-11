@@ -1,10 +1,12 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
-formula: '\step{down}{\of{down}=\big(}\step{act}{\of{act}\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{act}{\big)}\step{gate}{\odot}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+formula: '\step{down}{\of{down}=\big(}\step{act}{\of{act}\big(}\step{clamp}{\min\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{clamp}{,\,\of{limit}\big)}\step{act}{\big)}\step{gate}{\odot}\step{clamp}{\operatorname{clamp}\big(}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{clamp}{,\,-\of{limit},\,\of{limit}\big)}\step{down}{\big){\of{Wd}}^{\top}}'
 params:
   act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
   f:    { type: dim }
   name: { type: text, default_key: true }
+  clamped: { type: bool, default: false }
+  limit: { type: float }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -25,8 +27,11 @@ fold:
 body:
   - gate: x @ Wg.T
   - up:   x @ Wu.T
-  - a:    { op: act(gate), tex: '\of{act}(\mathbf{gate})' }
-  - m:    a * up
+  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
+  - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - a:    { op: act(gate), tex: '\of{act}(\mathbf{gate})', when: not clamped }
+  - a:    { op: act(gc), tex: '\of{act}(\bar{\mathbf{gate}})', when: clamped }
+  - m:    { op: 'a * uc if clamped else a * up' }
   - down: m @ Wd.T
 steps:
   - id: proj
@@ -36,6 +41,18 @@ steps:
     text: 两个投影的输入都是 $\of{x}$，维度从 $d$ 扩大到 $f$。两个 Linear 都没有 bias。
     backward:
       label: '$\partial W,\ \partial\of{x}$'
+  - id: clamp
+    when: clamped
+    show: [gc, uc]
+    label: '$\bar{\mathbf{gate}},\ \bar{\mathbf{up}}$'
+    title: 截断 gate 和 up
+    text: |
+      进入激活之前，gate 只截上界，大于 $L=\of{limit}$ 的值变成 $L$；up 两边都截，限制在 $[-L, L]$。个别很大的 gate 或 up 值因此不会让输出变得很大。
+      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }},\qquad \bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate},\ \partial\mathbf{up}$'
+      title: 穿过截断
+      text: 落在界内的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
   - id: act
     show: a
     label: '$\of{act}$'

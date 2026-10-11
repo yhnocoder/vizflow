@@ -41,8 +41,11 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
     const at = child(stepsWhere, decl.steps as unknown[], i);
     if (!isRecord(step)) fail(at, 'a step must be a mapping');
     checkKeys(step, STEP_KEYS, at);
-    if (!c.enabled(step, { ...env, where: at })) return [];
     if (typeof step.id !== 'string') fail(at, 'a step needs an id');
+    if (!c.enabled(step, { ...env, where: at })) {
+      c.switchedOffSteps.add(`${scope.path}#${step.id}`);
+      return [];
+    }
     if (seen.has(step.id)) fail(child(at, step, 'id'), `step id '${step.id}' is used twice`);
     seen.add(step.id);
     const fieldEnv = (key: string): Env => ({ ...env, where: child(at, step, key) });

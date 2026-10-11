@@ -2,7 +2,7 @@ import { type Node, opDef } from '../../autograd';
 import type { LayoutEntry } from '../../scene3d';
 import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
-import { reshapeNested } from './buffer-functions';
+import { BUFFER_FUNCTIONS, reshapeNested } from './buffer-functions';
 import type { Compiler } from './text';
 import { type BufferValue, type Env, type Num, type OpValue, type ParamType, type Scope } from './types';
 import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
@@ -98,7 +98,11 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, weightDecl] of Object.entries(weights)) {
     const at = child(weightsWhere, weights, name);
     if (!isRecord(weightDecl)) fail(at, `weight '${name}' must be a mapping`);
-    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype']), at);
+    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype', 'when']), at);
+    if (!c.enabled(weightDecl, { ...env, where: at })) {
+      if (bound?.map[name] !== undefined) fail(child(bound.env.where, bound.map, name), `weight '${name}' of ${scope.def.name} is switched off by its when, so it cannot be shared`);
+      continue;
+    }
     const shape = shapeOf(c, weightDecl.shape, { ...env, where: child(at, weightDecl, 'shape') }, child(at, weightDecl, 'shape'));
     const binding = bound?.map[name];
     if (binding !== undefined) {
@@ -134,11 +138,12 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, bufferDecl] of Object.entries(buffers)) {
     const at = child(buffersWhere, buffers, name);
     if (!isRecord(bufferDecl)) fail(at, `buffer '${name}' must be a mapping`);
-    checkKeys(bufferDecl, new Set(['value', 'shape', 'tex', 'dtype']), at);
+    checkKeys(bufferDecl, new Set(['value', 'shape', 'tex', 'dtype', 'when']), at);
+    if (!c.enabled(bufferDecl, { ...env, where: at })) continue;
     const bufferDtype = dtypeOption(bufferDecl, at);
     const valueWhere = child(at, bufferDecl, 'value');
     const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
-    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
+    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, `a buffer value must call one of ${Object.keys(BUFFER_FUNCTIONS).join(', ')}`);
     let buffer = value as BufferValue;
     if (bufferDecl.shape !== undefined) {
       const shapeWhere = child(at, bufferDecl, 'shape');
@@ -153,7 +158,7 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
     const given = c.takeValue(path);
     if (given !== undefined) buffer = { ...buffer, values: given };
     const key = given !== undefined ? `${path}=values` : `${scope.def.file}#${scope.def.name}.${name}=${String(bufferDecl.value)}(${buffer.shape.map((d) => `${d.toy}:${d.real}`).join(',')};${JSON.stringify(buffer.values)})`;
-    const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
+    const tex = scope.texOverride.get(name) ?? (typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name));
     const node = c.bufferNode(key, () => {
       try {
         const created = c.g.buffer(path, leafSpec(c, buffer.shape), buffer.values, { tex, elem: elemOf(tex), ...bufferDtype });

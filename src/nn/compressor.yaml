@@ -1,0 +1,196 @@
+module: Compressor
+subtitle: 每 $m$ 个 token 压缩成一个 KV 条目
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  PartialRoPE: vizflow/nn/partial-rope
+formula: '\step{rope.*}{\of{C}=\mathrm{RoPE}\big(}\step{kv_norm.*}{\mathrm{RMSNorm}\big(}\step{sum}{\textstyle\sum_{j}}\step{softmax}{\operatorname{softmax}_j\big(}\step{gate,windows}{\mathbf{z}_{j}}\step{bias}{+B_{j}}\step{softmax}{\big)}\step{weight}{\odot}\step{proj,windows}{\mathbf{c}_{j}}\step{kv_norm.*}{\big)}\step{rope.*}{\big)}'
+params:
+  m:       { type: dim }
+  c:       { type: dim }
+  rd:      { type: dim }
+  theta:   { type: float, default: 1e4 }
+  overlap: { type: bool, default: false }
+  eps:     { type: float, default: 1e-6 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [C, mask]
+weights:
+  Wkv:           { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{kv}}' }
+  Wgate:         { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{gate}}' }
+  position_bias: { shape: [m, '2 * c if overlap else c'], dtype: fp32, tex: 'B' }
+buffers:
+  mask: { value: 'block_causal_mask(T, m)', tex: 'M_{\mathrm{c}}' }
+  zero: { value: 'zeros(1, m, c)', tex: '\mathbf{0}_{\of{m}\times\of{c}}', when: overlap }
+  ninf: { value: 'full(-inf, 1, m, c)', tex: '(-\infty)_{\of{m}\times\of{c}}', when: overlap }
+fold:
+  label: '$\of{C}$'
+  title: compressor（已折叠）
+  text: |
+    每 $m=\of{m}$ 个 token 用 softmax 门控加权合成一个条目，归一化后在窗口第一个 token 的位置上做 RoPE。
+    $$\of{C}={{ C | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 compressor（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - kv:      { op: x @ Wkv.T, tex: '\mathbf{c}' }
+  - gate:    { op: x @ Wgate.T, tex: '\mathbf{z}' }
+  - kv_u:    { op: 'narrow(kv, 0, 0, (T // m) * m)', tex: '\mathbf{c}_{\mathrm{used}}' }
+  - gate_u:  { op: 'narrow(gate, 0, 0, (T // m) * m)', tex: '\mathbf{z}_{\mathrm{used}}' }
+  - kv_w:    { op: 'view(kv_u, T // m, m, -1)', tex: '\mathbf{c}^{\mathrm{win}}' }
+  - gate_w0: { op: 'view(gate_u, T // m, m, -1)', tex: '\mathbf{z}^{\mathrm{win}}' }
+  - gate_w:  { op: gate_w0 + position_bias, tex: '\mathbf{z}^{\mathrm{win}}+B' }
+  - kv_a:    { op: 'narrow(kv_w, 2, 0, c)', tex: '\mathbf{c}^{a}', when: overlap }
+  - kv_b:    { op: 'narrow(kv_w, 2, c, c)', tex: '\mathbf{c}^{b}', when: overlap }
+  - g_a:     { op: 'narrow(gate_w, 2, 0, c)', tex: '\mathbf{z}^{a}', when: overlap }
+  - g_b:     { op: 'narrow(gate_w, 2, c, c)', tex: '\mathbf{z}^{b}', when: overlap }
+  - kv_prev: { op: 'narrow(kv_a, 0, 0, T // m - 1)', tex: '\mathbf{c}^{a}_{w-1}', when: overlap }
+  - g_prev:  { op: 'narrow(g_a, 0, 0, T // m - 1)', tex: '\mathbf{z}^{a}_{w-1}', when: overlap }
+  - kv_prevp: { op: 'cat([zero, kv_prev], 0)', tex: '[\mathbf{0};\mathbf{c}^{a}_{w-1}]', when: overlap }
+  - g_prevp:  { op: 'cat([ninf, g_prev], 0)', tex: '[-\infty;\mathbf{z}^{a}_{w-1}]', when: overlap }
+  - kv_s:    { op: 'cat([kv_prevp, kv_b], 1)', tex: '\mathbf{c}^{\mathrm{slot}}', when: overlap }
+  - g_s:     { op: 'cat([g_prevp, g_b], 1)', tex: '\mathbf{z}^{\mathrm{slot}}', when: overlap }
+  - w:       { op: 'softmax(g_s, 1) if overlap else softmax(gate_w, 1)', tex: '\boldsymbol{\omega}', dtype: fp32 }
+  - wk:      { op: 'kv_s * w if overlap else kv_w * w', tex: '\boldsymbol{\omega}\odot\mathbf{c}' }
+  - pooled:  { op: 'sum(wk, 1)', tex: '\textstyle\sum_j\boldsymbol{\omega}_j\odot\mathbf{c}_j' }
+  - kv_norm:
+      use: RMSNorm
+      suffix: c
+      subtitle: DeepseekV4RMSNorm
+      params: { eps: eps }
+      inputs: { x: pooled }
+      outputs: { out: pn }
+      tex: { out: '\bar{\mathbf{c}}' }
+      folded: true
+  - pn3: { op: 'view(pn, T // m, 1, c)', tex: '\bar{\mathbf{c}}_{w}' }
+  - rope:
+      use: PartialRoPE
+      suffix: c
+      title: apply_rotary_pos_emb
+      subtitle: '位置是 $w\cdot m$'
+      params: { rd: rd, theta: theta, stride: m, interleaved: true }
+      inputs: { x: pn3 }
+      outputs: { out: C }
+      tex: { cos: '\cos_{\of{m}w}', sin: '\sin_{\of{m}w}' }
+      folded: true
+steps:
+  - id: proj
+    show: [Wkv.T, kv]
+    label: '$\of{kv}$'
+    title: kv_proj
+    text: |
+      每个 token 投影出要被压缩的内容 $\mathbf{c}$。
+      $$\of{kv}={{ kv | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{kv}},\ \partial\of{x}$'
+      title: 传到 kv_proj 的权重和 $\of{x}$
+  - id: gate
+    show: [Wgate.T, gate]
+    label: '$\of{gate}$'
+    title: gate_proj
+    text: |
+      再投影出同样宽的门控分数 $\mathbf{z}$，它决定一个窗口里每个 token 的每个通道占多少权重。
+      $$\of{gate}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{gate}},\ \partial\of{x}$'
+      title: 传到 gate_proj 的权重和 $\of{x}$
+  - id: usable
+    show: [kv_u, gate_u]
+    label: '$\of{kv_u},\ \of{gate_u}$'
+    title: 只取能凑满窗口的 token
+    text: |
+      只保留前 $\lfloor T/m\rfloor m=\of{(T // m) * m}$ 个 token，对应 <code>kv[:, :usable]</code>。凑不满一个窗口的 token 这一次不压缩，它们只能通过滑动窗口被看到；推理时它们留在 cache 的缓冲区里，等凑满 $m=\of{m}$ 个再压缩。
+    backward:
+      label: '$\partial\of{kv},\ \partial\of{gate}$'
+      title: 没被压缩的 token 这里没有梯度
+  - id: windows
+    show: [kv_w, gate_w0]
+    label: '$\of{kv_w},\ \of{gate_w0}$'
+    title: 按窗口排好
+    text: |
+      每 $m=\of{m}$ 个相邻 token 是一个窗口，排成 $(\lfloor T/m\rfloor, m, \cdot)$，对应 <code>view(batch, n_windows, ratio, -1)</code>。
+    backward:
+      label: '$\partial\of{kv_u},\ \partial\of{gate_u}$'
+      title: 按原来的顺序排回去
+  - id: bias
+    show: [position_bias, gate_w]
+    label: '$+B$'
+    title: 加上窗口内位置的偏置
+    text: |
+      position_bias $B$ 的第 $j$ 行加到每个窗口第 $j$ 个 token 的门控分数上，所有窗口共用。
+      $$B={{ position_bias | matrix:3 }}$$
+    backward:
+      label: '$\partial B,\ \partial\of{gate_w0}$'
+      title: 传到 position_bias
+      text: |
+        $B$ 被所有窗口共用，梯度是各个窗口之和。
+        $$\frac{\partial\ell}{\partial B}={{ position_bias.grad | matrix:3 }}$$
+  - id: halves
+    when: overlap
+    show: [kv_a, kv_b, g_a, g_b]
+    label: '$\mathbf{c}^{a},\ \mathbf{c}^{b}$'
+    title: 每个 token 的两份内容
+    text: |
+      这个 compressor 的投影宽 $2c=\of{2*c}$：前 $c=\of{c}$ 维 $\mathbf{c}^{a}$ 用于下一个窗口的条目，后 $c$ 维 $\mathbf{c}^{b}$ 用于本窗口的条目，门控分数也一样分成两半。
+    backward:
+      label: '$\partial\of{kv_w},\ \partial\of{gate_w}$'
+      title: 两半拼回去
+  - id: shift
+    when: overlap
+    show: [kv_prev, g_prev, zero, ninf, kv_prevp, g_prevp]
+    label: '$\mathbf{c}^{a}_{w-1}$'
+    title: 把 $\mathbf{c}^{a}$ 交给下一个窗口
+    text: |
+      第 $w$ 个窗口拿到第 $w-1$ 个窗口的 $\mathbf{c}^{a}$。第 0 个窗口前面没有窗口，内容补 0，门控分数补 $-\infty$，softmax 之后权重是 0。推理时，这个位置放的是上一次调用保存下来的 $\mathbf{c}^{a}$。
+    backward:
+      label: '$\partial\mathbf{c}^{a},\ \partial\mathbf{z}^{a}$'
+      title: 梯度交还给前一个窗口
+  - id: slots
+    when: overlap
+    show: [kv_s, g_s]
+    label: '$\of{kv_s},\ \of{g_s}$'
+    title: 每个条目有 $2m$ 个来源
+    text: |
+      前 $m$ 个来源是上一个窗口的 $\mathbf{c}^{a}$，后 $m$ 个是本窗口的 $\mathbf{c}^{b}$，所以相邻两个条目的来源窗口重叠一半：宽 $2m=\of{2*m}$，步长 $m=\of{m}$。
+      $$\mathbf{z}^{\mathrm{slot}}={{ g_s | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{c}^{a}_{w-1},\ \partial\mathbf{c}^{b}$'
+      title: 按来源切开
+  - id: softmax
+    show: w
+    label: '$\of{w}$'
+    title: 在窗口内对每个通道做 softmax
+    text: |
+      softmax 沿窗口内的 token 这一维（<code>dim=2</code>），每个通道各做一次：一个窗口里每个通道的权重加起来是 1。HF 在 float32 里做这个 softmax。
+      $$\of{w}={{ w | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{z}$'
+      title: 穿过 softmax
+  - id: weight
+    show: wk
+    label: '$\of{wk}$'
+    title: 内容乘权重
+    text: |
+      $$\of{wk}={{ wk | matrix:2 }}$$
+    backward:
+      label: '$\partial\boldsymbol{\omega},\ \partial\mathbf{c}$'
+      title: 传到权重和内容
+  - id: sum
+    show: pooled
+    label: '$\of{pooled}$'
+    title: 窗口内相加
+    text: |
+      每个窗口得到一个 $c$ 维的条目。
+      $$\of{pooled}={{ pooled | matrix:2 }}$$
+    backward:
+      label: '$\partial(\boldsymbol{\omega}\odot\mathbf{c})$'
+      title: 梯度复制给窗口里的每个 token
+  - id: unsqueeze
+    show: pn3
+    label: '$\of{pn3}$'
+    title: 加一个 head 维
+    text: 归一化后的条目写成 $(\lfloor T/m\rfloor, 1, c)$，和只有一个 head 的 KV 对齐，对应 <code>compressed.unsqueeze(1)</code>。
+    backward:
+      label: '$\partial\bar{\mathbf{c}}$'
+      title: 去掉 head 维

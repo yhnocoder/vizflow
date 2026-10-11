@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { SOFTPLUS_THRESHOLD, normalCdf, normalPdf, sigmoid } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, SOFTPLUS_THRESHOLD, clampInside, normalCdf, normalPdf, sigmoid } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -104,20 +104,44 @@ export const geluExplain = unary(
 export const identityExplain = unary((a) => a, () => 1, () => '1');
 
 const lastHalf = (shape: readonly number[]) => shape[shape.length - 1] / 2;
+const interleavedOf = (attrs: object) => (attrs as { interleaved?: boolean }).interleaved === true;
+
+function rotatedFrom(out: number[], shape: readonly number[], interleaved: boolean): { index: number[]; sign: number } {
+  const last = out.length - 1;
+  const c = out[last];
+  const index = [...out];
+  if (interleaved) {
+    index[last] = c % 2 === 0 ? c + 1 : c - 1;
+    return { index, sign: c % 2 === 0 ? -1 : 1 };
+  }
+  const half = lastHalf(shape);
+  index[last] = c < half ? c + half : c - half;
+  return { index, sign: c < half ? -1 : 1 };
+}
 
 export const rotateHalfExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, out) => (out[out.length - 1] < lastHalf(ctx.out.shape) ? -1 : 1),
+  local: (ctx, out) => rotatedFrom(out, ctx.out.shape, interleavedOf(ctx.attrs)).sign,
   tex: {
     forward: (s) => `\\operatorname{rotate\\_half}(${s.in[0]})`,
-    local: (s) => (s.outIndex[s.outIndex.length - 1] < lastHalf(s.ctx.out.shape) ? '-1' : '1'),
+    local: (s) => String(rotatedFrom(s.outIndex, s.ctx.out.shape, interleavedOf(s.attrs)).sign),
   },
-  selected: (ctx, out) => {
-    const last = out.length - 1;
-    const half = lastHalf(ctx.out.shape);
-    const index = [...out];
-    index[last] = out[last] < half ? out[last] + half : out[last] - half;
-    return [{ arg: 0, index }];
+  selected: (ctx, out) => [{ arg: 0, index: rotatedFrom(out, ctx.out.shape, interleavedOf(ctx.attrs)).index }],
+};
+
+function clampTex(input: string, { min, max }: ClampAttrs): string {
+  const bound = (v: number) => (v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true }));
+  if (min === null) return `\\min(${input},${bound(max as number)})`;
+  if (max === null) return `\\max(${input},${bound(min)})`;
+  return `\\operatorname{clamp}(${input},${bound(min)},${bound(max)})`;
+}
+
+export const clampExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, _out, _arg, input) => (clampInside(ctx.inputs[0].get(input), ctx.attrs as ClampAttrs) ? 1 : 0),
+  tex: {
+    forward: (s) => clampTex(s.in[0], s.attrs as ClampAttrs),
+    local: (s) => (clampInside(s.ctx.inputs[0].get(s.inIndex), s.attrs as ClampAttrs) ? '1' : '0'),
   },
 };
 

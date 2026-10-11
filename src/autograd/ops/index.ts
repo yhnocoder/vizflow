@@ -4,6 +4,7 @@ import type { AnyOpDef } from '../op';
 import { defineOp } from '../registry';
 import {
   addOp,
+  clampOp,
   divOp,
   expOp,
   geluOp,
@@ -48,6 +49,15 @@ export interface RsqrtOptions extends OpOptions {
   eps?: number;
 }
 
+export interface RotateHalfOptions extends OpOptions {
+  interleaved?: boolean;
+}
+
+export interface ClampOptions extends OpOptions {
+  min?: number | null;
+  max?: number | null;
+}
+
 export interface CatOptions extends OpOptions {
   dim?: number;
   pieces?: number | string | null;
@@ -70,7 +80,9 @@ export interface BuiltinOps {
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
-  rotate_half(input: Node, options?: OpOptions): Node;
+  rotate_half(input: Node, options?: RotateHalfOptions): Node;
+  clamp(input: Node, options?: ClampOptions): Node;
+  clamp(input: Node, min: number | null, max?: number | null, options?: ClampOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
   matmul(input: Node, other: Node, options?: OpOptions): Node;
   sum(input: Node, dim?: Dim | null | SumOptions, options?: SumOptions): Node;
@@ -112,6 +124,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   geluOp,
   identityOp,
   rotateHalfOp,
+  clampOp,
   transposeOp,
   matmulOp,
   sumOp,

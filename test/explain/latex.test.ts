@@ -12,7 +12,7 @@ describe('LaTeX templates render with KaTeX', () => {
     const g = graph();
     const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
     const node = g.exp(x);
-    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1 } };
+    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, min: -1, max: 1 } };
     for (const def of builtinOps) {
       const ex = builtinExplains[def.name];
       expect(ex, def.name).toBeDefined();

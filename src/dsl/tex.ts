@@ -72,6 +72,25 @@ function bracedArgument(tex: string, open: number): number {
   throw new Error('\\step has an unclosed brace');
 }
 
+export function dropSteps(tex: string, dropped: (id: string) => boolean): string {
+  const pattern = /\\step(?![A-Za-z])\s*/g;
+  let out = '';
+  let from = 0;
+  for (let found = pattern.exec(tex); found !== null; found = pattern.exec(tex)) {
+    const idOpen = found.index + found[0].length;
+    const idClose = bracedArgument(tex, idOpen);
+    let bodyOpen = idClose + 1;
+    while (/\s/.test(tex[bodyOpen] ?? '')) bodyOpen++;
+    const bodyClose = bracedArgument(tex, bodyOpen);
+    const id = tex.slice(idOpen + 1, idClose).trim();
+    out += tex.slice(from, found.index);
+    if (!dropped(id)) out += `${tex.slice(found.index, bodyOpen + 1)}${dropSteps(tex.slice(bodyOpen + 1, bodyClose), dropped)}}`;
+    from = bodyClose + 1;
+    pattern.lastIndex = from;
+  }
+  return out + tex.slice(from);
+}
+
 export function markSteps(tex: string, mark: (id: string) => string): string {
   const pattern = /\\step(?![A-Za-z])\s*/g;
   let out = '';

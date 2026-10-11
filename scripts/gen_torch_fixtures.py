@@ -606,6 +606,23 @@ def rotate_half_cases():
     ]
 
 
+def rotate_pairs(x):
+    return torch.stack((-x[..., 1::2], x[..., 0::2]), dim=-1).flatten(-2)
+
+
+def clamp_cases():
+    cases = [
+        op_case("rotate_half", f"interleaved shape {shape}", rotate_pairs, [("input", randn(*shape))], [tensor_arg(0)], {"interleaved": True})
+        for shape in [(4,), (3, 2, 4)]
+    ]
+    for shape, low, high in [((3, 4), -0.5, 0.5), ((2, 2, 3), None, 0.3), ((5,), -0.2, None)]:
+        options = {key: value for key, value in [("min", low), ("max", high)] if value is not None}
+        cases.append(op_case("clamp", f"{shape} min {low} max {high}", lambda x, options=options: torch.clamp(x, **options), [("input", randn(*shape))], [tensor_arg(0)], options))
+    x = torch.tensor([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=torch.float64)
+    cases.append(op_case("clamp", "values on the bounds", lambda x: torch.clamp(x, -0.5, 0.5), [("input", x)], [tensor_arg(0)], {"min": -0.5, "max": 0.5}))
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -621,7 +638,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops)
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases())
     write("pages.json", pages + stable_pages)
 
 

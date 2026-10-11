@@ -128,26 +128,56 @@ export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
 export const identityOp = unary('identity', (x) => x, () => 1);
 
-function rotateHalf(input: Tensor, sign: number): Tensor {
+function rotateHalf(input: Tensor, sign: number, interleaved: boolean): Tensor {
   const width = input.shape[input.ndim - 1];
   const half = width / 2;
   const out = new Tensor(input.shape);
   for (let i = 0; i < input.size; i++) {
-    out.data[i] = i % width < half ? -sign * input.data[i + half] : sign * input.data[i - half];
+    const c = i % width;
+    if (interleaved) out.data[i] = c % 2 === 0 ? -sign * input.data[i + 1] : sign * input.data[i - 1];
+    else out.data[i] = c < half ? -sign * input.data[i + half] : sign * input.data[i - half];
   }
   return out;
 }
 
-export const rotateHalfOp: OpDef<NoAttrs> = {
+export interface RotateHalfAttrs {
+  interleaved: boolean;
+}
+
+export const rotateHalfOp: OpDef<RotateHalfAttrs> = {
   name: 'rotate_half',
   args: ['input'],
   tensors: ['input'],
+  defaults: { interleaved: false },
   shape: ([a]) => {
     if (a.length === 0 || a[a.length - 1] % 2 !== 0) throw new Error(`rotate_half: last dimension of (${a.join(', ')}) must be even`);
     return [...a];
   },
-  forward: ([a]) => rotateHalf(a, 1),
-  backward: (gradOut) => [rotateHalf(gradOut, -1)],
+  forward: ([a], { interleaved }) => rotateHalf(a, 1, interleaved),
+  backward: (gradOut, _inputs, _out, { interleaved }) => [rotateHalf(gradOut, -1, interleaved)],
+};
+
+export interface ClampAttrs {
+  min: number | null;
+  max: number | null;
+}
+
+export function clampInside(x: number, { min, max }: ClampAttrs): boolean {
+  return (min === null || x > min) && (max === null || x < max);
+}
+
+export const clampOp: OpDef<ClampAttrs> = {
+  name: 'clamp',
+  args: ['input', 'min', 'max'],
+  tensors: ['input'],
+  defaults: { min: null, max: null },
+  shape: ([a], { min, max }) => {
+    if (min === null && max === null) throw new Error('clamp: at least one of min and max must be given');
+    if (min !== null && max !== null && min > max) throw new Error(`clamp: min ${min} is larger than max ${max}`);
+    return [...a];
+  },
+  forward: ([a], attrs) => mapWith(a, (x) => Math.min(attrs.max ?? Infinity, Math.max(attrs.min ?? -Infinity, x))),
+  backward: (gradOut, [a], _out, attrs) => [new Tensor(a.shape, gradOut.data.map((g, i) => (clampInside(a.data[i], attrs) ? g : 0)))],
 };
 
 interface TransposeAttrs {

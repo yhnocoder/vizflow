@@ -1,0 +1,149 @@
+module: DeepseekV4Router
+subtitle: DeepseekV4TopKRouter 或 DeepseekV4HashRouter
+formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{mask,sum,eps,normalize}{\dfrac{\mathbf{s}\odot\mathbf{m}}{\sum\mathbf{s}\odot\mathbf{m}+10^{-20}}},\quad\step{logits,softplus,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W_r^{\top})}}\step{bias,topk}{,\quad\mathbf{m}=\operatorname{top}_{K}(\mathbf{s}+\mathbf{b}_{\mathrm{corr}})}\step{hash}{,\quad\mathbf{m}=H[x]}'
+params:
+  E:    { type: dim }
+  V:    { type: dim }
+  K:    { type: dim }
+  rsf:  { type: float, default: 1.5 }
+  hash: { type: bool, default: false }
+inputs:
+  x:   { shape: [T, d] }
+  ids: { shape: [T], when: hash }
+outputs: [rw]
+weights:
+  Wr: { shape: [E, d], tex: 'W_{r}' }
+buffers:
+  bias:  { value: zeros(E), tex: '\mathbf{b}_{\mathrm{corr}}', dtype: fp32, when: not hash }
+  hmask: { value: 'zeros(V, E)', tex: 'H', when: hash }
+fold:
+  label: '$\of{rw}=\mathrm{gate}(\of{x})$'
+  title: gate（已折叠）
+  text: |
+    每个位置选出 $K=\of{K}$ 个路由专家，并给出它们的权重，没选中的专家权重是 0。
+    $$\of{rw}={{ rw | matrix:3 }}$$
+  backward:
+    label: '$\partial W_r,\ \partial\of{x}$'
+    title: 穿过 gate（已折叠）
+body:
+  - logits: { op: x @ Wr.T, tex: '\mathbf{r}' }
+  - sp:     { op: softplus(logits), tex: '\operatorname{softplus}(\mathbf{r})' }
+  - s:      { op: sqrt(sp), tex: '\mathbf{s}' }
+  - sc:     { op: s + bias, tex: '\tilde{\mathbf{s}}', when: not hash }
+  - sel:    { op: 'topk_mask(sc, K, -1)', tex: '\mathbf{m}', when: not hash }
+  - sel:    { op: 'embedding(ids, hmask)', tex: '\mathbf{m}', when: hash }
+  - w:      { op: s * sel, tex: '\mathbf{w}' }
+  - ws:     { op: 'sum(w, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{w}' }
+  - den:    { op: ws + 1e-20, tex: '\textstyle\sum\mathbf{w}+10^{-20}' }
+  - wn:     { op: w / den, tex: '\bar{\mathbf{w}}' }
+  - rw:     { op: wn * rsf, tex: '\mathbf{p}' }
+steps:
+  - id: logits
+    show: [Wr.T, logits]
+    label: '$\of{logits}$'
+    title: 每个专家一个分数
+    text: |
+      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
+      $$\mathbf{r}={{ logits | matrix:3 }}$$
+    backward:
+      label: '$\partial W_r,\ \partial\of{x}$'
+      title: 传到 gate 的权重和 $\of{x}$
+  - id: softplus
+    show: sp
+    label: '$\operatorname{softplus}$'
+    title: softplus
+    text: |
+      DeepSeek V4 的打分函数是 <code>sqrtsoftplus</code>，先做 softplus：
+      $$\operatorname{softplus}(r)=\log(1+e^{r}),\qquad \operatorname{softplus}(\mathbf{r})={{ sp | matrix:3 }}$$
+      结果总是正数，分数很低的专家也只是接近 0。V3 用的是 sigmoid，上界是 1；softplus 没有上界。
+    backward:
+      label: '$\partial\mathbf{r}$'
+      title: 穿过 softplus
+      text: softplus 的导数是 $\sigma(r)$。
+  - id: sqrt
+    show: s
+    label: '$\of{s}=\sqrt{\cdot}$'
+    title: 开平方，得到亲和度
+    text: |
+      再开平方，把大的分数压小一些。这就是每个专家的亲和度 $\of{s}$，后面的权重用它。
+      $$\of{s}={{ s | matrix:3 }}$$
+    backward:
+      label: '$\partial\operatorname{softplus}(\mathbf{r})$'
+      title: 穿过开平方
+      text: |
+        只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。
+        $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
+  - id: bias
+    when: not hash
+    show: [bias, sc]
+    label: '$\of{sc}=\of{s}+\of{bias}$'
+    title: 加上负载均衡的偏置
+    text: |
+      <code>e_score_correction_bias</code> 是每个专家一个的偏置，只用来挑专家，不进入权重。它是 buffer，不靠梯度更新。
+      $$\of{bias}={{ bias | matrix:3 }},\qquad \of{sc}={{ sc | matrix:3 }}$$
+  - id: topk
+    when: not hash
+    show: sel
+    label: '$\of{sel}$'
+    title: 'top-$K$：选出 $K$ 个专家'
+    text: |
+      每个位置按 $\of{sc}$ 选出最大的 $K=\of{K}$ 个专家。V4 不像 V3 那样先把专家分组再挑组，直接在所有专家里选。真实模型里每个 token 从 256 个路由专家里选 6 个。挑选只决定 0 和 1，没有梯度。
+      $$\of{sel}={{ sel | matrix:2 }}$$
+  - id: hash
+    when: hash
+    show: [hmask, sel]
+    label: '$\of{sel}=H[x]$'
+    title: 按 token id 查表选专家
+    text: |
+      前 3 层用 hash 路由：每个 token id 选哪 $K$ 个专家是一张固定的表 <code>tid2eid</code>，和 $\of{x}$ 无关，训练中也不变。HF 存的是每个 token 的 $K$ 个专家编号；这里把它写成一张 $V\times E$ 的 0/1 表 $H$，第 $v$ 行在 token $v$ 的那 $K$ 个专家处是 1，按 token id 取行就得到每个位置选中的专家。
+      $$H={{ hmask | matrix:0 }},\qquad \of{sel}={{ sel | matrix:0 }}$$
+  - id: mask
+    show: w
+    label: '$\of{s}\odot\mathbf{m}$'
+    title: 留下选中专家的亲和度
+    text: |
+      权重用不带偏置的 $\of{s}$。HF 用 <code>scores.gather(1, indices)</code> 取出选中的那几个，这里乘上 0/1 的选择，没选中的专家记成 0，结果相同。
+      $$\of{w}={{ w | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{s}$'
+      title: 只有选中的专家有梯度
+  - id: sum
+    show: ws
+    label: '$\sum\of{w}$'
+    title: 选中的亲和度相加
+    text: |
+      $$\textstyle\sum\of{w}={{ ws | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{w}$'
+      title: 梯度复制给每个专家
+  - id: eps
+    show: den
+    label: '$+10^{-20}$'
+    title: 加 $10^{-20}$
+    text: 防止除以 0。
+    backward:
+      label: '$\partial\sum\of{w}$'
+      title: 加常数，梯度原样传下去
+  - id: normalize
+    show: wn
+    label: '$\of{wn}$'
+    title: 归一化
+    text: |
+      选中的几个亲和度除以它们的和，每个位置的权重加起来是 1。
+      $$\bar{\mathbf{w}}={{ wn | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{w},\ \partial\of{den}$'
+      title: 穿过归一化
+      text: |
+        归一化让被选中的几个亲和度互相影响：一个专家的亲和度变大，其他被选中的专家的权重就变小。
+        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
+  - id: scale
+    show: rw
+    label: '$\of{rw}$'
+    title: 乘 routed_scaling_factor
+    text: |
+      再乘 routed_scaling_factor $=\of{rsf}$，得到专家的权重 $\mathbf{p}$。
+      $$\mathbf{p}={{ rw | matrix:3 }}$$
+    backward:
+      label: '$\partial\bar{\mathbf{w}}$'
+      title: 穿过缩放

@@ -1,11 +1,14 @@
 module: GQA
 subtitle: grouped-query attention
-formula: '\step{concat}{\of{o}=\operatorname{concat}_h\big(}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{S}{{\of{q}}_h\step{kT}{{\step{krep}{{\of{k}}_h}}^{\top}}}\step{Ssc}{/\sqrt{d_h}}\step{mask}{+M}\step{exp,sum,div}{\big)}\step{vrep,pv}{{\of{v}}_h}\step{concat}{\big)}'
+formula: '\step{concat}{\of{o}=\operatorname{concat}_h\big(}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{sink}{\big[}\step{S}{{\of{q}}_h\step{kT}{{\step{krep}{{\of{k}}_h}}^{\top}}}\step{Ssc}{/\sqrt{d_h}}\step{mask}{+M}\step{sink}{,\ s_h\big]}\step{exp,sum,div}{\big)}\step{sink}{_{:,\,1..T_k}}\step{vrep,pv}{{\of{v}}_h}\step{concat}{\big)}'
+params:
+  sink: { type: bool, default: false }
 inputs:
-  q:    { shape: [T, H, dh] }
-  k:    { shape: [T, Hkv, dh] }
-  v:    { shape: [T, Hkv, dv] }
-  mask: { shape: [T, T] }
+  q:     { shape: [T, H, dh] }
+  k:     { shape: [Tk, Hkv, dh] }
+  v:     { shape: [Tk, Hkv, dv] }
+  mask:  { shape: [T, Tk] }
+  sinks: { shape: [H], when: sink }
 outputs: [o]
 fold:
   label: '$\of{o}$'
@@ -30,7 +33,10 @@ body:
       - Sm[h]: { op: 'Ss[h] + mask', tex: '\bar{S}^{(\of{h})}' }
       - ex[h]: { op: 'exp(Sm[h])', tex: '\mathrm{ex}^{(\of{h})}', dtype: fp32 }
       - Z[h]:  { op: 'sum(ex[h], -1, keepdim=true)', tex: 'Z^{(\of{h})}' }
-      - P[h]:  { op: 'ex[h] / Z[h]', tex: 'P^{(\of{h})}', dtype: q }
+      - sk[h]: { op: 'narrow(sinks, 0, h-1, 1)', tex: 's_{\of{h}}', when: sink }
+      - es[h]: { op: 'exp(sk[h])', tex: 'e^{s_{\of{h}}}', when: sink }
+      - Zs[h]: { op: 'Z[h] + es[h]', tex: "{Z'}^{(\\of{h})}", when: sink }
+      - P[h]:  { op: 'ex[h] / Zs[h] if sink else ex[h] / Z[h]', tex: 'P^{(\of{h})}', dtype: q }
       - o[h]:  { op: 'P[h] @ V[h]', tex: '\mathbf{o}^{(\of{h})}' }
   - o: 'cat(o[1..H], dim=1)'
 steps:
@@ -64,13 +70,13 @@ steps:
     backward:
       label: '$\partial\of{k}^{(h)}$'
       title: 转置回去
-      text: 把梯度转置回 $T\times d_h$。
+      text: 把梯度转置回 $T_k\times d_h$。
   - id: S
     show: 'S[1..H]'
     label: '$\mathbf{q}\mathbf{k}^{\top}$'
     title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
     text: |
-      每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。
+      每个 head 各自算一个 $T\times T_k$ 的分数表（query 有 $T=\of{T}$ 个，key 有 $T_k=\of{Tk}$ 个）：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。
       $$S^{(1)}={{ S[1] | matrix:2 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\mathbf{k}^{\top}$'
@@ -117,6 +123,20 @@ steps:
       label: '$\partial\,\mathrm{ex}$'
       title: 传回 ex
       text: 求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
+  - id: sink
+    when: sink
+    show: ['sk[1..H]', 'es[1..H]', 'Zs[1..H]']
+    label: '$+e^{s_h}$'
+    title: attention sink：分母多一项
+    text: |
+      每个 head 有一个可学习的数 $s_h$（HF 里的 <code>sinks</code>）。HF 把它作为额外的一列拼到分数后面，和分数一起做 softmax，再丢掉这一列，这和在分母上多加一项 $e^{s_h}$ 完全相同，这里按后一种写法画。所以一行的注意力权重加起来小于 1，差额 $e^{s_h}/{Z'}^{(h)}$ 分给了这个不对应任何 key 的位置。一个 query 找不到想看的 key 时，可以把权重放在 sink 上，不必把权重分给所有 key。HF 在 softmax 之前还减去每一行的最大值，这一步只防止溢出，不改变结果，图里没有画。
+      $$s={{ sinks | matrix:3 }},\qquad {Z'}^{(1)}={{ Zs[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial Z,\ \partial s_h$'
+      title: 穿过 sink，传到 $s_h$
+      text: |
+        $Z'$ 对 $e^{s_h}$ 的局部导数是 1，$e^{s_h}$ 对 $s_h$ 的局部导数是它自己。$s_h$ 被这个 head 的每一行共用，它的梯度是各行之和。
+        $$\frac{\partial\ell}{\partial s}={{ sinks.grad | matrix:3 }}$$
   - id: div
     show: 'P[1..H]'
     label: '$P$'

@@ -137,6 +137,16 @@ describe('new panels', () => {
     expect(() => mountPanels(container(), g, [{ attention: [g.nodes.find((n) => n.name === 'q')!], ids }])).toThrow(/must be a square matrix/);
   });
 
+  it('adds the extra key columns after the token columns, without dots', () => {
+    const { g, ids, q } = attentionGraph();
+    const el = container();
+    mounted.push(mountPanels(el, g, [{ attention: [q], ids, extra_keys: ['$c_{1}$'] }]));
+    const cells = [...el.querySelector<HTMLElement>('.vf-attn')!.children].map(text);
+    expect(cells.slice(0, 5)).toEqual(['$h_{1}$', 'a', 'c', 'b', '$c_{1}$']);
+    expect(cells.slice(5, 10)).toEqual(['a', q.value.get([0, 0]).toFixed(2), '·', '·', q.value.get([0, 3]).toFixed(2)]);
+    expect(() => mountPanels(container(), g, [{ attention: [q], ids, extra_keys: ['$c_{1}$', '$c_{2}$'] }])).toThrow(/must be a \(T, T \+ 2\) matrix/);
+  });
+
   it('puts several matrices in one card with captions, row names and frames on every label column', () => {
     const { g, y, W } = attentionGraph();
     const el = container();

@@ -1,0 +1,81 @@
+module: HyperConnectionMerge
+subtitle: 子层输出写回 stream，加上混合后的 stream
+formula: '\step{add}{\of{out}=}\step{expand}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack}{\of{comb}^{\top}\of{X}}'
+inputs:
+  X:    { shape: [T, N, d] }
+  y:    { shape: [T, d] }
+  post: { shape: [T, N] }
+  comb: { shape: [T, N, N] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: 写回 stream（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{X},\ \partial\of{y},\ \partial\of{post},\ \partial\of{comb}$'
+    title: 穿过写回（已折叠）
+body:
+  - expanded: { op: 'view(post, T, N, 1) * view(y, T, 1, d)', tex: '\of{post}\otimes\of{y}' }
+  - for: k
+    in: 1..N
+    brace: 'stream \of{k}'
+    body:
+      - ck[k]:   { op: 'select(comb, 2, k-1)', tex: 'C_{:,\of{k}}' }
+      - prod[k]: { op: 'view(ck[k], T, N, 1) * X', tex: 'C_{:,\of{k}}\odot\of{X}' }
+      - mixk[k]: { op: 'sum(prod[k], 1, keepdim=true)', tex: '(\of{comb}^{\top}\of{X})_{\of{k}}' }
+  - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}' }
+  - out: { op: expanded + mixed }
+steps:
+  - id: expand
+    show: expanded
+    label: '$\of{post}\otimes\of{y}$'
+    title: 子层的输出按 post 写进每条 stream
+    text: |
+      子层的输出 $\of{y}$ 只有一条，按每个 token 的 post 系数复制进 \of{N} 条 stream：第 $n$ 条 stream 得到 $w_{\mathrm{post},n}\,\of{y}$。对应 <code>post.unsqueeze(-1) * output.unsqueeze(-2)</code>。
+      $$\of{post}\otimes\of{y}={{ expanded | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{post},\ \partial\of{y}$'
+      title: 传到 post 和子层的输出
+      text: |
+        $\of{y}$ 收到的梯度是 \of{N} 条 stream 的梯度按 post 加权求和。
+        $$\frac{\partial\ell}{\partial\of{y}}={{ y.grad | matrix:3 }}$$
+  - id: column
+    show: ['ck[1..N]', 'prod[1..N]']
+    label: '$C_{:,k}\odot\of{X}$'
+    title: comb 的第 $k$ 列给输入的 stream 加权
+    text: |
+      HF 写的是 <code>torch.matmul(comb.transpose(-1, -2), hidden_states)</code>：输出的第 $k$ 条 stream 是 $\sum_j C_{j,k}\,{\of{X}}_j$，用的是 comb 的第 $k$ 列，所以要先转置。Sinkhorn 之后的 comb 不对称，转置不能省。这里按输出的 stream 分开画：取出 comb 的第 $k$ 列，逐个乘到输入的 \of{N} 条 stream 上。
+    backward:
+      label: '$\partial\of{comb},\ \partial\of{X}$'
+      title: 传到 comb 的第 $k$ 列和输入的 stream
+  - id: column_sum
+    show: 'mixk[1..N]'
+    label: '$(\of{comb}^{\top}\of{X})_k$'
+    title: 加起来得到第 $k$ 条 stream
+    text: |
+      $$(\of{comb}^{\top}\of{X})_1={{ mixk[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial(C_{:,k}\odot\of{X})$'
+      title: 梯度复制给每条输入的 stream
+  - id: stack
+    show: mixed
+    label: '$\of{comb}^{\top}\of{X}$'
+    title: \of{N} 条 stream 拼回去
+    text: |
+      $$\of{comb}^{\top}\of{X}={{ mixed | matrix:2 }}$$
+    backward:
+      label: '$\partial(\of{comb}^{\top}\of{X})_k$'
+      title: 按 stream 切开
+  - id: add
+    show: out
+    label: '$\of{out}$'
+    title: 两部分相加
+    text: |
+      这就是这一子层之后的 \of{N} 条 stream。这里没有普通的 $\mathbf{x}+\mathrm{attn}(\mathbf{x})$ 残差，残差这一路是 comb 混合过的输入 stream。comb 的每一列加起来接近 1，所以每条输出 stream 里来自输入的部分是输入 stream 的加权平均，HF 的注释说明这是为了让 stream 的大小不随层数增大。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{expanded},\ \partial\,\mathrm{mixed}$'
+      title: 梯度分给写回的输出和混合的输入
+      text: |
+        $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$

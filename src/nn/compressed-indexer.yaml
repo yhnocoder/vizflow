@@ -1,0 +1,168 @@
+module: CompressedIndexer
+subtitle: DeepseekV4Indexer
+import:
+  Compressor: vizflow/nn/compressor
+  PartialRoPE: vizflow/nn/partial-rope
+formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu}{\big)}\step{scale}{/\sqrt{c_I}}\step{topk}{+M_{\mathrm{c}}\big)}'
+params:
+  HI:    { type: dim }
+  cI:    { type: dim }
+  kI:    { type: dim }
+  m:     { type: dim }
+  rd:    { type: dim }
+  theta: { type: float, default: 1e4 }
+  eps:   { type: float, default: 1e-6 }
+inputs:
+  x:  { shape: [T, d] }
+  qr: { shape: [T, rq] }
+outputs: [out]
+weights:
+  Wqb: { shape: [HI * cI, rq], tex: 'W^{I}_{qb}' }
+  Ww:  { shape: [HI, d], tex: 'W^{I}_{w}' }
+fold:
+  label: '$\of{out}=\mathrm{indexer}(\of{x},\ \of{qr})$'
+  title: indexer（已折叠）
+  text: |
+    indexer 用自己的一套 compressor 把 key 压缩成和外面相同的窗口，给每个位置和每个已经完整的压缩条目打一个分，每个位置只保留分数最高的 $k_I=\of{kI}$ 个条目，其余条目在 mask 里是 $-\infty$。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: indexer
+    title: indexer 没有梯度
+    text: indexer 只输出选中的条目编号，选择不可导，损失的梯度不会进入 indexer。
+body:
+  - compressor:
+      use: Compressor
+      suffix: I
+      subtitle: indexer 自己的 compressor，宽 $c_I$
+      params: { m: m, c: cI, rd: rd, theta: theta, overlap: true, eps: eps }
+      inputs: { x: x }
+      outputs: { C: K, mask: Mc }
+      tex: { C: '\mathbf{K}^{I}' }
+      folded: true
+      fold:
+        text: |
+          和 CSA 的 compressor 相同的重叠窗口压缩，只是宽度是 $c_I=\of{cI}$，参数也是 indexer 自己的一套：kv_proj、gate_proj、position_bias、kv_norm。
+          $$\mathbf{K}^{I}={{ K | matrix:2 }}$$
+  - qp: { op: qr @ Wqb.T, tex: '\of{qr}{W^{I}_{qb}}^{\top}' }
+  - q:  { op: 'view(qp, T, HI, cI)', tex: '\mathbf{q}^{I}' }
+  - rope:
+      use: PartialRoPE
+      suffix: I
+      title: apply_rotary_pos_emb
+      subtitle: query 在位置 $t$
+      params: { rd: rd, theta: theta, interleaved: true }
+      inputs: { x: q }
+      outputs: { out: qe }
+      tex: { out: "{\\mathbf{q}^{I}}'" }
+      folded: true
+  - scorer:
+      title: scorer
+      subtitle: DeepseekV4IndexerScorer
+      body:
+        - qf: { op: 'view(qe, T * HI, cI)', tex: 'Q^{I}' }
+        - kf: { op: 'view(K, T // m, cI)', tex: '\mathbf{K}^{I}' }
+        - kT: { op: kf.T, tex: '{\mathbf{K}^{I}}^{\top}' }
+        - Sf: { op: qf @ kT, tex: 'Q^{I}{\mathbf{K}^{I}}^{\top}', dtype: fp32 }
+        - S:  { op: 'view(Sf, T, HI, T // m)', tex: 'S^{I}' }
+        - R:  { op: relu(S), tex: 'R' }
+        - Rs: { op: R * cI ** -0.5, tex: '\tilde{R}' }
+        - wx: { op: x @ Ww.T, tex: '\of{x}{W^{I}_{w}}^{\top}', dtype: fp32 }
+        - w:  { op: wx * HI ** -0.5, tex: '\mathbf{w}^{I}' }
+        - Rw: { op: 'Rs * view(w, T, HI, 1)', tex: '\mathbf{w}^{I}\odot\tilde{R}' }
+        - I:  { op: 'sum(Rw, 1)', tex: 'I' }
+  - Im:  { op: I + Mc, tex: '\bar{I}' }
+  - sel: { op: 'topk_mask(Im, min(kI, T // m), -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
+  - out: { op: 'where(sel, Mc, -inf)', tex: '\tilde{M}_{\mathrm{c}}' }
+steps:
+  - id: q_up
+    show: [Wqb.T, qp]
+    label: '$\of{qp}$'
+    title: q_b_proj：indexer 的 query
+    text: |
+      indexer 的 query 来自注意力里归一化后的 q latent $\of{qr}$（HF 的 <code>q_residual</code>），乘 indexer 自己的 q_b_proj。
+      $$\of{qp}={{ qp | matrix:2 }}$$
+  - id: q_heads
+    show: q
+    label: '$\of{q}$'
+    title: 分成 $H_I$ 个 head
+    text: |
+      分成 $H_I=\of{HI}$ 个 head，每个宽 $c_I=\of{cI}$。真实模型里 $H_I=64$、$c_I=128$。
+      $$\of{q}={{ q | matrix:2 }}$$
+  - id: q_flat
+    show: qf
+    label: '$\of{qf}$'
+    title: 所有 head 的 query 排成一列
+    text: 所有 head 共用同一组压缩后的 key，所以把 $T H_I$ 个 query 排成一个矩阵，一次乘完。
+  - id: k_flat
+    show: [kf, kT]
+    label: '${\mathbf{K}^{I}}^{\top}$'
+    title: 压缩后的 key 转置
+    text: |
+      $$\mathbf{K}^{I}={{ kf | matrix:2 }}$$
+  - id: dot
+    show: [Sf, S]
+    label: '$\of{S}$'
+    title: query 和每个压缩条目做点积
+    text: |
+      HF 先把 query 和 key 转成 float32 再乘。每个 token 对每个压缩条目都算，因果的限制在后面用 mask 加上。
+      $$\of{S}={{ S | matrix:3 }}$$
+  - id: relu
+    show: R
+    label: '$\of{R}$'
+    title: ReLU
+    text: |
+      负的点积变成 0：一个 head 觉得某个条目不相关时，它对这个条目的分数没有贡献。HF 先做 ReLU 再乘缩放。
+      $$\of{R}={{ R | matrix:3 }}$$
+  - id: scale
+    show: Rs
+    label: '$\of{Rs}$'
+    title: 乘 $1/\sqrt{c_I}$
+    text: |
+      $$\tilde{R}={{ Rs | matrix:3 }}$$
+  - id: weights
+    show: [Ww.T, wx]
+    label: '$\of{wx}$'
+    title: weights_proj：每个位置给每个 head 一个权重
+    text: |
+      权重从 indexer 的输入 $\of{x}$ 算出，可以是负数，它决定这个位置更相信哪几个 head 的打分。
+      $$\of{wx}={{ wx | matrix:3 }}$$
+  - id: weights_scale
+    show: w
+    label: '$\of{w}$'
+    title: 权重乘 $1/\sqrt{H_I}$
+    text: |
+      $$\of{w}={{ w | matrix:3 }}$$
+  - id: index_weight
+    show: Rw
+    label: '$\of{Rw}$'
+    title: 每个 head 的分数乘上自己的权重
+    text: |
+      $$\of{Rw}={{ Rw | matrix:3 }}$$
+  - id: index_sum
+    show: I
+    label: '$\of{I}$'
+    title: 按 head 相加，得到 index score
+    text: |
+      $I_{t,w}$ 表示位置 $t$ 有多需要第 $w$ 个压缩条目。
+      $$I_{t,w}=\sum_h w_{t,h}\,\tilde{R}_{t,h,w},\qquad \of{I}={{ I | matrix:3 }}$$
+  - id: future
+    show: Im
+    label: '$\of{Im}$'
+    title: 还没压缩完的条目记成 $-\infty$
+    text: |
+      加上 compressor 的那张 mask $M_{\mathrm{c}}$：位置 $t$ 不能选还包含未来 token 的条目。对应 HF 的 <code>index_scores.masked_fill(future_mask, -inf)</code>。
+      $$\of{Im}={{ Im | matrix:3 }}$$
+  - id: topk
+    show: sel
+    label: '$\of{sel}$'
+    title: 'top-$k_I$：每个位置选出 $k_I$ 个条目'
+    text: |
+      每一行选出分数最高的 $\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$ 个。能选的条目不到这么多时（例如位置 0，一个完整的条目都没有），top-k 会选上 $-\infty$ 的条目；HF 把这样的选择改成 $-1$，表示无效，下一步它们仍然是 $-\infty$。真实模型里 $k_I=512$。挑选只决定 0 和 1，没有梯度。
+      $$\of{sel}={{ sel | matrix:2 }}$$
+  - id: mask
+    show: out
+    label: '$\of{out}$'
+    title: 压缩条目的稀疏 mask
+    text: |
+      选中且已经完整的条目是 0，其余是 $-\infty$。HF 用选中的编号把 0 写进一张全是 $-\infty$ 的表（<code>block_bias.scatter_</code>），结果相同。
+      $$\of{out}={{ out | matrix:2 }}$$

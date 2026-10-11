@@ -3,7 +3,7 @@ import { explainOf } from '../../explain';
 import { type Ast, ParseError, parseExpr } from '../expr';
 import { DslError, child } from '../source';
 import { elemOf, numberTex } from '../tex';
-import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
+import { BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
 import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
 import { isNum, isRecord, num } from './util';
@@ -192,11 +192,18 @@ export class ExpressionCompiler extends CompilerState {
     const kwargs: Record<string, Value> = {};
     for (const [key, arg] of ast.kwargs) kwargs[key] = this.evaluate(arg, env, make, offset);
     if (env.buffers && fnName in BUFFER_FUNCTIONS) {
-      const arity = BUFFER_ARITY[fnName];
-      if ((arity === 'any' ? args.length === 0 : args.length !== arity) || ast.kwargs.length > 0 || !args.every(isNum)) {
-        this.fail(env, `${fnName} takes ${arity === 'any' ? 'one or more' : arity} numbers`, at);
+      const fn = BUFFER_FUNCTIONS[fnName];
+      const [least, most] = fn.args;
+      const count = least === most ? String(least) : most === Infinity ? `${least} or more` : `${least} to ${most}`;
+      if (args.length < least || args.length > most || !args.every(isNum)) this.fail(env, `${fnName} takes ${count} numbers`, at);
+      const options: Record<string, Num | boolean> = {};
+      for (const [key, value] of Object.entries(kwargs)) {
+        const type = fn.options[key];
+        if (type === undefined) this.fail(env, `${fnName} has no option '${key}'`, at);
+        if (type === 'bool' ? typeof value !== 'boolean' : !isNum(value)) this.fail(env, `option '${key}' of ${fnName} must be ${type === 'bool' ? 'true or false' : 'a number'}`, at);
+        options[key] = value as Num | boolean;
       }
-      return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
+      return { buffer: true, ...fn.make(args as Num[], options) };
     }
     if ((fnName === 'min' || fnName === 'max') && param === undefined && args.length >= 2 && args.every(isNum) && ast.kwargs.length === 0) {
       const pick = fnName === 'min' ? Math.min : Math.max;

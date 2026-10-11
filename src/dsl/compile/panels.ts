@@ -25,6 +25,11 @@ export function compilePanels(c: Compiler, env: Env): PanelItem[] {
       out[key] = nodeAt(panel[key], field(key));
     }
     if (panel.attention !== undefined) out.attention = nodesAt(panel.attention, field('attention'));
+    if (panel.extra_keys !== undefined) {
+      const extra = panel.extra_keys;
+      if (!Array.isArray(extra) || extra.some((label) => typeof label !== 'string')) fail(field('extra_keys'), 'extra_keys must be a list of strings');
+      out.extra_keys = extra.map((label, k) => textAt(label, child(field('extra_keys'), extra, k)));
+    }
     if (panel.highlight !== undefined) {
       const highlight = panel.highlight;
       out.highlight = isRecord(highlight) ? { ...highlight, node: nodeAt(highlight.node, child(field('highlight'), highlight, 'node')) } : nodeAt(highlight, field('highlight'));

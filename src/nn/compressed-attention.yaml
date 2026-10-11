@@ -1,0 +1,277 @@
+module: CompressedAttention
+subtitle: DeepseekV4Attention
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  UnweightedRMSNorm: vizflow/nn/rmsnorm-unweighted
+  PartialRoPE: vizflow/nn/partial-rope
+  GQA: vizflow/nn/gqa
+  Compressor: vizflow/nn/compressor
+  CompressedIndexer: vizflow/nn/compressed-indexer
+formula: '\step{o_b}{\of{att}=}\step{group_proj,concat_groups}{\big[\,\cdots\,\mathbf{o}_{g}W_{a,g}^{\top}\cdots\big]}\step{o_b}{\,W_{b}^{\top}},\quad\step{inverse.*}{\mathbf{o}=\mathrm{RoPE}^{-1}\big(}\step{eager_attention_forward.*}{\operatorname{attn}\big(\mathbf{q},\ }\step{keys}{[\,\mathbf{kv};\,\mathbf{C}\,]}\step{eager_attention_forward.*}{\big)}\step{inverse.*}{\big)}'
+params:
+  H:        { type: dim }
+  D:        { type: dim }
+  rd:       { type: dim }
+  rq:       { type: dim }
+  g:        { type: dim }
+  dg:       { type: dim }
+  W:        { type: dim }
+  theta:    { type: float, default: 1e4 }
+  compress: { type: bool, default: false }
+  sparse:   { type: bool, default: false }
+  m:        { type: dim }
+  HI:       { type: dim }
+  cI:       { type: dim }
+  kI:       { type: dim }
+  eps:      { type: float, default: 1e-6 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [att]
+weights:
+  Wqa:   { shape: [rq, d], tex: 'W_{qa}' }
+  Wqb:   { shape: [H * D, rq], tex: 'W_{qb}' }
+  Wkv:   { shape: [D, d], tex: 'W_{kv}' }
+  Woa:   { shape: [g * dg, H * D // g], tex: 'W_{a}' }
+  Wob:   { shape: [d, g * dg], tex: 'W_{b}' }
+  sinks: { shape: [H], dtype: fp32, tex: '\mathbf{s}^{\mathrm{sink}}' }
+buffers:
+  Mw: { value: 'causal_mask(T, W)', tex: 'M_{\mathrm{sw}}' }
+fold:
+  label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
+  title: self_attn（已折叠）
+  text: |
+    query 经过低秩的 q_a_proj、q_b_proj，key 和 value 是同一个向量，只有一个 head。每个位置看滑动窗口里的 $W=\of{W}$ 个 token，加上压缩过的更早的条目；输出转回 RoPE 之前的方向，再按组投影回 $d$ 维。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
+    $$\of{att}={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 self_attn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - cq: { op: x @ Wqa.T, tex: '\mathbf{c}_{q}' }
+  - q_a_norm:
+      use: RMSNorm
+      suffix: qa
+      subtitle: DeepseekV4RMSNorm
+      params: { eps: eps }
+      inputs: { x: cq }
+      outputs: { out: cqn }
+      tex: { out: '\bar{\mathbf{c}}_{q}' }
+      folded: true
+  - qp: { op: cqn @ Wqb.T, tex: '\bar{\mathbf{c}}_{q}W_{qb}^{\top}' }
+  - q: { op: 'view(qp, T, H, D)', tex: '\mathbf{q}' }
+  - q_b_norm:
+      use: UnweightedRMSNorm
+      suffix: qb
+      subtitle: DeepseekV4UnweightedRMSNorm
+      params: { eps: eps, intro: '每个 head 的 query 各自做一次 RMSNorm。' }
+      inputs: { x: q }
+      outputs: { out: qn }
+      tex: { out: '\bar{\mathbf{q}}' }
+      folded: true
+  - q_rope:
+      use: PartialRoPE
+      suffix: q
+      title: apply_rotary_pos_emb
+      subtitle: query
+      params: { rd: rd, theta: theta, interleaved: true }
+      inputs: { x: qn }
+      outputs: { out: qr }
+      tex: { out: "\\mathbf{q}'" }
+      folded: true
+  - kvp: { op: x @ Wkv.T, tex: '\of{x}W_{kv}^{\top}' }
+  - kv_norm:
+      use: RMSNorm
+      suffix: kv
+      subtitle: DeepseekV4RMSNorm
+      params: { eps: eps }
+      inputs: { x: kvp }
+      outputs: { out: kvn }
+      tex: { out: '\bar{\mathbf{kv}}' }
+      folded: true
+  - kv1: { op: 'view(kvn, T, 1, D)', tex: '\mathbf{kv}' }
+  - kv_rope:
+      use: PartialRoPE
+      suffix: kv
+      title: apply_rotary_pos_emb
+      subtitle: key 和 value
+      params: { rd: rd, theta: theta, interleaved: true }
+      inputs: { x: kv1 }
+      outputs: { out: kvr }
+      tex: { out: "\\mathbf{kv}'" }
+      folded: true
+  - compressor:
+      use: Compressor
+      when: compress
+      subtitle: '每 $m=\of{m}$ 个 token 压成一个条目'
+      params: { m: m, c: D, rd: rd, theta: theta, overlap: sparse, eps: eps }
+      inputs: { x: x }
+      outputs: { C: C, mask: Mc }
+      tex: { C: '\mathbf{C}', mask: 'M_{\mathrm{c}}' }
+  - indexer:
+      use: CompressedIndexer
+      when: sparse
+      params: { HI: HI, cI: cI, kI: kI, m: m, rd: rd, theta: theta, eps: eps }
+      inputs: { x: x, qr: cqn }
+      outputs: { out: Ms }
+  - keys: { op: 'cat([kvr, C], 0)', tex: '[\,\mathbf{kv}'';\,\mathbf{C}\,]', when: compress }
+  - mask: { op: 'cat([Mw, Ms if sparse else Mc], 1)', tex: 'M', when: compress }
+  - eager_attention_forward:
+      use: GQA
+      inline: true
+      params: { sink: true }
+      inputs: { q: qr, k: keys if compress else kvr, v: keys if compress else kvr, mask: mask if compress else Mw, sinks: sinks }
+      outputs: { o: o_cat }
+      brace: { title: eager_attention_forward, subtitle: '每个 head 各算一次，key 和 value 是同一个向量' }
+      steps:
+        krep:
+          label: '$\mathbf{k}^{(h)}$'
+          title: 每个 head 取出共用的 key
+          text: |
+            只有一个 KV head，<code>repeat_kv</code> 把它复制给 \of{H} 个 query head。key 和 value 是同一个张量：HF 把同一个 <code>kv</code> 同时作为 key 和 value 传进注意力。
+        vrep:
+          label: '$\mathbf{v}^{(h)}$'
+          title: value 也是同一个向量
+          text: value 用的就是上面那个 key，带着同样的 RoPE。最后会把它转回来。
+        mask:
+          title: 滑动窗口和压缩条目的 mask
+          text: |
+            mask 的前 $T$ 列是滑动窗口：位置 $t$ 看 $t-W<s\le t$ 的 token。后面几列是压缩条目，来自 compressor 的因果 mask（HCA）或 indexer 选出的稀疏 mask（CSA）。
+            $$M={{ mask | matrix:2 }}$$
+          backward:
+            text: 加常量，梯度原样传下去。mask 由形状和 indexer 的选择决定，没有梯度。
+  - o3: { op: 'view(o_cat, T, H, D)', tex: '\mathbf{o}' }
+  - inverse:
+      use: PartialRoPE
+      suffix: o
+      title: apply_rotary_pos_emb（$-\sin$）
+      subtitle: 把 value 带的旋转转回去
+      params: { rd: rd, theta: theta, interleaved: true, inverse: true }
+      inputs: { x: o3 }
+      outputs: { out: ou }
+      tex: { out: '\mathbf{o}''' }
+      folded: true
+  - og: { op: 'view(ou, T, g, H * D // g)', tex: '\mathbf{o}^{\mathrm{grp}}' }
+  - for: j
+    in: 1..g
+    brace: 'group \of{j}'
+    body:
+      - Wa[j]: { op: 'narrow(Woa, 0, (j-1) * dg, dg)', tex: 'W_{a,\of{j}}' }
+      - z[j]:  { op: 'select_matmul(og, Wa[j].T, j-1)', tex: '\mathbf{o}_{\of{j}}W_{a,\of{j}}^{\top}' }
+  - zc: { op: 'cat(z[1..g], dim=1)', tex: '\mathbf{u}' }
+  - att: { op: zc @ Wob.T, tex: '\mathbf{att}' }
+steps:
+  - id: q_down
+    show: [Wqa.T, cq]
+    label: '$\of{cq}$'
+    title: q_a_proj：query 先压缩到 $r_q$ 维
+    text: |
+      $r_q=\of{rq}$，真实模型里 $d=4096$、$r_q=1024$。
+      $$\of{cq}={{ cq | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{qa},\ \partial\of{x}$'
+      title: 传到 q_a_proj 的权重和 $\of{x}$
+  - id: q_up
+    show: [Wqb.T, qp]
+    label: '$\of{qp}$'
+    title: q_b_proj：展开成 \of{H} 个 head
+    text: |
+      归一化后的 latent（HF 的 <code>q_residual</code>，indexer 也用它）投影到 $HD=\of{H*D}$ 维。
+      $$\of{qp}={{ qp | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{qb},\ \partial\of{cqn}$'
+      title: 传到 q_b_proj 的权重和 latent
+  - id: q_heads
+    show: q
+    label: '$\of{q}$'
+    title: 按 head 分开
+    text: |
+      每个 head 宽 $D=\of{D}$，最后 $d_r=\of{rd}$ 维做 RoPE。真实模型里 $D=512$、$d_r=64$。
+      $$\of{q}={{ q | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{qp}$'
+      title: 拼回一行
+  - id: kv_proj
+    show: [Wkv.T, kvp]
+    label: '$\of{kvp}$'
+    title: kv_proj：一个既是 key 又是 value 的向量
+    text: |
+      $\of{x}$ 直接投影到 $D$ 维，只有一个 head，所有 query head 共用；这个向量既作 key 也作 value。
+      $$\of{kvp}={{ kvp | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{kv},\ \partial\of{x}$'
+      title: 传到 kv_proj 的权重和 $\of{x}$
+  - id: kv_head
+    show: kv1
+    label: '$\of{kv1}$'
+    title: 写成一个 head
+    text: 写成 $(T, 1, D)$。
+    backward:
+      label: '$\partial\of{kvn}$'
+      title: 去掉 head 维
+  - id: keys
+    when: compress
+    show: keys
+    label: '$\of{keys}$'
+    title: 滑动窗口的 kv 后面接上压缩条目
+    text: |
+      key（也是 value）有 $T+\lfloor T/m\rfloor=\of{T + T // m}$ 个：前 $T$ 个是每个 token 自己的，后 $\lfloor T/m\rfloor$ 个是压缩条目，对应 <code>torch.cat([kv, compressed_kv], dim=2)</code>。
+      $$\of{keys}={{ keys | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{kv}'',\ \partial\mathbf{C}$'
+      title: 按来源切开
+  - id: mask
+    when: compress
+    show: [Mw, mask]
+    label: '$\of{mask}$'
+    title: 拼出注意力的 mask
+    text: |
+      前 $T$ 列是滑动窗口的 causal mask：位置 $t$ 只看 $t-W<s\le t$，$W=\of{W}$。
+      $$M_{\mathrm{sw}}={{ Mw | matrix:2 }}$$
+      后面接上压缩条目那几列。第 $w$ 个条目压缩了 token $wm$ 到 $wm+m-1$，位置 $t$ 只有在这些 token 都不晚于自己时才能看到它，即 $(w+1)m\le t+1$，否则是 $-\infty$，对应 HF 里 <code>entry_indices &gt;= (position_ids + 1) // compress_rate</code> 的那张 mask。HCA 层直接用这张 mask；CSA 层用 indexer 在它的基础上挑过的 mask，没选中的条目也是 $-\infty$。
+      $$\of{mask}={{ mask | matrix:2 }}$$
+  - id: o_heads
+    show: o3
+    label: '$\of{o3}$'
+    title: 按 head 分开
+    text: 注意力的输出排回 $(T, H, D)$。
+    backward:
+      label: '$\partial\mathbf{o}$'
+      title: 拼回一行
+  - id: groups
+    show: og
+    label: '$\of{og}$'
+    title: 把 head 分成 $g$ 组
+    text: |
+      \of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维，对应 <code>attn_output.reshape(..., o_groups, -1)</code>。真实模型 64 个 head 分 8 组，每组 4096 维。
+    backward:
+      label: '$\partial\mathbf{o}''$'
+      title: 拼回去
+  - id: group_proj
+    show: ['Wa[1..g]', 'z[1..g]']
+    label: '$\mathbf{o}_{g}W_{a,g}^{\top}$'
+    title: o_a_proj：每组单独投影
+    text: |
+      o_a_proj 的权重有 $g\cdot d_g$ 行，第 $j$ 组只用其中第 $j$ 段 $d_g=\of{dg}$ 行，组与组之间不混合，相当于一个块对角的矩阵。HF 用 <code>torch.bmm</code> 一次算完所有组。真实模型每组从 4096 维投影到 1024 维。
+      $$\mathbf{o}_{1}W_{a,1}^{\top}={{ z[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{a},\ \partial\mathbf{o}^{\mathrm{grp}}$'
+      title: 传到 o_a_proj 的权重和各组的输出
+  - id: concat_groups
+    show: zc
+    label: '$\of{zc}$'
+    title: 各组拼起来
+    text: |
+      对应 <code>.flatten(2)</code>，得到 $g d_g=\of{g*dg}$ 维。
+    backward:
+      label: '$\partial\mathbf{o}_{g}W_{a,g}^{\top}$'
+      title: 按组切开
+  - id: o_b
+    show: [Wob.T, att]
+    label: '$\of{att}$'
+    title: o_b_proj：混合各组，回到 $d$ 维
+    text: |
+      $$\of{att}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{b},\ \partial\of{zc}$'
+      title: 传到 o_b_proj 的权重

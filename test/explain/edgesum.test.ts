@@ -117,6 +117,27 @@ const cases: Case[] = [
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
+  {
+    op: 'rotate_half',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2, 4], randomValues(r, [3, 2, 4]));
+      return { out: g.rotate_half(x, { interleaved: true }), inputs: [x] };
+    },
+  },
+  {
+    op: 'clamp',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.clamp(x, -0.5, 0.7), inputs: [x] };
+    },
+  },
+  {
+    op: 'clamp',
+    build: (g, r) => {
+      const x = g.input('x', [2, 5], randomValues(r, [2, 5]));
+      return { out: g.clamp(x, { max: 0.3 }), inputs: [x] };
+    },
+  },
   { op: 'mul', build: (g, r) => binary(g, r, 'mul', [3, 2, 4], [3, 1, 4]) },
   { op: 'mean', build: (g, r) => reduce(g, r, 'mean', [3, 2, 4], -1, true) },
   {
