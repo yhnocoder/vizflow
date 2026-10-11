@@ -5,7 +5,7 @@ import { type Explainer, explain } from '../explain';
 import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { PlateMesh } from './blocks';
-import { markFar, refreshBlock, updateBars } from './blockview';
+import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
 import { FOLLOW_RATE, CameraRig } from './camera';
 import { type OverviewNav, buildChrome, buildTools, updateNav } from './chrome';
 import { TokenChips } from './chips';
@@ -53,6 +53,8 @@ export class SceneController implements EditHost {
   private stepKey: string | undefined;
   private lastFrame: number | undefined;
   private far = true;
+  private seeThrough = true;
+  private frontRow = true;
   lod = false;
   stepNodes = new Set<Node>();
   renderables: Renderable[] = [];
@@ -238,6 +240,7 @@ export class SceneController implements EditHost {
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     markFar(this);
+    markSeeThrough(this);
     const stepKey = `${dir}:${this.state.index}:${info?.id ?? ''}`;
     if (this.follow && this.stepKey !== undefined && stepKey !== this.stepKey) this.rig.followStep();
     this.stepKey = stepKey;
@@ -292,6 +295,7 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
     }
     const moved = this.controls.update();
+    if ((moved || stepped || following || this.labelsDirty) && markSeeThrough(this)) this.refresh();
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
@@ -318,6 +322,24 @@ export class SceneController implements EditHost {
   toggleFar(): boolean {
     this.far = !this.far;
     return this.far;
+  }
+
+  get seeThroughOn(): boolean {
+    return this.seeThrough;
+  }
+
+  toggleSeeThrough(): boolean {
+    this.seeThrough = !this.seeThrough;
+    return this.seeThrough;
+  }
+
+  get frontRowOnly(): boolean {
+    return this.frontRow;
+  }
+
+  toggleFrontRow(): boolean {
+    this.frontRow = !this.frontRow;
+    return this.frontRow;
   }
 
   markLabelsDirty(): void {

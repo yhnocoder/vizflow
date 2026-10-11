@@ -24,7 +24,7 @@ describe('PlateMesh axis', () => {
     const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
     const [block] = resolveLayout([stack(x)], ctx).blocks;
     const plate = new PlateMesh(block, theme);
-    const state = { revealed: true, far: false };
+    const state = { revealed: true, far: false, seeThrough: false };
     plate.update(state, [0], [-1, 0], 1);
     const first = plate.axis!.geometry;
     expect(first.getAttribute('position').count).toBe(2 + 2 * 2);
@@ -41,7 +41,7 @@ describe('PlateMesh axis', () => {
     expect(position().count).toBe(8);
     expect([3, 5, 7].map((i) => position().getY(i))).toEqual([-1, 0, 1]);
     expect(plate.axis!.visible).toBe(true);
-    plate.update({ revealed: false, far: false }, [0], [-1, 0, 1], 1);
+    plate.update({ revealed: false, far: false, seeThrough: false }, [0], [-1, 0, 1], 1);
     expect(plate.axis!.visible).toBe(false);
     plate.dispose();
   });
