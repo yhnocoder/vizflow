@@ -83,6 +83,8 @@ export function compileInstance(
     if (typeof target !== 'string') fail(at, 'an output binding must be a name');
     const concrete = c.concreteName(target, { ...env, where: at });
     bindings.push([output, concrete.name, at]);
+    const outer = parent.texOverride.get(concrete.name) ?? parent.texOverride.get(concrete.base);
+    if (outer !== undefined) scope.texOverride.set(output, outer);
     if (!scope.texOverride.has(output)) scope.outputTex.set(output, marked(c.loopTex(concrete.base, concrete.indices), parent, false));
   }
   if (use.inline !== undefined && typeof use.inline !== 'boolean') fail(child(env.where, use, 'inline'), 'inline must be true or false');

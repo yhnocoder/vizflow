@@ -7,6 +7,18 @@ inputs:
   logp: { shape: [N, C] }
   y:    { shape: [N] }
 outputs: [loss, lt]
+fold:
+  label: '$\of{loss}$'
+  title: \of{name}（已折叠）
+  text: |
+    按标签取格、取负、取平均收在盒子里，对应一次 <code>F.nll_loss(logp, y)</code>。
+    $$\of{loss}={{loss:3}}$$
+  backward:
+    label: '$\partial\of{logp}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      每一行只有标签那一格收到 $-1/N$，其余是 0。
+      $$\frac{\partial\ell}{\partial\of{logp}}={{ logp.grad | matrix:3 }}$$
 body:
   - pick: { op: 'gather(logp, -1, view(y, -1, 1))', tex: '\log p_{y}' }
   - lt:   { op: -pick, tex: '\boldsymbol{\ell}' }

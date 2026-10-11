@@ -25,7 +25,7 @@ body:
 steps:
   - id: exp
     show: e
-    label: '$e^{x}$'
+    label: '$\of{e}$'
     title: \of{name}：取 exp
     text: |
       softplus 的定义是 $\log(1+e^{x})$，这里按定义拆成三步：取 exp、加 1、取 log。<code>F.softplus</code> 默认 <code>beta=1</code>、<code>threshold=20</code>：kernel 对 $x\le 20$ 算 <code>log1p(exp(x))</code>，也就是这三步；$x>20$ 时直接输出 $x$，因为这时 $\log(1+e^{x})$ 和 $x$ 在浮点数里已经相等。这一页的输入都远小于 20。
@@ -38,7 +38,7 @@ steps:
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: add
     show: d
-    label: '$1+e^{x}$'
+    label: '$\of{d}$'
     title: \of{name}：加 1
     text: |
       $$\of{d}={{ d | matrix:3 }}$$
@@ -56,7 +56,7 @@ steps:
       结果总是正数，$x$ 很负时接近 0，$x$ 很大时接近 $x$。
       $$\of{out}=\log\of{d}={{ out | matrix:3 }}$$
     backward:
-      label: '$\partial\of{d}$'
+      label: '$\partial(\of{d})$'
       title: \of{name}：穿过 log
       text: |
         log 的局部导数是 $1/\of{d}$。三段乘起来是 $\frac{e^{x}}{1+e^{x}}=\sigma(x)$。

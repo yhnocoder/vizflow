@@ -117,7 +117,7 @@ body:
       tex: { q_embed: "\\mathbf{q}'", k_embed: "\\mathbf{k}'" }
       fold:
         text: |
-          四步合成一个旋转：每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵，位置 1 是单位阵。
+          这几步合成一个旋转：每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵，位置 1 是单位阵。
           $$\begin{pmatrix}q'_c\\ q'_{c+2}\end{pmatrix}=\begin{pmatrix}\cos t\omega_c & -\sin t\omega_c\\ \sin t\omega_c & \cos t\omega_c\end{pmatrix}\begin{pmatrix}\bar q_c\\ \bar q_{c+2}\end{pmatrix}$$
         backward:
           text: |
@@ -127,7 +127,7 @@ body:
         cos:
           title: RoPE：乘 cos
           text: |
-            RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。cos/sin 表的每一行对应一个位置；列按频率排，$\omega_i=\theta^{-2i/d_h}$，Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h=4$ 和 3 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta=10$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 position_id $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs))</code> 生成这张表，所以它们的频率相同、数值也相同。两个 q head 和 k 用的是同一张表。下图把位置延长到 24，阴影是这里用到的前 3 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
+            RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。cos/sin 表的每一行对应一个位置；列按频率排，$\omega_i=\theta^{-2i/d_h}$，Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h=4$ 和 3 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta=10$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 position_id $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs))</code> 生成这张表，所以它们的频率相同、数值也相同。两个 q head 和 k 用的是同一张表。下图把位置延长到 24，阴影是这里用到的前 3 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
 
             {{ apply_rotary_pos_emb.cos | rope_wave:cos }}
 
@@ -138,13 +138,11 @@ body:
               $\bar{\mathbf{q}}$ 有两条路：乘 cos 的直连，和经过 rotate_half 的那条。两条相加，等于用 $-t\,\omega$ 把梯度转回去。
               $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{\mathbf{k}}}={{ kn.grad | matrix:3 }}$$
         rh:
-          title: rotate_half
           text: |
-            把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
-            $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2),\qquad \mathrm{rh}(\bar{\mathbf{q}})={{ apply_rotary_pos_emb.qrh | matrix:2 }}$$
+            取负的后半段放到前面，前半段放到后面，拼回 $d_h=4$ 列。拼接只是搬动元素，局部导数是 1，每个元素只连一条线。合起来 $\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$。
+            $$\mathrm{rh}(\bar{\mathbf{q}})={{ apply_rotary_pos_emb.qrh | matrix:2 }}$$
           backward:
-            title: 穿过 rotate_half
-            text: 反向就是把梯度按相反的方向搬回去：$\bar q_{c}$ 从 $\mathrm{rh}_{c+2}$ 拿到 $+1$ 倍，$\bar q_{c+2}$ 从 $\mathrm{rh}_{c}$ 拿到 $-1$ 倍。
+            text: 拼接的反向把梯度按列切回两段：$\bar q_{c}$ 最终从 $\mathrm{rh}_{c+2}$ 拿到 $+1$ 倍，$\bar q_{c+2}$ 经过取负从 $\mathrm{rh}_{c}$ 拿到 $-1$ 倍。
         sin:
           title: 乘 sin
           notes:

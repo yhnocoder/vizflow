@@ -41,20 +41,21 @@ fold:
 body:
   - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
+  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
+  - r:  { op: rsqrt(mse), tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}' }
   - out: { op: xh * weight, dtype: x }
 steps:
   - id: rms
-    show: [ms, r]
-    label: '$\of{ms},\ \of{r}$'
-    title: 均方根的倒数
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
     text: |
-      每一行对平方取平均得到 $\mathrm{ms}$，加上 $\epsilon=\of{eps}$ 再取平方根的倒数。
+      取平方根的倒数，对应一次 <code>torch.rsqrt</code>。
       $$\of{r} = {{ r | matrix:3 }}$$
     backward:
-      label: '$\partial\of{ms},\ \partial\of{sq}$'
-      title: 传到 ms 和平方</code></pre>
+      label: '$\partial\of{mse}$'
+      title: 穿过 rsqrt</code></pre>
 <table>
   <thead>
     <tr><th>字段</th><th>出现在</th><th>内容</th></tr>
@@ -139,6 +140,7 @@ steps:
     <tr><td><code>inf</code></td><td>正无穷，<code>-inf</code> 是负无穷，例如 <code>where(em, sc, -inf)</code>。作用域里有名为 <code>inf</code> 的名字时用那个名字</td></tr>
     <tr><td><code>//</code>、<code>1e-6</code>、<code>"none"</code>、<code>true</code></td><td>整除；科学计数法；字符串字面量，只用于关键字参数；布尔值</td></tr>
     <tr><td><code>act(x)</code></td><td><code>act</code> 是 op 类型的参数时，调用它的值对应的运算</td></tr>
+    <tr><td><code>act_fn: { use: act, ... }</code></td><td><code>act</code> 是 module 类型的参数时，实例化它的值对应的模块</td></tr>
   </tbody>
 </table>
 <p>YAML 的 flow 映射 <code>{ ... }</code> 里不加引号的值遇到逗号就结束，所以带逗号的表达式要加引号，例如 <code>{ op: 'embedding(ids, E)' }</code>。</p>
@@ -148,7 +150,7 @@ steps:
   <li>作用域封闭。名字依次在本模块的 body 节点、inputs、weights、buffers、子实例 outputs 绑定的名字、params 里查找，找不到就报错。模块看不到父模块和页面的名字。</li>
   <li>名字唯一。for 里定义的名字和实例名必须带循环变量下标（<code>q[h]</code>），展开后是 <code>q[1]</code>、<code>q[2]</code>。</li>
   <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。模式里可以有一个 <code>...</code>，匹配任意个维度，这些维度不绑定名字；例如 RMSNorm 的 <code>[..., n]</code> 只要求最后一维，输入可以是 $(T, d)$，也可以是按 head 分好的 $(T, H, d_h)$。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
-  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>。<code>text</code> 类型的参数可以写 <code>default_key: true</code>，没给时取实例的键，例如 <code>input_layernorm</code>；这样实例名就是显示的模块名，不用在实例里再写一遍。两者都没有时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
+  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>module</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>。<code>text</code> 类型的参数可以写 <code>default_key: true</code>，没给时取实例的键，例如 <code>input_layernorm</code>；这样实例名就是显示的模块名，不用在实例里再写一遍。两者都没有时报错。<code>op</code> 和 <code>module</code> 类型的值必须在 <code>values</code> 里列出。<code>module</code> 类型的值是一个模块名，在声明这个参数的模块的命名空间里查找，所以 GLU 自己 import 了可选的激活模块，页面只写 <code>act: SiLU</code>，不用 import SiLU；实例里写 <code>use: act</code> 时实例化这个模块。父模块把自己的 module 参数原样传下去时，传的是它的值。</li>
   <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
   <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code>、<code>causal_mask(T)</code> 与 <code>zeros(...)</code>，前三个的数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同，<code>zeros</code> 接受任意个维度，给出全 0 的张量，例如递推的初始状态 <code>'S[0]': { value: 'zeros(H, dk, dv)' }</code>。buffer 的名字可以带下标，供 for 里的 <code>S[t-1]</code> 在第一次迭代时引用。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
   <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块见下表。</li>
@@ -158,19 +160,26 @@ steps:
     <tr><th>模块文件</th><th>模块名</th><th>接口</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>rmsnorm</code></td><td>RMSNorm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>；权重 $\boldsymbol{\gamma}$ 长度 $n$，初值全 1；参数 <code>eps</code>（默认 $10^{-6}$，传给 <code>rsqrt</code> 的 <code>eps</code>）和四个 text 参数 <code>name</code>、<code>intro</code>、<code>out_note</code>、<code>in_note</code>，用来在步骤正文里写出实例自己的名字和补充说明。步骤 square、rms、normalize、scale 都带反向的默认文字，模块带 <code>fold</code> 默认文字。</td></tr>
-    <tr><td><code>glu</code></td><td>GLU</td><td>输入 <code>x: [T, d]</code>，输出 <code>down</code>；参数 <code>act</code>（op，可选 <code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code>，默认 <code>silu</code>）、<code>f</code>（中间维度，dim）和 <code>name</code>（text）。</td></tr>
-    <tr><td><code>rope</code></td><td>RoPE</td><td>输入 <code>q: [T, Hq, dh]</code>、<code>k: [T, Hk, dh]</code>，输出 <code>q_embed</code>、<code>k_embed</code>；参数只有 <code>theta</code>（默认 $10^4$），$d_h$ 从输入推出；cos、sin 表是 $(T, 1, d_h)$ 的 buffer。步骤 cos、rh、sin、add。</td></tr>
+    <tr><td><code>rmsnorm</code></td><td>RMSNorm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>；权重 $\boldsymbol{\gamma}$ 长度 $n$，初值全 1；参数 <code>eps</code>（默认 $10^{-6}$）和四个 text 参数 <code>name</code>、<code>intro</code>、<code>out_note</code>、<code>in_note</code>，用来在步骤正文里写出实例自己的名字和补充说明。节点按 HF 的代码逐个画出：平方 <code>sq</code>、平均 <code>ms</code>、加上 $\epsilon$ 的 <code>mse</code>、<code>rsqrt</code> 得到的 <code>r</code>、<code>xh</code>、<code>out</code>。步骤 square、mean、eps、rms、normalize、scale 都带反向的默认文字，模块带 <code>fold</code> 默认文字。</td></tr>
+    <tr><td><code>glu</code></td><td>GLU</td><td>输入 <code>x: [T, d]</code>，输出 <code>down</code>；参数 <code>act</code>（module，可选 <code>Sigmoid</code>、<code>ReLU</code>、<code>GELU</code>、<code>SiLU</code>，默认 <code>SiLU</code>）、<code>f</code>（中间维度，dim）和 <code>name</code>（text）。激活是子实例 <code>act_fn</code>（对应 HF 的 <code>self.act_fn</code>），它的输出绑定为 <code>a</code>。步骤 proj、激活模块的步骤、gate、down。</td></tr>
+    <tr><td><code>rope</code></td><td>RoPE</td><td>输入 <code>q: [T, Hq, dh]</code>、<code>k: [T, Hk, dh]</code>，输出 <code>q_embed</code>、<code>k_embed</code>；参数只有 <code>theta</code>（默认 $10^4$），$d_h$ 从输入推出；cos、sin 表是 $(T, 1, d_h)$ 的 buffer。rotate_half 按 HF 的三行代码画成切两半（两个 <code>narrow</code>）、后半取负、<code>cat</code> 拼回。步骤 cos、half、neg、rh、sin、add。</td></tr>
     <tr><td><code>gqa</code></td><td>GQA</td><td>grouped-query attention。输入 <code>q: [T, H, dh]</code>、<code>k: [T, Hkv, dh]</code>、<code>v: [T, Hkv, dv]</code>、<code>mask: [T, T]</code>，输出 <code>o</code>，形状 $(T, H d_v)$；$d_v$ 可以和 $d_h$ 不同，MLA 就是这样。每个 query head $h$ 用 <code>select</code> 取出下标为 $\lfloor (h-1)/(H/H_{kv}) \rfloor$ 的 kv head（下标从 0 起，对应 HF 的 <code>repeat_kv</code>），再算 $S = \operatorname{select}(\mathbf{q},1,h-1)\,\mathbf{k}^{\top}$（<code>select_matmul</code>）、乘 $d_h^{-1/2}$、加 mask、exp、按行求和、相除、乘 $\mathbf{v}$，最后 <code>cat(o[1..H], dim=1)</code>。$H = H_{kv}$ 时是普通的多头注意力。步骤 krep、vrep、kT、S、Ssc、mask、exp、sum、div、pv、concat。</td></tr>
     <tr><td><code>mla</code></td><td>MLA</td><td>DeepSeek V2/V3 的 multi-head latent attention，对应 HF <code>DeepseekV3Attention</code>（<code>q_lora_rank</code> 不为空）。输入 <code>x: [T, d]</code>，输出 <code>att</code>；参数 <code>H</code>、<code>dn</code>（qk_nope_head_dim）、<code>dr</code>（qk_rope_head_dim）、<code>dv</code>（v_head_dim）、<code>rq</code>（q_lora_rank）、<code>rkv</code>（kv_lora_rank），都是 dim，以及 <code>theta</code>（默认 $10^4$）。权重 $W_{qa}$、$W_{qb}$、$W_{kva}$、$W_{kvb}$、$W_o$ 对应 q_a_proj、q_b_proj、kv_a_proj_with_mqa、kv_b_proj、o_proj，子实例 <code>q_a_layernorm</code>、<code>kv_a_layernorm</code> 是 RMSNorm，<code>apply_rotary_pos_emb</code> 是 RoPE，注意力用 inline 的 GQA（$H=H_{kv}$）。RoPE 按 <code>rope_interleave=False</code> 的写法转后 $d_r$ 维；DeepSeek V3 的权重是交错存放的（<code>rope_interleave=True</code>），两者只差 $W_{qb}$ 和 $W_{kva}$ 里这 $d_r$ 行的一个固定排列，$d_r=2$ 时完全相同。不画 YaRN 的缩放。步骤 q_down、q_up、q_split、kv_down、kv_split、q_cat、kv_up、kv_split2、k_expand、k_cat、o_proj，以及 GQA 的步骤。</td></tr>
-    <tr><td><code>rmsnorm-zero-centered</code></td><td>ZeroCenteredRMSNorm</td><td>Qwen3.5 的 <code>Qwen3_5RMSNorm</code>。接口与 <code>rmsnorm</code> 相同；权重初值全 0，输出是 $\hat{x}\odot(1+\boldsymbol{\gamma})$，乘之前在 fp32 里算 $1+\boldsymbol{\gamma}$，最后转回输入的 dtype。步骤 square、rms、normalize、scale。</td></tr>
-    <tr><td><code>rmsnorm-gated</code></td><td>GatedRMSNorm</td><td>Qwen3.5 Gated DeltaNet 的 <code>Qwen3_5RMSNormGated</code>。输入 <code>x: [..., n]</code> 和形状相同的 <code>gate</code>，输出 <code>out</code> $=\boldsymbol{\gamma}\odot\operatorname{norm}(x)\odot\operatorname{silu}(\mathit{gate})$，silu 在 fp32 里算；权重初值全 1；参数 <code>eps</code>。步骤 square、rms、normalize、scale、act、gate。</td></tr>
-    <tr><td><code>l2norm</code></td><td>L2Norm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code> $=x/\sqrt{\sum x^2+\epsilon}$，在 fp32 里算；参数 <code>eps</code>（默认 $10^{-6}$）。没有权重。步骤 square、norm、normalize。</td></tr>
+    <tr><td><code>rmsnorm-zero-centered</code></td><td>ZeroCenteredRMSNorm</td><td>Qwen3.5 的 <code>Qwen3_5RMSNorm</code>。接口与 <code>rmsnorm</code> 相同；权重初值全 0，输出是 $\hat{x}\odot(1+\boldsymbol{\gamma})$，乘之前在 fp32 里算 $1+\boldsymbol{\gamma}$，最后转回输入的 dtype。步骤 square、mean、eps、rms、normalize、scale。</td></tr>
+    <tr><td><code>rmsnorm-gated</code></td><td>GatedRMSNorm</td><td>Qwen3.5 Gated DeltaNet 的 <code>Qwen3_5RMSNormGated</code>。输入 <code>x: [..., n]</code> 和形状相同的 <code>gate</code>，输出 <code>out</code> $=\boldsymbol{\gamma}\odot\operatorname{norm}(x)\odot\operatorname{SiLU}(\mathit{gate})$；SiLU 是子实例 <code>act</code>（SiLU 模块），输出绑定为 <code>s</code>；权重初值全 1；参数 <code>eps</code>。步骤 square、mean、eps、rms、normalize、scale、SiLU 的步骤、gate。</td></tr>
+    <tr><td><code>l2norm</code></td><td>L2Norm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code> $=x/\sqrt{\sum x^2+\epsilon}$，在 fp32 里算；参数 <code>eps</code>（默认 $10^{-6}$）。没有权重。节点 <code>sq</code>、<code>ss</code>、加上 $\epsilon$ 的 <code>sse</code>、<code>r</code>、<code>out</code>。步骤 square、sum、eps、norm、normalize。</td></tr>
     <tr><td><code>gated-delta-rule</code></td><td>GatedDeltaRule</td><td>HF <code>torch_recurrent_gated_delta_rule</code>（<code>use_qk_l2norm_in_kernel=True</code>）。输入 <code>q</code>、<code>k: [T, H, dk]</code>，<code>v: [T, H, dv]</code>，<code>g</code>、<code>beta: [T, H]</code>，输出 <code>o: [T, H, dv]</code>。q、k 先过 L2Norm，q 再乘 $d_k^{-1/2}$；然后用 <code>sequential</code> 的 for 按位置递推状态 $S_t\in\mathbb{R}^{H\times d_k\times d_v}$：衰减 $\alpha_tS_{t-1}$，读出 $\hat{\mathbf{v}}_t$，写入 $\mathbf{k}_t\boldsymbol{\delta}_t^{\top}$，输出 $S_t^{\top}\mathbf{q}_t$。$S_0$ 是 fp32 的全 0 buffer。模块步骤 scale、stack，每个位置的步骤 decay、read、write、output。</td></tr>
-    <tr><td><code>lm-head-nll</code></td><td>LMHeadNLL</td><td>参数 <code>V</code>（dim）；输入 <code>h: [T, d]</code> 与标签 <code>y: [T]</code>，输出 <code>loss</code>、<code>z</code>、<code>logp</code>。</td></tr>
+    <tr><td><code>lm-head-nll</code></td><td>LMHeadNLL</td><td>参数 <code>V</code>（dim）；输入 <code>h: [T, d]</code> 与标签 <code>y: [T]</code>，输出 <code>loss</code>、<code>z</code>、<code>logp</code>。子实例 <code>log_softmax</code>（LogSoftmax）和 <code>nll_loss</code>（NLLLoss）。</td></tr>
+    <tr><td><code>sigmoid</code></td><td>Sigmoid</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=1/(1+e^{-x})$。节点 <code>n</code>（取负）、<code>e</code>（exp）、<code>d</code>（加 1）、<code>out</code>（<code>reciprocal</code>）。步骤 neg、exp、add、recip。</td></tr>
+    <tr><td><code>silu</code></td><td>SiLU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=x\,\sigma(x)$。子实例 <code>sigmoid</code>（Sigmoid）输出 <code>s</code>，再算 <code>x * s</code>。步骤是 Sigmoid 的四步加 mul。</td></tr>
+    <tr><td><code>softplus</code></td><td>Softplus</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=\log(1+e^{x})$。节点 <code>e</code>、<code>d</code>、<code>out</code>。步骤 exp、add、log。<code>F.softplus</code> 在 $x&gt;20$ 时直接输出 $x$，模块按定义画，步骤正文写明这一点。</td></tr>
+    <tr><td><code>gelu</code></td><td>GELU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=\tfrac{1}{2}x\big(1+\operatorname{erf}(x/\sqrt{2})\big)$，按 PyTorch kernel 的顺序画出 <code>hx</code>、<code>u</code>、<code>e</code>（<code>erf</code>）、<code>p</code>、<code>out</code>。步骤 half、scale、erf、add、mul。</td></tr>
+    <tr><td><code>relu</code></td><td>ReLU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code>，一个 <code>relu</code> 节点。步骤 relu。</td></tr>
+    <tr><td><code>log-softmax</code></td><td>LogSoftmax</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>，对最后一维算 log_softmax。节点 <code>ex</code>（exp，fp32）、<code>S</code>（按行求和，keepdim）、<code>LSE</code>（log）、<code>out</code> $=x-\mathrm{LSE}$。步骤 exp、sum、log、sub。</td></tr>
+    <tr><td><code>nll-loss</code></td><td>NLLLoss</td><td>输入 <code>logp: [N, C]</code> 和标签 <code>y: [N]</code>，输出 <code>loss</code> 和每个位置的 <code>lt: [N, 1]</code>。节点 <code>pick</code> $=$ <code>gather(logp, -1, view(y, -1, 1))</code>、<code>lt</code> $=-$<code>pick</code>、<code>loss</code> $=$ <code>mean(lt)</code>，对应 <code>reduction='mean'</code>，不处理 <code>ignore_index</code>。步骤 pick、neg、mean。</td></tr>
   </tbody>
 </table>
-<p>模块把 softmax 拆成 exp、求和、相除三步，把 repeat_kv 画成 <code>select</code>，因为读者要在图上看到这些中间张量；数值与 torch 的融合实现相同。</p>
+<p>内置模块里每个节点是一个初等运算，PyTorch 里由一个 kernel 完成的复合函数也按定义拆开：softmax 拆成 exp、求和、相除，log_softmax 拆成 exp、求和、log、相减，sigmoid 拆成取负、exp、加 1、取倒数，SiLU 是 sigmoid 再乘输入，softplus 拆成 exp、加 1、log，nll_loss 拆成按标签取格、取负、取平均，rotate_half 拆成切片、取负、拼接，RMSNorm 的 $\epsilon$ 是单独的加法节点，repeat_kv 画成 <code>select</code>。理由：读者要在图上看到每个中间张量和每条边的局部导数，复合函数的导数正是学生最容易跳过的一步。softmax 和 log_softmax 的 kernel 会先减去每行的最大值，这一项在结果和梯度里都抵消，模块按定义画，步骤正文写明这一点。数值与 torch 的融合实现在 float64 下一致。<code>matmul</code>、<code>causal_conv1d</code>、<code>rsqrt</code>、<code>exp</code> 这类本身就是一个初等运算或一个线性映射的运算保留为一个节点。</p>
 <p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度、<code>view</code> 的形状这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器第一次遇到这个尺寸时用 <code>g.addDim</code> 在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参，编译只进行一遍。页面没有 <code>real</code> 时不加。<code>cat</code> 的列表参数来自范围 <code>o[a..b]</code>、并且范围的真实个数与示例个数不同时（例如 $H$ 的示例值 2、真实值 32），编译器给 <code>cat</code> 加上 <code>pieces</code> 选项，值是表示个数的维度，拼接结果的真实尺寸按「一块的真实尺寸 × 真实个数」计算，后面的 o_proj 因此按 4096 显示。</p>
 <p><b>初值。</b>权重按路径在 <code>values</code> 里查固定数值，没有时按 <code>init</code> 生成。buffer 也可以在 <code>values</code> 里按路径给定数值，替换 <code>value</code> 算出的数值，例如 MoE 路由的偏置 <code>moe_layer.mlp.bias</code>；这样的 buffer 不和其他实例共用。<code>values</code> 里多出的路径报错。</p>
 <table>
@@ -194,7 +203,7 @@ steps:
 <ul>
   <li>默认值由名字推出：小写名字加粗（<code>q</code> 成为 <code>\mathbf{q}</code>，<code>gate</code> 成为 <code>\mathbf{gate}</code>）；大写字母开头的名字照写，名字末尾的数字或小写字母作下标（<code>Wq</code> 成为 <code>W_{q}</code>，<code>x0</code> 成为 <code>\mathbf{x}_{0}</code>）；多个大写字母的名字用 <code>\mathrm</code>（<code>LSE</code>）；带下划线的名字把下划线后的部分作下标。带循环下标的名字加上标 <code>^{(h)}</code>。</li>
   <li>节点的 tex 依次取：使用处 <code>tex</code> 的覆盖、声明里的 <code>tex</code>、使用处绑定的输出名推出的默认值、模块内名字推出的默认值。</li>
-  <li><code>\of{name}</code> 换成那个名字的 tex。op 参数的 <code>\of{act}</code> 是运算的 tex，<code>\of{act.def}</code> 是运算登记的定义式，<code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code> 已登记（<code>OP_TEX</code>）。循环变量的 <code>\of{h}</code> 是它的值，float 参数的 <code>\of{eps}</code> 是它的 TeX 写法（<code>10^{-6}</code>）。text 参数的值里也可以写 <code>\of{...}</code>，在模块内展开，名字按模块内的作用域查找，所以页面传给 RMSNorm 的 <code>out_note: $\of{out}$ 是 lm_head 的输入。</code> 写出的是这个实例输出的 tex。</li>
+  <li><code>\of{name}</code> 换成那个名字的 tex。op 参数的 <code>\of{act}</code> 是运算的 tex，module 参数的 <code>\of{act}</code> 是 <code>\operatorname{模块名}</code>，<code>\of{act.def}</code> 是运算登记的定义式，<code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code> 已登记（<code>OP_TEX</code>）。循环变量的 <code>\of{h}</code> 是它的值，float 参数的 <code>\of{eps}</code> 是它的 TeX 写法（<code>10^{-6}</code>）。text 参数的值里也可以写 <code>\of{...}</code>，在模块内展开，名字按模块内的作用域查找，所以页面传给 RMSNorm 的 <code>out_note: $\of{out}$ 是 lm_head 的输入。</code> 写出的是这个实例输出的 tex。</li>
   <li>重音命令 <code>\hat</code>、<code>\bar</code>、<code>\tilde</code>、<code>\widehat</code>、<code>\widetilde</code>、<code>\overline</code>、<code>\vec</code>、<code>\dot</code> 的参数是 <code>\of{x}</code>、而 x 的 tex 以下标结尾时，下标移到重音外面：<code>\hat{\of{x}}</code> 在 x 为 <code>\mathbf{x}_{0}</code> 时写成 <code>\hat{\mathbf{x}}_{0}</code>。实例自动加的下标因此不会被重音盖住，elem 也只有一层下标。</li>
   <li>步骤的标题、按钮文字、正文和面板文字里的数学符号一律写成 LaTeX（<code>$\partial\of{x}$</code>），不用 unicode 的数学字符。模块的步骤文字用 <code>\of{...}</code> 引用节点，实例自动加的下标就会出现在文字里。</li>
   <li>节点的 <code>elem</code> 由 tex 推出，与 <code>explain</code> 追加下标的方式兼容：<code>\mathbf{x}</code> 的 elem 是 <code>{x}</code>，多字母名字用 <code>\mathrm</code>，tex 里已有不在末尾的下标时整体加花括号，追加下标时不产生双下标。</li>

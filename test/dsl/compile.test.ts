@@ -176,6 +176,52 @@ body:
     expect(ok.nodes.get('y')).toBe(ok.nodes.get('s.out'));
   });
 
+  it('instantiates the module a module parameter names, from the namespace of the declaring module', async () => {
+    const gated = `
+module: Gated
+import:
+  SiLU: vizflow/nn/silu
+  ReLU: vizflow/nn/relu
+params:
+  act: { type: module, values: [SiLU, ReLU], default: SiLU }
+inputs:
+  x: { shape: [n] }
+outputs: [out]
+body:
+  - act_fn: { use: act, inputs: { x: x }, outputs: { out: out } }
+`;
+    const files = { 'mem:/pages/gated.yaml': gated };
+    const use = (params: string) => page(`
+title: t
+import: { Gated: ./gated.yaml }
+dims: {}
+inputs:
+  x: { value: [-1, 2] }
+body:
+  - g: { use: Gated, ${params}inputs: { x: x }, outputs: { out: y } }
+`, files);
+    const silu = await use('');
+    expect(silu.modules.map((m) => m.id)).toEqual(['g', 'g.act_fn', 'g.act_fn.sigmoid']);
+    expect(Array.from(silu.nodes.get('y')!.value.data)).toEqual([-1 / (1 + Math.E), 2 / (1 + Math.exp(-2))]);
+    const relu = await use('params: { act: ReLU }, ');
+    expect(relu.nodes.get('y')!.op).toBe('relu');
+    await expect(use('params: { act: GELU }, ')).rejects.toThrow(/parameter 'act' must be one of SiLU, ReLU, got 'GELU'/);
+    await expect(page(`
+title: t
+modules:
+  M:
+    params: { act: { type: module, default: Nope } }
+    inputs: { x: { shape: [n] } }
+    outputs: [x]
+    body: []
+dims: {}
+inputs:
+  x: { value: [1] }
+body:
+  - m: { use: M, inputs: { x: x } }
+`)).rejects.toThrow(/parameter 'act': module 'Nope' is not imported by M/);
+  });
+
   it('defaults a default_key text parameter to the instance key', async () => {
     const named = (decl: string) => `
 module: Named

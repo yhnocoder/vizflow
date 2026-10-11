@@ -82,7 +82,7 @@ body:
       params: { act: SiLU, f: mf*Sh, name: shared }
       inputs: { x: x }
       outputs: { down: shared }
-      tex: { down: '\mathbf{y}^{\mathrm{s}}' }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
   - out: { op: routed + shared, tex: '\mathbf{moe}' }
 steps:
   - id: router

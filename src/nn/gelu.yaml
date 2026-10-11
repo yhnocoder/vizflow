@@ -63,7 +63,7 @@ steps:
         $$\frac{\partial\ell}{\partial\of{u}}={{ u.grad | matrix:3 }}$$
   - id: add
     show: p
-    label: '$1+\operatorname{erf}$'
+    label: '$\of{p}$'
     title: \of{name}：加 1
     text: |
       $$\of{p}={{ p | matrix:3 }}$$
@@ -78,7 +78,7 @@ steps:
     text: |
       $$\of{out}=\of{hx}\odot\of{p}={{ out | matrix:3 }}$$
     backward:
-      label: '$\partial\of{hx},\ \partial\of{p}$'
+      label: '$\partial\of{hx},\ \partial(\of{p})$'
       title: \of{name}：穿过相乘
       text: |
         逐元素乘的两个输入互为对方的局部导数。
