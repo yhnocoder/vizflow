@@ -9,6 +9,8 @@ params:
   E:   { type: dim }
   mf:  { type: dim }
   act_fn: { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
+  clamped: { type: bool, default: false }
+  limit: { type: float }
 inputs:
   x:   { shape: [T, d] }
   idx: { shape: [T, K] }
@@ -43,12 +45,21 @@ body:
   - gate_up:       { op: 'grouped_linear(current_state, Wgu, expert_idx)', tex: '\mathbf{gu}' }
   - gate:          { op: 'narrow(gate_up, -1, 0, mf)', tex: '\mathbf{gate}' }
   - up:            { op: 'narrow(gate_up, -1, mf, mf)', tex: '\mathbf{up}' }
+  - gc:            { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
+  - uc:            { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
   - act:
       use: act_fn
+      when: not clamped
       inputs: { x: gate }
       outputs: { out: hact }
       tex: { out: '\of{act_fn}(\mathbf{gate})' }
-  - hidden:        { op: hact * up, tex: '\mathbf{m}' }
+  - act:
+      use: act_fn
+      when: clamped
+      inputs: { x: gc }
+      outputs: { out: hact }
+      tex: { out: '\of{act_fn}(\bar{\mathbf{gate}})' }
+  - hidden:        { op: 'hact * uc if clamped else hact * up', tex: '\mathbf{m}' }
   - down:          { op: 'grouped_linear(hidden, Wd, expert_idx)', tex: '\mathbf{d}' }
   - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}' }
   - scaled:        { op: 'down * view(weight, T*K, 1)', tex: '\mathbf{d}^{w}' }
@@ -130,7 +141,46 @@ steps:
       text: |
         chunk 的反向把 $\of{gate}$ 和 $\of{up}$ 的梯度按列拼回去，前 $m_f$ 列来自 gate，后 $m_f$ 列来自 up。
         $$\frac{\partial\ell}{\partial\of{gate_up}}={{ gate_up.grad | matrix:3 }}$$
+  - id: clamp_gate
+    when: clamped
+    show: gc
+    label: '$\bar{\mathbf{gate}}$'
+    title: 截断 gate 的上界
+    text: |
+      <code>gate = gate.clamp(max=self.limit)</code>：进入激活之前，gate 只截上界，大于 $L=\of{limit}$ 的值变成 $L$。HF 的 DeepSeek V4 把截断写在 <code>_apply_gate</code> 里，紧跟在 chunk 之后，先截 gate，再截 up。
+      $$\bar{\mathbf{gate}}={{ gc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过截断
+      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
+  - id: clamp_up
+    when: clamped
+    show: uc
+    label: '$\bar{\mathbf{up}}$'
+    title: 截断 up 的两侧
+    text: |
+      <code>up = up.clamp(min=-self.limit, max=self.limit)</code>：up 两边都截，限制在 $[-L, L]$。个别很大的 gate 或 up 值因此不会让专家的输出变得很大。
+      $$\bar{\mathbf{up}}={{ uc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{up}$'
+      title: 穿过截断
+      text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
   - id: mul
+    when: clamped
+    show: hidden
+    label: '$\of{hidden}=\of{hact}\odot\bar{\mathbf{up}}$'
+    title: 门控相乘
+    text: |
+      <code>self.act_fn(gate) * up</code>：激活后的 $\of{hact}$ 和截断后的 $\bar{\mathbf{up}}$ 逐元素相乘。
+      $$\of{hidden}={{ hidden | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{hact},\ \partial\bar{\mathbf{up}}$'
+      title: 梯度分给激活和 up
+      text: |
+        $\of{hact}$ 的梯度是上游梯度乘 $\bar{\mathbf{up}}$，$\bar{\mathbf{up}}$ 的梯度是上游梯度乘 $\of{hact}$，都是逐元素相乘。
+        $$\frac{\partial\ell}{\partial\of{hact}}={{ hact.grad | matrix:3 }}$$
+  - id: mul
+    when: not clamped
     show: hidden
     label: '$\of{hidden}=\of{hact}\odot\of{up}$'
     title: 门控相乘

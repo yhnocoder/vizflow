@@ -6,7 +6,7 @@ import { loadExample } from './load';
 
 interface DeepseekV4Fixture {
   sequence: number[];
-  hash_mask: number[][];
+  tid2eid: number[][];
   router_bias: number[];
   indexer_params_without_grad: string[];
   weights: Record<string, EncodedTensor>;
@@ -34,7 +34,7 @@ describe('deepseek_v4-dsl.yaml against transformers DeepseekV4Model in float64',
     expect(new Set(params)).toEqual(new Set(Object.keys(fixture.weights)));
     expect(params.filter(isIndexer).length).toBe(fixture.indexer_params_without_grad.length);
     expect(page.nodes.get('hca_layer.mlp.gate.bias')!.value.toNested()).toEqual(fixture.router_bias);
-    expect(page.nodes.get('csa_layer.mlp.gate.hmask')!.value.toNested()).toEqual(fixture.hash_mask);
+    expect(page.nodes.get('csa_layer.mlp.gate.tid2eid')!.value.toNested()).toEqual(fixture.tid2eid);
   });
 
   it('matches the loss, the streams after each layer and the final norm', () => {
@@ -68,7 +68,7 @@ describe('deepseek_v4-dsl.yaml against transformers DeepseekV4Model in float64',
     const nodes = page.graph.nodes.filter((n) => n.name.startsWith(INDEXER) && n.kind === 'op');
     expect(nodes.length).toBeGreaterThan(20);
     for (const node of nodes) expect(node.grad, node.name).toBeNull();
-    for (const name of ['csa_layer.mlp.gate.sel', 'hca_layer.mlp.gate.sel']) expect(page.nodes.get(name)!.grad, name).toBeNull();
+    for (const name of ['csa_layer.mlp.gate.idx', 'hca_layer.mlp.gate.idx']) expect(page.nodes.get(name)!.grad, name).toBeNull();
     const steps = createSteps(page.graph, page.steps);
     expect(steps.list.some((s) => s.dir === 'backward' && s.module?.includes('.indexer'))).toBe(false);
   });

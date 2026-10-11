@@ -2,7 +2,7 @@ module: DeepseekV4Router
 subtitle: DeepseekV4TopKRouter 或 DeepseekV4HashRouter
 import:
   Softplus: vizflow/nn/softplus
-formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{mask,sum,eps,normalize}{\dfrac{\mathbf{s}\odot\mathbf{m}}{\sum\mathbf{s}\odot\mathbf{m}+10^{-20}}},\quad\step{logits,softplus.*,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W_r^{\top})}}\step{bias,topk}{,\quad\mathbf{m}=\operatorname{top}_{K}(\mathbf{s}+\mathbf{b}_{\mathrm{corr}})}\step{hash}{,\quad\mathbf{m}=H[x]}'
+formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{gather,sum,eps,normalize}{\dfrac{\mathbf{s}_{\mathbf{i}}}{\sum\mathbf{s}_{\mathbf{i}}+10^{-20}}},\quad\step{logits,softplus.*,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W_r^{\top})}}\step{bias,topk}{,\quad\mathbf{i}=\operatorname{topk}_{K}(\mathbf{s}+\mathbf{b}_{\mathrm{corr}})}\step{hash}{,\quad\mathbf{i}=\mathrm{tid2eid}[x]}'
 params:
   E:    { type: dim }
   V:    { type: dim }
@@ -13,18 +13,18 @@ params:
 inputs:
   x:   { shape: [T, d] }
   ids: { shape: [T], when: hash }
-outputs: [rw]
+outputs: [idx, rw]
 weights:
   Wr: { shape: [E, d], tex: 'W_{r}' }
 buffers:
-  bias:  { value: zeros(E), tex: '\mathbf{b}_{\mathrm{corr}}', dtype: fp32, when: not hash }
-  hmask: { value: 'zeros(V, E)', tex: 'H', when: hash }
+  bias:    { value: zeros(E), tex: '\mathbf{b}_{\mathrm{corr}}', dtype: fp32, when: not hash }
+  tid2eid: { value: 'zeros(V, K)', tex: '\mathrm{tid2eid}', dtype: int64, when: hash }
 fold:
-  label: '$\of{rw}=\mathrm{gate}(\of{x})$'
+  label: '$\of{idx},\ \of{rw}=\mathrm{gate}(\of{x})$'
   title: gate（已折叠）
   text: |
-    每个位置选出 $K=\of{K}$ 个路由专家，并给出它们的权重，没选中的专家权重是 0。
-    $$\of{rw}={{ rw | matrix:3 }}$$
+    每个位置选出 $K=\of{K}$ 个路由专家的编号 $\of{idx}$，并给出它们的权重 $\of{rw}$。
+    $$\of{idx}={{ idx | matrix }},\qquad \of{rw}={{ rw | matrix:3 }}$$
   backward:
     label: '$\partial W_r,\ \partial\of{x}$'
     title: 穿过 gate（已折叠）
@@ -52,11 +52,11 @@ body:
           $$\operatorname{softplus}(\mathbf{r})={{ sp | matrix:3 }}$$
   - s:      { op: sqrt(sp), tex: '\mathbf{s}' }
   - sc:     { op: s + bias, tex: '\tilde{\mathbf{s}}', when: not hash }
-  - sel:    { op: 'topk_mask(sc, K, -1)', tex: '\mathbf{m}', when: not hash }
-  - sel:    { op: 'embedding(ids, hmask)', tex: '\mathbf{m}', when: hash }
-  - w:      { op: s * sel, tex: '\mathbf{w}' }
-  - ws:     { op: 'sum(w, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{w}' }
-  - den:    { op: ws + 1e-20, tex: '\textstyle\sum\mathbf{w}+10^{-20}' }
+  - idx:    { op: 'topk_indices(sc, K, -1)', tex: '\mathbf{i}', when: not hash }
+  - idx:    { op: 'index(tid2eid, [ids])', tex: '\mathbf{i}', when: hash }
+  - w:      { op: 'gather(s, -1, idx)', tex: '\mathbf{s}_{\mathbf{i}}' }
+  - ws:     { op: 'sum(w, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{s}_{\mathbf{i}}' }
+  - den:    { op: ws + 1e-20, tex: '\textstyle\sum\mathbf{s}_{\mathbf{i}}+10^{-20}' }
   - wn:     { op: w / den, tex: '\bar{\mathbf{w}}' }
   - rw:     { op: wn * rsf, tex: '\mathbf{p}' }
 steps:
@@ -65,7 +65,7 @@ steps:
     label: '$\of{logits}$'
     title: 每个专家一个分数
     text: |
-      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
+      <code>logits = F.linear(flat, self.weight)</code>。gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
       $$\mathbf{r}={{ logits | matrix:3 }}$$
     backward:
       label: '$\partial W_r,\ \partial\of{x}$'
@@ -75,7 +75,7 @@ steps:
     label: '$\of{s}=\sqrt{\cdot}$'
     title: 开平方，得到亲和度
     text: |
-      再开平方，把大的分数压小一些。这就是每个专家的亲和度 $\of{s}$，后面的权重用它。
+      再开平方，把大的分数压小一些。这就是每个专家的亲和度 $\of{s}$（HF 的 <code>scores</code>），后面的权重用它。
       $$\of{s}={{ s | matrix:3 }}$$
     backward:
       label: '$\partial\operatorname{softplus}(\mathbf{r})$'
@@ -93,38 +93,39 @@ steps:
       $$\of{bias}={{ bias | matrix:3 }},\qquad \of{sc}={{ sc | matrix:3 }}$$
   - id: topk
     when: not hash
-    show: sel
-    label: '$\of{sel}$'
+    show: idx
+    label: '$\of{idx}$'
     title: 'top-$K$：选出 $K$ 个专家'
     text: |
-      每个位置按 $\of{sc}$ 选出最大的 $K=\of{K}$ 个专家。V4 不像 V3 那样先把专家分组再挑组，直接在所有专家里选。真实模型里每个 token 从 256 个路由专家里选 6 个。挑选只决定 0 和 1，没有梯度。
-      $$\of{sel}={{ sel | matrix:2 }}$$
+      <code>torch.topk(scores + self.e_score_correction_bias, self.top_k, dim=-1, sorted=False).indices</code>：每个位置按 $\of{sc}$ 选出最大的 $K=\of{K}$ 个专家，给出它们的编号（从 0 开始）。V4 不像 V3 那样先把专家分组再挑组，直接在所有专家里选。真实模型里每个 token 从 256 个路由专家里选 6 个。HF 写的是 <code>sorted=False</code>，同一行编号的顺序只影响后面加法的次序，这里按分数从大到小排。编号是整数，没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
   - id: hash
     when: hash
-    show: [hmask, sel]
-    label: '$\of{sel}=H[x]$'
+    show: [tid2eid, idx]
+    label: '$\of{idx}=\mathrm{tid2eid}[x]$'
     title: 按 token id 查表选专家
     text: |
-      前 3 层用 hash 路由：每个 token id 选哪 $K$ 个专家是一张固定的表 <code>tid2eid</code>，和 $\of{x}$ 无关，训练中也不变。HF 存的是每个 token 的 $K$ 个专家编号；这里把它写成一张 $V\times E$ 的 0/1 表 $H$，第 $v$ 行在 token $v$ 的那 $K$ 个专家处是 1，按 token id 取行就得到每个位置选中的专家。
-      $$H={{ hmask | matrix:0 }},\qquad \of{sel}={{ sel | matrix:0 }}$$
-  - id: mask
+      <code>self.tid2eid[input_ids.reshape(-1)]</code>：前 3 层用 hash 路由，每个 token id 选哪 $K$ 个专家是一张固定的 $V\times K$ 的表 <code>tid2eid</code>，和 $\of{x}$ 无关，训练中也不变。按 token id 取行就得到每个位置选中的专家编号。
+      $$\mathrm{tid2eid}={{ tid2eid | matrix }},\qquad \of{idx}={{ idx | matrix }}$$
+  - id: gather
     show: w
-    label: '$\of{s}\odot\mathbf{m}$'
-    title: 留下选中专家的亲和度
+    label: '$\mathbf{s}_{\mathbf{i}}$'
+    title: 取出选中专家的亲和度
     text: |
-      权重用不带偏置的 $\of{s}$。HF 用 <code>scores.gather(1, indices)</code> 取出选中的那几个，这里乘上 0/1 的选择，没选中的专家记成 0，结果相同。
-      $$\of{w}={{ w | matrix:3 }}$$
+      <code>weights = scores.gather(1, indices)</code>：权重用不带偏置的 $\of{s}$，每个位置取出它选中的 $K$ 个专家的亲和度，和 $\of{idx}$ 一一对应。
+      $$\mathbf{s}_{\mathbf{i}}={{ w | matrix:3 }}$$
     backward:
       label: '$\partial\of{s}$'
       title: 只有选中的专家有梯度
+      text: gather 的反向把梯度放回被取到的那一列，没选中的专家梯度是 0。
   - id: sum
     show: ws
-    label: '$\sum\of{w}$'
+    label: '$\sum\mathbf{s}_{\mathbf{i}}$'
     title: 选中的亲和度相加
     text: |
-      $$\textstyle\sum\of{w}={{ ws | matrix:3 }}$$
+      $$\textstyle\sum\mathbf{s}_{\mathbf{i}}={{ ws | matrix:3 }}$$
     backward:
-      label: '$\partial\of{w}$'
+      label: '$\partial\mathbf{s}_{\mathbf{i}}$'
       title: 梯度复制给每个专家
   - id: eps
     show: den
@@ -132,7 +133,7 @@ steps:
     title: 加 $10^{-20}$
     text: 防止除以 0。
     backward:
-      label: '$\partial\sum\of{w}$'
+      label: '$\partial\sum\mathbf{s}_{\mathbf{i}}$'
       title: 加常数，梯度原样传下去
   - id: normalize
     show: wn
@@ -142,17 +143,17 @@ steps:
       选中的几个亲和度除以它们的和，每个位置的权重加起来是 1。
       $$\bar{\mathbf{w}}={{ wn | matrix:3 }}$$
     backward:
-      label: '$\partial\of{w},\ \partial\of{den}$'
+      label: '$\partial\mathbf{s}_{\mathbf{i}},\ \partial\of{den}$'
       title: 穿过归一化
       text: |
         归一化让被选中的几个亲和度互相影响：一个专家的亲和度变大，其他被选中的专家的权重就变小。
-        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial\mathbf{s}_{\mathbf{i}}}={{ w.grad | matrix:3 }}$$
   - id: scale
     show: rw
     label: '$\of{rw}$'
     title: 乘 routed_scaling_factor
     text: |
-      再乘 routed_scaling_factor $=\of{rsf}$，得到专家的权重 $\mathbf{p}$。
+      再乘 routed_scaling_factor $=\of{rsf}$，得到专家的权重 $\mathbf{p}$，也就是 HF 交给 experts 的 <code>top_k_weights</code>，和 $\of{idx}$ 一一对应。
       $$\mathbf{p}={{ rw | matrix:3 }}$$
     backward:
       label: '$\partial\bar{\mathbf{w}}$'

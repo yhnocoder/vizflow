@@ -2,6 +2,7 @@ module: DeepseekV4MoE
 subtitle: DeepseekV4SparseMoeBlock
 import:
   GLU: vizflow/nn/glu
+  Experts: vizflow/nn/experts
   Router: ./router.yaml
 params:
   E:     { type: dim }
@@ -33,88 +34,59 @@ body:
       title: gate
       params: { E: E, V: V, K: K, rsf: rsf, hash: hash, detail: detail }
       inputs: { x: x, ids: ids }
-      outputs: { rw: rw }
+      outputs: { idx: idx, rw: rw }
   - experts:
-      title: experts
-      subtitle: DeepseekV4Experts，每个专家对所有位置都算一遍，再按权重相加
-      body:
-        - for: e
-          in: 1..E
-          body:
-            - expert[e]:
-                use: GLU
-                subtitle: 路由专家，带截断的 SwiGLU
-                when: detail
-                params: { act: SiLU, f: f, name: expert, clamped: true, limit: limit }
-                inputs: { x: x }
-                outputs: { down: 'y[e]' }
-            - expert[e]:
-                use: GLU
-                subtitle: 路由专家，带截断的 SwiGLU
-                when: not detail
-                folded: true
-                params: { act: SiLU, f: f, name: expert, clamped: true, limit: limit }
-                inputs: { x: x }
-                outputs: { down: 'y[e]' }
-                fold:
-                  text: |
-                    计算和第 3 层的路由专家相同，那里展开画了每一步；权重是这一层自己的。
-                    $$\of{y[e]}={{ y[e] | matrix:2 }}$$
-            - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
-        - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
-        - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\mathbf{p}\odot Y' }
-        - routed: { op: 'sum(Yw, 1)', tex: '\mathbf{y}^{\mathrm{r}}' }
+      use: Experts
+      subtitle: DeepseekV4Experts，带截断的 SwiGLU
+      when: detail
+      params: { E: E, mf: f, clamped: true, limit: limit }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+  - experts:
+      use: Experts
+      subtitle: DeepseekV4Experts，带截断的 SwiGLU
+      when: not detail
+      folded: true
+      params: { E: E, mf: f, clamped: true, limit: limit }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      fold:
+        text: |
+          计算和第 3 层的 experts 相同，那里展开画了每一步；权重是这一层自己的，选中的专家来自这一层的 top-$K$ 路由。
+          $$\of{routed}={{ routed | matrix:2 }}$$
   - shared_experts:
       use: GLU
       subtitle: DeepseekV4MLP，共享专家
       suffix: s
+      when: detail
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
+  - shared_experts:
+      use: GLU
+      subtitle: DeepseekV4MLP，共享专家
+      suffix: s
+      when: not detail
       folded: true
-      params: { act: SiLU, f: f, name: shared, clamped: true, limit: limit }
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit }
       inputs: { x: x }
       outputs: { down: shared }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
       fold:
         text: |
-          共享专家的计算和第 3 层的路由专家相同，也是带截断的 SwiGLU，那里展开画了每一步；权重是自己的。对应 HF 里 <code>self.shared_experts(hidden_states)</code>。
+          计算和第 3 层的 shared_experts 相同，那里展开画了每一步；权重是这一层自己的。
           $$\of{shared}={{ shared | matrix:2 }}$$
   - out: { op: routed + shared, tex: '\mathbf{moe}' }
 steps:
-  - id: stack
-    show: ['yv[1..E]', Y]
-    label: '$Y$'
-    title: 路由专家的输出排在一起
-    text: |
-      每个路由专家都是一个带截断的 SwiGLU，截断的上限是 swiglu_limit $=\of{limit}$。这里为了画图，每个专家对所有位置都算了一遍，再把 \of{E} 个输出排成 $(T, E, d)$；HF 只把每个专家被选中的那些 token 送进去算。
-      $$Y_{:,1,:}={{ y[1] | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{y}^{(e)}$'
-      title: 按专家切开
-  - id: weight
-    show: Yw
-    label: '$\mathbf{p}\odot Y$'
-    title: 每个专家的输出乘上自己的权重
-    text: |
-      没选中的专家权重是 0，它的输出在这里不起作用。
-    backward:
-      label: '$\partial Y,\ \partial\of{rw}$'
-      title: 传到各个专家的输出和权重
-      text: |
-        专家 $e$ 的输出收到的梯度是 $p_e\,\partial\ell/\partial\of{routed}$，没选中这个专家的位置梯度是 0，所以这个专家的参数只从选中它的 token 学习。
-  - id: combine
-    show: routed
-    label: '$\of{routed}$'
-    title: 按专家加起来
-    text: |
-      $$\of{routed}=\sum_e p_{e}\,\mathbf{y}^{(e)}={{ routed | matrix:2 }}$$
-    backward:
-      label: '$\partial(\mathbf{p}\odot Y)$'
-      title: 梯度复制给每个专家
   - id: add
     show: out
     label: '$\of{out}=\of{routed}+\of{shared}$'
     title: 加上共享专家
     text: |
-      共享专家每个位置都要经过，权重固定是 1，它也用带截断的 SwiGLU。
+      <code>routed + self.shared_experts(residual)</code>：共享专家每个位置都要经过，权重固定是 1，它和路由专家一样用带截断的 SwiGLU。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{routed},\ \partial\of{shared}$'

@@ -39,7 +39,7 @@ leaves:
   label: 输入
   title: 输入和参数
   text: |
-    输入只有 token id，其余都是参数和常量。每一层有两个 mHC，各有一块 $W_{\mathrm{fn}}$、一个偏置和三个缩放；注意力有 q_a_proj、q_b_proj、kv_proj、o_a_proj、o_b_proj 五个投影、两个 RMSNorm 和每个 head 一个的 sink；compressor 有 kv_proj、gate_proj、position_bias 和 kv_norm；CSA 层的 indexer 另有一套 compressor 和 q_b_proj、weights_proj。MoE 的 gate 有一块 $W_r$，每个路由专家和共享专家各有三块权重。hash 路由的表和 top-k 路由的偏置是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和各种 mask 由形状决定，不需要梯度。
+    输入只有 token id，其余都是参数和常量。每一层有两个 mHC，各有一块 $W_{\mathrm{fn}}$、一个偏置和三个缩放；注意力有 q_a_proj、q_b_proj、kv_proj、o_a_proj、o_b_proj 五个投影、两个 RMSNorm 和每个 head 一个的 sink；compressor 有 kv_proj、gate_proj、position_bias 和 kv_norm；CSA 层的 indexer 另有一套 compressor 和 q_b_proj、weights_proj。MoE 的 gate 有一块 $W_r$；所有路由专家的权重存在两块三维的参数里，gate_up_proj 是 $(E, 2m_f, d)$，down_proj 是 $(E, d, m_f)$；共享专家有三块权重。hash 路由的表 tid2eid 和 top-k 路由的偏置是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和各种 mask 由形状决定，不需要梯度。
     $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
 
 modules:
@@ -389,4 +389,4 @@ panels:
     note: DeepSeek-V4-Flash：d = 4096，43 层；注意力 64 个 head，head_dim = 512，其中最后 64 维做 RoPE，q_lora_rank = 1024，o_groups = 8，o_lora_rank = 1024，sliding_window = 128；CSA 的压缩率 4，HCA 的压缩率 128；indexer 有 64 个 head，index_head_dim = 128，index_topk = 512；滑动窗口层的 rope_theta = $10^4$，CSA 和 HCA 层的 compress_rope_theta = 160000，并用 YaRN（factor 16）扩展上下文，这一页不画 YaRN；hc_mult = 4，hc_sinkhorn_iters = 20；MoE 256 个路由专家，每个 token 选 6 个，另有 1 个共享专家，moe_intermediate_size = 2048，routed_scaling_factor = 1.5，swiglu_limit = 10；V = 129280。这一页用 Sinkhorn 3 轮、swiglu_limit = 2，让截断在小数值上也能看到。
 values:
   hca_layer.mlp.gate.bias: [0, 0.1, -0.02, 0.03]
-  csa_layer.mlp.gate.hmask: [[1, 1, 0, 0], [0, 1, 1, 0], [0, 0, 1, 1], [1, 0, 0, 1], [1, 0, 1, 0]]
+  csa_layer.mlp.gate.tid2eid: [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]]

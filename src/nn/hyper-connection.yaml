@@ -85,7 +85,9 @@ body:
       body:
         - comb_z:  { op: comb_w * s_comb, tex: '\alpha_{\mathrm{comb}}M_{\mathrm{comb}}' }
         - comb_zb: { op: comb_z + b_comb, tex: 'Z_{\mathrm{comb}}' }
-        - comb_sm: { op: 'softmax(comb_zb, -1)', tex: '\operatorname{softmax}(Z_{\mathrm{comb}})' }
+        - comb_ex: { op: exp(comb_zb), tex: 'e^{Z_{\mathrm{comb}}}' }
+        - comb_Z:  { op: 'sum(comb_ex, -1, keepdim=true)', tex: 'e^{Z_{\mathrm{comb}}}\mathbf{1}' }
+        - comb_sm: { op: comb_ex / comb_Z, tex: '\operatorname{softmax}(Z_{\mathrm{comb}})' }
         - comb0:   { op: comb_sm + hc_eps, tex: 'C^{\mathrm{init}}' }
   - sinkhorn:
       title: Sinkhorn
@@ -308,16 +310,36 @@ steps:
     backward:
       label: '$\partial(\alpha_{\mathrm{comb}}M_{\mathrm{comb}}),\ \partial B_{\mathrm{comb}}$'
       title: comb：穿过加偏置
-  - id: comb_softmax
-    show: comb_sm
-    label: '$\operatorname{softmax}$'
-    title: comb：按行做 softmax
+  - id: comb_exp
+    show: comb_ex
+    label: '$e^{Z_{\mathrm{comb}}}$'
+    title: comb：softmax 的 exp
     text: |
-      comb 的每一行做 softmax（<code>dim=-1</code>），每行加起来是 1，所有元素都是正数。
-      $$\operatorname{softmax}(Z_{\mathrm{comb}})={{ comb_sm | matrix:3 }}$$
+      comb 的每一行做 softmax（<code>dim=-1</code>）。softmax 按定义拆成三步画：取 exp、按行求和、相除。softmax 的 kernel 会先减去每行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      $$e^{Z_{\mathrm{comb}}}={{ comb_ex | matrix:3 }}$$
     backward:
       label: '$\partial Z_{\mathrm{comb}}$'
-      title: comb：穿过 softmax
+      title: comb：穿过 exp
+      text: exp 的导数是它自己。
+  - id: comb_sum
+    show: comb_Z
+    label: '$e^{Z_{\mathrm{comb}}}\mathbf{1}$'
+    title: comb：softmax 按行求和
+    text: |
+      $$e^{Z_{\mathrm{comb}}}\mathbf{1}={{ comb_Z | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{Z_{\mathrm{comb}}}$'
+      title: comb：行和的梯度复制给这一行
+  - id: comb_div
+    show: comb_sm
+    label: '$\operatorname{softmax}$'
+    title: comb：softmax 相除
+    text: |
+      每个元素除以它所在行的和，每行加起来是 1，所有元素都是正数。
+      $$\operatorname{softmax}(Z_{\mathrm{comb}})={{ comb_sm | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{Z_{\mathrm{comb}}},\ \partial(e^{Z_{\mathrm{comb}}}\mathbf{1})$'
+      title: comb：穿过相除
   - id: comb_eps
     show: comb0
     label: '$C^{\mathrm{init}}$'

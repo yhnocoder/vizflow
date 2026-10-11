@@ -133,6 +133,8 @@ def layer_paths(name, layer):
         f"{name}.self_attn.Wob": attn.o_b_proj.weight,
         f"{name}.self_attn.sinks": attn.sinks,
         f"{name}.mlp.gate.Wr": layer.mlp.gate.weight,
+        f"{name}.mlp.experts.Wgu": layer.mlp.experts.gate_up_proj,
+        f"{name}.mlp.experts.Wd": layer.mlp.experts.down_proj,
     }
     paths.update(hc_paths(f"{name}.attn_hc", layer.attn_hc))
     paths.update(hc_paths(f"{name}.ffn_hc", layer.ffn_hc))
@@ -151,16 +153,7 @@ def page_paths(model, lm_head, take):
     paths.update({"hc_head.fn": model.hc_head.hc_fn, "hc_head.base": model.hc_head.hc_base, "hc_head.scale": model.hc_head.hc_scale})
     for name, layer in zip(LAYERS, model.layers):
         paths.update(layer_paths(name, layer))
-    paths = {path: take(p) for path, p in paths.items()}
-    f = DIMS["f"]
-    for name, layer in zip(LAYERS, model.layers):
-        experts = layer.mlp.experts
-        for e in range(DIMS["E"]):
-            gate_up = take(experts.gate_up_proj)[e]
-            paths[f"{name}.mlp.expert[{e + 1}].Wg"] = gate_up[:f]
-            paths[f"{name}.mlp.expert[{e + 1}].Wu"] = gate_up[f:]
-            paths[f"{name}.mlp.expert[{e + 1}].Wd"] = take(experts.down_proj)[e]
-    return paths
+    return {path: take(p) for path, p in paths.items()}
 
 
 def fill(model, lm_head, generator):
@@ -176,13 +169,6 @@ def fill(model, lm_head, generator):
 
 def encode(t):
     return {"shape": list(t.shape), "values": [float(v) for v in t.detach().reshape(-1)]}
-
-
-def hash_mask():
-    mask = torch.zeros(DIMS["V"], DIMS["E"])
-    for v, experts in enumerate(TID2EID):
-        mask[v, experts] = 1.0
-    return mask
 
 
 def main():
@@ -217,7 +203,6 @@ def main():
         "swiglu_limit": SWIGLU_LIMIT,
         "sequence": SEQUENCE,
         "tid2eid": TID2EID,
-        "hash_mask": hash_mask().tolist(),
         "router_bias": ROUTER_BIAS,
         "indexer_params_without_grad": indexer_without_grad,
         "weights": {path: encode(t) for path, t in weights.items()},
