@@ -39,7 +39,7 @@ export interface RequestView {
   hit: number;
 }
 
-export type EventKind = 'launch' | 'process' | 'preempt' | 'retract' | 'resume' | 'blocked' | 'finish';
+export type EventKind = 'launch' | 'process' | 'preempt' | 'retract' | 'resume' | 'blocked' | 'reject' | 'abort' | 'finish';
 
 export interface EngineEvent {
   kind: EventKind;

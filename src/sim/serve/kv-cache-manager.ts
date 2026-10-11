@@ -346,7 +346,7 @@ export class KvCacheManager {
     return fresh;
   }
 
-  cacheBlocks(request: KvRequest, numComputedTokens: number): void {
+  private cacheBlocks(request: KvRequest, numComputedTokens: number): void {
     if (!this.config.enablePrefixCaching) return;
     const numToCache = this.cacheableTokens(Math.min(numComputedTokens, request.numTokens));
     for (const m of this.managers) m.cacheBlocks(request, numToCache, [request.numPromptTokens - 1]);

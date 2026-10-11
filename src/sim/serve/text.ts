@@ -23,6 +23,10 @@ export function describeEvent(e: EngineEvent, engine: EngineName): string {
       return `${list(e.ids)} 重新开始，前缀缓存命中 ${e.hit} 个 token`;
     case 'blocked':
       return `${list(e.ids)} 放不下，留在等待队列`;
+    case 'reject':
+      return `${list(e.ids)} 的提示词超过 KV 容量允许的输入长度，请求被中止，提示词换成 1 个 token 走完一次 prefill 后结束`;
+    case 'abort':
+      return `${list(e.ids)} 被中止：撤回其他请求后 KV 仍不够它 decode，释放 KV`;
     case 'finish':
       return `${list(e.ids)} 生成完毕，释放 KV`;
   }

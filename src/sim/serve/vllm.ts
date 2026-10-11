@@ -155,7 +155,6 @@ export function simulateVllm(config: ServingConfig): EngineRun {
       r.outputs += 1;
       if (r.placeholders > 0) r.placeholders -= 1;
       r.firstToken ??= batch.step;
-      kv.cacheBlocks(r, r.computed - r.placeholders);
       got.push(r.id);
       if (r.outputs >= r.out) {
         const at = running.indexOf(r);

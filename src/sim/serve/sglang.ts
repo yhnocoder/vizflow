@@ -11,6 +11,7 @@ export const RETRACT_DECODE_STEPS = 20;
 export const CLIP_MAX_NEW_TOKENS = 4096;
 export const IN_BATCH_PREFIX_THRESHOLD = 32;
 export const LPM_QUEUE_LIMIT = 128;
+export const MAX_REQ_INPUT_MARGIN = 5;
 
 type Status = RequestStatus | 'prefill';
 
@@ -31,6 +32,7 @@ interface Req {
   decodeTokens: number;
   duplicateTokens: number;
   evictions: number;
+  rejected: boolean;
 }
 
 interface Batch {
@@ -48,11 +50,18 @@ export function simulateSglang(config: ServingConfig): EngineRun {
   const minRatio = INIT_NEW_TOKEN_RATIO * MIN_NEW_TOKEN_RATIO_FACTOR;
   const decay = (INIT_NEW_TOKEN_RATIO - minRatio) / NEW_TOKEN_RATIO_DECAY_STEPS;
   let ratio = INIT_NEW_TOKEN_RATIO;
-  const reqs: Req[] = config.requests.map((r, i) => ({
-    id: r.id, tokens: tokenIds(r, i, r.prompt + Math.max(1, r.out)), arrive: r.arrive, prompt: r.prompt, out: Math.max(1, r.out),
-    outputs: 0, inflight: 0, computed: 0, hit: 0, status: 'pending',
-    firstToken: null, finished: null, prefillTokens: 0, decodeTokens: 0, duplicateTokens: 0, evictions: 0,
-  }));
+  const maxReqLen = capacity - 1;
+  const maxReqInputLen = maxReqLen - MAX_REQ_INPUT_MARGIN;
+  const reqs: Req[] = config.requests.map((r, i) => {
+    const rejected = r.prompt >= maxReqInputLen;
+    const prompt = rejected ? 1 : r.prompt;
+    const out = rejected ? 1 : Math.max(1, Math.min(r.out, maxReqLen - r.prompt - 1));
+    return {
+      id: r.id, tokens: rejected ? ['rejected', `rejected:${i}`] : tokenIds(r, i, prompt + out), arrive: r.arrive, prompt, out,
+      outputs: 0, inflight: 0, computed: 0, hit: 0, status: 'pending',
+      firstToken: null, finished: null, prefillTokens: 0, decodeTokens: 0, duplicateTokens: 0, evictions: 0, rejected,
+    };
+  });
   const byId = new Map(reqs.map((r) => [r.id, r]));
   const cache = new RadixCacheSim(capacity);
   const waiting: Req[] = [];
@@ -140,28 +149,34 @@ export function simulateSglang(config: ServingConfig): EngineRun {
       remaining -= n;
     }
 
+    let offset = decodeHeadroom();
+    const remainingTotal = () => cache.availableSize() + cache.evictableSize() - offset;
     if (chunked !== null) {
       const r = chunked;
       const rest = r.prompt + r.outputs - r.computed;
-      const n = Math.min(rest, remaining);
+      const memory = Math.trunc(remainingTotal());
+      const n = Math.min(rest, memory > 0 ? Math.min(remaining, memory) : remaining);
       if (n === rest) chunked = null;
       addRow(r, r.computed, n);
+      offset += 1 + (n === rest ? Math.min(r.out - r.outputs, CLIP_MAX_NEW_TOKENS) : 0);
     }
     if (remaining <= 0 || chunked !== null || waiting.length === 0 || (batchFull && rows.length === 0)) return rows;
-    let kvBudget = cache.availableSize() + cache.evictableSize() - decodeHeadroom();
     for (const r of orderWaiting()) {
       if (remaining <= 0) break;
       const match = matchPrefix(r);
       const matched = match.prefixLength;
       const extend = r.prompt + r.outputs - matched;
       const truncated = extend > remaining;
-      const cost = truncated ? remaining : extend + Math.min(r.out - r.outputs, CLIP_MAX_NEW_TOKENS);
-      if (cost >= kvBudget) {
+      const maxNew = Math.min(r.out - r.outputs, CLIP_MAX_NEW_TOKENS);
+      cache.incLockRef(match.lastNode);
+      const room = remainingTotal();
+      cache.decLockRef(match.lastNode);
+      if (extend + maxNew + 1 >= room) {
         batchFull = true;
         events.push({ kind: 'blocked', ids: [r.id] });
         break;
       }
-      kvBudget -= cost;
+      offset += 1 + (truncated ? 0 : maxNew);
       waiting.splice(waiting.indexOf(r), 1);
       r.status = 'prefill';
       cache.admit(r.id, r.tokens, r.prompt, match);
@@ -177,7 +192,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
     return rows;
   }
 
-  function buildDecode(events: EngineEvent[]): BatchRow[] {
+  function buildDecode(step: number, events: EngineEvent[]): BatchRow[] {
     const needsToken = (r: Req) => r.outputs + r.inflight < r.out;
     if (shrunk || running.some((r) => !needsToken(r))) batchFull = false;
     shrunk = false;
@@ -195,6 +210,16 @@ export function simulateSglang(config: ServingConfig): EngineRun {
         batchFull = false;
         waiting.push(victim);
         events.push({ kind: 'retract', ids: [victim.id] });
+        cache.evictToFree(order.length * RETRACT_DECODE_STEPS);
+      }
+      if (cache.availableSize() + cache.evictableSize() < running.filter(needsToken).length) {
+        const last = order.pop()!;
+        running.splice(running.indexOf(last), 1);
+        cache.release(last.id, 0, false);
+        last.status = 'finished';
+        last.finished = step;
+        shrunk = true;
+        events.push({ kind: 'abort', ids: [last.id] }, { kind: 'finish', ids: [last.id] });
       }
       const decoded = running.reduce((s, r) => s + r.outputs, 0);
       const maxNew = running.reduce((s, r) => s + r.out, 0);
@@ -217,6 +242,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
       if (r.arrive === step) {
         r.status = 'waiting';
         waiting.push(r);
+        if (r.rejected) events.push({ kind: 'reject', ids: [r.id] });
       }
     }
     const pendingChunk = chunked as Req | null;
@@ -234,7 +260,7 @@ export function simulateSglang(config: ServingConfig): EngineRun {
     let rows = buildPrefill(events);
     let mode: Batch['mode'] | null = rows.length > 0 ? 'extend' : null;
     if (mode === null) {
-      rows = buildDecode(events);
+      rows = buildDecode(step, events);
       if (rows.length > 0) mode = 'decode';
     }
     const tokens = rows.reduce((s, r) => s + r.n, 0);
