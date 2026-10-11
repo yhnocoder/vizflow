@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { type PadAttrs, type PermuteAttrs, convTaps, cummaxSources, indexAddTarget, indexSource, padSource, permuteSource, repeatSourceIndex } from '../../autograd/ops/index_ops';
-import { indexOf, normDim, offsetOf } from '../../tensor';
+import { type PadAttrs, type PermuteAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
+import { broadcastIndex, indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
   pattern: 'select',
@@ -207,7 +207,9 @@ export const indexExplain: OpExplain = {
   },
   selected: (ctx, out) => {
     const [input, ...indices] = ctx.inputs;
-    return [{ arg: 0, index: [...indexSource(input.shape, indices, out[0]), ...out.slice(1)] }];
+    const lead = indices[0].ndim;
+    const row = offsetOf(indices[0].shape, out.slice(0, lead));
+    return [{ arg: 0, index: [...indexSource(input.shape, indices, row), ...out.slice(lead)] }];
   },
 };
 
@@ -276,4 +278,55 @@ export const cummaxExplain: OpExplain = {
     local: () => '1',
   },
   selected: (ctx, out) => [{ arg: 0, index: cummaxSource(ctx, out) }],
+};
+
+function sortSource(ctx: OpCtx, out: number[]): number[] {
+  const input = ctx.inputs[0];
+  return indexOf(input.shape, sortSources(input, ctx.attrs as SortAttrs)[offsetOf(input.shape, out)]);
+}
+
+export const sortExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, _arg, input) => (offsetOf(ctx.inputs[0].shape, sortSource(ctx, out)) === offsetOf(ctx.inputs[0].shape, input) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{sort}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: sortSource(ctx, out) }],
+};
+
+function scatterSource(ctx: OpCtx, out: number[]): { arg: number; index: number[] } {
+  const [input, index, src] = ctx.inputs;
+  const target = offsetOf(input.shape, out);
+  const hit = scatterPairs(input, index, src, ctx.attrs as ScatterAttrs).filter(([to]) => to === target).pop();
+  return hit === undefined ? { arg: 0, index: [...out] } : { arg: 2, index: indexOf(src.shape, hit[1]) };
+}
+
+export const scatterExplain: OpExplain = {
+  pattern: 'select',
+  local: (ctx, out, arg) => (scatterSource(ctx, out).arg === arg ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{scatter}(${s.in[0]},${(s.attrs as ScatterAttrs).dim},${s.in[1]},${s.in[2]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [scatterSource(ctx, out)],
+};
+
+function indexPutSource(ctx: OpCtx, out: number[]): { arg: number; index: number[] } {
+  const [, mask, values] = ctx.inputs;
+  const lead = mask.ndim;
+  const row = offsetOf(mask.shape, out.slice(0, lead));
+  const k = indexPutRows(mask).indexOf(row);
+  if (k < 0) return { arg: 0, index: [...out] };
+  return { arg: 2, index: broadcastIndex([k, ...out.slice(lead)], values.shape) };
+}
+
+export const indexPutExplain: OpExplain = {
+  pattern: 'select',
+  local: (ctx, out, arg) => (indexPutSource(ctx, out).arg === arg ? 1 : 0),
+  tex: {
+    forward: (s) => `${s.in[0]}[${s.in[1]}]\\leftarrow ${s.in[2]}`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [indexPutSource(ctx, out)],
 };

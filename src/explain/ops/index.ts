@@ -34,6 +34,11 @@ import {
   absExplain,
   signExplain,
   clampMinExplain,
+  ltExplain,
+  bitwiseOrExplain,
+  floorDivideExplain,
+  logicalNotExplain,
+  copysignExplain,
 } from './elementwise';
 import {
   catExplain,
@@ -55,6 +60,9 @@ import {
   topkMaskExplain,
   unsqueezeExplain,
   viewExplain,
+  sortExplain,
+  scatterExplain,
+  indexPutExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
@@ -126,6 +134,14 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   clamp_min: clampMinExplain,
   repeat: repeatExplain,
   cummax: cummaxExplain,
+  lt: ltExplain,
+  bitwise_or: bitwiseOrExplain,
+  floor_divide: floorDivideExplain,
+  logical_not: logicalNotExplain,
+  copysign: copysignExplain,
+  sort: sortExplain,
+  scatter: scatterExplain,
+  index_put: indexPutExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

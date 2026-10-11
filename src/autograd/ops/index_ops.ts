@@ -1,4 +1,4 @@
-import { Tensor, forEachIndex, formatShape, normDim, offsetOf, reduceMap } from '../../tensor';
+import { Tensor, broadcastIndex, forEachIndex, formatShape, normDim, offsetOf, reduceMap, unbroadcast } from '../../tensor';
 import type { OpDef } from '../op';
 import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
 
@@ -600,10 +600,10 @@ export const nonzeroStaticOp: OpDef<NonzeroStaticAttrs> = {
 
 function indexShape(input: readonly number[], indices: readonly (readonly number[])[]): number[] {
   if (indices.length > input.length) throw new Error(`index: ${indices.length} index tensors are too many for input ${formatShape(input)}`);
-  if (indices.some((shape) => shape.length !== 1 || shape[0] !== indices[0][0])) {
-    throw new Error(`index: index tensors ${indices.map((shape) => formatShape(shape)).join(', ')} must be one-dimensional and of the same length`);
+  if (indices.some((shape) => shape.length !== indices[0].length || shape.some((n, d) => n !== indices[0][d]))) {
+    throw new Error(`index: index tensors ${indices.map((shape) => formatShape(shape)).join(', ')} must have the same shape`);
   }
-  return [indices[0][0], ...input.slice(indices.length)];
+  return [...indices[0], ...input.slice(indices.length)];
 }
 
 export function indexSource(input: readonly number[], indices: readonly Tensor[], row: number): number[] {
@@ -723,6 +723,7 @@ export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
 
 export interface PadAttrs {
   pad: number[];
+  value: number;
 }
 
 function padding(shape: readonly number[], attrs: PadAttrs): { before: number[]; shape: number[] } {
@@ -752,12 +753,13 @@ export const padOp: OpDef<PadAttrs> = {
   tensors: ['input'],
   rest: 'pad',
   sizes: ['pad'],
+  defaults: { value: 0 },
   shape: ([input], attrs) => padding(input, attrs).shape,
   forward: ([input], attrs) => {
     const out = new Tensor(padding(input.shape, attrs).shape);
     forEachIndex(out.shape, (index, offset) => {
       const source = padSource(input.shape, attrs, index);
-      if (source !== undefined) out.data[offset] = input.get(source);
+      out.data[offset] = source === undefined ? attrs.value : input.get(source);
     });
     return out;
   },
@@ -851,4 +853,157 @@ export const cummaxOp: OpDef<CummaxAttrs> = {
     return [grad];
   },
   cost: pointwise(1, 1, [[0]]),
+};
+
+export interface SortAttrs {
+  dim: number;
+}
+
+export function sortSources(input: Tensor, attrs: SortAttrs): Int32Array {
+  const dim = normDim(attrs.dim, input.ndim);
+  const { outer, size, inner } = sliceLayout(input.shape, dim);
+  const sources = new Int32Array(input.size);
+  for (let o = 0; o < outer; o++) {
+    for (let i = 0; i < inner; i++) {
+      const at = (j: number) => (o * size + j) * inner + i;
+      const order = Array.from({ length: size }, (_, j) => j).sort((a, b) => input.data[at(a)] - input.data[at(b)] || a - b);
+      order.forEach((j, rank) => {
+        sources[at(rank)] = at(j);
+      });
+    }
+  }
+  return sources;
+}
+
+export const sortOp: OpDef<SortAttrs> = {
+  name: 'sort',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  defaults: { dim: -1 },
+  shape: ([input], attrs) => {
+    if (input.length === 0) throw new Error('sort: input must have at least one dimension');
+    normDim(attrs.dim, input.length);
+    return [...input];
+  },
+  forward: ([input], attrs) => new Tensor(input.shape, Array.from(sortSources(input, attrs), (o) => input.data[o])),
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    sortSources(input, attrs).forEach((source, offset) => {
+      grad.data[source] += gradOut.data[offset];
+    });
+    return [grad];
+  },
+  cost: movement(true, [[]]),
+};
+
+export interface ScatterAttrs {
+  dim: number;
+}
+
+function scatterLayout(input: readonly number[], index: readonly number[], src: readonly number[], attrs: ScatterAttrs): number {
+  if (index.length !== input.length || src.length !== input.length) {
+    throw new Error(`scatter: index ${formatShape(index)} and src ${formatShape(src)} must have as many dimensions as input ${formatShape(input)}`);
+  }
+  const dim = normDim(attrs.dim, input.length);
+  index.forEach((n, d) => {
+    if (n > src[d] || (d !== dim && n > input[d])) throw new Error(`scatter: index ${formatShape(index)} does not fit input ${formatShape(input)} and src ${formatShape(src)}`);
+  });
+  return dim;
+}
+
+export function scatterPairs(input: Tensor, index: Tensor, src: Tensor, attrs: ScatterAttrs): [number, number][] {
+  const dim = scatterLayout(input.shape, index.shape, src.shape, attrs);
+  const pairs: [number, number][] = [];
+  forEachIndex(index.shape, (position, offset) => {
+    const picked = Math.round(index.data[offset]);
+    if (picked < 0 || picked >= input.shape[dim]) throw new Error(`scatter: index ${picked} at [${position.join(', ')}] is out of range for input ${formatShape(input.shape)} along dim ${dim}`);
+    const target = [...position];
+    target[dim] = picked;
+    pairs.push([offsetOf(input.shape, target), offsetOf(src.shape, position)]);
+  });
+  return pairs;
+}
+
+export const scatterOp: OpDef<ScatterAttrs> = {
+  name: 'scatter',
+  args: ['input', 'dim', 'index', 'src'],
+  tensors: ['input', 'index', 'src'],
+  differentiable: [true, false, true],
+  shape: ([input, index, src], attrs) => {
+    scatterLayout(input, index, src, attrs);
+    return [...input];
+  },
+  forward: ([input, index, src], attrs) => {
+    const out = input.clone();
+    for (const [to, from] of scatterPairs(input, index, src, attrs)) out.data[to] = src.data[from];
+    return out;
+  },
+  backward: (gradOut, [input, index, src], _out, attrs) => {
+    const gi = gradOut.clone();
+    const gs = new Tensor(src.shape);
+    const pairs = scatterPairs(input, index, src, attrs);
+    for (const [to] of pairs) gi.data[to] = 0;
+    for (const [to, from] of pairs) gs.data[from] = gradOut.data[to];
+    return [gi, null, gs];
+  },
+  cost: movement(true, [[], [], []]),
+};
+
+function indexPutLayout(input: readonly number[], mask: readonly number[], values: readonly number[]): number[] {
+  if (mask.length === 0 || mask.length > input.length || mask.some((n, d) => n !== input[d])) {
+    throw new Error(`index_put: mask ${formatShape(mask)} must match the leading dimensions of input ${formatShape(input)}`);
+  }
+  const rest = input.slice(mask.length);
+  const tail = values.slice(Math.max(0, values.length - rest.length));
+  const fits = values.length <= rest.length + 1 && tail.every((n, d) => n === 1 || n === rest[rest.length - tail.length + d]);
+  if (!fits) throw new Error(`index_put: values ${formatShape(values)} cannot be broadcast to the selected rows of input ${formatShape(input)}`);
+  return rest;
+}
+
+export function indexPutRows(mask: Tensor): number[] {
+  const rows: number[] = [];
+  for (let r = 0; r < mask.size; r++) if (mask.data[r] !== 0) rows.push(r);
+  return rows;
+}
+
+export const indexPutOp: OpDef<Record<string, never>> = {
+  name: 'index_put',
+  args: ['input', 'mask', 'values'],
+  tensors: ['input', 'mask', 'values'],
+  differentiable: [true, false, true],
+  shape: ([input, mask, values]) => {
+    indexPutLayout(input, mask, values);
+    return [...input];
+  },
+  forward: ([input, mask, values]) => {
+    const rest = indexPutLayout(input.shape, mask.shape, values.shape);
+    const rows = indexPutRows(mask);
+    const target = [rows.length, ...rest];
+    if (values.shape.length === target.length && values.shape[0] !== 1 && values.shape[0] !== rows.length) {
+      throw new Error(`index_put: values ${formatShape(values.shape)} has ${values.shape[0]} rows, but the mask selects ${rows.length}`);
+    }
+    const width = numel(rest);
+    const out = input.clone();
+    rows.forEach((r, k) => {
+      forEachIndex(rest, (inner, c) => {
+        out.data[r * width + c] = values.data[offsetOf(values.shape, broadcastIndex([k, ...inner], values.shape))];
+      });
+    });
+    return out;
+  },
+  backward: (gradOut, [input, mask, values]) => {
+    const rest = indexPutLayout(input.shape, mask.shape, values.shape);
+    const rows = indexPutRows(mask);
+    const width = numel(rest);
+    const gi = gradOut.clone();
+    const picked = new Tensor([rows.length, ...rest]);
+    rows.forEach((r, k) => {
+      for (let c = 0; c < width; c++) {
+        picked.data[k * width + c] = gradOut.data[r * width + c];
+        gi.data[r * width + c] = 0;
+      }
+    });
+    return [gi, null, unbroadcast(picked, values.shape)];
+  },
+  cost: movement(true, [[], [], []]),
 };

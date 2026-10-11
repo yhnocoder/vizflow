@@ -52,15 +52,36 @@ function binary(
   };
 }
 
-export const whereOp: OpDef<{ other: number }> = {
+function whereShape([condition, input, other]: number[][]): number[] {
+  const kept = broadcastShapes(condition, input);
+  return other === undefined ? kept : broadcastShapes(kept, other);
+}
+
+function whereValue(shape: number[], [condition, input, other]: Tensor[], fallback: number | undefined): Tensor {
+  const out = new Tensor(shape);
+  forEachIndex(shape, (index, offset) => {
+    const keep = condition.data[offsetOf(condition.shape, broadcastIndex(index, condition.shape))] !== 0;
+    if (keep) out.data[offset] = input.data[offsetOf(input.shape, broadcastIndex(index, input.shape))];
+    else out.data[offset] = other === undefined ? (fallback as number) : other.data[offsetOf(other.shape, broadcastIndex(index, other.shape))];
+  });
+  return out;
+}
+
+export const whereOp: OpDef<{ other?: number }> = {
   name: 'where',
   args: ['condition', 'input', 'other'],
-  tensors: ['condition', 'input'],
-  differentiable: [false, true],
-  shape: ([condition, input]) => broadcastShapes(condition, input),
-  forward: ([condition, input], { other }) => zipWith(condition, input, (keep, x) => (keep !== 0 ? x : other)),
-  backward: (gradOut, [condition, input]) => [null, unbroadcast(zipWith(condition, gradOut, (keep, g) => (keep !== 0 ? g : 0)), input.shape)],
-  cost: movement(false, [[], [0]]),
+  tensors: ['condition', 'input', 'other'],
+  scalars: ['other'],
+  differentiable: [false, true, true],
+  shape: (shapes) => whereShape(shapes),
+  forward: (inputs, { other }) => whereValue(whereShape(inputs.map((t) => [...t.shape])), inputs, other),
+  backward: (gradOut, [condition, input, other]) => {
+    const keep = zipWith(condition, gradOut, (c, g) => (c !== 0 ? g : 0));
+    const grads: (Tensor | null)[] = [null, unbroadcast(keep, input.shape)];
+    if (other !== undefined) grads.push(unbroadcast(zipWith(condition, gradOut, (c, g) => (c !== 0 ? 0 : g)), other.shape));
+    return grads;
+  },
+  cost: movement(false, [[], [0], [0]]),
 };
 
 function unary<A extends object = NoAttrs>(
@@ -184,6 +205,54 @@ function bitwise(name: string, fn: (x: bigint, y: bigint) => bigint): OpDef<Scal
 
 export const bitwiseXorOp = bitwise('bitwise_xor', (x, y) => x ^ y);
 export const bitwiseAndOp = bitwise('bitwise_and', (x, y) => x & y);
+export const bitwiseOrOp = bitwise('bitwise_or', (x, y) => x | y);
+
+function floorDivExact(x: bigint, y: bigint): bigint {
+  if (y === 0n) throw new Error('floor_divide: integer division by zero');
+  const q = x / y;
+  return q * y !== x && x < 0n !== y < 0n ? q - 1n : q;
+}
+
+export const floorDivideOp = bitwise('floor_divide', floorDivExact);
+
+export const logicalNotOp: OpDef<NoAttrs> = {
+  name: 'logical_not',
+  args: ['input'],
+  tensors: ['input'],
+  differentiable: [false],
+  dtype: 'bool',
+  cost: pointwise(1, 0, [[]]),
+  shape: ([a]) => [...a],
+  forward: ([a]) => mapWith(a, (x) => (x === 0 ? 1 : 0)),
+  backward: () => [null],
+};
+
+export function signBit(y: number): number {
+  return y < 0 || Object.is(y, -0) ? -1 : 1;
+}
+
+export function copysignLocal(x: number, y: number): number {
+  return x === 0 ? 0 : Math.sign(x) * signBit(y);
+}
+
+export const copysignOp: OpDef<ScalarAttrs> = {
+  name: 'copysign',
+  args: ['input', 'other'],
+  tensors: ['input', 'other'],
+  scalars: ['other'],
+  differentiable: [true, false],
+  cost: {
+    saves: [[0, 1], []],
+    flops: (inputs, out) => ({ forward: [numel(out)], backward: inputs.map((_, k) => (k === 0 ? [numel(out)] : NO_FLOPS)) }),
+  },
+  shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+  forward: ([a, b], { other }) =>
+    b === undefined ? mapWith(a, (x) => Math.abs(x) * signBit(other as number)) : zipWith(a, b, (x, y) => Math.abs(x) * signBit(y)),
+  backward: (gradOut, [a, b], _out, { other }) => {
+    const local = b === undefined ? mapWith(a, (x) => copysignLocal(x, other as number)) : zipWith(a, b, copysignLocal);
+    return [unbroadcast(zipWith(local, gradOut, (l, g) => l * g), a.shape), null];
+  },
+};
 
 function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<ScalarAttrs> {
   return {
@@ -203,6 +272,7 @@ function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<Sca
 
 export const eqOp = compare('eq', (x, y) => x === y);
 export const geOp = compare('ge', (x, y) => x >= y);
+export const ltOp = compare('lt', (x, y) => x < y);
 export const greaterOp = compare('greater', (x, y) => x > y);
 export const powOp = unary<{ exponent: number }>(
   'pow',
