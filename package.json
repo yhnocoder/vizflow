@@ -17,6 +17,7 @@
     "./src/scene3d/index.ts",
     "./src/scene3d/edit.ts",
     "./src/element/index.ts",
+    "./src/serving/index.ts",
     "./dist/*.js",
     "./dist/module/*.js"
   ],
@@ -56,6 +57,10 @@
     "./dsl": {
       "types": "./dist/types/dsl/index.d.ts",
       "import": "./dist/module/dsl.js"
+    },
+    "./serving": {
+      "types": "./dist/types/serving/index.d.ts",
+      "import": "./dist/module/serving.js"
     }
   },
   "scripts": {
