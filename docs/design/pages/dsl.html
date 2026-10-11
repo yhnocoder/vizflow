@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizflow 页面描述文件</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lxgw-wenkai-screen-webfont@1.7.0/lxgwwenkaiscreen.css">
+<link rel="stylesheet" href="../style.css">
+<script defer src="../math.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-chtml.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/components/prism-core.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/autoloader/prism-autoloader.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/line-highlight/prism-line-highlight.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/prismjs@1.30.0/plugins/diff-highlight/prism-diff-highlight.min.js"></script>
+<script defer src="../code.js"></script>
+</head>
+<body>
+<main>
+<p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
+<h1>vizflow 页面描述文件 <span class="tag">第一版</span></h1>
+<p class="lead">由标准模块组成的页面（例如一层 Transformer）可以不写 JavaScript，只写一份 YAML 页面描述文件。<code>dsl</code> 入口把它编译成计算图、步骤、面板、讲解段落、模块记录和一棵布局树，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 再把这些交给已有的挂载流程。页面描述文件只是 JavaScript 接口之上的一层：编译结果就是普通的 <code>Graph</code>、<code>StepsSpec</code> 与 <code>PanelItem[]</code>，遇到描述文件写不出的需求时，页面改用 JavaScript 接口。JavaScript 调用方也可以直接把同样结构的对象传给 <code>compilePage</code>，YAML 只是这份结构的一种写法。</p>
+<p class="hint">完整示例：<code>examples/qwen3-dsl.yaml</code> 与它引用的 <code>examples/qwen3/attention.yaml</code>。它和 JavaScript 写的 <code>examples/qwen3-structure.html</code> 是同一页，测试比较两页的损失和每个权重的梯度。</p>
+
+<h2>文件里写什么</h2>
+<p>文件分两种。页面文件描述一整页，模块文件描述一个可以复用的模块，例如 RMSNorm。页面本身是根模块，body、steps、backward 的规则与模块相同。</p>
+<pre><code class="language-yaml">module: RMSNorm
+subtitle: LlamaRMSNorm / Qwen3RMSNorm
+params:
+  eps:  { type: float, default: 1e-6 }
+  name: { type: text, default: RMSNorm }
+inputs:
+  x: { shape: [..., n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  backward:
+    title: 穿过 \of{name}（已折叠）
+body:
+  - sq: { op: x ** 2, tex: '\of{x}^{2}' }
+  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
+  - xh: { op: x * r, tex: '\hat{\of{x}}' }
+  - out: xh * weight
+steps:
+  - id: rms
+    show: [ms, r]
+    label: '$\of{ms},\ \of{r}$'
+    title: 均方根的倒数
+    text: |
+      每一行对平方取平均得到 $\mathrm{ms}$，加上 $\epsilon=\of{eps}$ 再取平方根的倒数。
+      $$\of{r} = {{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms},\ \partial\of{sq}$'
+      title: 传到 ms 和平方</code></pre>
+<table>
+  <thead>
+    <tr><th>字段</th><th>出现在</th><th>内容</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>module</code></td><td>模块</td><td>模块名</td></tr>
+    <tr><td><code>title</code>、<code>lede</code>、<code>hint</code>、<code>camera</code></td><td>页面</td><td>页面标题、导语、场景提示和相机选项。元素把标题和导语画在场景上方，<code>hint</code> 与 <code>camera</code> 原样传给 <code>mountScene</code>。</td></tr>
+    <tr><td><code>import</code></td><td>两种</td><td>本文件用到的模块，<code>{ 名字: 引用 }</code></td></tr>
+    <tr><td><code>modules</code></td><td>页面</td><td>只在本页使用的模块，<code>{ 名字: 模块内容 }</code>，内容与模块文件相同，不写 <code>module</code></td></tr>
+    <tr><td><code>subtitle</code></td><td>两种</td><td>大括号上的副标题</td></tr>
+    <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, values? } }</code></td></tr>
+    <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
+    <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
+    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组 } }</code> 建 input 节点</td></tr>
+    <tr><td><code>outputs</code></td><td>模块</td><td>输出节点的名字列表</td></tr>
+    <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex? } }</code>，建 param 节点</td></tr>
+    <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, shape?, tex? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点；<code>shape</code> 把数值按这个形状重排，元素个数必须相同，否则报错 <code>buffer 'x' has N values, which do not fit the shape (...)</code></td></tr>
+    <tr><td><code>body</code></td><td>两种</td><td>节点、子模块实例、group 与 for 的列表，按顺序建图</td></tr>
+    <tr><td><code>steps</code></td><td>两种</td><td>本模块的前向步骤：<code>id</code>、<code>show</code>、<code>active?</code>、<code>label?</code>、<code>title?</code>、<code>text?</code>、<code>segment?</code>、<code>backward?</code>。<code>backward: { label?, title?, text? }</code> 是这一步对应的反向步骤的默认文字，<code>segment</code> 覆盖步骤条上的分段名</td></tr>
+    <tr><td><code>backward</code></td><td>两种</td><td>按节点名给对应反向步骤的 <code>title</code>、<code>label</code>、<code>text</code></td></tr>
+    <tr><td><code>fold</code></td><td>模块</td><td>模块折叠后那一步的默认文字 <code>{ label?, title?, text?, backward?: { label?, title?, text? } }</code>，实例的 <code>fold</code> 逐个字段覆盖它</td></tr>
+    <tr><td><code>overview</code></td><td>页面</td><td>总览步骤的 <code>title</code>、<code>text</code>、<code>label</code>；<code>backward: { label?, title?, text? }</code> 在反向的最后加一个反向总览步骤</td></tr>
+    <tr><td><code>leaves</code></td><td>页面</td><td><code>{ title, label?, text? }</code>，在总览之后加一个输入步骤，显示全部叶子（input、label、权重、权重的转置和 buffer），缺 <code>title</code> 时报错 <code>leaves needs a title</code>，见「步骤怎么排」</td></tr>
+    <tr><td><code>sequence</code></td><td>页面</td><td><code>{ tokens, input, label }</code>，用一条 token 序列同时建输入和右移一位的标签，见「序列输入」</td></tr>
+    <tr><td><code>init</code>、<code>values</code></td><td>页面</td><td>权重初值的随机种子 <code>{ seed }</code>，以及按路径给定的固定数值</td></tr>
+    <tr><td><code>panels</code></td><td>页面</td><td>面板列表，见「面板与大括号」</td></tr>
+    <tr><td><code>sections</code></td><td>页面</td><td>场景下方的讲解段落，见「讲解段落」</td></tr>
+    <tr><td><code>layout</code></td><td>页面</td><td>原样放进编译结果的 <code>layout</code>，目前没有模块读取它</td></tr>
+  </tbody>
+</table>
+<p>body 的每一项是只有一个键的映射，或者一个 for：</p>
+<ul>
+  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex }</code> 同时给出 tex。</li>
+  <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside?, inline?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。其余字段决定这个实例作为一个模块怎么显示和折叠，见下面的「模块记录」。</li>
+  <li><code>name: { body, steps?, beside?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，用来画大括号、把步骤分组和整体折叠。</li>
+  <li><code>{ for: h, in: '1..H', name?, brace?, beside?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。</li>
+</ul>
+<p><b>模块记录。</b>每个不是 inline 的实例、每个 group 和写了 <code>brace</code> 的 for 迭代对应一个模块记录，编译结果的 <code>modules</code> 列出其中含运算节点的那些（<code>PageModule</code>，见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」）。记录的字段来自使用处：</p>
+<ul>
+  <li><code>title</code> 覆盖大括号的标题，默认是实例名或 group 名（for 里去掉循环下标），可以写 <code>\of{...}</code> 和行内公式。<code>subtitle</code> 默认取模块文件的 <code>subtitle</code>。</li>
+  <li><code>folded: true</code> 让模块一开始就是折叠的，读者可以展开。<code>fixed: true</code> 表示占位模块：它总是折叠，不能展开，盒子里的计算只用来示意（例如 Qwen3 页的「第 1 到 $N-1$ 层」用 <code>identity</code> 代替）。</li>
+  <li><code>split: true</code> 让子模块各自成为步骤条上的一段，例如 decoder 层的 input_layernorm、self_attn、MLP 各占一段；不写时整个模块是一段，子模块是段里的小标题。</li>
+  <li><code>fold</code> 是折叠后那一步的文字，字段与模块文件顶层的 <code>fold</code> 相同，逐个字段覆盖模块文件给的默认值。</li>
+  <li><code>inline: true</code> 的实例不建模块记录，也不生成子布局树：节点和步骤直接算作外层模块的，路径仍然带实例名。它不能写 <code>title</code>、<code>subtitle</code>、<code>fixed</code>、<code>folded</code>、<code>split</code>、<code>fold</code>，写了报错 <code>an inline instance has no box of its own, so it cannot have 'x'</code>。Qwen3 注意力里的 q_norm、k_norm 和 eager_attention_forward 用 inline，因为 HF 里它们不是单独的一次模块调用。</li>
+</ul>
+<p><b>并排。</b>实例、group 和 for 可以写 <code>beside: 名字</code>，表示这一项在场景里画在前一项的旁边，从同一层开始。名字是紧挨着的前一项的名字（实例名、group 名或 for 的 <code>name</code>），或者是已经 beside 前一项的某一项的名字，这样几项连成一组，例如 c beside b、b beside a 是三条竖道。一组里的项在编译结果的布局树里合成一个 <code>parallel</code>，每项一个分支，按书写顺序从左到右排列；主列从各分支最高的一层再往上一层继续。没有写 <code>beside</code> 的项按原来的规则排在主列上。</p>
+<p>并排的几项是同一个模块的实例时，步骤也合并：各实例 id 相同的步骤合成一步，<code>show</code> 和 <code>active</code> 取并集，标题和正文用第一个实例的（模块默认值或这个实例的补丁），按钮文字和反向按钮文字把各实例不同的写法连起来，两边都是一整个行内公式时合成一个公式 <code>$a,\ b$</code>，否则用 <code>, </code> 连接。其余情况下 <code>beside</code> 只影响布局，步骤不变。合并让「q 和 k 各做一次 RMSNorm」只占四步，读者在同一步里看到两边的对应关系。</p>
+<pre><code class="language-yaml">- q: 'view(x @ Wq.T, T, H, dh)'
+- k: 'view(x @ Wk.T, T, Hkv, dh)'
+- qk_norm:
+    title: q_norm $\cdot$ k_norm
+    body:
+      - q_norm: { use: RMSNorm, inline: true, suffix: q, inputs: { x: q }, outputs: { out: qn } }
+      - k_norm: { use: RMSNorm, inline: true, suffix: k, beside: q_norm, inputs: { x: k }, outputs: { out: kn } }
+- apply_rotary_pos_emb:
+    use: RoPE
+    inputs: { q: qn, k: kn }
+    outputs: { q_embed: qr, k_embed: kr }</code></pre>
+<p>这里 q_norm 和 k_norm 是两条竖道，从同一层开始，整组由 group qk_norm 画一个大括号；均方根那一步的按钮文字是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。RoPE 从两条竖道的上方开始。一个 body 里实例的步骤补丁在这个 body 全部建完之后才编译，所以 q_norm 的补丁可以引用后面 k_norm 的节点，例如在合并后的那一步里同时写出 $r^{q}$ 和 $r^{k}$。以下情况报错，错误信息指向 <code>beside</code> 所在的行：</p>
+<ul>
+  <li>名字不是紧挨着的前一项，也不是与前一项并排的项，例如中间隔了一个节点。错误信息区分「这个名字前面没有」和「这个名字不是前一项」。</li>
+  <li>写在单个节点 <code>name: expr</code> 上。并排的单位是实例、group 和 for。</li>
+  <li>这一项用到了同一组里前面某一项算出的值。并排的项从同一层开始，用到别的竖道的结果的项必须画在那条竖道上方，所以要写在这一组之后。权重、buffer 和只由它们算出的节点（例如权重的转置）不算。</li>
+</ul>
+<p>结构检查手写，不用 JSON Schema。未知的字段、缺少的字段和类型不对的值都报错，错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>bad.yaml:5:8 body[0].y: name 'nope' is not defined in the page</code>。行号和列号来自 <code>yaml</code> 包解析时保留的位置，传入的是 JavaScript 对象时信息里只有路径。YAML 里的重复键同样报错。</p>
+
+<h2>表达式</h2>
+<p>节点的 <code>op</code>、实例的 <code>inputs</code>、buffer 的 <code>value</code> 和 shape 里的维度都是 PyTorch 风格的表达式：</p>
+<table>
+  <thead>
+    <tr><th>写法</th><th>含义</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>f(a, b, k=v)</code></td><td>调用 graph 上的同名方法（内置运算与 <code>defineOp</code> 注册的运算），位置参数和关键字参数按方法签名传递。只能在编译期求值的参数（维度名、参数、数字表达式）先求值成数。运算定义了 <code>rest</code> 时，多出的位置参数收成一个数组，例如 <code>view(x, T, H, dh)</code> 等于 <code>view(x, [T, H, dh])</code>。</td></tr>
+    <tr><td><code>a @ b</code>、<code>a ** n</code></td><td><code>matmul</code>；<code>pow</code>，<code>n</code> 是数</td></tr>
+    <tr><td><code>a + b</code>、<code>a - b</code>、<code>a * b</code>、<code>a / b</code></td><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code>。右边可以是数；<code>数 + 节点</code> 和 <code>数 * 节点</code> 交换成节点在左；<code>数 - 节点</code> 和 <code>数 / 节点</code> 报错</td></tr>
+    <tr><td><code>-a</code>、<code>a.T</code></td><td>乘 −1；转置，图上已有同一个转置时复用</td></tr>
+    <tr><td><code>q[h]</code>、<code>o[1..H]</code></td><td>循环下标；按顺序列出全部下标，用在 <code>cat</code> 这类接受节点列表的参数里</td></tr>
+    <tr><td><code>//</code>、<code>1e-6</code>、<code>"none"</code>、<code>true</code></td><td>整除；科学计数法；字符串字面量，只用于关键字参数；布尔值</td></tr>
+    <tr><td><code>act(x)</code></td><td><code>act</code> 是 op 类型的参数时，调用它的值对应的运算</td></tr>
+  </tbody>
+</table>
+<p>YAML 的 flow 映射 <code>{ ... }</code> 里不加引号的值遇到逗号就结束，所以带逗号的表达式要加引号，例如 <code>{ op: 'embedding(ids, E)' }</code>。</p>
+
+<h2>作用域、维度与参数</h2>
+<ol>
+  <li>作用域封闭。名字依次在本模块的 body 节点、inputs、weights、buffers、子实例 outputs 绑定的名字、params 里查找，找不到就报错。模块看不到父模块和页面的名字。</li>
+  <li>名字唯一。for 里定义的名字和实例名必须带循环变量下标（<code>q[h]</code>），展开后是 <code>q[1]</code>、<code>q[2]</code>。</li>
+  <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。模式里可以有一个 <code>...</code>，匹配任意个维度，这些维度不绑定名字；例如 RMSNorm 的 <code>[..., n]</code> 只要求最后一维，输入可以是 $(T, d)$，也可以是按 head 分好的 $(T, H, d_h)$。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
+  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>，没有 <code>default</code> 时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
+  <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
+  <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code> 与 <code>causal_mask(T)</code>，数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
+  <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块见下表。</li>
+</ol>
+<table>
+  <thead>
+    <tr><th>模块文件</th><th>模块名</th><th>接口</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>rmsnorm</code></td><td>RMSNorm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>；权重 $\boldsymbol{\gamma}$ 长度 $n$，初值全 1；参数 <code>eps</code>（默认 $10^{-6}$，传给 <code>rsqrt</code> 的 <code>eps</code>）和四个 text 参数 <code>name</code>、<code>intro</code>、<code>out_note</code>、<code>in_note</code>，用来在步骤正文里写出实例自己的名字和补充说明。步骤 square、rms、normalize、scale 都带反向的默认文字，模块带 <code>fold</code> 默认文字。</td></tr>
+    <tr><td><code>glu</code></td><td>GLU</td><td>输入 <code>x: [T, d]</code>，输出 <code>down</code>；参数 <code>act</code>（op，可选 <code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code>，默认 <code>silu</code>）、<code>f</code>（中间维度，dim）和 <code>name</code>（text）。</td></tr>
+    <tr><td><code>rope</code></td><td>RoPE</td><td>输入 <code>q: [T, Hq, dh]</code>、<code>k: [T, Hk, dh]</code>，输出 <code>q_embed</code>、<code>k_embed</code>；参数只有 <code>theta</code>（默认 $10^4$），$d_h$ 从输入推出；cos、sin 表是 $(T, 1, d_h)$ 的 buffer。步骤 cos、rh、sin、add。</td></tr>
+    <tr><td><code>gqa</code></td><td>GQA</td><td>grouped-query attention。输入 <code>q: [T, H, dh]</code>、<code>k</code> 与 <code>v: [T, Hkv, dh]</code>、<code>mask: [T, T]</code>，输出 <code>o</code>，形状 $(T, H d_h)$。每个 query head $h$ 用 <code>select</code> 取出下标为 $\lfloor (h-1)/(H/H_{kv}) \rfloor$ 的 kv head（下标从 0 起，对应 HF 的 <code>repeat_kv</code>），再算 $S = \operatorname{select}(\mathbf{q},1,h-1)\,\mathbf{k}^{\top}$（<code>select_matmul</code>）、乘 $d_h^{-1/2}$、加 mask、exp、按行求和、相除、乘 $\mathbf{v}$，最后 <code>cat(o[1..H], dim=1)</code>。$H = H_{kv}$ 时是普通的多头注意力。步骤 krep、vrep、kT、S、Ssc、mask、exp、sum、div、pv、concat。</td></tr>
+    <tr><td><code>lm-head-nll</code></td><td>LMHeadNLL</td><td>参数 <code>V</code>（dim）；输入 <code>h: [T, d]</code> 与标签 <code>y: [T]</code>，输出 <code>loss</code>、<code>z</code>、<code>logp</code>。</td></tr>
+  </tbody>
+</table>
+<p>模块把 softmax 拆成 exp、求和、相除三步，把 repeat_kv 画成 <code>select</code>，因为读者要在图上看到这些中间张量；数值与 torch 的融合实现相同。</p>
+<p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度、<code>view</code> 的形状这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参。页面没有 <code>real</code> 时不加。<code>cat</code> 的列表参数来自范围 <code>o[a..b]</code>、并且范围的真实个数与示例个数不同时（例如 $H$ 的示例值 2、真实值 32），编译器给 <code>cat</code> 加上 <code>pieces</code> 选项，值是表示个数的维度，拼接结果的真实尺寸按「一块的真实尺寸 × 真实个数」计算，后面的 o_proj 因此按 4096 显示。</p>
+<p><b>初值。</b>权重按路径在 <code>values</code> 里查固定数值，没有时按 <code>init</code> 生成。<code>values</code> 里多出的路径报错。</p>
+<table>
+  <thead>
+    <tr><th>常量</th><th>值</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>默认 <code>init</code></td><td><code>uniform</code></td></tr>
+    <tr><td><code>uniform</code></td><td>$U(-1, 1)$，四舍五入到 2 位小数</td></tr>
+    <tr><td><code>normal</code></td><td>$N(0, 1)$（Box–Muller），四舍五入到 2 位小数</td></tr>
+    <tr><td><code>ones</code>、<code>zeros</code></td><td>全 1、全 0</td></tr>
+    <tr><td>默认随机种子</td><td>1，随机数生成器是 mulberry32；权重按建图顺序依次取随机数</td></tr>
+  </tbody>
+</table>
+
+<h2>路径与 graph 上的节点名</h2>
+<p>实例内的名字在全页的路径是「实例名.名字」逐层拼接，例如 <code>layer.self_attn.attn[1].P</code>。<code>panels</code>、<code>backward</code>、步骤补丁、<code>values</code> 和正文模板都按路径或本作用域的名字引用节点。编译结果的 <code>nodes</code> 是 <code>Map&lt;路径, Node&gt;</code>。</p>
+<p>graph 上节点的 <code>name</code> 就是路径。一个表达式里间接产生的节点（例如 <code>rsqrt(ms + eps)</code> 里的 <code>ms + eps</code>）没有名字，命名为 <code>路径/k</code>，<code>k</code> 从 1 起按创建顺序编号，例如 <code>layer.input_layernorm.r/1</code>。这些节点和所属的节点在同一步出现。正文模板按最长前缀匹配节点名，所以 <code>{{layer.self_attn.P[1][i, j]}}</code> 能正确识别。</p>
+
+<h2>tex 怎么来</h2>
+<ul>
+  <li>默认值由名字推出：小写名字加粗（<code>q</code> 成为 <code>\mathbf{q}</code>，<code>gate</code> 成为 <code>\mathbf{gate}</code>）；大写字母开头的名字照写，名字末尾的数字或小写字母作下标（<code>Wq</code> 成为 <code>W_{q}</code>，<code>x0</code> 成为 <code>\mathbf{x}_{0}</code>）；多个大写字母的名字用 <code>\mathrm</code>（<code>LSE</code>）；带下划线的名字把下划线后的部分作下标。带循环下标的名字加上标 <code>^{(h)}</code>。</li>
+  <li>节点的 tex 依次取：使用处 <code>tex</code> 的覆盖、声明里的 <code>tex</code>、使用处绑定的输出名推出的默认值、模块内名字推出的默认值。</li>
+  <li><code>\of{name}</code> 换成那个名字的 tex。op 参数的 <code>\of{act}</code> 是运算的 tex，<code>\of{act.def}</code> 是运算登记的定义式，<code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code> 已登记（<code>OP_TEX</code>）。循环变量的 <code>\of{h}</code> 是它的值，float 参数的 <code>\of{eps}</code> 是它的 TeX 写法（<code>10^{-6}</code>）。text 参数的值里也可以写 <code>\of{...}</code>，在模块内展开，名字按模块内的作用域查找，所以页面传给 RMSNorm 的 <code>out_note: $\of{out}$ 是 lm_head 的输入。</code> 写出的是这个实例输出的 tex。</li>
+  <li>重音命令 <code>\hat</code>、<code>\bar</code>、<code>\tilde</code>、<code>\widehat</code>、<code>\widetilde</code>、<code>\overline</code>、<code>\vec</code>、<code>\dot</code> 的参数是 <code>\of{x}</code>、而 x 的 tex 以下标结尾时，下标移到重音外面：<code>\hat{\of{x}}</code> 在 x 为 <code>\mathbf{x}_{0}</code> 时写成 <code>\hat{\mathbf{x}}_{0}</code>。实例自动加的下标因此不会被重音盖住，elem 也只有一层下标。</li>
+  <li>步骤的标题、按钮文字、正文和面板文字里的数学符号一律写成 LaTeX（<code>$\partial\of{x}$</code>），不用 unicode 的数学字符。模块的步骤文字用 <code>\of{...}</code> 引用节点，实例自动加的下标就会出现在文字里。</li>
+  <li>节点的 <code>elem</code> 由 tex 推出，与 <code>explain</code> 追加下标的方式兼容：<code>\mathbf{x}</code> 的 elem 是 <code>{x}</code>，多字母名字用 <code>\mathrm</code>，tex 里已有不在末尾的下标时整体加花括号，追加下标时不产生双下标。</li>
+  <li>同一作用域里同一个模块有多个实例时，按出现顺序给实例内部节点和权重的 tex 加下标，带循环下标的实例用循环变量的值。已有下标的合并（<code>W_{q}</code> 成为 <code>W_{q,1}</code>），含 <code>\of{}</code> 的 tex 不加，作用域里只有一个实例时不加，buffer 不加。使用处写了 <code>suffix</code> 时用它代替下标。</li>
+  <li>全页两个节点的 tex 相同时，编译器用 <code>console.warn</code> 给出 <code>vizflow dsl: nodes 'a', 'b' share the tex '...'</code>。</li>
+</ul>
+
+<h2>步骤怎么排</h2>
+<ol>
+  <li>每个模块的 steps 插在该实例在父模块 body 里的位置。一个 step 放在它 <code>show</code> 的节点里最早创建的那一个之后；同一个模块里后写的 step 不排在先写的 step 前面。这样「按 head 拆开」这类步骤可以写在模块末尾，仍然出现在循环之前。</li>
+  <li>body 里没有被任何 step 的 <code>show</code> 覆盖的节点自动生成一步，标题和标签取节点名。这一步同时显示该节点用到的、还没有出现过的权重、权重的转置和 buffer。权重和 buffer 不单独生成步骤。</li>
+  <li>同一个 for 的各次迭代生成的步骤合并成一步：id 相同的步骤（包括子实例和 group 的步骤）合并，自动生成的步骤按节点在迭代中的位置合并。合并后的 <code>show</code> 和 <code>active</code> 取所有迭代的并集，<code>label</code>、<code>title</code>、<code>text</code> 用第一次迭代的，位置也是第一次迭代的位置。这样 GQA 每个 head 的 $S^{(h)}$、$P^{(h)}$ 共用一组步骤，步骤数不随 head 数增长，与按 head 并排画出的场景一致。并排的同一模块的实例按同样的方式合并，规则见上文「并排」。</li>
+  <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm.square</code>。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔，<code>backward</code> 逐个字段覆盖这一步的反向默认文字。循环里合并的步骤用任一次迭代的路径都能找到。id 不存在时报错 <code>step 'x' does not exist in '路径'</code>。补丁在所在 body 建完后才编译。</li>
+  <li>页面写了 <code>leaves</code> 时，总览之后的第一步是输入步骤（<code>kind: 'inputs'</code>），显示全部叶子；之后各步只显示自己算出的节点，用到的叶子已经在输入步骤里出现。</li>
+  <li>反向步骤用 <code>createSteps</code> 的 <code>backward: 'reverse'</code> 生成：前向步骤倒过来，每一步一个反向步骤，规则见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。反向步骤的文字按字段取，优先级从高到低是：模块或页面的 <code>backward</code> 按节点名写的文字（写进算出这个节点的那个前向步骤，节点不在任何前向步骤里时报错 <code>node 'x' is not computed in any forward step</code>）、补丁的 <code>backward</code>、步骤声明的 <code>backward</code>。三处都没写的字段用自动内容。</li>
+  <li>每一步记下它所属的最内层模块（<code>module</code>）、步骤条上的分段（<code>segment</code>）和段内小标题（<code>sub</code>）。从外往里找第一个没有写 <code>split</code> 的模块，它的标题是分段名；这一步的最内层模块比它更深、本身也没有写 <code>split</code> 时，最内层模块的标题是小标题。不属于任何模块的步骤以按钮文字为分段名。步骤自己写了 <code>segment</code> 时用它。</li>
+  <li>正文里的 <code>{{ name | matrix }}</code>、<code>{{ name | matrix:3 }}</code>、<code>{{ name.grad | matrix:3 }}</code> 在编译期按节点形状展开成 <code>\begin{pmatrix}...\end{pmatrix}</code>，每个单元格是一个模板 <code>{{节点名[i, j]:3}}</code>。三维的节点 $(T, H, d_h)$ 每个 head 展开成一个矩阵，下面标 <code>_{h=i}</code>，几个矩阵并排放在 <code>\left[\,\cdots\,\right]</code> 里；只有一个 head 时是一个普通矩阵。</li>
+  <li><code>{{ name | rope_wave:cos }}</code>、<code>{{ name | rope_wave:sin:N }}</code> 展开成内置小图 <code>&lt;vf-figure&gt;</code>，画出 RoPE 表每一列随位置变化的曲线，<code>N</code> 是画到的位置数，见<a href="vizflow.html">vizflow 设计</a>的「正文模板」。节点必须是至少 2 行、最后一维为偶数的表，中间可以夹大小为 1 的维度（$(T, 1, d_h)$）；不满足时编译报错。未知的过滤器报 <code>unknown template filter</code>。</li>
+  <li>其余 <code>{{...}}</code> 里的名字按作用域换成 graph 上的节点名，再交给步骤的正文模板。</li>
+</ol>
+
+<h2>面板与大括号</h2>
+<p><code>panels</code> 是 <code>PanelItem</code> 的同构写法，凡是节点的位置都写路径或根作用域的名字：<code>tokens</code>、<code>sliders</code>、<code>ids</code>、<code>columns[].node</code>、<code>matrix</code>、<code>matrices[].matrix</code>、<code>highlight</code>（或 <code>highlight.node</code>）、<code>attention</code>、<code>loss.parts</code>、<code>loss.random.nodes</code> 与 <code>sgd.params</code>。<code>attention</code> 可以写范围 <code>'P[1..H]'</code> 或列表。<code>sgd.params</code> 与 <code>random.nodes</code> 写 <code>all</code> 表示全部权重。<code>matrix: head.W.T</code> 这类表达式也可以写，转置在建图时已经存在时直接复用。<code>title</code>、<code>note</code>、<code>caption</code>、列标题与 <code>loss.text</code> 里的 <code>\of{...}</code> 按根作用域展开。<code>loss</code> 一项单独写 <code>- loss</code> 时用默认选项。<code>sequence: true</code> 的面板需要页面写了 <code>sequence</code>。</p>
+<p>大括号来自模块记录。页面编译出 <code>modules</code> 后，<code>autoLayout</code> 按<a href="vizflow.html">vizflow 设计</a>的「分层布局」生成大括号；标题是模块记录的标题，按 <code>renderText</code> 渲染，可以含行内公式。页面里没有任何模块时（例如只有几个节点的最小页面），<code>autoLayout</code> 按布局树排布，for 里同名实例合成一个括号、并排的几项标题用 <code> · </code> 连接，见<a href="vizflow.html">vizflow 设计</a>的「自动布局」。</p>
+
+<h2>序列输入</h2>
+<p>语言模型的页面通常把一条 token 序列同时作为输入和右移一位的标签。页面写 <code>sequence: { tokens: [the, cat, sat, on], input: ids, label: y }</code> 时，编译器建两个 label 节点：<code>input</code> 是前 $T$ 个 token 的 id，<code>label</code> 是后 $T$ 个，两者的 <code>tokens</code> 都是页面的 <code>vocab</code>。规则：</p>
+<ul>
+  <li><code>tokens</code> 至少两个，每个必须在 <code>vocab</code> 里；$T$ 等于个数减 1，根作用域的 <code>dims</code> 里有 <code>T</code> 时必须相等，否则报错 <code>sequence has N tokens, so T must be ..., but dims gives T = ...</code>。</li>
+  <li>编译结果的 <code>sequence</code> 是 <code>PageSequence</code>：<code>get()</code> 返回当前的 $T+1$ 个 id，<code>set(ids)</code> 在一次 <code>batch</code> 里同时改写输入和标签；个数不对或 id 越界时抛错 <code>sequence.set: expected N token ids between 0 and V-1, got [...]</code>。</li>
+  <li>元素把 <code>sequence</code> 交给面板和场景：序列面板逐个位置选 token，场景里点击 $\log\mathbf{p}$ 的柱子改的是序列，输入和标签一起变化，见<a href="vizflow.html">vizflow 设计</a>的「标签与交互」。</li>
+</ul>
+<pre><code class="language-ts">interface PageSequence { readonly tokens: string[]; readonly length: number; get(): number[]; set(ids: number[]): void }</code></pre>
+
+<h2>讲解段落</h2>
+<p><code>sections</code> 在场景和步骤条下方画讲解段落，用来放不属于某一步的长篇讲解（例如 RoPE 为什么能编码相对位置）。每一项编译成 <code>SectionItem</code>，由 <code>ui</code> 的 <code>mountSections</code> 画出，见<a href="vizflow.html">vizflow 设计</a>的「面板」。</p>
+<ul>
+  <li><code>{ title?, rope?, src }</code> 或 <code>{ title?, rope?, rows }</code>，两者只能写一个，都没有时报错 <code>a section needs src or rows</code>。</li>
+  <li><code>src</code> 是 Markdown 文件，相对于 YAML 文件解析，和 <code>import</code> 的模块路径一样在运行时读取。文件按冒号块分行、分栏：三个或更多冒号加名字的一行打开一个块，只有冒号的一行关闭最近的块；<code>columns 宽度...</code> 只能在最外层，里面只放 <code>column</code>；<code>lead</code> 是开头段落；单独的 <code>---</code> 结束当前行；其他名字是内置组件，参数写在块的内容里（YAML）。解析由 <code>dsl</code> 的 <code>section-md</code> 完成，出错时报 Markdown 文件的行号，例如 <code>qwen3/rope.md:12:1: '::: lead' is not closed</code>。完整写法见 <code>docs/guide.md</code> 第 5.3 节。</li>
+  <li><code>rows</code> 直接写在 YAML 里：一行是块的列表，或者 <code>{ columns: [宽度...], cells: [[块...], ...] }</code>，宽度个数必须等于栏数；数字是像素，其他写法原样作为 CSS 网格宽度。块是 <code>rope_dial</code>、<code>rope_curve</code>、<code>{ text }</code>、<code>{ lead }</code>、<code>{ buttons: [{ label, go }] }</code>、<code>{ rope_compare: { scores, weights, ids } }</code> 之一。</li>
+  <li><code>rope: { q, k, rows?, head?, theta, dh, positions? }</code> 给 RoPE 组件提供数据：q、k 可以是 $(T, H d_h)$ 或 $(T, H, d_h)$ 的节点，或每个 head 一个节点的列表；<code>rows</code> 是 q 和 k 各取第几行（负数从末尾数），默认 <code>[-1, 1]</code>；<code>head</code> 默认 1；<code>dh</code> 必须是偶数；<code>positions</code> 是曲线画到的位置数，默认 24，至少 2。</li>
+</ul>
+
+<h2>编译接口与布局树</h2>
+<pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
+interface CompiledPage {
+  graph: Graph;
+  steps: StepsSpec;
+  tree: LayoutTree;
+  modules: PageModule[];
+  panels: PanelItem[];
+  sections: SectionItem[];
+  nodes: Map&lt;string, Node&gt;;
+  sequence?: PageSequence;
+  layout?: unknown;
+  page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
+}
+function compilePage(spec: PageFile, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
+function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
+function parseYaml(text: string, file: string): unknown;</code></pre>
+<p><code>compilePage</code> 的 <code>base</code> 是相对引用的基准地址，也是错误信息里的文件名，省略时文件名是 <code>&lt;page&gt;</code>，页面里不能有相对引用。<code>loadPage</code> 读取 <code>url</code>，以它为基准地址编译。两者都用同一个读取函数读 <code>sections</code> 的 <code>src</code> 文件。<code>steps</code> 的 <code>backward</code> 是 <code>'reverse'</code>，<code>steps.modules</code> 与 <code>modules</code> 是同一组模块记录。<code>dsl</code> 入口另外导出 <code>PageFile</code>、<code>ModuleFile</code> 等类型、<code>DslError</code> 与 <code>OP_TEX</code>。</p>
+<p><code>tree</code> 是交给自动布局的布局树，类型定义在 <code>scene3d</code>：</p>
+<pre><code class="language-ts">type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
+interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; children: LayoutEntry[] }</code></pre>
+<ul>
+  <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 和 <code>sequence</code> 建的两个节点是它的第一批 node 条目。inline 实例生成一个 title 为空的子树。</li>
+  <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
+  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
+  <li>一项和 beside 它的各项合成一个 parallel，每项一个分支。实例和 group 的分支就是它们自己的 LayoutTree；for 的分支是一个 title 为空的 LayoutTree，里面是这个 for 自己的 parallel。</li>
+</ul>
+
+</main>
+</body>
+</html>
