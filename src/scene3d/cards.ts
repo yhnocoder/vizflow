@@ -101,7 +101,7 @@ function equation(label: string, tex: string, value: number): HTMLElement[] {
   return [element('div', 'vf-lab', label), eq];
 }
 
-export function edgeCardElement(card: EdgeCard, edgeId: string): DocumentFragment {
+export function edgeCardElement(card: EdgeCard, edgeId: string, dtype: string): DocumentFragment {
   const fragment = document.createDocumentFragment();
   const title = element('h4', 'vf-pop-title');
   title.appendChild(render(card.title));
@@ -110,6 +110,7 @@ export function edgeCardElement(card: EdgeCard, edgeId: string): DocumentFragmen
   fragment.append(...equation('上游梯度', card.upstream.tex, card.upstream.value));
   fragment.append(...equation('沿这条边传回', card.product.tex, card.product.value));
   if (card.note !== undefined) fragment.appendChild(note(card.note));
+  fragment.appendChild(element('div', 'vf-dtype', `dtype ${dtype}`));
   const marker = fragment.firstElementChild as HTMLElement;
   marker.dataset.edgeId = edgeId;
   return fragment;

@@ -33,6 +33,7 @@ import { type StepInfo, type StepModule, type StepState, type Steps, allVisible,
 import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
+import { TokenFrame, relatedOpacity, tokenNodes, tokenRect } from './hover';
 import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import { type EditHost, mountEditor } from './edit';
@@ -377,6 +378,9 @@ class SceneController implements EditHost {
   private screenVersion = 0;
   private screenCached = -1;
   private hoverEdge: DrawnEdge | undefined;
+  private hoverBar: { renderable: Renderable; index: number } | undefined;
+  private readonly tokenFrame: TokenFrame;
+  private readonly tokened: Set<Node>;
   private readonly boxes = new Map<string, SceneBox>();
   private readonly boxGeometry = new BoxGeometry(1, 1, 1);
   private readonly boxEdges = new EdgesGeometry(this.boxGeometry);
@@ -398,6 +402,7 @@ class SceneController implements EditHost {
     this.theme = readTheme();
     this.explainer = explain(g);
     this.aligned = classAlignment(g.nodes);
+    this.tokened = tokenNodes(g.nodes);
     this.follow = options.camera?.follow === true;
     root.classList.toggle('vf-follow', this.follow);
     this.zoomRange = options.camera?.zoom ?? DEFAULT_ZOOM;
@@ -446,6 +451,8 @@ class SceneController implements EditHost {
     this.highlightMaterial = new MeshBasicMaterial({ color: new Color(...this.theme.ink) });
     this.braceInk = new LineBatch(this.theme.ink);
     this.scene.add(this.braceInk.object);
+    this.tokenFrame = new TokenFrame(this.theme);
+    this.scene.add(this.tokenFrame.group);
 
     this.buildBlocks();
     const modules = options.modules ?? [];
@@ -1375,7 +1382,13 @@ class SceneController implements EditHost {
       const [a, b] = d.endpoints();
       d.points = sampleCurve(a, b, d.flat, d.bow);
     }
-    this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity })));
+    const bar = this.hoverBar;
+    const element = bar === undefined ? undefined : bar.renderable.block.elements[bar.index];
+    const touches = (end: FlowEdge['from']) => 'index' in end && end.node === bar!.renderable.block.node && end.index.every((v, i) => v === element!.index[i]);
+    this.lines.setPolylines(
+      this.edges.map((d) => ({ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, touches(d.edge.from) || touches(d.edge.to)) })),
+    );
+    this.tokenFrame.set(bar !== undefined && element !== undefined && this.tokened.has(bar.renderable.block.node) ? tokenRect(bar.renderable.block, element) : undefined);
     this.updateHighlight();
   }
 
@@ -1656,6 +1669,7 @@ class SceneController implements EditHost {
     }
     this.lines.setColor(this.theme.ink, this.theme.surface);
     this.braceInk.setColor(this.theme.ink);
+    this.tokenFrame.setTheme(this.theme);
     this.highlightMaterial.color.setRGB(...this.theme.ink);
     this.refresh();
   }
@@ -1701,6 +1715,13 @@ class SceneController implements EditHost {
     return best;
   }
 
+  private setHoverBar(hit: { renderable: Renderable; index: number } | undefined): void {
+    if (hit?.renderable === this.hoverBar?.renderable && hit?.index === this.hoverBar?.index) return;
+    this.hoverBar = hit;
+    this.geometryDirty = true;
+    this.requestFrame();
+  }
+
   private setHoverEdge(d: DrawnEdge | undefined): void {
     if (this.hoverEdge === d) return;
     this.hoverEdge = d;
@@ -1729,7 +1750,7 @@ class SceneController implements EditHost {
     fragment.appendChild(line);
     const name = document.createElement('div');
     name.className = 'vf-s';
-    name.textContent = node.name;
+    name.textContent = `${node.name} · ${node.dtype}`;
     fragment.appendChild(name);
     const target = this.targetOf(block, element.row);
     if (label !== undefined && target !== element.col && !backward) {
@@ -1778,7 +1799,7 @@ class SceneController implements EditHost {
   }
 
   private showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
-    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.explainer.edgeCard(d.edge), d.edge.id));
+    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;
     const rect = this.root.getBoundingClientRect();
     placePop(this.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -1800,7 +1821,7 @@ class SceneController implements EditHost {
       product: { tex: `\\frac{\\partial ${outTex}}{\\partial ${inTex}}\\cdot\\frac{\\partial\\ell}{\\partial ${outTex}}`, value: jac.value * upstream },
       note: JACOBIAN_CARD_NOTE,
     };
-    return edgeCardElement(card, d.edge.id);
+    return edgeCardElement(card, d.edge.id, d.fromNode.dtype);
   }
 
   private linkCard(d: DrawnEdge): DocumentFragment {
@@ -1812,7 +1833,10 @@ class SceneController implements EditHost {
     const note = document.createElement('p');
     note.className = 'vf-nt';
     note.textContent = LINK_CARD_NOTE;
-    fragment.append(title, note);
+    const dtype = document.createElement('div');
+    dtype.className = 'vf-dtype';
+    dtype.textContent = `dtype ${d.fromNode.dtype}`;
+    fragment.append(title, note, dtype);
     return fragment;
   }
 
@@ -1854,6 +1878,7 @@ class SceneController implements EditHost {
     const onMove = (ev: PointerEvent) => {
       const hit = this.hit(ev);
       const rect = this.root.getBoundingClientRect();
+      this.setHoverBar(hit);
       if (hit === undefined) {
         this.tip.hidden = true;
         const edge = this.edgeAt(ev.clientX - rect.left, ev.clientY - rect.top);
@@ -1873,6 +1898,7 @@ class SceneController implements EditHost {
     };
     const onLeave = () => {
       this.tip.hidden = true;
+      this.setHoverBar(undefined);
       this.setHoverEdge(undefined);
       if (this.pinned === undefined) this.pop.hidden = true;
     };
@@ -1919,6 +1945,7 @@ class SceneController implements EditHost {
     }
     this.lines.dispose();
     this.braceInk.dispose();
+    this.tokenFrame.dispose();
     this.highlight?.geometry.dispose();
     this.highlightMaterial.dispose();
     this.labels.dispose();
