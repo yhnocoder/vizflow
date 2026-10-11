@@ -113,6 +113,7 @@ const cases: Case[] = [
   { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },
   { op: 'relu', build: (g, r) => unary(g, r, 'relu', [2, 3]) },
   { op: 'gelu', build: (g, r) => unary(g, r, 'gelu', [2, 3]) },
+  { op: 'abs', build: (g, r) => unary(g, r, 'abs', [2, 3]) },
   { op: 'identity', build: (g, r) => unary(g, r, 'identity', [2, 3]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },

@@ -101,6 +101,11 @@ export const geluExplain = unary(
   (x) => normalCdf(x) + x * normalPdf(x),
   (x) => `\\Phi(${x})+${x}\\,\\varphi(${x})`,
 );
+export const absExplain = unary(
+  (a) => `\\left|${a}\\right|`,
+  (x) => (x > 0 ? 1 : x < 0 ? -1 : 0),
+  (x) => `\\operatorname{sgn}(${x})`,
+);
 export const identityExplain = unary((a) => a, () => 1, () => '1');
 
 const lastHalf = (shape: readonly number[]) => shape[shape.length - 1] / 2;

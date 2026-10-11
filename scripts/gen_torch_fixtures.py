@@ -711,7 +711,10 @@ def main():
     transformer_ops = transformer_op_fixtures()
     sorted_moe_ops = sorted_moe_cases()
     scaled_mm_ops = scaled_mm_cases()
-    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops + cache_cases() + lse_merge_cases())
+    cache_ops = cache_cases()
+    lse_merge_ops = lse_merge_cases()
+    abs_ops = pointwise_cases("abs", torch.abs, randn)
+    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops + cache_ops + lse_merge_ops + abs_ops)
     write("pages.json", pages + stable_pages)
 
 

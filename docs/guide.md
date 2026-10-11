@@ -348,7 +348,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | 运算 | 调用 | 说明 |
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
-| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `abs` `identity` | `g.exp(a)` | 逐元素。`abs` 在 0 处的导数取 0，与 PyTorch 一致；`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
 | `softplus` | `g.softplus(a)` | 逐元素 $\log(1+e^{x})$；$x>20$ 时直接输出 $x$，与 torch 的默认值相同 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |

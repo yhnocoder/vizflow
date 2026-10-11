@@ -3,6 +3,7 @@ import type { Node } from '../node';
 import type { AnyOpDef } from '../op';
 import { defineOp } from '../registry';
 import {
+  absOp,
   addOp,
   divOp,
   expOp,
@@ -88,6 +89,7 @@ export interface BuiltinOps {
   softplus(input: Node, options?: OpOptions): Node;
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
+  abs(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
   rotate_half(input: Node, options?: OpOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
@@ -148,6 +150,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   softplusOp,
   reluOp,
   geluOp,
+  absOp,
   identityOp,
   rotateHalfOp,
   transposeOp,

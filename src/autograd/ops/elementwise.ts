@@ -126,6 +126,7 @@ export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * M
 
 export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0));
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
+export const absOp = unary('abs', Math.abs, (x) => (x > 0 ? 1 : x < 0 ? -1 : 0));
 export const identityOp = unary('identity', (x) => x, () => 1);
 
 function rotateHalf(input: Tensor, sign: number): Tensor {

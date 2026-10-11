@@ -1,6 +1,7 @@
 import type { OpExplain } from '../../autograd';
 import { registerExplain } from '../registry';
 import {
+  absExplain,
   addExplain,
   divExplain,
   expExplain,
@@ -61,6 +62,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   softplus: softplusExplain,
   relu: reluExplain,
   gelu: geluExplain,
+  abs: absExplain,
   identity: identityExplain,
   rotate_half: rotateHalfExplain,
   transpose: transposeExplain,
