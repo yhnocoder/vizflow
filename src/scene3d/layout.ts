@@ -450,7 +450,8 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
     if (cols > 1) {
       const base = planar ?? last;
       const y = base === undefined ? ay : (planar === undefined ? base.y : planar.y + level);
-      const xs = base !== undefined && base.xs.length === cols ? base.xs : Array.from({ length: cols }, (_, c) => ax + (c - (cols - 1) / 2) * colGap);
+      const cx = base === undefined ? ax : (base.xs[0] + base.xs[base.xs.length - 1]) / 2;
+      const xs = base !== undefined && base.xs.length === cols ? base.xs : Array.from({ length: cols }, (_, c) => cx + (c - (cols - 1) / 2) * colGap);
       const shift = planar === undefined ? 0 : back;
       const zs = base !== undefined && base.zs.length === rows ? base.zs.map((z) => z - shift) : Array.from({ length: rows }, (_, r) => az - r * BATCH_ROW_SPACING * s);
       block = planarBlock(n, y, xs, zs, ctx, options);

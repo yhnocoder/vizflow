@@ -178,6 +178,21 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'loss').title.anchor).toBe('right');
   });
 
+  it('centers a planar layer with a different column count over the previous layer', () => {
+    const g = graph({ dims: { d: 4, V: 3 } });
+    const x = g.input('x', [1, 'd'], [[1, 2, 3, 4]]);
+    const W = g.param('W', ['V', 'd'], [
+      [1, 0, 0, 0],
+      [0, 1, 0, 0],
+      [0, 0, 1, 0],
+    ]);
+    const z = g.matmul(x, W.T, { name: 'z' });
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const { blocks } = resolveLayout([stack(x, z, { at: [0, 0, 0], offsets: { x: [5, 0, 0] } })], ctx);
+    expect(blockOf(blocks, 'x').elements.map((e) => e.x)[0]).toBeCloseTo(5 - 1.5 * BOARD_COLUMN_SPACING, 12);
+    expect(blockOf(blocks, 'z').elements.map((e) => e.x)).toEqual([5 - BOARD_COLUMN_SPACING, 5, 5 + BOARD_COLUMN_SPACING]);
+  });
+
   it('moves each planar layer and the side node back by the back option', () => {
     const g = graph({ dims: { V: 3 } });
     const x = g.input('x', ['V'], [1, 2, 3]);
