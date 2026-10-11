@@ -1,0 +1,174 @@
+module: Qwen3_5Attention
+subtitle: Qwen3_5Attention
+import:
+  ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
+  RoPE: vizflow/nn/rope
+  GQA: vizflow/nn/gqa
+params:
+  H:     { type: dim }
+  Hkv:   { type: dim }
+  dh:    { type: dim }
+  rd:    { type: dim }
+  theta: { type: float, default: 1e7 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [att]
+fold:
+  label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
+  title: self_attn（已折叠）
+  text: |
+    q/k/v 投影、q_norm/k_norm、部分维度的 RoPE、eager_attention_forward、输出门和 o_proj 都收进了盒子，对应 HF 里 <code>self.self_attn(hidden_states)</code>。位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以 Jacobian 是块下三角。
+    $$\of{att}={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 self_attn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+weights:
+  Wq: { shape: [2*H*dh, d] }
+  Wk: { shape: [Hkv*dh, d] }
+  Wv: { shape: [Hkv*dh, d] }
+  Wo: { shape: [d, H*dh] }
+buffers:
+  M: { value: causal_mask(T) }
+body:
+  - qg: { op: 'view(x @ Wq.T, T, H, 2*dh)', tex: '[\mathbf{q}\,|\,\mathbf{gate}]' }
+  - q: 'narrow(qg, -1, 0, dh)'
+  - gate: 'view(narrow(qg, -1, dh, dh), T, H*dh)'
+  - k: 'view(x @ Wk.T, T, Hkv, dh)'
+  - v: 'view(x @ Wv.T, T, Hkv, dh)'
+  - qk_norm:
+      title: q_norm $\cdot$ k_norm
+      subtitle: Qwen3_5RMSNorm，按 head_dim
+      fold:
+        label: '$\of{qn},\ \of{kn}$'
+        title: q_norm 和 k_norm（已折叠）
+        text: |
+          每个位置、每个 head 各自做一次以 0 为中心的 RMSNorm。
+          $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
+        backward:
+          label: '$\partial\boldsymbol{\gamma},\ \partial\of{q},\ \partial\of{k}$'
+          title: 穿过 q_norm 和 k_norm（已折叠）
+          text: |
+            $$\frac{\partial\ell}{\partial\mathbf{q}}={{ q.grad | matrix:3 }}$$
+      body:
+        - q_norm:
+            use: ZeroCenteredRMSNorm
+            inline: true
+            suffix: q
+            params: { intro: 和 Qwen3 一样，在 RoPE 之前对 q 和 k 的每个 head 各做一次 RMSNorm，范围是 $d_h$。 }
+            inputs: { x: q }
+            outputs: { out: qn }
+            tex: { out: '\bar{\of{q}}', ms: '\mathrm{ms}^{q}', r: 'r^{q}', scale: '(1+\boldsymbol{\gamma}_{q})' }
+        - k_norm:
+            use: ZeroCenteredRMSNorm
+            inline: true
+            suffix: k
+            beside: q_norm
+            inputs: { x: k }
+            outputs: { out: kn }
+            tex: { out: '\bar{\of{k}}', ms: '\mathrm{ms}^{k}', r: 'r^{k}', scale: '(1+\boldsymbol{\gamma}_{k})' }
+  - apply_rotary_pos_emb:
+      title: apply_rotary_pos_emb
+      subtitle: 只转前 $\of{rd}$ 维
+      fold:
+        label: "$\\of{qr},\\ \\of{kr}$"
+        title: apply_rotary_pos_emb（已折叠）
+        text: |
+          每个 head 的前 $r=\of{rd}$ 维按位置旋转，其余 $d_h-r$ 维原样拼回去。
+          $$\mathbf{q}'={{ qr | matrix:2 }}$$
+        backward:
+          label: '$\partial\bar{\mathbf{q}},\ \partial\bar{\mathbf{k}}$'
+          title: 穿过 apply_rotary_pos_emb（已折叠）
+      body:
+        - q_rot:  { op: 'narrow(qn, -1, 0, rd)', tex: '\bar{\mathbf{q}}_{\mathrm{rot}}' }
+        - q_pass: { op: 'narrow(qn, -1, rd, dh - rd)', tex: '\bar{\mathbf{q}}_{\mathrm{pass}}' }
+        - k_rot:  { op: 'narrow(kn, -1, 0, rd)', tex: '\bar{\mathbf{k}}_{\mathrm{rot}}' }
+        - k_pass: { op: 'narrow(kn, -1, rd, dh - rd)', tex: '\bar{\mathbf{k}}_{\mathrm{pass}}' }
+        - rope:
+            use: RoPE
+            inline: true
+            params: { theta: theta }
+            inputs: { q: q_rot, k: k_rot }
+            outputs: { q_embed: q_emb, k_embed: k_emb }
+            tex: { q_embed: "\\mathbf{q}'_{\\mathrm{rot}}", k_embed: "\\mathbf{k}'_{\\mathrm{rot}}" }
+        - qr: { op: 'cat([q_emb, q_pass], dim=2)', tex: "\\mathbf{q}'" }
+        - kr: { op: 'cat([k_emb, k_pass], dim=2)', tex: "\\mathbf{k}'" }
+      steps:
+        - id: split
+          show: [q_rot, q_pass, k_rot, k_pass]
+          label: '$\mathrm{rot},\ \mathrm{pass}$'
+          title: 每个 head 切成旋转和不旋转两段
+          text: |
+            Qwen3.5 的 partial_rotary_factor 是 0.25：每个 head 只有前 $r=d_h/4$ 维参与 RoPE，真实模型里是 256 维里的前 64 维，这里是 \of{dh} 维里的前 \of{rd} 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。
+            $$\bar{\mathbf{q}}_{\mathrm{rot}}={{ q_rot | matrix:2 }}$$
+          backward:
+            label: '$\partial\bar{\mathbf{q}},\ \partial\bar{\mathbf{k}}$'
+            title: 两段拼回一个 head
+        - id: join
+          show: [qr, kr]
+          label: "$\\of{qr},\\ \\of{kr}$"
+          title: 拼回整个 head
+          text: |
+            旋转过的那段和原样的那段按原来的顺序拼回去，对应 <code>torch.cat([q_embed, q_pass], dim=-1)</code>。
+            $$\mathbf{q}'={{ qr | matrix:2 }}$$
+          backward:
+            label: "$\\partial\\mathbf{q}'_{\\mathrm{rot}},\\ \\partial\\bar{\\mathbf{q}}_{\\mathrm{pass}}$"
+            title: 按列切回两段
+  - eager_attention_forward:
+      use: GQA
+      inline: true
+      inputs: { q: qr, k: kr, v: v, mask: M }
+      outputs: { o: o }
+      brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
+  - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{gate})' }
+  - og: { op: o * sg, tex: '\tilde{\mathbf{o}}' }
+  - att: { op: og @ Wo.T, tex: '\mathbf{att}' }
+steps:
+  - id: qkv
+    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: 'nn.Linear $\times$ 3' }
+    show: [Wq.T, Wk.T, Wv.T, qg, k, v]
+    label: '$\of{qg},\ \of{k},\ \of{v}$'
+    title: q_proj、k_proj、v_proj
+    text: |
+      和 Qwen3 相比，q_proj 的输出宽了一倍：每个 query head 得到 $2d_h$ 个数，前 $d_h$ 个是 query，后 $d_h$ 个是这个 head 的输出门。一共 \of{H} 个 query head、\of{Hkv} 个 kv head，$d_h=\of{dh}$。三个 Linear 都没有 bias。
+      $$[\mathbf{q}\,|\,\mathbf{gate}]={{ qg | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: 传到三个投影的权重和 $\of{x}$
+      text: |
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: chunk
+    show: [q, gate]
+    label: '$\of{q},\ \of{gate}$'
+    title: 拆出 query 和输出门
+    text: |
+      <code>torch.chunk(..., 2, dim=-1)</code> 把每个 head 的 $2d_h$ 列切成两半。query 留在 $(T, H, d_h)$ 继续往上走，门展平成 $(T, H d_h)$，等注意力算完再用。
+      $$\mathbf{gate}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial[\mathbf{q}\,|\,\mathbf{gate}]$'
+      title: 两半拼回去
+  - id: output_gate
+    show: [sg, og]
+    label: '$\of{og}$'
+    title: 输出门
+    text: |
+      注意力的输出逐元素乘上 $\sigma(\mathbf{gate})$。门由当前位置的输入决定，每个 head 的每一维都有自己的门，可以把某个 head 的输出整个关掉。这是 Qwen3.5 的 gated attention：它让模型不必把注意力分给第一个 token 来「什么也不做」，训练也更稳定。
+      $$\tilde{\mathbf{o}}=\mathbf{o}\odot\sigma(\mathbf{gate})={{ og | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o},\ \partial\mathbf{gate}$'
+      title: 传到注意力输出和门
+      text: |
+        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{gate})$，门关上的地方，注意力几乎收不到梯度；$\partial\ell/\partial\,\mathbf{gate}$ 再乘上 sigmoid 的导数 $\sigma(1-\sigma)$。
+        $$\frac{\partial\ell}{\partial\,\mathbf{gate}}={{ gate.grad | matrix:3 }}$$
+  - id: o_proj
+    brace: { title: o_proj, subtitle: nn.Linear }
+    show: [Wo.T, att]
+    label: o_proj
+    title: o_proj
+    text: |
+      投影回 $d$ 维，没有 bias。
+      $$\mathbf{att}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial W_o,\ \partial\tilde{\mathbf{o}}$'
+      title: 传到 o_proj 权重和 $\tilde{\mathbf{o}}$

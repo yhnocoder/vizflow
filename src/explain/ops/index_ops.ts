@@ -1,4 +1,5 @@
-import type { OpExplain } from '../../autograd';
+import type { OpCtx, OpExplain } from '../../autograd';
+import { convTaps } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -92,5 +93,56 @@ export const selectExplain: OpExplain = {
     const dim = normDim(attrs.dim, ctx.inputs[0].shape.length);
     const index = attrs.index < 0 ? attrs.index + ctx.inputs[0].shape[dim] : attrs.index;
     return [{ arg: 0, index: [...out.slice(0, dim), index, ...out.slice(dim)] }];
+  },
+};
+
+export const repeatInterleaveExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => {
+      const { repeats, dim } = s.attrs as { repeats: number; dim: number };
+      return `\\operatorname{repeat\\_interleave}(${s.in[0]},${repeats},${dim})`;
+    },
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const attrs = ctx.attrs as { repeats: number; dim: number };
+    const dim = normDim(attrs.dim, out.length);
+    const index = [...out];
+    index[dim] = Math.floor(out[dim] / attrs.repeats);
+    return [{ arg: 0, index }];
+  },
+};
+
+function convTap(ctx: OpCtx, out: number[], arg: number, input: number[]): { s: number; j: number } {
+  const K = ctx.inputs[1].shape[1];
+  const t = out[0];
+  return arg === 0 ? { s: input[0], j: input[0] - t + K - 1 } : { s: t - K + 1 + input[1], j: input[1] };
+}
+
+export const causalConv1dExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, arg, input) => {
+    const { s, j } = convTap(ctx, out, arg, input);
+    const c = out[1];
+    return arg === 0 ? ctx.inputs[1].get([c, j]) : ctx.inputs[0].get([s, c]);
+  },
+  tex: {
+    forward: (s) => `\\operatorname{conv1d}(${s.in[0]},${s.in[1]})`,
+    local: (s) => {
+      const { s: row, j } = convTap(s.ctx, s.outIndex, s.arg, s.inIndex);
+      const c = s.outIndex[1];
+      return s.arg === 0 ? s.elem(1, [c, j]) : s.elem(0, [row, c]);
+    },
+  },
+  selected: (ctx, out) => {
+    const [T] = ctx.inputs[0].shape;
+    const K = ctx.inputs[1].shape[1];
+    const c = out[1];
+    return convTaps(T, K, out[0]).flatMap(({ s, j }) => [
+      { arg: 0, index: [s, c] },
+      { arg: 1, index: [c, j] },
+    ]);
   },
 };

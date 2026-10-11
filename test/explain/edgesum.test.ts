@@ -185,6 +185,30 @@ const cases: Case[] = [
   { op: 'nll_loss', build: (g, r) => nll(g, r, [3, 5], [2, 0, 4], { reduction: 'none' }) },
   { op: 'nll_loss', build: (g, r) => nll(g, r, [4, 5], [2, -100, 4, 1], {}) },
   { op: 'nll_loss', build: (g, r) => nll(g, r, [4, 5], [2, 7, 4, 1], { reduction: 'none', ignore_index: 7 }) },
+  { op: 'softplus', build: (g, r) => unary(g, r, 'softplus', [2, 3]) },
+  {
+    op: 'repeat_interleave',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2, 2], randomValues(r, [3, 2, 2]));
+      return { out: g.repeat_interleave(x, 3, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'causal_conv1d',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const w = g.input('w', [4, 4], randomValues(r, [4, 4]));
+      return { out: g.causal_conv1d(x, w), inputs: [x, w] };
+    },
+  },
+  {
+    op: 'causal_conv1d',
+    build: (g, r) => {
+      const x = g.input('x', [5, 2], randomValues(r, [5, 2]));
+      const w = g.input('w', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.causal_conv1d(x, w), inputs: [x, w] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

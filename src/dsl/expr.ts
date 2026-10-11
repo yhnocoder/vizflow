@@ -6,6 +6,7 @@ export type Ast =
   | { k: 'member'; obj: Ast; name: string; pos: number }
   | { k: 'index'; obj: Ast; index: Ast; end?: Ast; pos: number }
   | { k: 'call'; fn: Ast; args: Ast[]; kwargs: [string, Ast][]; pos: number }
+  | { k: 'list'; items: Ast[]; pos: number }
   | { k: 'neg'; arg: Ast; pos: number }
   | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number };
 
@@ -179,6 +180,16 @@ class Parser {
       const inner = this.expr();
       this.expect(')');
       return inner;
+    }
+    if (token.t === 'op' && token.v === '[') {
+      const items: Ast[] = [];
+      while (!this.isOp(']')) {
+        items.push(this.expr());
+        if (!this.isOp(',')) break;
+        this.take();
+      }
+      this.expect(']');
+      return { k: 'list', items, pos: token.pos };
     }
     throw new ParseError(token.t === 'end' ? 'unexpected end of expression' : `unexpected '${token.v}'`, token.pos);
   }

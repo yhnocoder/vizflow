@@ -91,6 +91,12 @@ export const rsqrtOp: OpDef<{ eps: number }> = {
 };
 export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
 export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
+export const SOFTPLUS_THRESHOLD = 20;
+export const softplusOp = unary(
+  'softplus',
+  (x) => (x > SOFTPLUS_THRESHOLD ? x : Math.log1p(Math.exp(x))),
+  (x) => (x > SOFTPLUS_THRESHOLD ? 1 : sigmoid(x)),
+);
 export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));
 
 export function erf(x: number): number {

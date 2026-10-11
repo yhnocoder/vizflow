@@ -1,0 +1,133 @@
+module: GatedDeltaRule
+subtitle: gated delta rule，逐个位置递推
+import:
+  L2Norm: vizflow/nn/l2norm
+params:
+  eps: { type: float, default: 1e-6 }
+inputs:
+  q:    { shape: [T, H, dk] }
+  k:    { shape: [T, H, dk] }
+  v:    { shape: [T, H, dv] }
+  g:    { shape: [T, H] }
+  beta: { shape: [T, H] }
+outputs: [o]
+buffers:
+  'S[0]': { value: 'zeros(H, dk, dv)', tex: 'S_{0}', dtype: fp32 }
+fold:
+  label: '$\of{o}$'
+  title: gated delta rule（已折叠）
+  text: |
+    每个 head 有一个 $d_k\times d_v$ 的状态 $S$，按位置依次衰减、按 delta rule 写入，再用 query 读出。
+    $$S_t=\alpha_t S_{t-1}+\mathbf{k}_t\big(\beta_t(\mathbf{v}_t-\alpha_t S_{t-1}^{\top}\mathbf{k}_t)\big)^{\top},\qquad \mathbf{o}_t=S_t^{\top}\mathbf{q}_t$$
+    $$\of{o}={{ o | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{q},\ \partial\of{k},\ \partial\of{v},\ \partial\of{g},\ \partial\of{beta}$'
+    title: 穿过 gated delta rule（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{v}}={{ v.grad | matrix:3 }}$$
+body:
+  - q_l2norm:
+      use: L2Norm
+      inline: true
+      suffix: q
+      inputs: { x: q }
+      outputs: { out: qn }
+      tex: { out: '\hat{\of{q}}', ss: '\lVert\of{q}\rVert^{2}', r: 'r^{q}' }
+  - k_l2norm:
+      use: L2Norm
+      inline: true
+      suffix: k
+      beside: q_l2norm
+      inputs: { x: k }
+      outputs: { out: kn }
+      tex: { out: '\hat{\of{k}}', ss: '\lVert\of{k}\rVert^{2}', r: 'r^{k}' }
+  - qs: { op: qn * dk ** -0.5, tex: '\tilde{\of{q}}' }
+  - for: t
+    in: 1..T
+    sequential: true
+    body:
+      - token[t]:
+          title: 位置 $\of{t}$
+          body:
+            - qt[t]:    { op: 'select(qs, 0, t-1)', tex: '\mathbf{q}_{\of{t}}' }
+            - kt[t]:    { op: 'select(kn, 0, t-1)', tex: '\mathbf{k}_{\of{t}}' }
+            - vt[t]:    { op: 'select(v, 0, t-1)', tex: '\mathbf{v}_{\of{t}}', dtype: fp32 }
+            - alpha[t]: { op: 'exp(select(g, 0, t-1))', tex: '\alpha_{\of{t}}' }
+            - bt[t]:    { op: 'select(beta, 0, t-1)', tex: '\beta_{\of{t}}', dtype: fp32 }
+            - Sd[t]:    { op: 'S[t-1] * view(alpha[t], H, 1, 1)', tex: '\alpha_{\of{t}}S_{\of{t-1}}' }
+            - m[t]:     { op: 'sum(Sd[t] * view(kt[t], H, dk, 1), -2)', tex: '\mathbf{m}_{\of{t}}' }
+            - delta[t]: { op: '(vt[t] - m[t]) * view(bt[t], H, 1)', tex: '\boldsymbol{\delta}_{\of{t}}' }
+            - S[t]:     { op: 'Sd[t] + view(kt[t], H, dk, 1) * view(delta[t], H, 1, dv)', tex: 'S_{\of{t}}' }
+            - ot[t]:    { op: 'sum(S[t] * view(qt[t], H, dk, 1), -2)', tex: '\mathbf{o}_{\of{t}}' }
+          steps:
+            - id: decay
+              show: ['qt[t]', 'kt[t]', 'vt[t]', 'alpha[t]', 'bt[t]', 'Sd[t]']
+              label: '$\of{Sd[t]}$'
+              title: 位置 $\of{t}$：取出这一位置，状态衰减
+              text: |
+                从 $\tilde{\mathbf{q}}$、$\hat{\mathbf{k}}$、$\mathbf{v}$、$g$、$\beta$ 里取出第 $\of{t}$ 个位置，每个 head 一份。上一步的状态 $S_{\of{t-1}}$ 先整体乘上衰减 $\alpha_{\of{t}}=e^{g_{\of{t}}}$，它在 0 和 1 之间，越接近 0 忘得越多。每个 head 有自己的 $\alpha$。
+                $$\alpha_{\of{t}}={{ alpha[t] | matrix:3 }},\qquad \alpha_{\of{t}}S_{\of{t-1}}={{ Sd[t] | matrix:3 }}$$
+              backward:
+                label: '$\partial S_{\of{t-1}},\ \partial\alpha_{\of{t}}$'
+                title: 位置 $\of{t}$：穿过衰减
+                text: |
+                  $S_{\of{t-1}}$ 收到的梯度乘上 $\alpha_{\of{t}}$ 继续往更早的位置传，这就是状态上的「随时间反向传播」。$\alpha_{\of{t}}$ 的梯度是它乘的整块状态与梯度的逐元素乘积之和。
+                  $$\frac{\partial\ell}{\partial\alpha_{\of{t}}}={{ alpha[t].grad | matrix:3 }}$$
+            - id: read
+              show: 'm[t]'
+              label: '$\of{m[t]}$'
+              title: 位置 $\of{t}$：用 key 读出旧的记忆
+              text: |
+                用这一位置的 key 读衰减后的状态：$\mathbf{m}_{\of{t}}=(\alpha_{\of{t}}S_{\of{t-1}})^{\top}\hat{\mathbf{k}}_{\of{t}}$，代码里是 <code>(state * k_t.unsqueeze(-1)).sum(dim=-2)</code>。它是状态目前对这个 key 记住的 value。
+                $$\mathbf{m}_{\of{t}}={{ m[t] | matrix:3 }}$$
+              backward:
+                label: '$\partial(\alpha S),\ \partial\mathbf{k}_{\of{t}}$'
+                title: 位置 $\of{t}$：传回状态和 key
+            - id: write
+              show: ['delta[t]', 'S[t]']
+              label: '$\of{S[t]}$'
+              title: 位置 $\of{t}$：delta rule 写入
+              text: |
+                新的 value 和旧记忆的差乘上写入强度 $\beta_{\of{t}}$，得到 $\boldsymbol{\delta}_{\of{t}}=\beta_{\of{t}}(\mathbf{v}_{\of{t}}-\mathbf{m}_{\of{t}})$，再用外积 $\hat{\mathbf{k}}_{\of{t}}\boldsymbol{\delta}_{\of{t}}^{\top}$ 写回状态。$\beta=1$ 时，写完以后用同一个 key 读出的正好是 $\mathbf{v}_{\of{t}}$；$\beta=0$ 时什么也不写。普通线性注意力直接加 $\mathbf{k}\mathbf{v}^{\top}$，同一个 key 写多次会一直累加，delta rule 只写差值。
+                $$\boldsymbol{\delta}_{\of{t}}={{ delta[t] | matrix:3 }},\qquad S_{\of{t}}={{ S[t] | matrix:3 }}$$
+              backward:
+                label: '$\partial\boldsymbol{\delta}_{\of{t}},\ \partial\mathbf{k}_{\of{t}},\ \partial\beta_{\of{t}}$'
+                title: 位置 $\of{t}$：穿过写入
+                text: |
+                  外积的反向：$\partial\ell/\partial\boldsymbol{\delta}_{\of{t}}=(\partial\ell/\partial S_{\of{t}})^{\top}\hat{\mathbf{k}}_{\of{t}}$，$\hat{\mathbf{k}}_{\of{t}}$ 同时从写入、读出和下面的残差差值三处收到梯度。
+                  $$\frac{\partial\ell}{\partial\boldsymbol{\delta}_{\of{t}}}={{ delta[t].grad | matrix:3 }}$$
+            - id: output
+              show: 'ot[t]'
+              label: '$\of{ot[t]}$'
+              title: 位置 $\of{t}$：用 query 读出输出
+              text: |
+                写入以后再用缩放过的 query 读状态：$\mathbf{o}_{\of{t}}=S_{\of{t}}^{\top}\tilde{\mathbf{q}}_{\of{t}}$。状态是前 $\of{t}$ 个位置压缩成的固定大小的矩阵，所以每个位置的计算量与序列长度无关。
+                $$\mathbf{o}_{\of{t}}={{ ot[t] | matrix:3 }}$$
+              backward:
+                label: '$\partial S_{\of{t}},\ \partial\mathbf{q}_{\of{t}}$'
+                title: 位置 $\of{t}$：传回状态和 query
+                text: |
+                  $S_{\of{t}}$ 从这里收到 $\tilde{\mathbf{q}}_{\of{t}}(\partial\ell/\partial\mathbf{o}_{\of{t}})^{\top}$，再加上从下一个位置传回来的那一份。
+                  $$\frac{\partial\ell}{\partial S_{\of{t}}}={{ S[t].grad | matrix:3 }}$$
+  - o: { op: 'view(cat(ot[1..T], dim=0), T, H, dv)', dtype: v }
+steps:
+  - id: scale
+    show: qs
+    label: '$\of{qs}$'
+    title: query 乘 $1/\sqrt{d_k}$
+    text: |
+      归一化以后的 query 再乘 $1/\sqrt{d_k}$，和 softmax 注意力里的缩放作用相同。
+      $$\tilde{\mathbf{q}}={{ qs | matrix:2 }}$$
+    backward:
+      label: '$\partial\hat{\mathbf{q}}$'
+      title: 穿过缩放
+  - id: stack
+    show: o
+    label: '$\of{o}$'
+    title: 把各位置的输出拼回去
+    text: |
+      把 $\of{T}$ 个位置的输出按位置叠回 $(T, H, d_v)$，转回输入的 dtype。
+      $$\of{o}={{ o | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o}_{t}$'
+      title: 按位置拆开

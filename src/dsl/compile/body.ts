@@ -166,8 +166,11 @@ function compileItem(
       branches.push(branch);
       if (rec !== undefined) closeModule(c, rec, c.g.nodes.slice(start));
     }
-    entries.push({ kind: 'parallel', branches });
-    slots.push({ kind: 'loop', iterations });
+    const sequential = item.sequential ?? false;
+    if (typeof sequential !== 'boolean') fail(child(at, item, 'sequential'), 'sequential must be true or false');
+    if (sequential) entries.push(...branches);
+    else entries.push({ kind: 'parallel', branches });
+    slots.push({ kind: 'loop', iterations, sequential });
     return { name: forName, beside: besideOf(item, at) };
   }
   const keys = Object.keys(item);

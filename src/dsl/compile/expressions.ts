@@ -122,6 +122,11 @@ export class ExpressionCompiler extends CompilerState {
         return this.binary(ast, env, make, offset, top);
       case 'call':
         return this.call(ast, env, make, offset, top);
+      case 'list': {
+        const items = ast.items.map((item) => this.evaluate(item, env, make, offset));
+        if (items.length === 0 || !items.every((item) => item instanceof Node)) this.fail(env, 'a list must hold one or more nodes', offset + ast.pos);
+        return items as Node[];
+      }
       case 'member': {
         const base = this.evaluate(ast.obj, env, make, offset);
         if (!(base instanceof Node)) this.fail(env, "'.T' needs a node", offset + ast.pos);
@@ -173,8 +178,9 @@ export class ExpressionCompiler extends CompilerState {
     const kwargs: Record<string, Value> = {};
     for (const [key, arg] of ast.kwargs) kwargs[key] = this.evaluate(arg, env, make, offset);
     if (env.buffers && fnName in BUFFER_FUNCTIONS) {
-      if (args.length !== BUFFER_ARITY[fnName] || ast.kwargs.length > 0 || !args.every(isNum)) {
-        this.fail(env, `${fnName} takes ${BUFFER_ARITY[fnName]} numbers`, at);
+      const arity = BUFFER_ARITY[fnName];
+      if ((arity === 'any' ? args.length === 0 : args.length !== arity) || ast.kwargs.length > 0 || !args.every(isNum)) {
+        this.fail(env, `${fnName} takes ${arity === 'any' ? 'one or more' : arity} numbers`, at);
       }
       return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
     }

@@ -61,7 +61,7 @@ export interface StepRec {
 export type Slot =
   | { kind: 'node'; name: string; node: Node; created: Node[] }
   | { kind: 'child'; def: ModuleDef; steps: StepRec[]; created: Node[]; merge?: Slot }
-  | { kind: 'loop'; iterations: Slot[][] }
+  | { kind: 'loop'; iterations: Slot[][]; sequential: boolean }
   | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
 
 export class NeedDim {

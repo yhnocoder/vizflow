@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { normalCdf, normalPdf } from '../../autograd/ops/elementwise';
+import { SOFTPLUS_THRESHOLD, normalCdf, normalPdf, sigmoid } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -84,6 +84,11 @@ export const siluExplain = unary(
     return s * (1 + x * (1 - s));
   },
   (x) => `\\sigma(${x})\\left(1+${x}\\left(1-\\sigma(${x})\\right)\\right)`,
+);
+export const softplusExplain = unary(
+  (a) => `\\operatorname{softplus}(${a})`,
+  (x) => (x > SOFTPLUS_THRESHOLD ? 1 : sigmoid(x)),
+  (x) => `\\sigma(${x})`,
 );
 
 export const reluExplain = unary(
