@@ -56,6 +56,10 @@
     "./dsl": {
       "types": "./dist/types/dsl/index.d.ts",
       "import": "./dist/module/dsl.js"
+    },
+    "./serve": {
+      "types": "./dist/types/serve/index.d.ts",
+      "import": "./dist/module/serve.js"
     }
   },
   "scripts": {

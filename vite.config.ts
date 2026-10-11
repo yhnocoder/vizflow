@@ -18,6 +18,7 @@ const entries = {
   theme: src('theme/index.ts'),
   element: src('element/index.ts'),
   dsl: src('dsl/index.ts'),
+  serve: src('serve/index.ts'),
 };
 
 const fontCssId = /[\\/]node_modules[\\/](?:katex[\\/]dist|@fontsource[\\/][^\\/]+)[\\/][^\\/?]+\.css\?raw$/;

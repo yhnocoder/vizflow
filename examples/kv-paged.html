@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分页 KV cache 的显存管理</title>
+<link rel="icon" href="data:,">
+<style>
+:root { --req-A: #d0731a; --req-B: #2c6fd1; --req-C: #2e8a57; --req-D: #9b59c9; --g0: #b5651d; --g1: #7a5bb5; --g2: #2a8a8a; --hl: #d0731a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --req-A: #e08a3c; --req-B: #5b95e6; --req-C: #4fb07a; --req-D: #b784e0; --g0: #d08a4a; --g1: #a48ad6; --g2: #4fb0b0; --hl: #e8a060; } }
+:root[data-theme="dark"] { --req-A: #e08a3c; --req-B: #5b95e6; --req-C: #4fb07a; --req-D: #b784e0; --g0: #d08a4a; --g1: #a48ad6; --g2: #4fb0b0; --hl: #e8a060; }
+body { background: var(--bg); color: var(--ink); }
+main { --vf-side-width: 400px; }
+header { margin-bottom: 10px; max-width: 920px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(24px, 3.2vw, 36px); line-height: 1.15; margin: 0 0 8px; text-wrap: balance; }
+.lede { color: var(--muted); max-width: 80ch; font-size: 14.5px; }
+.lede p { margin: 0 0 6px; }
+.bar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin: 12px 0; position: sticky; top: 0; z-index: 2; background: var(--bg); padding: 8px 0; border-bottom: 1px solid var(--line); }
+.bar .group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.bar button { font: inherit; font-size: 13.5px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.bar button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.bar button:disabled { opacity: 0.4; cursor: default; }
+.bar input[type=range] { width: min(260px, 50vw); }
+.bar output { font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+.col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; min-width: 0; }
+.panel h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.panel > p { margin: 0; color: var(--muted); }
+.muted { color: var(--muted); }
+.pool { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.blk { border: 1px solid var(--line-strong); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 4px; font-size: 11.5px; min-width: 0; }
+.blk.free { border-style: dashed; }
+.blk.cached { background: color-mix(in srgb, var(--ink) 4%, var(--surface)); }
+.blk.null { background: color-mix(in srgb, var(--muted) 18%, var(--surface)); color: var(--muted); border-style: solid; }
+.blk.hl { outline: 2px solid var(--hl); outline-offset: 1px; }
+.blk.focus, .fq.focus, .bt.focus, .tn.focus, .rs.focus { box-shadow: 0 0 0 3px var(--ink); }
+.blk-h { display: flex; gap: 6px; align-items: baseline; }
+.blk-h b { font-family: var(--mono); font-size: 12.5px; }
+.blk-h .ref { margin-left: auto; font-family: var(--mono); color: var(--muted); }
+.blk-note { color: var(--muted); font-size: 11px; }
+.blk-f { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; min-height: 16px; }
+.slots { display: flex; gap: 2px; flex-wrap: wrap; }
+.slot { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 3px; border: 1px solid var(--line); font-style: normal; font-size: 12px; color: #fff; }
+.slot.on { background: var(--fill); border-color: transparent; }
+.blk.cached .slot.on { opacity: 0.45; }
+.slot.entry { font-family: var(--mono); font-size: 10.5px; }
+.who { font-family: var(--mono); font-size: 11px; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--c) 18%, transparent); color: var(--ink); border: 1px solid var(--c); }
+.hash { font-family: var(--mono); font-size: 10.5px; padding: 0 3px; border-radius: 3px; background: color-mix(in srgb, var(--ink) 10%, transparent); }
+.hash::before { content: "h:"; color: var(--muted); }
+.badge { font-size: 10.5px; padding: 0 4px; border-radius: 3px; background: var(--hl); color: #fff; }
+.grp { font-size: 10.5px; padding: 0 4px; border-radius: 3px; color: #fff; }
+.grp.g0 { background: var(--g0); } .grp.g1 { background: var(--g1); } .grp.g2 { background: var(--g2); }
+.strip { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.strip .end { font-size: 11.5px; color: var(--muted); }
+.fq { font-family: var(--mono); font-size: 12px; padding: 2px 6px; border-radius: 4px; border: 1px solid var(--line-strong); }
+.fq.cached { background: color-mix(in srgb, var(--ink) 12%, transparent); border-style: solid; }
+.fq.hl { outline: 2px solid var(--hl); }
+.ql { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ql-k { font-family: var(--mono); font-size: 12px; color: var(--muted); min-width: 64px; }
+.rq { display: inline-block; font-family: var(--mono); font-weight: 600; font-size: 12px; padding: 0 6px; border-radius: 4px; background: var(--c); color: #fff; }
+.req { border-left: 4px solid var(--c); padding: 4px 0 4px 10px; display: flex; flex-direction: column; gap: 4px; }
+.req-h { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.toks { font-size: 14px; letter-spacing: 1px; word-break: break-all; }
+.toks .hit, .rtoks .hit { background: color-mix(in srgb, var(--c) 28%, transparent); }
+.toks .pend { color: var(--muted); text-decoration: underline dotted; }
+.bt-row { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }
+.bt { display: inline-flex; flex-direction: column; align-items: center; font-family: var(--mono); font-size: 12px; border: 1px solid var(--c); border-radius: 4px; padding: 0 5px; line-height: 1.2; }
+.bt small { font-size: 9.5px; color: var(--muted); }
+.bt.nullb { border-color: var(--line); color: var(--muted); }
+.log { display: flex; flex-direction: column; gap: 8px; }
+.log .ev { border-left: 3px solid var(--c, var(--line-strong)); padding: 2px 0 2px 8px; line-height: 1.6; font-size: 13.5px; }
+.log .ev .k { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-right: 4px; }
+.log .ev ul { margin: 4px 0 0; padding-left: 18px; color: var(--ink); }
+.log .ev li { margin: 2px 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); align-items: center; }
+.tree, .tree ul { list-style: none; margin: 0; padding-left: 16px; }
+.tree { padding-left: 0; }
+.tree li { position: relative; margin: 3px 0; }
+.tree ul li::before { content: ""; position: absolute; left: -11px; top: 0; height: 13px; width: 9px; border-left: 1px solid var(--line-strong); border-bottom: 1px solid var(--line-strong); }
+.tn { display: inline-flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; border: 1px solid var(--line-strong); border-radius: 6px; padding: 2px 8px; font-size: 12px; max-width: 100%; }
+.tn.locked { border-width: 2px; }
+.tn.hl { outline: 2px solid var(--hl); }
+.tn .key { font-size: 14px; letter-spacing: 1px; word-break: break-all; }
+.tn .meta { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.rslots { display: grid; grid-template-columns: repeat(auto-fill, minmax(30px, 1fr)); gap: 3px; }
+.rs { position: relative; display: flex; align-items: center; justify-content: center; height: 30px; border: 1px dashed var(--line-strong); border-radius: 4px; font-style: normal; font-size: 13px; }
+.rs small { position: absolute; right: 2px; bottom: 0; font-size: 8.5px; font-family: var(--mono); color: var(--muted); }
+.rs.on { background: var(--fill); color: #fff; border: 1px solid transparent; }
+.rs.on small { color: rgba(255, 255, 255, 0.8); }
+.rs.on.intree { box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.35); }
+.rs.cachedslot { background: color-mix(in srgb, var(--ink) 12%, var(--surface)); border-style: solid; }
+.rs.lost { border-color: red; }
+.rs.hl { outline: 2px solid var(--hl); }
+.rtoks { display: flex; flex-wrap: wrap; gap: 2px; }
+.rtoks span { display: inline-flex; flex-direction: column; align-items: center; font-size: 14px; padding: 0 2px; border-radius: 3px; }
+.rtoks small { font-family: var(--mono); font-size: 9.5px; color: var(--muted); }
+table.cmp { border-collapse: collapse; font-size: 13px; }
+table.cmp td, table.cmp th { border-bottom: 1px solid var(--line); padding: 3px 10px 3px 0; text-align: left; }
+table.cmp td.n { font-family: var(--mono); }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; vertical-align: -2px; margin-right: 3px; }
+code { font-family: var(--mono); font-size: 0.92em; }
+@media (max-width: 600px) {
+  .pool { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+  .slot { width: 19px; height: 19px; font-size: 11px; }
+}
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1 id="title">分页 KV cache 的显存管理</h1>
+    <div class="lede" id="lede"></div>
+  </header>
+  <div class="bar">
+    <div class="group" role="group" aria-label="模式" id="modes"></div>
+    <div class="group">
+      <button type="button" id="reset" title="回到第 0 步">重置</button>
+      <button type="button" id="prev" title="上一步（←）">上一步</button>
+      <button type="button" id="next" title="下一步（→）">下一步</button>
+      <input type="range" id="slider" min="0" max="0" step="1" value="0" aria-label="步">
+      <output id="stepOut"></output>
+    </div>
+  </div>
+  <div class="vf-split">
+    <div class="col" id="mainCol"></div>
+    <aside class="col">
+      <section class="panel" aria-label="本步事件">
+        <h3 id="logTitle">本步发生了什么</h3>
+        <div class="log" id="log"></div>
+      </section>
+      <section class="panel" id="extra"></section>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import '@yhnocoder/vizflow/theme';
+import { renderText } from '@yhnocoder/vizflow/formula';
+import { radixScenario, v4Scenario, vllmScenario, SYSTEM_PROMPT, RADIX_SLOTS } from './kv/paged-scenarios.js';
+import { V4_GROUP_NAMES, explainRadixActions, explainVllmEvents } from './kv/paged-text.js';
+import { blockOwners, renderFreeQueue, renderFreeSlots, renderPool, renderQueues, renderRadixRequests, renderSlots, renderTables, renderTree } from './kv/paged-view.js';
+
+const vllm = vllmScenario();
+const radix = radixScenario();
+const v4 = v4Scenario();
+const $ = (id) => document.getElementById(id);
+
+function seenTokens(snaps, specs) {
+  return (snap) => {
+    const previous = snap.step > 0 ? snaps[snap.step - 1] : null;
+    if (previous === null) return [];
+    return previous.requests
+      .filter((r) => r.status !== 'pending')
+      .map((r) => {
+        const spec = specs.find((s) => s.id === r.id);
+        return { id: r.id, tokens: [...spec.prompt, ...spec.outputs.slice(0, r.numOutputTokens)] };
+      });
+  };
+}
+
+function firstHits(snaps) {
+  const hits = {};
+  for (const snap of snaps) for (const e of snap.events) if (e.kind === 'admit' && !(e.req in hits)) hits[e.req] = e.hitTokens;
+  return hits;
+}
+
+const LEDES = {
+  vllm: String.raw`<p>vLLM V1 把 KV cache 显存切成固定大小的块。这里每块 4 个 token，一共 12 块，其中 #0 是保留的 null 块，能用的是 11 块。每个请求有一张块表，把逻辑块号（请求内第几块）映射到物理块号（显存里第几块）。写满的块按内容算出块哈希并登记到缓存表，之后 token 前缀相同的请求按哈希查到同一个物理块，直接复用里面的 KV。</p>
+<p>请求结束后，块里的 KV 不会立刻清掉：带哈希的块放到空闲队列队尾，只有被重新分配给别的请求时才删掉哈希。四个请求按到达步进入调度：A、B、D 共用 9 个 token 的系统 prompt「${SYSTEM_PROMPT.join('')}」，C 是一个不相关的长请求。每一步之后的状态都来自 <code>src/serve</code> 里按 vLLM 源码写的确定性模拟器。真实部署的块大小通常是 16 个 token，显存能放几万个块；这里缩小到一屏能看清，所以显存压力和抢占来得很快。</p>`,
+  radix: String.raw`<p>SGLang 用 RadixCache 管理前缀缓存。KV 按 token 存在槽位里（page size 1），一棵 radix 树把 token 序列映射到槽位：每个节点的 key 是一段 token，value 是这些 token 的槽位。新请求沿树逐 token 匹配，命中长度可以停在任意 token 上，不受块边界限制。被请求使用的路径用 lock_ref 锁住；不再使用的叶子按 last_access（逻辑时钟）从早到晚驱逐。</p>
+<p>这里用的 token 序列、到达步和生成长度与 vLLM 模式完全相同，可以对照两边的命中长度。这个模拟器只模拟了缓存和槽位分配器，没有模拟 SGLang 的调度器：请求到达当步就被接纳，prefill 一步完成，之后每步 decode 一个 token，不会排队，也不会被抢占（SGLang 显存不足时的 retract 没有模拟）。为了让四个请求不排队也放得下，槽位数设为 ${RADIX_SLOTS}，比 vLLM 模式 11 个可用块 × 4 = 44 个槽位多 4 个。vLLM 模式在第 14 步抢占了 D，所以从那以后两边 D 的进度不同。</p>`,
+  v4: String.raw`<p>DeepSeek V4 的注意力层有三种：CSA 层每 4 个 token 压成一个条目，HCA 层每 128 个 token 压成一个条目，SWA 层只保留最近的窗口。vLLM 把每种 KV 作为一个 KV cache 组，所有组共用同一个块池，每个请求在每个组各有一张块表。</p>
+<p>V4-Flash 的真实尺寸：压缩组每块覆盖 256 个 token，CSA 一块存 $256/4 = 64$ 个条目，HCA 一块存 $256/128 = 2$ 个条目；SWA 块是 64 个 token，窗口 128 个 token；压缩器的状态也按滑动窗口的方式管理，CSA 保留 8 行，HCA 保留 128 行。调度块大小是各组块大小的最小公倍数 256，前缀命中长度是 256 的整数倍。</p>
+<p>这里按比例缩小：压缩组每块覆盖 16 个 token，CSA 比率 4，一块 4 个条目；HCA 比率改成 8（真实是 128），一块 2 个条目，与真实的每块 2 个条目相同；SWA 块 4 个 token，窗口 8 个 token。调度块大小因此是 16，块哈希按最大公约数 4 个 token 计算。模拟器没有建模压缩器状态，页面上也不显示它。请求 A 的 22 个 token 先 prefill 再 decode，B 在 A 结束后到达，前 22 个 token 与 A 相同。</p>`,
+};
+
+const MODES = {
+  vllm: { title: 'vLLM 块哈希前缀缓存', count: vllm.snaps.length },
+  radix: { title: 'SGLang RadixCache', count: radix.steps.length },
+  v4: { title: 'DeepSeek V4 混合组', count: v4.snaps.length },
+};
+
+const params = new URLSearchParams(location.search);
+let mode = params.get('mode') in MODES ? params.get('mode') : 'vllm';
+let step = Number(params.get('step') ?? 0);
+
+for (const [key, m] of Object.entries(MODES)) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = m.title;
+  b.dataset.mode = key;
+  b.onclick = () => {
+    mode = key;
+    step = 0;
+    setupMode();
+  };
+  $('modes').appendChild(b);
+}
+
+const vllmCtx = { config: vllm.config, specs: vllm.requests, seenTokens: seenTokens(vllm.snaps, vllm.requests) };
+const v4Ctx = {
+  config: v4.config,
+  specs: v4.requests,
+  seenTokens: seenTokens(v4.snaps, v4.requests),
+  groupNames: V4_GROUP_NAMES,
+  groupShort: ['CSA', 'HCA', 'SWA'],
+  groupBlockSizes: v4.config.groups.map((g) => (g.kind === 'compressed' ? g.tokensPerBlock : g.blockSize)),
+};
+
+let owners = null;
+
+function panel(id, title, note = '') {
+  return `<section class="panel"><h3>${title}</h3>${note ? `<p>${note}</p>` : ''}<div id="${id}"></div></section>`;
+}
+
+function setupMode() {
+  $('modes').querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  renderText(LEDES[mode], $('lede'));
+  const count = MODES[mode].count;
+  $('slider').max = String(count - 1);
+  step = Math.max(0, Math.min(count - 1, Number.isFinite(step) ? step : 0));
+  if (mode === 'radix') {
+    $('mainCol').innerHTML = [
+      panel('tree', 'radix 树', '每个节点：编号、key（这段 token）、lock_ref、last_access、槽位。粗边框表示 lock_ref 大于 0。请求的末端节点是它当前加锁的节点。'),
+      panel('slots', `槽位（共 ${RADIX_SLOTS} 个，从 1 编号）`, '彩色：进行中的请求在用的槽位，底部深色条表示它也挂在树上；灰色：只在树上、没有请求在用，可以被驱逐；虚线框：空闲。'),
+      panel('freeSlots', 'free_pages（左边是队头，先被分配）'),
+      panel('reqs', '进行中的请求', '每个 token 下面是它的槽位号；底色标出的是已经在树上、受锁保护的前缀。'),
+    ].join('');
+    const vHits = firstHits(vllm.snaps);
+    const rHits = {};
+    for (const s of radix.steps) for (const a of s.actions) if (a.kind === 'admit') rHits[a.req] = a.prefixLength;
+    $('extra').innerHTML = `<h3>首次接纳时的前缀命中（token 数）</h3><table class="cmp"><tr><th>请求</th><th>vLLM 块哈希</th><th>RadixCache</th></tr>${radix.requests.map((r) => `<tr><td>${r.id}</td><td class="n">${vHits[r.id]}</td><td class="n">${rHits[r.id]}</td></tr>`).join('')}</table><p class="muted">B 与 A 的前 10 个 token 相同。vLLM 只能复用完整的块，第 10 个 token 落在第 2 块中间，所以只命中 8 个；RadixCache 按 token 匹配，命中 10 个。D 的情况相同。</p>`;
+  } else {
+    const ctx = mode === 'v4' ? v4Ctx : vllmCtx;
+    const snaps = mode === 'v4' ? v4.snaps : vllm.snaps;
+    owners = blockOwners(snaps);
+    const legend = mode === 'v4'
+      ? `<div class="legend"><span><span class="grp g0">CSA</span> 一块 4 个条目，每个条目压缩 4 个 token</span><span><span class="grp g1">HCA</span> 一块 2 个条目，每个条目压缩 8 个 token</span><span><span class="grp g2">SWA</span> 一块 4 个 token</span></div>`
+      : '';
+    $('mainCol').innerHTML = [
+      `<section class="panel"><h3>块池（${ctx.config.numGpuBlocks} 块）</h3><p>每块的格子是它的槽位，颜色表示哪个请求在用，字是存进去的 token${mode === 'v4' ? '，压缩组的格子是条目编号' : ''}。虚线边框是空闲块；灰底的空闲块还带着哈希，内容可以被命中。橙色外框是本步事件涉及的块，标签写出发生了什么。h: 后面是块哈希的前 4 位。</p>${legend}<div class="pool" id="pool"></div></section>`,
+      `<section class="panel"><h3>空闲队列</h3><p>分配从左边的队头取；灰底是带哈希的块。</p><div class="strip"><span class="end">队头</span><span class="strip" id="fq"></span><span class="end">队尾</span></div></section>`,
+      panel('queues', '调度队列'),
+      panel('tables', '请求与块表', `下划线虚线的 token 已经生成但 KV 还没算；底色标出最近一次前缀命中的 token。块表的每一格上面是逻辑块号，下面是物理块号${mode === 'v4' ? '，#0 是 null 块：滑动窗口之外的位置不再占用真实的块' : ''}。`),
+    ].join('');
+    $('extra').innerHTML = mode === 'v4'
+      ? `<h3>本模式要看的三件事</h3><p class="muted">1. 第 0 步：同一个请求在三个组各分配块，压缩组的块按条目计数（CSA 4 个、HCA 2 个）。<br>2. 第 1、2、6、10 步（A）和第 14、15 步（B）：SWA 组里完全移出窗口的块被释放（out_of_window），块表对应位置换成 #0。<br>3. 第 13 步：B 与 A 共享 22 个 token，但命中只有 16 个，因为命中长度要按调度块大小 16 对齐。</p>`
+      : `<h3>本模式要看的几件事</h3><p class="muted">第 1 步：B 与 A 在块中间分叉，只命中 8 个 token。第 3 步：A 结束，无哈希的块进队头，有哈希的块进队尾。第 6 步：C 分配到带哈希的 #3，哈希被删掉（驱逐）。第 10 步：D 从空闲队列取回 #1、#2（touch）。第 14 步：C 缺块，D 被抢占。第 16 步：D 恢复，命中自己被抢占前留下的块。</p>`;
+  }
+  render();
+}
+
+function attachHover(container) {
+  container.querySelectorAll('[data-ref]').forEach((el) => {
+    const blocks = el.dataset.ref.split(',').filter(Boolean);
+    const nodes = (el.dataset.nodes ?? '').split(',').filter(Boolean);
+    const slots = (el.dataset.slots ?? '').split(',').filter(Boolean);
+    const targets = () => [
+      ...blocks.flatMap((b) => [...document.querySelectorAll(`[data-block="${b}"]`)]),
+      ...nodes.flatMap((n) => [...document.querySelectorAll(`[data-node="${n}"]`)]),
+      ...slots.flatMap((s) => [...document.querySelectorAll(`[data-slot="${s}"]`)]),
+    ];
+    el.addEventListener('mouseenter', () => targets().forEach((t) => t.classList.add('focus')));
+    el.addEventListener('mouseleave', () => targets().forEach((t) => t.classList.remove('focus')));
+  });
+}
+
+function render() {
+  const count = MODES[mode].count;
+  $('slider').value = String(step);
+  $('stepOut').textContent = `第 ${step} 步 / 共 ${count} 步`;
+  $('prev').disabled = step === 0;
+  $('next').disabled = step === count - 1;
+  const log = $('log');
+  if (mode === 'radix') {
+    const s = radix.steps[step];
+    const items = explainRadixActions(s, radix.requests, (id) => {
+      const n = s.snapshot.nodes.find((x) => x.id === id);
+      return n && n.key.length > 0 ? `（key「${n.key.join('')}」）` : n ? '（根）' : '';
+    });
+    const hlNodes = new Set(items.flatMap((i) => i.nodes));
+    const hlSlots = new Set(items.flatMap((i) => i.slots));
+    $('tree').innerHTML = renderTree(s.snapshot, hlNodes);
+    $('slots').innerHTML = `<div class="rslots">${renderSlots(s.snapshot, RADIX_SLOTS, hlSlots)}</div>`;
+    $('freeSlots').innerHTML = `<div class="strip">${renderFreeSlots(s.snapshot)}</div>`;
+    $('reqs').innerHTML = renderRadixRequests(s.snapshot);
+    $('logTitle').textContent = `第 ${step} 步发生了什么（逻辑时钟 ${s.snapshot.clock}）`;
+    log.innerHTML = items.length > 0
+      ? items.map((i) => `<div class="ev" style="--c:var(--req-${i.req})" data-ref="" data-nodes="${i.nodes.join(',')}" data-slots="${i.slots.join(',')}"><span class="k">${i.kind}</span>${i.text}${i.details.length > 0 ? `<ul>${i.details.map((d) => `<li><span class="k">${d.kind}</span>${d.text}</li>`).join('')}</ul>` : ''}</div>`).join('')
+      : '<p class="muted">这一步没有请求在运行，也没有请求到达。</p>';
+  } else {
+    const ctx = mode === 'v4' ? v4Ctx : vllmCtx;
+    const snap = (mode === 'v4' ? v4.snaps : vllm.snaps)[step];
+    $('pool').innerHTML = renderPool(snap, owners[step], ctx);
+    $('fq').innerHTML = renderFreeQueue(snap);
+    $('queues').innerHTML = renderQueues(snap, ctx.specs);
+    $('tables').innerHTML = renderTables(snap, ctx);
+    const items = explainVllmEvents(snap, ctx);
+    $('logTitle').textContent = `第 ${step} 步发生了什么`;
+    log.innerHTML = items.length > 0
+      ? items.map((i) => `<div class="ev" style="--c:var(--req-${i.req})" data-ref="${i.blocks.join(',')}"><span class="k">${i.kind}</span>${i.text}</div>`).join('')
+      : '<p class="muted">这一步没有调度任何请求。</p>';
+  }
+  attachHover(log);
+  const u = new URL(location.href);
+  u.searchParams.set('mode', mode);
+  u.searchParams.set('step', String(step));
+  history.replaceState(null, '', u);
+}
+
+function go(next) {
+  step = Math.max(0, Math.min(MODES[mode].count - 1, next));
+  render();
+}
+
+$('prev').onclick = () => go(step - 1);
+$('next').onclick = () => go(step + 1);
+$('reset').onclick = () => go(0);
+$('slider').addEventListener('input', () => go(Number($('slider').value)));
+document.addEventListener('keydown', (e) => {
+  if (e.target instanceof HTMLInputElement && e.target.type !== 'range') return;
+  if (e.key === 'ArrowLeft') { e.preventDefault(); go(step - 1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); go(step + 1); }
+});
+
+setupMode();
+window.vizflow = { vllm, radix, v4, go, setMode: (m) => { mode = m; step = 0; setupMode(); } };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
