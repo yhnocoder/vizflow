@@ -53,7 +53,7 @@ export class CameraRig {
     this.controls.minPolarAngle = polarLo;
     this.controls.maxPolarAngle = polarHi;
     this.controls.addEventListener('change', () => {
-      c.labelsDirty = true;
+      c.markLabelsDirty();
       c.requestFrame();
     });
   }
@@ -92,7 +92,7 @@ export class CameraRig {
     this.camera.zoom += (goal.zoom - this.camera.zoom) * k;
     this.camera.updateProjectionMatrix();
     if (Math.abs(goal.y - this.controls.target.y) < FOLLOW_SETTLE_Y && Math.abs(goal.zoom - this.camera.zoom) < FOLLOW_SETTLE_ZOOM) this.goal = undefined;
-    this.c.labelsDirty = true;
+    this.c.markLabelsDirty();
     return true;
   }
 
@@ -177,7 +177,7 @@ export class CameraRig {
     this.camera.zoom = Math.min(hi, Math.max(lo, this.camera.zoom * Math.exp(-ev.deltaY * WHEEL_ZOOM_RATE)));
     this.camera.updateProjectionMatrix();
     this.goal = undefined;
-    this.c.labelsDirty = true;
+    this.c.markLabelsDirty();
     this.c.requestFrame();
     clearTimeout(this.wheelTimer);
     this.wheelTimer = window.setTimeout(() => this.c.refresh(), WHEEL_SETTLE_MS);

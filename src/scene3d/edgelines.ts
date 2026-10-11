@@ -116,7 +116,7 @@ export class EdgeLines {
   setHover(d: DrawnEdge | undefined): void {
     if (this.hover === d) return;
     this.hover = d;
-    this.c.geometryDirty = true;
+    this.c.markGeometryDirty();
     this.c.requestFrame();
   }
 

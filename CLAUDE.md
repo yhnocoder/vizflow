@@ -76,7 +76,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - `src/steps/`：步骤序列与讲解文本模板。入口 `src/steps/index.ts`。
 - `src/ui/`：页面上的 DOM 组件（步骤条、面板、讲解段落、图示），使用 Solid。入口 `src/ui/index.ts`。
 - `src/theme/`：颜色与字体。入口 `src/theme/index.ts`。
-- `src/scene3d/`：3D 场景。入口 `src/scene3d/scene.ts` 的 `mountScene`，控制器是 `src/scene3d/controller.ts`，各部分分在单独的文件：
+- `src/scene3d/`：3D 场景。入口 `src/scene3d/scene.ts`，控制器是 `src/scene3d/controller.ts`，各部分分在单独的文件：
   - 布局：`src/scene3d/layout.ts`、`src/scene3d/levels.ts`、`src/scene3d/auto.ts`；
   - 相机与取景：`src/scene3d/camera.ts`、`src/scene3d/framing.ts`；
   - 柱子与数值标签：`src/scene3d/renderable.ts`、`src/scene3d/blockview.ts`、`src/scene3d/blocks.ts`；

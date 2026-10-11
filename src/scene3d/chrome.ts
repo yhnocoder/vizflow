@@ -82,8 +82,7 @@ export function buildTools(c: SceneController): OverviewNav | undefined {
     const far = chip('远处淡出');
     far.setAttribute('aria-pressed', 'true');
     far.addEventListener('click', () => {
-      c.farOn = !c.farOn;
-      far.setAttribute('aria-pressed', String(c.farOn));
+      far.setAttribute('aria-pressed', String(c.toggleFar()));
       c.refresh();
     });
     tools.appendChild(far);

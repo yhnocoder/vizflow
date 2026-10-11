@@ -52,7 +52,7 @@ export class SceneController implements EditHost {
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
   private lastFrame: number | undefined;
-  farOn = true;
+  private far = true;
   lod = false;
   stepNodes = new Set<Node>();
   renderables: Renderable[] = [];
@@ -63,8 +63,8 @@ export class SceneController implements EditHost {
   width = 1;
   height = 1;
   private frameHandle = 0;
-  geometryDirty = true;
-  labelsDirty = true;
+  private geometryDirty = true;
+  private labelsDirty = true;
   screenVersion = 0;
   private disposed = false;
 
@@ -309,6 +309,23 @@ export class SceneController implements EditHost {
     this.renderer.setSize(this.width, this.height, false);
     this.rig.reframe();
     this.labelsDirty = true;
+  }
+
+  get farOn(): boolean {
+    return this.far;
+  }
+
+  toggleFar(): boolean {
+    this.far = !this.far;
+    return this.far;
+  }
+
+  markLabelsDirty(): void {
+    this.labelsDirty = true;
+  }
+
+  markGeometryDirty(): void {
+    this.geometryDirty = true;
   }
 
   resetView(): void {
