@@ -39,7 +39,7 @@ steps:
     label: '$\mu$'
     title: \of{name}：每一行的均值
     text: |
-      \of{intro}LayerNorm 对最后一维归一化，每一行先求均值 $\mu$，对应 <code>x.mean(-1, keepdim=True)</code>。和 RMSNorm 相比，LayerNorm 多了减均值这一步和偏置 $\of{bias}$。
+      \of{intro}LayerNorm 对最后一维归一化，每一行先求均值 $\mu$，对应 <code>x.mean(-1, keepdim=True)</code>。和 RMSNorm 相比，LayerNorm 多了减均值这一步和偏置 $\of{bias}$。PyTorch 的 LayerNorm 是一个 kernel，输入是 bf16 时它在内部用 float32 求均值和方差，只把输出转回输入的 dtype；这里按定义拆开画，中间节点标的 dtype 跟随输入。
       $$\mu={{ mu | matrix:3 }}$$
     backward:
       label: '$\partial\of{x}$'

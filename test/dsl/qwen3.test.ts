@@ -113,13 +113,14 @@ const MODULES: Record<string, string> = {
   rms: 'norm',
 };
 
-const EXPANDED: Record<string, number> = { qkv: 3, gu: 1, r1rs: 3, qkrs: 3, rh: 3, r2rs: 3, silu: 6, frs: 3, lse: 3, lp: 1, nll: 2, mean: 1 };
+const EXPANDED: Record<string, number> = { lm: 2, qkv: 3, gu: 1, r1rs: 3, qkrs: 3, rh: 3, r2rs: 3, silu: 6, frs: 3, lse: 3, lp: 1, nll: 2, mean: 1 };
 const EXPANSION_NODES = [
   ...Object.values(RMS).map((path) => `${path}.mse`),
   `${NORMS.q}.mse`,
   `${NORMS.k}.mse`,
   ...['q1', 'q2', 'k1', 'k2', 'nq2', 'nk2'].map((k) => `${ROPE}.${k}`),
   ...['n', 'e', 'd', 'out'].map((k) => `layer.mlp.act_fn.sigmoid.${k}`),
+  'zf',
   'log_softmax.ex',
   'log_softmax.S',
   'nll_loss.pick',
@@ -301,10 +302,10 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     expect(ops.map((n) => n.name).sort()).toEqual([...new Set([...outs, ...EXPANSION_NODES])].sort());
   });
 
-  it('lists 68 forward and 67 backward steps with the reference labels, titles and texts where no op was expanded', () => {
+  it('lists 69 forward and 68 backward steps with the reference labels, titles and texts where no op was expanded', () => {
     const expected = refSteps(ref);
-    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(68);
-    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(67);
+    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(69);
+    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(68);
     expect(steps.list).toHaveLength(expected.length);
     steps.list.forEach((info, i) => {
       const want = expected[i];
@@ -440,16 +441,16 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     s.subscribe(() => notified++);
     s.setFolded(ATTN, true);
     expect(notified).toBeGreaterThan(0);
-    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(68 - 27 + 1);
+    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(69 - 27 + 1);
     expect(visible(s.list[s.current].label)).toBe(visible('att = self_attn(n₁)'));
     s.setAllFolded(true);
     expect(s.list.map((x) => visible(x.label))).toEqual([
-      '总览', '输入', 'e = E[x]', 'x₀', 'x = layer(x₀)', 'h', 'z', 'log p', 'ℓ',
-      '∂log p', '∂z', '∂W, ∂h', '∂γ, ∂x', '∂参数, ∂x₀', '∂e', '∂E', '总览',
+      '总览', '输入', 'e = E[x]', 'x₀', 'x = layer(x₀)', 'h', 'z', 'z_{fp32}', 'log p', 'ℓ',
+      '∂log p', '∂z_{fp32}', '∂z', '∂W, ∂h', '∂γ, ∂x', '∂参数, ∂x₀', '∂e', '∂E', '总览',
     ].map(visible));
     expect(visible(s.list[s.current].label)).toBe(visible('x = layer(x₀)'));
     s.setAllFolded(false);
-    expect(s.list).toHaveLength(135);
+    expect(s.list).toHaveLength(137);
     expect(s.folded('layers')).toBe(true);
     s.dispose();
   });

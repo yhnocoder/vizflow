@@ -19,7 +19,7 @@ fold:
       两条路合起来，$\frac{\partial\ell}{\partial x_{i}}=g_{i}-p_{i}\sum_{j}g_{j}$，其中 $g=\partial\ell/\partial\of{out}$，$p=e^{\of{out}}$。
       $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 body:
-  - ex:  { op: exp(x), tex: 'e^{\of{x}}', dtype: fp32 }
+  - ex:  { op: exp(x), tex: 'e^{\of{x}}' }
   - S:   { op: 'sum(ex, -1, keepdim=true)', tex: 'S' }
   - LSE: { op: log(S), tex: '\mathrm{LSE}' }
   - out: { op: x - LSE, tex: '\log\mathbf{p}' }

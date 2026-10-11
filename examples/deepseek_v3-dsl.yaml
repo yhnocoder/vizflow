@@ -281,10 +281,11 @@ body:
           计算和 dense 层的 input_layernorm 相同，那里展开画了每一步；权重是 final norm 自己的。
           $$\of{h}={{ h | matrix:2 }}$$
   - z:    h @ W.T
+  - zf:   { op: identity(z), tex: '\mathbf{z}_{\mathrm{fp32}}', dtype: fp32 }
   - log_softmax:
       use: LogSoftmax
       subtitle: F.log_softmax(z.float(), -1)
-      inputs: { x: z }
+      inputs: { x: zf }
       outputs: { out: logp }
   - nll_loss:
       use: NLLLoss
@@ -325,6 +326,16 @@ steps:
       title: 传到 lm_head 权重和 $\of{h}$
       text: |
         $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
+  - id: float
+    show: zf
+    segment: lm_head
+    label: '$\of{zf}$'
+    title: 转成 float32
+    text: |
+      HF 计算损失前先做 <code>logits.float()</code>，后面的 log_softmax 和 nll_loss 都在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过类型转换
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
   - cost

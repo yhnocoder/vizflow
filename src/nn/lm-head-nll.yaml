@@ -12,11 +12,12 @@ outputs: [loss, z, logp]
 weights:
   W: { shape: [V, d] }
 body:
-  - z: h @ W.T
+  - z:    h @ W.T
+  - zf:   { op: identity(z), tex: '\mathbf{z}_{\mathrm{fp32}}', dtype: fp32 }
   - log_softmax:
       use: LogSoftmax
       subtitle: F.log_softmax(z.float(), -1)
-      inputs: { x: z }
+      inputs: { x: zf }
       outputs: { out: logp }
   - nll_loss:
       use: NLLLoss
@@ -31,3 +32,12 @@ steps:
     text: |
       每个位置的 ${\of{h}}_t$ 都乘同一块 $W^{\top}$，得到这个位置对下一个 token 的 logits。
       $$\of{z}=\of{h}W^{\top}={{ z | matrix }}$$
+  - id: float
+    show: zf
+    label: '$\of{zf}$'
+    title: 转成 float32
+    text: |
+      HF 计算损失前先做 <code>logits.float()</code>，后面的 log_softmax 和 nll_loss 都在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过类型转换

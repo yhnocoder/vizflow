@@ -214,10 +214,11 @@ body:
           text: |
             $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - z:    h @ W.T
+  - zf:   { op: identity(z), tex: '\mathbf{z}_{\mathrm{fp32}}', dtype: fp32 }
   - log_softmax:
       use: LogSoftmax
       subtitle: F.log_softmax(z.float(), -1)
-      inputs: { x: z }
+      inputs: { x: zf }
       outputs: { out: logp }
   - nll_loss:
       use: NLLLoss
@@ -259,6 +260,16 @@ steps:
       text: |
         $\partial\ell/\partial W^{\top}=\mathbf{h}^{\top}\frac{\partial\ell}{\partial\mathbf{z}}$，三个位置的外积加在一起。
         $$\frac{\partial\ell}{\partial\mathbf{h}}=\frac{\partial\ell}{\partial\mathbf{z}}W={{ h.grad | matrix:3 }}$$
+  - id: float
+    show: zf
+    segment: lm_head
+    label: '$\of{zf}$'
+    title: 转成 float32
+    text: |
+      HF 计算损失前先做 <code>logits.float()</code>，后面的 log_softmax 和 nll_loss 都在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过类型转换
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
   - cost
