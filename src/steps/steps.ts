@@ -81,7 +81,7 @@ function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<Backwa
     }
     return [];
   }
-  const ordered = visible.filter((n) => n.kind !== 'label' && n.id <= loss.id).sort((a, b) => b.id - a.id);
+  const ordered = visible.filter((n) => n.grad !== null && n.id <= loss.id).sort((a, b) => b.id - a.id);
   const groups: Node[][] = [];
   ordered.forEach((node, i) => {
     if (i === 1 && ordered[0] === loss) groups[0].push(node);

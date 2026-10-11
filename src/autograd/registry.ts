@@ -20,6 +20,8 @@ export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'input',
   'param',
   'label',
+  'buffer',
+  'split',
   'loss',
   'findLoss',
   'node',
@@ -56,6 +58,18 @@ export function defineOp<A extends object>(def: OpDef<A>): void {
   }
   if (def.differentiable && def.differentiable.length !== def.tensors.length) {
     throw new Error(`op '${def.name}': differentiable must have one entry per tensor`);
+  }
+  if (def.list !== undefined && (def.tensors.length !== 1 || def.tensors[0] !== def.list)) {
+    throw new Error(`op '${def.name}': list '${def.list}' must be the only tensor argument`);
+  }
+  if (def.list !== undefined && def.differentiable !== undefined) {
+    throw new Error(`op '${def.name}': differentiable cannot be combined with list`);
+  }
+  for (const s of def.scalars ?? []) {
+    if (!def.tensors.includes(s)) throw new Error(`op '${def.name}': scalar '${s}' is not a tensor argument`);
+  }
+  for (const s of def.sizes ?? []) {
+    if (!def.args.includes(s) || def.tensors.includes(s)) throw new Error(`op '${def.name}': size '${s}' is not a non-tensor argument`);
   }
   registry.set(def.name, def);
 }

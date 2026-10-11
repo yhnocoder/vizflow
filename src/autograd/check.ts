@@ -38,13 +38,14 @@ export function checkOpNamed<A extends object>(
   const where = nodeName === undefined ? '' : ` (node '${nodeName}')`;
   inputs.forEach((input, arg) => {
     if (def.differentiable && !def.differentiable[arg]) return;
+    const what = `op '${def.name}'${where}, input ${arg} '${def.list === undefined ? def.tensors[arg] : `${def.list}[${arg}]`}'`;
     const grad = grads[arg];
     if (grad === null || grad === undefined) {
-      throw new Error(`gradient check failed: op '${def.name}'${where}, input ${arg} '${def.tensors[arg]}' has no gradient`);
+      throw new Error(`gradient check failed: ${what} has no gradient`);
     }
     if (formatShape(grad.shape) !== formatShape(input.shape)) {
       throw new Error(
-        `gradient check failed: op '${def.name}'${where}, input ${arg} '${def.tensors[arg]}': backward returned ${formatShape(grad.shape)} for shape ${formatShape(input.shape)}`,
+        `gradient check failed: ${what}: backward returned ${formatShape(grad.shape)} for shape ${formatShape(input.shape)}`,
       );
     }
     for (let j = 0; j < input.size; j++) {
@@ -62,7 +63,7 @@ export function checkOpNamed<A extends object>(
       const analytic = grad.data[j];
       if (!(Math.abs(analytic - numeric) <= tolerance)) {
         throw new Error(
-          `gradient check failed: op '${def.name}'${where}, input ${arg} '${def.tensors[arg]}' at [${indexOf(input.shape, j).join(', ')}]: backward ${analytic.toFixed(6)} vs numeric ${numeric.toFixed(6)}`,
+          `gradient check failed: ${what} at [${indexOf(input.shape, j).join(', ')}]: backward ${analytic.toFixed(6)} vs numeric ${numeric.toFixed(6)}`,
         );
       }
     }

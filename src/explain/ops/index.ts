@@ -1,7 +1,21 @@
 import type { OpExplain } from '../../autograd';
 import { registerExplain } from '../registry';
-import { addExplain, divExplain, expExplain, logExplain, mulExplain, negExplain, subExplain, transposeExplain } from './elementwise';
-import { gatherExplain } from './index_ops';
+import {
+  addExplain,
+  divExplain,
+  expExplain,
+  logExplain,
+  mulExplain,
+  negExplain,
+  powExplain,
+  rsqrtExplain,
+  sigmoidExplain,
+  siluExplain,
+  sqrtExplain,
+  subExplain,
+  transposeExplain,
+} from './elementwise';
+import { catExplain, embeddingExplain, gatherExplain, narrowExplain } from './index_ops';
 import { nllLossExplain } from './loss';
 import { matmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -15,6 +29,11 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   neg: negExplain,
   exp: expExplain,
   log: logExplain,
+  pow: powExplain,
+  rsqrt: rsqrtExplain,
+  sqrt: sqrtExplain,
+  sigmoid: sigmoidExplain,
+  silu: siluExplain,
   transpose: transposeExplain,
   matmul: matmulExplain,
   sum: sumExplain,
@@ -24,6 +43,9 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   softmax: softmaxExplain,
   log_softmax: logSoftmaxExplain,
   gather: gatherExplain,
+  embedding: embeddingExplain,
+  narrow: narrowExplain,
+  cat: catExplain,
   nll_loss: nllLossExplain,
 };
 

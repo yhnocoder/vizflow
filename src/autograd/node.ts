@@ -1,7 +1,7 @@
 import type { Nested, Tensor } from '../tensor';
 import type { Graph } from './graph';
 
-export type NodeKind = 'input' | 'param' | 'label' | 'op';
+export type NodeKind = 'input' | 'param' | 'label' | 'buffer' | 'op';
 
 export interface CardText {
   title: string;

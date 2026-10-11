@@ -42,6 +42,9 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   name: string;
   args: string[];
   tensors: string[];
+  list?: string;
+  scalars?: string[];
+  sizes?: string[];
   defaults?: Partial<A>;
   shape(inputs: number[][], attrs: A): number[];
   forward(inputs: Tensor[], attrs: A): Tensor;

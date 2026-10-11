@@ -18,18 +18,26 @@ function mapWith(a: Tensor, fn: (x: number) => number): Tensor {
   return new Tensor(a.shape, a.data.map(fn));
 }
 
+interface ScalarAttrs {
+  other?: number;
+}
+
 function binary(
   name: string,
   forward: (x: number, y: number) => number,
   local: (x: number, y: number) => [number, number],
-): OpDef<NoAttrs> {
+): OpDef<ScalarAttrs> {
   return {
     name,
     args: ['input', 'other'],
     tensors: ['input', 'other'],
-    shape: ([a, b]) => broadcastShapes(a, b),
-    forward: ([a, b]) => zipWith(a, b, forward),
-    backward: (gradOut, [a, b]) => {
+    scalars: ['other'],
+    shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+    forward: ([a, b], { other }) => (b === undefined ? mapWith(a, (x) => forward(x, other as number)) : zipWith(a, b, forward)),
+    backward: (gradOut, [a, b], _out, { other }) => {
+      if (b === undefined) {
+        return [new Tensor(a.shape, gradOut.data.map((g, i) => g * local(a.data[i], other as number)[0]))];
+      }
       const ga = zipWith(a, b, (x, y) => local(x, y)[0]);
       const gb = zipWith(a, b, (x, y) => local(x, y)[1]);
       for (let i = 0; i < gradOut.size; i++) {
@@ -41,16 +49,27 @@ function binary(
   };
 }
 
-function unary(name: string, forward: (x: number) => number, local: (x: number, y: number) => number): OpDef<NoAttrs> {
+function unary<A extends object = NoAttrs>(
+  name: string,
+  forward: (x: number, attrs: A) => number,
+  local: (x: number, y: number, attrs: A) => number,
+  args: string[] = ['input'],
+): OpDef<A> {
   return {
     name,
-    args: ['input'],
+    args,
     tensors: ['input'],
     shape: ([a]) => [...a],
-    forward: ([a]) => mapWith(a, forward),
-    backward: (gradOut, [a], out) =>
-      [new Tensor(a.shape, gradOut.data.map((g, i) => g * local(a.data[i], out.data[i])))],
+    forward: ([a], attrs) => mapWith(a, (x) => forward(x, attrs)),
+    backward: (gradOut, [a], out, attrs) =>
+      [new Tensor(a.shape, gradOut.data.map((g, i) => g * local(a.data[i], out.data[i], attrs)))],
   };
+}
+
+export function sigmoid(x: number): number {
+  if (x >= 0) return 1 / (1 + Math.exp(-x));
+  const e = Math.exp(x);
+  return e / (1 + e);
 }
 
 export const addOp = binary('add', (x, y) => x + y, () => [1, 1]);
@@ -60,6 +79,16 @@ export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * 
 export const negOp = unary('neg', (x) => -x, () => -1);
 export const expOp = unary('exp', Math.exp, (_x, y) => y);
 export const logOp = unary('log', Math.log, (x) => 1 / x);
+export const powOp = unary<{ exponent: number }>(
+  'pow',
+  (x, { exponent }) => x ** exponent,
+  (x, _y, { exponent }) => exponent * x ** (exponent - 1),
+  ['input', 'exponent'],
+);
+export const rsqrtOp = unary('rsqrt', (x) => 1 / Math.sqrt(x), (_x, y) => -0.5 * y ** 3);
+export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
+export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
+export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));
 
 interface TransposeAttrs {
   dim0: number;

@@ -35,6 +35,7 @@ function squeeze(shape: readonly number[]): number[] {
 }
 
 function consumersOf(g: Graph, node: Node, reachesLoss: (node: Node) => boolean): Node[] {
+  if (node.grad === null) return [];
   return g.nodes.filter((other) => {
     if (other.kind !== 'op' || !reachesLoss(other)) return false;
     const flags = opDef(other.op as string)?.differentiable;

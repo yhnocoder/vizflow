@@ -439,6 +439,101 @@ def stability_page_fixtures():
     return cases
 
 
+def scalar_operand_cases(op, fn):
+    scalars = [0.5, -2.0] if op == "div" else [0.5, -1.5]
+    return [
+        op_case(op, f"(2, 3) with scalar {s}", lambda x, s=s: fn(x, s), [("input", randn(2, 3))], [tensor_arg(0), s])
+        for s in scalars
+    ]
+
+
+def pow_cases():
+    specs = [(2, randn), (3, randn), (-0.5, positive), (0.5, positive), (1.5, positive)]
+    return [
+        op_case("pow", f"shape (2, 3) exponent {e}", lambda x, e=e: torch.pow(x, e), [("input", make(2, 3))], [tensor_arg(0), e])
+        for e, make in specs
+    ]
+
+
+def pointwise_cases(op, fn, make):
+    return [
+        op_case(op, f"shape {tuple(shape)}", fn, [("input", make(*shape))], [tensor_arg(0)])
+        for shape in [(5,), (2, 3), ()]
+    ]
+
+
+def embedding_cases():
+    specs = [
+        ("ids (3,) weight (5, 4)", torch.tensor([2, 4, 3]), (5, 4)),
+        ("ids () weight (5, 4)", torch.tensor(1), (5, 4)),
+        ("repeated ids (2, 3) weight (6, 2)", torch.tensor([[0, 5, 0], [5, 5, 1]]), (6, 2)),
+    ]
+    return [
+        op_case(
+            "embedding",
+            title,
+            F.embedding,
+            [("label", ids), ("input", randn(*weight))],
+            [tensor_arg(0), tensor_arg(1)],
+        )
+        for title, ids, weight in specs
+    ]
+
+
+def narrow_cases():
+    specs = [((2, 6), 1, 2, 3), ((5,), 0, 1, 4), ((2, 3, 4), -1, -3, 2), ((4, 3), 0, 0, 4), ((3, 4), 0, 1, 0)]
+    return [
+        op_case(
+            "narrow",
+            f"shape {shape} dim {dim} start {start} length {length}",
+            lambda x, dim=dim, start=start, length=length: torch.narrow(x, dim, start, length),
+            [("input", randn(*shape))],
+            [tensor_arg(0), dim, start, length],
+        )
+        for shape, dim, start, length in specs
+    ]
+
+
+def cat_cases():
+    specs = [
+        ([(2, 3), (2, 2)], 1, None),
+        ([(1, 3), (2, 3), (3, 3)], 0, None),
+        ([(2, 2, 3)], -1, None),
+        ([(4,), (2,)], None, None),
+        ([(2, 1), (2, 3)], None, -1),
+    ]
+    cases = []
+    for shapes, dim, keyword in specs:
+        tensors = [("input", randn(*shape)) for shape in shapes]
+        refs = [tensor_arg(i) for i in range(len(shapes))]
+        args = [refs] if dim is None else [refs, dim]
+        options = {} if keyword is None else {"dim": keyword}
+        used = dim if dim is not None else (keyword if keyword is not None else 0)
+        title = f"shapes {shapes} dim {used}" + (" as option" if keyword is not None else "")
+        cases.append(op_case("cat", title, lambda *xs, used=used: torch.cat(xs, used), tensors, args, options))
+    return cases
+
+
+def transformer_op_fixtures():
+    cases = []
+    cases += scalar_operand_cases("add", torch.add)
+    cases += scalar_operand_cases("sub", torch.sub)
+    cases += scalar_operand_cases("mul", torch.mul)
+    cases += scalar_operand_cases("div", torch.div)
+    cases += pow_cases()
+    cases += pointwise_cases("rsqrt", torch.rsqrt, positive)
+    cases += pointwise_cases("sqrt", torch.sqrt, positive)
+    cases += pointwise_cases("sigmoid", torch.sigmoid, lambda *shape: randn(*shape) * 3)
+    cases += pointwise_cases("silu", F.silu, lambda *shape: randn(*shape) * 3)
+    for op, fn in [("sigmoid", torch.sigmoid), ("silu", F.silu)]:
+        x = torch.tensor([-800.0, -30.0, 0.0, 30.0, 800.0], dtype=torch.float64)
+        cases.append(finite(op_case(op, "large magnitudes", fn, [("input", x)], [tensor_arg(0)])))
+    cases += embedding_cases()
+    cases += narrow_cases()
+    cases += cat_cases()
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -451,8 +546,11 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     ops = op_fixtures()
     pages = page_fixtures()
-    write("ops.json", ops + stability_op_fixtures())
-    write("pages.json", pages + stability_page_fixtures())
+    stable_ops = stability_op_fixtures()
+    stable_pages = stability_page_fixtures()
+    transformer_ops = transformer_op_fixtures()
+    write("ops.json", ops + stable_ops + transformer_ops)
+    write("pages.json", pages + stable_pages)
 
 
 if __name__ == "__main__":

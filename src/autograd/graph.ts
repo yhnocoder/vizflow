@@ -1,4 +1,4 @@
-import { type Nested, Tensor, formatShape, inferShape } from '../tensor';
+import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor';
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
 import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName } from './node';
@@ -21,6 +21,12 @@ export interface LabelOptions extends NodeOptions {
   classes?: number;
 }
 
+export interface SplitOptions {
+  names?: string[];
+  tex?: string[];
+  elem?: string[];
+}
+
 export interface Graph extends BuiltinOps {
   readonly dims: Readonly<Record<string, number>>;
   readonly real: Readonly<Record<string, number | string>> | undefined;
@@ -29,6 +35,8 @@ export interface Graph extends BuiltinOps {
   input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   param(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: LabelOptions): Node;
+  buffer(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
+  split(tensor: Node, split_size: number | string, dim?: number | SplitOptions, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
   node(name: string): Node | undefined;
@@ -46,6 +54,8 @@ interface NodeState {
 }
 
 const NODE_OPTION_KEYS = new Set(['name', 'tex', 'elem', 'card']);
+const SPLIT_OPTION_KEYS = ['names', 'tex', 'elem'] as const;
+const CONSTANT_KINDS: ReadonlySet<NodeKind> = new Set(['label', 'buffer']);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Node);
@@ -62,6 +72,17 @@ function resolveShape(spec: readonly (number | string)[], table: Readonly<Record
     }
     return size;
   });
+}
+
+function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Readonly<Record<string, number>>): Record<string, unknown> {
+  const resolved = { ...attrs };
+  for (const key of def.sizes ?? []) {
+    const value = attrs[key];
+    if (typeof value !== 'string') continue;
+    if (table[value] === undefined) throw new Error(`${def.name}: dimension '${value}' is not defined`);
+    resolved[key] = table[value];
+  }
+  return resolved;
 }
 
 class GraphImpl {
@@ -107,6 +128,43 @@ class GraphImpl {
     const classes = options.classes ?? options.tokens?.length;
     const attrs = classes === undefined ? {} : { classes };
     return this.leaf('label', name, shape, values, options, options.tokens, attrs);
+  }
+
+  buffer(name: string, shape: (number | string)[], values: Nested, options: NodeOptions = {}): Node {
+    return this.leaf('buffer', name, shape, values, options, undefined);
+  }
+
+  split(tensor: Node, splitSize: number | string, dim: number | SplitOptions = 0, options: SplitOptions = {}): Node[] {
+    if (isPlainObject(dim)) return this.split(tensor, splitSize, 0, dim as SplitOptions);
+    this.ownNode(tensor, 'split');
+    for (const key of Object.keys(options)) {
+      if (!(SPLIT_OPTION_KEYS as readonly string[]).includes(key)) throw new Error(`split: unknown option '${key}'`);
+    }
+    const size = typeof splitSize === 'string' ? this.dims[splitSize] : splitSize;
+    if (size === undefined) throw new Error(`split: dimension '${splitSize}' is not defined`);
+    if (!Number.isInteger(size) || size <= 0) throw new Error(`split: split_size must be a positive integer, got ${size}`);
+    const total = tensor.shape[normDim(dim as number, tensor.shape.length)];
+    const count = Math.ceil(total / size);
+    for (const key of SPLIT_OPTION_KEYS) {
+      const given = options[key];
+      if (given !== undefined && given.length !== count) {
+        throw new Error(`split: ${key} has ${given.length} entries for ${count} chunks`);
+      }
+    }
+    const names = Array.from({ length: count }, (_, i) => options.names?.[i] ?? `${tensor.name}_${i + 1}`);
+    names.forEach((name, i) => {
+      if (this.node(name) !== undefined || names.slice(0, i).some((n) => normalizeName(n) === normalizeName(name))) {
+        throw new Error(`node '${name}' already exists`);
+      }
+    });
+    return names.map((name, i) => {
+      const start = i * size;
+      const length = start + size <= total ? splitSize : total - start;
+      const nodeOptions: OpOptions = { name };
+      if (options.tex !== undefined) nodeOptions.tex = options.tex[i];
+      if (options.elem !== undefined) nodeOptions.elem = options.elem[i];
+      return this.self.narrow(tensor, dim as number, start, length, nodeOptions);
+    });
   }
 
   loss(node?: Node): Node {
@@ -179,8 +237,19 @@ class GraphImpl {
     const inputs: Node[] = [];
     def.args.forEach((argName, i) => {
       const given = positional[i];
-      if (def.tensors.includes(argName)) {
-        if (!(given instanceof Node)) throw new Error(`${def.name}: argument '${argName}' must be a node`);
+      if (argName === def.list) {
+        if (!Array.isArray(given) || given.length === 0 || !given.every((n) => n instanceof Node)) {
+          throw new Error(`${def.name}: argument '${argName}' must be a non-empty array of nodes`);
+        }
+        for (const n of given as Node[]) this.ownNode(n, def.name);
+        inputs.push(...(given as Node[]));
+      } else if (def.tensors.includes(argName)) {
+        const scalar = def.scalars?.includes(argName) ?? false;
+        if (scalar && typeof given === 'number') {
+          attrs[argName] = given;
+          return;
+        }
+        if (!(given instanceof Node)) throw new Error(`${def.name}: argument '${argName}' must be a node${scalar ? ' or a number' : ''}`);
         this.ownNode(given, def.name);
         inputs.push(given);
       } else if (given !== undefined) {
@@ -214,9 +283,11 @@ class GraphImpl {
     return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, tokens, state);
   }
 
-  private createOp(def: AnyOpDef, inputs: Node[], attrs: Record<string, unknown>, options: OpOptions): Node {
+  private createOp(def: AnyOpDef, inputs: Node[], given: Record<string, unknown>, options: OpOptions): Node {
+    const attrs = resolveSizes(def, given, this.dims);
     const shape = def.shape(inputs.map((n) => [...n.shape]), attrs);
-    const realShape = this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), attrs);
+    const realShape =
+      this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
     const name = options.name ?? this.autoName(def.name);
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
@@ -291,7 +362,7 @@ class GraphImpl {
   }
 
   private gradOf(id: number): Tensor | null {
-    if (this.nodes[id].kind === 'label') return null;
+    if (CONSTANT_KINDS.has(this.nodes[id].kind)) return null;
     this.ensureBackward();
     return this.states[id].grad;
   }
@@ -422,7 +493,7 @@ class GraphImpl {
       const def = opDef(node.op as string) as AnyOpDef;
       const inputGrads = def.backward(grads[i], node.inputs.map((n) => n.value), this.states[i].value, node.attrs);
       node.inputs.forEach((input, k) => {
-        if (input.kind === 'label') return;
+        if (CONSTANT_KINDS.has(input.kind)) return;
         if (def.differentiable !== undefined && !def.differentiable[k]) return;
         const grad = inputGrads[k];
         if (grad === null || grad === undefined) return;

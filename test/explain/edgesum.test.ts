@@ -82,6 +82,66 @@ const cases: Case[] = [
       return { out: g.gather(x, 0, t), inputs: [x] };
     },
   },
+  { op: 'add', build: (g, r) => scalar(g, r, 'add', 0.5) },
+  { op: 'sub', build: (g, r) => scalar(g, r, 'sub', -1.5) },
+  { op: 'mul', build: (g, r) => scalar(g, r, 'mul', -0.7) },
+  { op: 'div', build: (g, r) => scalar(g, r, 'div', 4) },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.pow(x, 3), inputs: [x] };
+    },
+  },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3], true));
+      return { out: g.pow(x, -0.5), inputs: [x] };
+    },
+  },
+  { op: 'rsqrt', build: (g, r) => unary(g, r, 'rsqrt', [2, 3], true) },
+  { op: 'sqrt', build: (g, r) => unary(g, r, 'sqrt', [2, 3], true) },
+  { op: 'sigmoid', build: (g, r) => unary(g, r, 'sigmoid', [2, 3]) },
+  { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },
+  {
+    op: 'embedding',
+    build: (g, r) => {
+      const ids = g.label('ids', [[0, 2], [2, 2]]);
+      const W = g.input('W', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.embedding(ids, W), inputs: [W] };
+    },
+  },
+  {
+    op: 'narrow',
+    build: (g, r) => {
+      const x = g.input('x', [3, 5], randomValues(r, [3, 5]));
+      return { out: g.narrow(x, 1, 1, 3), inputs: [x] };
+    },
+  },
+  {
+    op: 'narrow',
+    build: (g, r) => {
+      const x = g.input('x', [3, 5], randomValues(r, [3, 5]));
+      return { out: g.narrow(x, -2, -2, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'cat',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      const y = g.input('y', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.cat([x, y], 1), inputs: [x, y] };
+    },
+  },
+  {
+    op: 'cat',
+    build: (g, r) => {
+      const x = g.input('x', [1, 2], randomValues(r, [1, 2]));
+      const y = g.input('y', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.cat([x, y, x]), inputs: [x, y] };
+    },
+  },
   { op: 'nll_loss', build: (g, r) => nll(g, r, [5], 3, {}) },
   { op: 'nll_loss', build: (g, r) => nll(g, r, [3, 5], [2, 0, 4], {}) },
   { op: 'nll_loss', build: (g, r) => nll(g, r, [3, 5], [2, 0, 4], { reduction: 'sum' }) },
@@ -94,6 +154,11 @@ function binary(g: Graph, r: () => number, op: string, a: number[], b: number[],
   const x = g.input('x', a, randomValues(r, a, positive));
   const y = g.input('y', b, randomValues(r, b, positive));
   return { out: (g as unknown as Record<string, (...args: unknown[]) => Node>)[op](x, y), inputs: [x, y] };
+}
+
+function scalar(g: Graph, r: () => number, op: string, other: number) {
+  const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+  return { out: (g as unknown as Record<string, (...args: unknown[]) => Node>)[op](x, other), inputs: [x] };
 }
 
 function unary(g: Graph, r: () => number, op: string, shape: number[], positive = false) {
