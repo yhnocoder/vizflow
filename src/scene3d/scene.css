@@ -560,3 +560,154 @@
     bottom: 58px;
   }
 }
+
+.vf-note-ink {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 2;
+}
+
+.vf-note-arrow {
+  fill: none;
+  stroke: var(--note);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity 0.26s;
+}
+
+.vf-note-arrow.vf-note-in {
+  opacity: 1;
+}
+
+.vf-note-shaft {
+  stroke-width: 1.7;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.vf-note-shaft + .vf-note-shaft {
+  stroke-width: 1;
+  opacity: 0.7;
+}
+
+.vf-note-head {
+  stroke-width: 1.5;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+.vf-note-in .vf-note-shaft {
+  animation: vf-note-draw 0.45s ease-out forwards;
+}
+
+.vf-note-in .vf-note-head {
+  animation: vf-note-draw 0.18s ease-out 0.4s forwards;
+}
+
+.vf-note-still .vf-note-shaft,
+.vf-note-still .vf-note-head {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+
+@keyframes vf-note-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.vf-notes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 1;
+}
+
+.vf-note {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin: 0;
+  max-width: 260px;
+  padding: 3px 8px 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  color: var(--note);
+  font-family: "Segoe Print", "Bradley Hand", "Comic Sans MS", "Kaiti SC", "STKaiti", "KaiTi", var(--serif);
+  font-style: italic;
+  font-size: 14px;
+  line-height: 1.45;
+  opacity: 0;
+  transition: opacity 0.26s;
+}
+
+.vf-note.vf-note-in {
+  opacity: 1;
+}
+
+.vf-note.vf-off {
+  visibility: hidden;
+}
+
+.vf-note .katex {
+  font-size: 1.02em;
+  font-style: normal;
+}
+
+.vf-note-text p {
+  margin: 0;
+}
+
+.vf-note-reader {
+  pointer-events: auto;
+  padding-right: 20px;
+}
+
+.vf-note-x {
+  position: absolute;
+  right: 2px;
+  top: 1px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font: 14px/18px var(--sans);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.vf-note-reader:hover .vf-note-x,
+.vf-note-x:focus-visible {
+  opacity: 1;
+}
+
+.vf-note-x:hover {
+  color: var(--fg);
+  background: var(--line);
+}
+
+.vf-note-input {
+  width: 200px;
+  border: none;
+  border-bottom: 1.5px dashed var(--note);
+  background: transparent;
+  color: var(--note);
+  font: inherit;
+  outline: none;
+  padding: 2px 0;
+}
+
+.vf-noting canvas,
+.vf-noting canvas:active {
+  cursor: crosshair;
+}

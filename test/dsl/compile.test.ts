@@ -958,4 +958,20 @@ body:
     ]);
     expect(result.modules.map((m) => m.id)).toEqual(['attn']);
   });
+
+  it('resolves step notes to tensors, elements and module instances, and rejects bad targets', async () => {
+    const head = 'title: t\ndims: { T: 2, n: 3 }\ninputs:\n  x: { value: [[1, 2, 3], [4, 5, 6]] }\nimport: { Norm: ./norm.yaml }\nbody:\n  - norm: { use: Norm, inputs: { x: x }, outputs: { out: y } }\n  - z: y * 2\nsteps:\n  - id: s\n    show: z\n    notes:\n';
+    const files = { 'mem:/pages/norm.yaml': NORM };
+    const result = await page(`${head}      - { at: z, text: '整个 $z$', side: left }\n      - { at: 'z[1,2]', text: one }\n      - { at: norm, text: module }\n`, files);
+    const notes = result.steps.forward.find((s) => s.title === 's')!.notes!;
+    expect(notes.slice(0, 2).map((n) => [n.nodes.map((x) => x.name), n.index, n.side, n.text])).toEqual([
+      [['z'], undefined, 'left', '整个 $z$'],
+      [['z'], [1, 2], undefined, 'one'],
+    ]);
+    expect(notes[2].nodes.map((x) => x.name)).toContain('norm.ms');
+    await expect(page(`${head}      - { at: 'z[2,0]', text: x }\n`, files)).rejects.toThrow(/index 2 is outside 0\.\.1 on axis 0/);
+    await expect(page(`${head}      - { at: z, text: x, side: up }\n`, files)).rejects.toThrow(/side must be one of left, right, above, below/);
+    await expect(page(`${head}      - { at: w, text: x }\n`, files)).rejects.toThrow(/name 'w' is not defined/);
+    await expect(page(`${head}      - { at: z }\n`, files)).rejects.toThrow(/a note needs a non-empty text/);
+  });
 });

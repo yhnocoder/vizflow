@@ -145,6 +145,9 @@ body:
             text: 反向就是把梯度按相反的方向搬回去：$\bar q_{c}$ 从 $\mathrm{rh}_{c+2}$ 拿到 $+1$ 倍，$\bar q_{c+2}$ 从 $\mathrm{rh}_{c}$ 拿到 $-1$ 倍。
         sin:
           title: 乘 sin
+          notes:
+            - at: 'apply_rotary_pos_emb.sin[0,0,1]'
+              text: '$t=0$ 时 $\sin 0=0$，这一行全是 0'
           text: |
             第 1 行（$t=0$）的 sin 全是 0，所以第一行在这一步全部变成 0。sin 表同样是周期的，和 cos 差四分之一个周期。
 
@@ -221,6 +224,10 @@ body:
               $$\frac{\partial\ell}{\partial S^{(1)}}={{ eager_attention_forward.S[1].grad | matrix:3 }}$$
         mask:
           title: causal mask
+          notes:
+            - at: 'M[0,2]'
+              side: left
+              text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'
           text: |
             加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 实现里填的不是真正的 $-\infty$，而是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
             $$M={{ M | matrix:2 }},\qquad \bar{S}^{(1)}={{ eager_attention_forward.Sm[1] | matrix:2 }}$$
@@ -249,6 +256,9 @@ body:
               $$\frac{\partial\ell}{\partial\,\mathrm{ex}^{(1)}}={{ eager_attention_forward.ex[1].grad | matrix:3 }}$$
         div:
           title: 注意力权重
+          notes:
+            - at: 'eager_attention_forward.P[1][0,0]'
+              text: '第一个位置只能看到自己，$P_{1,1}=1$'
           text: |
             每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以 $P_{1,1}=1$。Qwen3 的 attention_dropout 是 0，这里没有 dropout。
             $$P^{(1)}={{ eager_attention_forward.P[1] | matrix:3 }},\qquad P^{(\of{H})}={{ eager_attention_forward.P[H] | matrix:3 }}$$

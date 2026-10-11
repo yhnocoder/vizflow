@@ -10,8 +10,18 @@ export interface BackwardOverride {
   label?: string;
 }
 
+export type NoteSide = 'left' | 'right' | 'above' | 'below';
+
+export interface StepNote {
+  nodes: Node[];
+  index?: number[];
+  text: string;
+  side?: NoteSide;
+}
+
 export interface ForwardStep {
   show: Node | Node[];
+  notes?: StepNote[];
   active?: Node | Node[];
   title: string;
   text?: string;
@@ -48,7 +58,7 @@ export interface StepModule extends PageModule {
 
 export interface StepsSpec {
   forward: ForwardStep[];
-  overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride };
+  overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
   backward?: BackwardSpec;
   modules?: StepModule[];
 }
@@ -65,6 +75,7 @@ export interface StepInfo {
   segment: string;
   sub?: string;
   module?: string;
+  notes?: StepNote[];
 }
 
 export interface StepState {
@@ -106,6 +117,11 @@ function byId(nodes: Iterable<Node>): Node[] {
 
 function unique(nodes: Iterable<Node>): Node[] {
   return [...new Set(nodes)];
+}
+
+function withNotes(info: StepInfo, notes: StepNote[] | undefined): StepInfo {
+  if (notes !== undefined && notes.length > 0) info.notes = notes;
+  return info;
 }
 
 interface Entry {
@@ -237,9 +253,11 @@ class StepsImpl implements Steps {
     return this.infos;
   }
 
-  private overviewSpec(): { title: string; text: string; label: string } {
+  private overviewSpec(): { title: string; text: string; label: string; notes?: StepNote[] } {
     const overview = this.spec.overview ?? { title: DEFAULT_OVERVIEW_TITLE, text: '' };
-    return { title: overview.title, text: overview.text ?? '', label: overview.label ?? overview.title };
+    const out: { title: string; text: string; label: string; notes?: StepNote[] } = { title: overview.title, text: overview.text ?? '', label: overview.label ?? overview.title };
+    if (overview.notes !== undefined) out.notes = overview.notes;
+    return out;
   }
 
   private buildClassic(): void {
@@ -248,7 +266,7 @@ class StepsImpl implements Steps {
     const entries: Entry[] = [];
     const overview = this.overviewSpec();
     const all = new Set(this.visible);
-    entries.push(this.entry({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, all, all));
+    entries.push(this.entry(withNotes({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, overview.notes), all, all));
     const shown = new Set<Node>();
     spec.forward.forEach((step, k) => {
       const show = toList(step.show);
@@ -267,7 +285,7 @@ class StepsImpl implements Steps {
       };
       if (step.sub !== undefined) info.sub = step.sub;
       if (step.module !== undefined) info.module = step.module;
-      entries.push(this.entry(info, new Set(shown), active));
+      entries.push(this.entry(withNotes(info, step.notes), new Set(shown), active));
     });
     const revealed = new Set<Node>();
     for (const info of backwardEntries(g, this.visible, (spec.backward ?? 'auto') as Exclude<BackwardSpec, 'reverse'>)) {
@@ -295,14 +313,14 @@ class StepsImpl implements Steps {
     const all = new Set(this.visible);
     const overview = this.overviewSpec();
     const entries: Entry[] = [];
-    entries.push(this.entry({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, all, all));
+    entries.push(this.entry(withNotes({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, overview.notes), all, all));
     const revealed = new Set<Node>();
     const inputs = spec.forward.find((step) => step.kind === 'inputs');
     if (inputs !== undefined) {
       const show = toList(inputs.show);
       show.forEach((n) => revealed.add(n));
       const label = inputs.label ?? inputs.title;
-      entries.push(this.entry({ dir: 'forward', index: 1, id: 'f:inputs', kind: 'inputs', title: inputs.title, label, text: inputs.text ?? '', nodes: show, segment: inputs.segment ?? label }, new Set(revealed), new Set(show)));
+      entries.push(this.entry(withNotes({ dir: 'forward', index: 1, id: 'f:inputs', kind: 'inputs', title: inputs.title, label, text: inputs.text ?? '', nodes: show, segment: inputs.segment ?? label }, inputs.notes), new Set(revealed), new Set(show)));
     }
     const groups: { unit?: Unit; module?: StepModule }[] = [];
     for (const unit of this.units) {
@@ -351,6 +369,7 @@ class StepsImpl implements Steps {
         };
         if (step.sub !== undefined) info.sub = step.sub;
         if (step.module !== undefined) info.module = step.module;
+        withNotes(info, step.notes);
       }
       prod.forEach((n) => revealed.add(n));
       entries.push(this.entry(info, new Set(revealed), new Set(active)));

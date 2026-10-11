@@ -12,6 +12,8 @@ export {
   type PageModule,
   type StepModule,
   type StepKind,
+  type StepNote,
+  type NoteSide,
   isLeafLike,
 } from './steps';
 export { compileTemplate } from './template';

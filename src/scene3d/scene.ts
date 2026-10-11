@@ -29,7 +29,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { type Graph, type Node, moduleJacobian } from '../autograd';
 import { type Explainer, type FlowEdge, explain, matmulOperands } from '../explain';
 import { render, renderText } from '../formula';
-import { type StepInfo, type StepModule, type StepState, type Steps, allVisible, isLeafLike } from '../steps';
+import { type StepInfo, type StepModule, type StepNote, type StepState, type Steps, allVisible, isLeafLike } from '../steps';
 import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
@@ -54,6 +54,7 @@ import {
   tokenText,
 } from './layout';
 import { LineBatch } from './lines';
+import { type NoteGeometry, NoteLayer, type NoteView } from './notes';
 import { type FoldBox, type LevelLayout, type LevelPlan, BRACE_X, CHIP_LIFT } from './levels';
 import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockSpan, braceOffset, bracePoints, braceTip, checkModules, layoutBraces, levelBraces } from './modules';
 import { TICK_COUNT, barHeight, capFor, niceTicks, scaleFor } from './scales';
@@ -117,6 +118,20 @@ export const EDGE_BOW = 0.9;
 export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显示不出来。下方的分步讲解和右侧数值仍然可用。';
 export const KEY_FRAME_TEXT = '墨线框 = 被取用的行或标签';
 export const JUMP_PLACEHOLDER = '跳到模块…';
+export const NOTES_TOGGLE_TEXT = '笔记';
+export const NOTES_STORAGE_PREFIX = 'vizflow-notes:';
+
+interface NoteTarget {
+  nodes: Node[];
+  index?: number[];
+}
+
+interface ReaderNote {
+  key: string;
+  node: Node;
+  index: number[];
+  text: string;
+}
 
 const FRAME_SEARCH_STEPS = 30;
 const CAMERA_DISTANCE = 150;
@@ -386,6 +401,12 @@ class SceneController implements EditHost {
   private pinned: { node: Node; el: HTMLElement } | undefined;
   private downAt: [number, number] | undefined;
   private ovnav: { prev: HTMLButtonElement; next: HTMLButtonElement; text: HTMLSpanElement } | undefined;
+  private readonly notes: NoteLayer;
+  private readonly noteTargets = new Map<string, NoteTarget>();
+  private readerNotes: ReaderNote[] = [];
+  private draft: ReaderNote | undefined;
+  private noteMode = false;
+  private noteToggle: HTMLButtonElement | undefined;
   private disposed = false;
 
   constructor(
@@ -411,6 +432,12 @@ class SceneController implements EditHost {
       this.requestFrame();
     });
     this.buildChrome();
+    this.notes = new NoteLayer(root, {
+      remove: (key) => this.removeReaderNote(key),
+      save: (key, text) => this.saveDraft(key, text),
+      cancel: (key) => this.cancelDraft(key),
+    });
+    this.readerNotes = this.loadReaderNotes();
     this.tip = document.createElement('div');
     this.tip.className = 'vf-tip';
     this.tip.hidden = true;
@@ -617,6 +644,13 @@ class SceneController implements EditHost {
       unfoldAll.addEventListener('click', () => this.steps?.setAllFolded?.(false));
       tools.append(foldAll, unfoldAll);
     }
+    const notes = chip(NOTES_TOGGLE_TEXT);
+    notes.classList.add('vf-note-toggle');
+    notes.setAttribute('aria-pressed', 'false');
+    notes.title = '打开后点击柱子，在那里写一条笔记';
+    notes.addEventListener('click', () => this.setNoteMode(!this.noteMode));
+    tools.appendChild(notes);
+    this.noteToggle = notes;
     const reset = chip('复位视角');
     reset.addEventListener('click', () => this.resetView());
     tools.appendChild(reset);
@@ -905,6 +939,7 @@ class SceneController implements EditHost {
       if (this.reduceMotion.matches) this.applyGoal(1);
     }
     this.stepKey = stepKey;
+    this.syncNotes(info?.notes ?? [], info?.id ?? 'all');
     const zoom = this.zoomNow();
     for (const renderable of this.renderables) {
       const { block } = renderable;
@@ -1436,11 +1471,162 @@ class SceneController implements EditHost {
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
       this.labels.project(this.camera, this.width, this.height, !this.follow);
+      this.placeNotes();
       this.labelsDirty = false;
       this.screenVersion++;
     }
     if (running || moved) this.requestFrame();
     else this.lastFrame = undefined;
+  }
+
+  private storageKey(): string {
+    return `${NOTES_STORAGE_PREFIX}${location.pathname}`;
+  }
+
+  private loadReaderNotes(): ReaderNote[] {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(localStorage.getItem(this.storageKey()) ?? '[]');
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(raw)) return [];
+    const byName = new Map(this.g.nodes.map((n) => [n.name, n]));
+    return raw.flatMap((entry, i): ReaderNote[] => {
+      const node = byName.get(entry?.node);
+      if (node === undefined || !Array.isArray(entry.index) || typeof entry.text !== 'string') return [];
+      return [{ key: `r:${entry.key ?? i}`, node, index: entry.index.map(Number), text: entry.text }];
+    });
+  }
+
+  private storeReaderNotes(): void {
+    try {
+      localStorage.setItem(this.storageKey(), JSON.stringify(this.readerNotes.map((n) => ({ key: n.key.slice(2), node: n.node.name, index: n.index, text: n.text }))));
+    } catch {
+      return;
+    }
+  }
+
+  private setNoteMode(on: boolean): void {
+    this.noteMode = on;
+    this.noteToggle?.setAttribute('aria-pressed', String(on));
+    this.root.classList.toggle('vf-noting', on);
+    if (!on && this.draft !== undefined) this.cancelDraft(this.draft.key);
+  }
+
+  private startDraft(node: Node, index: number[]): void {
+    this.draft = { key: `r:${Date.now().toString(36)}`, node, index, text: '' };
+    this.refresh();
+  }
+
+  private saveDraft(key: string, text: string): void {
+    const draft = this.draft;
+    if (draft === undefined || draft.key !== key) return;
+    this.draft = undefined;
+    this.readerNotes.push({ ...draft, text });
+    this.storeReaderNotes();
+    this.refresh();
+  }
+
+  private cancelDraft(key: string): void {
+    if (this.draft?.key !== key) return;
+    this.draft = undefined;
+    this.refresh();
+  }
+
+  private removeReaderNote(key: string): void {
+    this.readerNotes = this.readerNotes.filter((n) => n.key !== key);
+    this.storeReaderNotes();
+    this.refresh();
+  }
+
+  private syncNotes(authored: readonly StepNote[], stepId: string): void {
+    this.noteTargets.clear();
+    const views: NoteView[] = [];
+    authored.forEach((note, i) => {
+      const key = `a:${stepId}:${i}`;
+      const target: NoteTarget = { nodes: note.nodes };
+      if (note.index !== undefined) target.index = note.index;
+      this.noteTargets.set(key, target);
+      const view: NoteView = { key, text: note.text, reader: false };
+      if (note.side !== undefined) view.side = note.side;
+      views.push(view);
+    });
+    const readers = this.draft === undefined ? this.readerNotes : [...this.readerNotes, this.draft];
+    for (const note of readers) {
+      if (!this.state.revealed(note.node)) continue;
+      this.noteTargets.set(note.key, { nodes: [note.node], index: note.index });
+      views.push({ key: note.key, text: note.text, reader: true, draft: note === this.draft });
+    }
+    if (this.notes.sync(views)) this.labelsDirty = true;
+  }
+
+  private screenPoint(x: number, y: number, z: number): [number, number] {
+    tmpVector.set(x, y, z).project(this.camera);
+    return [((tmpVector.x + 1) / 2) * this.width, ((1 - tmpVector.y) / 2) * this.height];
+  }
+
+  private noteGeometry(target: NoteTarget): NoteGeometry | undefined {
+    const points: [number, number][] = [];
+    let point: [number, number] | undefined;
+    for (const node of target.nodes) {
+      if (!this.state.revealed(node)) continue;
+      const candidates = this.renderables.filter((r) => r.block.node === node && this.shown(r.block));
+      const renderable = candidates.find((r) => r.block.copyOf === undefined) ?? candidates[0];
+      if (renderable === undefined) continue;
+      renderable.block.elements.forEach((element, i) => {
+        if (target.index !== undefined && element.index.some((k, axis) => k !== target.index![axis])) return;
+        const h = renderable.bars === undefined ? 0 : renderable.transition.current[i];
+        const top = this.screenPoint(element.x, element.y + Math.max(h, 0), element.z);
+        const bottom = this.screenPoint(element.x, element.y + Math.min(h, 0), element.z);
+        points.push(top, bottom);
+        if (target.index !== undefined) point = h >= 0 ? top : bottom;
+      });
+    }
+    if (points.length === 0) return undefined;
+    const xs = points.map((p) => p[0]);
+    const ys = points.map((p) => p[1]);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    const geometry: NoteGeometry = { rect: { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y } };
+    if (point !== undefined) geometry.point = point;
+    return geometry;
+  }
+
+  private placeNotes(): void {
+    if (this.noteTargets.size === 0) {
+      this.notes.place(() => undefined, this.width, this.height, () => []);
+      return;
+    }
+    const origin = this.root.getBoundingClientRect();
+    const chrome = [...this.root.querySelectorAll<HTMLElement>(':scope > .vf-stage-tools, :scope > .vf-ovnav, :scope > .vf-key, :scope > .vf-hint')]
+      .map((el) => el.getBoundingClientRect())
+      .filter((r) => r.width > 0)
+      .map((r) => ({ x: r.left - origin.left - 6, y: r.top - origin.top - 6, w: r.width + 12, h: r.height + 12 }));
+    const labels = this.labels.labels
+      .filter((label) => label.visible && label.pos !== undefined && !label.el.classList.contains('vf-off'))
+      .map((label) => {
+        const [w, h] = label.measure();
+        return { x: label.placed[0], y: label.placed[1], w, h };
+      });
+    const revealed = this.renderables.filter((r) => this.state.revealed(r.block.node) && this.shown(r.block)).map((r) => r.block.node);
+    const blocks = [...this.stepNodes, ...revealed].flatMap((node) => {
+      const geometry = this.noteGeometry({ nodes: [node] });
+      return geometry === undefined ? [] : [{ x: geometry.rect.x - 4, y: geometry.rect.y - 4, w: geometry.rect.w + 8, h: geometry.rect.h + 8 }];
+    });
+    this.notes.place(
+      (key) => {
+        const target = this.noteTargets.get(key);
+        return target === undefined ? undefined : this.noteGeometry(target);
+      },
+      this.width,
+      this.height,
+      (key) => {
+        const target = this.noteTargets.get(key);
+        const whole = target?.index === undefined ? undefined : this.noteGeometry({ nodes: target.nodes });
+        return whole === undefined ? [...chrome, ...labels, ...blocks] : [...chrome, ...labels, ...blocks, whole.rect];
+      },
+    );
   }
 
   private halfHeight(): number {
@@ -1885,6 +2071,10 @@ class SceneController implements EditHost {
       this.downAt = undefined;
       if (moved > CLICK_SLOP) return;
       const hit = this.hit(ev);
+      if (this.noteMode) {
+        if (hit !== undefined) this.startDraft(hit.renderable.block.node, hit.renderable.block.elements[hit.index].index);
+        return;
+      }
       if (hit === undefined || !this.aligned.has(hit.renderable.block.node) || this.state.dir !== 'forward') return;
       this.setTarget(hit.renderable, hit.index);
       this.showTip(hit.renderable, hit.index, ev);
@@ -1922,6 +2112,7 @@ class SceneController implements EditHost {
     this.highlight?.geometry.dispose();
     this.highlightMaterial.dispose();
     this.labels.dispose();
+    this.notes.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.root.remove();

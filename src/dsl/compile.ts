@@ -1,7 +1,7 @@
 import { type Graph, Node, graph, opDef } from '../autograd';
 import { explainOf, trailingSubscript } from '../explain';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
-import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
+import { type BackwardOverride, type ForwardStep, type NoteSide, type PageModule, type StepModule, type StepNote, type StepsSpec, isLeafLike } from '../steps';
 import { type Nested, inferShape } from '../tensor';
 import type { PanelItem, SectionBlock, SectionItem, SectionRow } from '../ui';
 import { checkFigure, figureNames, figureTag } from '../ui/figure-spec';
@@ -111,12 +111,14 @@ const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
 ]);
-const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward']);
+const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward', 'notes']);
 const BRACE_KEYS = new Set(['title', 'subtitle']);
-const PATCH_KEYS = new Set(['title', 'label', 'text', 'append', 'backward']);
+const PATCH_KEYS = new Set(['title', 'label', 'text', 'append', 'backward', 'notes']);
 const TEXT_KEYS = new Set(['title', 'text', 'label']);
 const FOLD_KEYS = new Set(['title', 'text', 'label', 'backward']);
-const OVERVIEW_KEYS = new Set(['title', 'text', 'label', 'backward']);
+const OVERVIEW_KEYS = new Set(['title', 'text', 'label', 'backward', 'notes']);
+const NOTE_KEYS = new Set(['at', 'text', 'side']);
+const NOTE_SIDES: ReadonlySet<string> = new Set(['left', 'right', 'above', 'below']);
 const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label']);
 const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
@@ -152,6 +154,10 @@ class Scope {
   local(key: string): Node | Scope | undefined {
     return this.entries.get(key) ?? this.children.get(key);
   }
+}
+
+function scopeNodes(scope: Scope): Node[] {
+  return [...scope.entries.values(), ...[...scope.children.values()].flatMap(scopeNodes)];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -894,6 +900,7 @@ class PageCompiler {
       const texts = this.texts(overview, { ...env, where: overviewWhere }, OVERVIEW_KEYS);
       stepsSpec.overview = { title: texts.title ?? String(page.title), text: texts.text ?? '' };
       if (texts.label !== undefined) stepsSpec.overview.label = texts.label;
+      if (overview.notes !== undefined) stepsSpec.overview.notes = this.notesOf(overview.notes, { ...env, where: child(overviewWhere, overview, 'notes') });
       if (overview.backward !== undefined) stepsSpec.overview.backward = this.texts(overview.backward, { ...env, where: child(overviewWhere, overview, 'backward') }, TEXT_KEYS);
     }
     this.warnDuplicateTex();
@@ -977,6 +984,52 @@ class PageCompiler {
       if (spec[key] !== undefined) out[key] = this.c.text(spec[key], { ...env, where: child(env.where, spec, key) });
     }
     return out;
+  }
+
+  notesOf(value: unknown, env: Env): StepNote[] {
+    if (!Array.isArray(value)) fail(env.where, 'notes must be a list');
+    return value.map((item, i) => {
+      const at = child(env.where, value, i);
+      if (!isRecord(item)) fail(at, 'a note must be a mapping with at and text');
+      checkKeys(item, NOTE_KEYS, at);
+      if (typeof item.at !== 'string') fail(at, 'a note needs at: a tensor name, a tensor element such as q[0,1,2], or a module instance');
+      if (typeof item.text !== 'string' || item.text.trim() === '') fail(at, 'a note needs a non-empty text');
+      const note: StepNote = { ...this.noteTarget(item.at, { ...env, where: child(at, item, 'at') }), text: this.c.ofText(item.text, { ...env, where: child(at, item, 'text') }) };
+      if (item.side !== undefined) {
+        if (typeof item.side !== 'string' || !NOTE_SIDES.has(item.side)) fail(child(at, item, 'side'), `side must be one of ${[...NOTE_SIDES].join(', ')}`);
+        note.side = item.side as NoteSide;
+      }
+      return note;
+    });
+  }
+
+  noteTarget(text: string, env: Env): { nodes: Node[]; index?: number[] } {
+    const element = /^(.+)\[\s*(-?\d+(?:\s*,\s*-?\d+)*)\s*\]$/.exec(text.trim());
+    if (element !== null) {
+      let whole: Resolved | undefined;
+      try {
+        whole = this.c.reference(text, env);
+      } catch (error) {
+        if (!(error instanceof DslError)) throw error;
+      }
+      if (whole instanceof Node) return { nodes: [whole] };
+      const node = this.c.node(element[1].trim(), env);
+      const index = element[2].split(',').map((part) => Number(part.trim()));
+      if (index.length !== node.shape.length) fail(env.where, `'${text}' gives ${index.length} indices, but '${element[1].trim()}' has shape (${node.shape.join(', ')})`);
+      index.forEach((k, axis) => {
+        if (k < 0 || k >= node.shape[axis]) fail(env.where, `'${text}': index ${k} is outside 0..${node.shape[axis] - 1} on axis ${axis}`);
+      });
+      return { nodes: [node], index };
+    }
+    const found = this.c.reference(text, env);
+    if (found instanceof Node) return { nodes: [found] };
+    if (Array.isArray(found)) return { nodes: found };
+    if (found instanceof Scope) {
+      const nodes = scopeNodes(found).filter((n) => !isLeafLike(n));
+      if (nodes.length === 0) fail(env.where, `module instance '${text}' has no computed tensors to point at`);
+      return { nodes };
+    }
+    return fail(env.where, `'${text}' is not a tensor or a module instance`);
   }
 
   leavesStep(env: Env): ForwardStep[] {
@@ -1583,6 +1636,7 @@ class PageCompiler {
       }
       if (step.brace !== undefined) forward.brace = this.braceOf(step.brace, fieldEnv('brace'));
       if (step.backward !== undefined) forward.backward = this.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
+      if (step.notes !== undefined) forward.notes = this.notesOf(step.notes, fieldEnv('notes'));
       return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
     });
   }
@@ -1696,6 +1750,7 @@ class PageCompiler {
         target.step.text = target.step.text ? `${target.step.text}\n${extra}` : extra;
       }
       if (spec.backward !== undefined) target.step.backward = { ...target.step.backward, ...this.texts(spec.backward, fieldEnv('backward'), TEXT_KEYS) };
+      if (spec.notes !== undefined) target.step.notes = [...(target.step.notes ?? []), ...this.notesOf(spec.notes, fieldEnv('notes'))];
     }
   }
 

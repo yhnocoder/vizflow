@@ -138,6 +138,9 @@ modules:
     steps:
       - id: res1
         show: a
+        notes:
+          - at: a
+            text: '长弧线是残差：$\mathbf{x}$ 绕过 attention 直接加到这里'
         segment: 残差
         brace: { title: 残差相加, subtitle: '$\mathbf{x}_0+\mathbf{att}$' }
         label: '$\of{a}=\of{x}+\of{att}$'
