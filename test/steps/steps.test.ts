@@ -127,6 +127,9 @@ describe('automatic backward steps', () => {
     expect(() => createSteps(g, merged)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
     const overridden = { forward: [{ show: [x, p], title: 'p', text: '' }], backward: { auto: true as const, override: { 1: { title: 'x' } } } };
     expect(() => createSteps(g, overridden)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
+    const q = g.mul(p, 2, { name: 'q' });
+    const reversed = createSteps(g, { forward: [{ show: [x], title: 'x', kind: 'inputs' }, { show: [p], title: 'p' }, { show: [q], title: 'q' }], backward: 'reverse' });
+    expect(reversed.list.map((st) => `${st.dir}:${st.title}`)).toEqual(['forward:总览', 'forward:x', 'forward:p', 'forward:q']);
   });
 
   it('generates no backward steps when backward is none, even with a loss', () => {
