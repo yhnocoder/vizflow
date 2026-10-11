@@ -61,15 +61,14 @@ describe('explain for scalar operands', () => {
 });
 
 describe('explain for buffers', () => {
-  it('draws no edge from a buffer and lists no consumers in its backward card', () => {
+  it('draws forward edges from a buffer but gives it no gradient', () => {
     const g = graph();
     const s = g.input('s', [2], [1, 2]);
     const M = g.buffer('M', [2], [0, -Infinity]);
     const y = g.add(s, M, { name: 'y' });
     g.sum(g.exp(y), { name: 'loss' });
     const ex = explain(g);
-    expect(ex.edges(y).map((edge) => ('node' in edge.from ? edge.from.node.name : ''))).toEqual(['s', 's']);
-    expect(ex.outEdges({ node: M, index: [0] })).toEqual([]);
+    expect(ex.edges(y).map((edge) => ('node' in edge.from ? edge.from.node.name : ''))).toEqual(['s', 'M', 's', 'M']);
     const card = ex.nodeCard(M, 'backward');
     expect(card.tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathbf{M}}=0']);
     expect(card.rows.at(-1)).toEqual({ label: '当前梯度', kind: 'grad', value: '无' });

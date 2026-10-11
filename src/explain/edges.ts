@@ -17,7 +17,7 @@ export function contextOf(node: Node): OpCtx {
 function differentiableArgs(node: Node): number[] {
   const def = opDef(node.op as string);
   const flags = def?.differentiable;
-  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (flags === undefined || flags[arg]));
+  return node.inputs.map((_, arg) => arg).filter((arg) => (node.inputs[arg].grad !== null || node.inputs[arg].kind === 'buffer') && (flags === undefined || flags[arg]));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
