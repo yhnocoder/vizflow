@@ -109,6 +109,8 @@ const cases: Case[] = [
     },
   },
   { op: 'sqrt', build: (g, r) => unary(g, r, 'sqrt', [2, 3], true) },
+  { op: 'reciprocal', build: (g, r) => unary(g, r, 'reciprocal', [2, 3], true) },
+  { op: 'erf', build: (g, r) => unary(g, r, 'erf', [2, 3]) },
   { op: 'sigmoid', build: (g, r) => unary(g, r, 'sigmoid', [2, 3]) },
   { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },
   { op: 'relu', build: (g, r) => unary(g, r, 'relu', [2, 3]) },

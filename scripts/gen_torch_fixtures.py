@@ -539,6 +539,8 @@ def transformer_op_fixtures():
     cases += head_cases()
     cases += linear_attention_cases()
     cases += routing_cases()
+    cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
+    cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
     return cases
 
 

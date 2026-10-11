@@ -9,8 +9,13 @@ import { INSTANCE_KEYS, MODULE_ITEM_KEYS, MODULE_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
 import { braceOf, moduleBackward, moduleSteps, patchSteps } from './steps';
 import type { Compiler } from './text';
-import { type Env, Scope, type Slot } from './types';
+import { type Env, type ModuleValue, Scope, type Slot } from './types';
 import { checkKeys, join, record } from './util';
+
+export function usedModule(scope: Scope, use: string): string {
+  const param = scope.params.get(use);
+  return param?.type === 'module' ? (param.value as ModuleValue).module : use;
+}
 
 export function compileInstance(
   c: Compiler,
@@ -28,7 +33,7 @@ export function compileInstance(
   checkKeys(use, INSTANCE_KEYS, env.where);
   const useWhere = child(env.where, use, 'use');
   if (typeof use.use !== 'string') fail(useWhere, 'use must name a module');
-  const def = parent.def.namespace.get(use.use);
+  const def = parent.def.namespace.get(usedModule(parent, use.use));
   if (def === undefined) fail(useWhere, `module '${use.use}' is not imported`);
   if (parent.local(name) !== undefined || parent.groups.has(name)) fail(env.where, `name '${name}' is already defined in ${c.scopeLabel(parent)}`);
   const ordinal = (ordinals.get(def) ?? 0) + 1;
@@ -78,6 +83,8 @@ export function compileInstance(
     if (typeof target !== 'string') fail(at, 'an output binding must be a name');
     const concrete = c.concreteName(target, { ...env, where: at });
     bindings.push([output, concrete.name, at]);
+    const outer = parent.texOverride.get(concrete.name) ?? parent.texOverride.get(concrete.base);
+    if (outer !== undefined) scope.texOverride.set(output, outer);
     if (!scope.texOverride.has(output)) scope.outputTex.set(output, marked(c.loopTex(concrete.base, concrete.indices), parent, false));
   }
   if (use.inline !== undefined && typeof use.inline !== 'boolean') fail(child(env.where, use, 'inline'), 'inline must be true or false');

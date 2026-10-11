@@ -34,9 +34,14 @@ import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
 const g = graph({ dims: { V: 5 } });
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
-const p = g.softmax(x, -1, { name: 'p' });
+const u = g.exp(x, { name: 'u' });
+const S = g.sum(u, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const p = g.div(u, S, { name: 'p' });
 const logp = g.log(p, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, {
   overview: {
@@ -54,17 +59,42 @@ const steps = createSteps(g, {
 
         $$x_{ {{t+1}} } = {{x[t]:2}}$$
       ` },
-    { show: p, label: 'p', title: 'softmax',
+    { show: u, label: '$\\mathbf{u}$', title: 'softmax：取指数',
       text: String.raw`
-        每个分量取指数后除以总和，得到和为 1 的概率。
+        softmax 的定义是 $p_i = e^{x_i}/\sum_j e^{x_j}$。<code>F.softmax</code> 是一个 kernel，这里按定义拆成三步：取指数、求和、相除。第一步每个分量取指数，结果全都是正数。
+        PyTorch 的 kernel 会先减去最大值再取指数，防止溢出；分子分母同乘 $e^{-m}$，结果不变。
 
-        $$p_{ {{t+1}} } = \frac{e^{x_{ {{t+1}} }}}{\sum_j e^{x_j}} = {{p[t]:3}}$$
+        $$u_{ {{t+1}} } = e^{x_{ {{t+1}} }} = {{u[t]:3}}$$
+      ` },
+    { show: S, label: '$S$', title: 'softmax：求和',
+      text: String.raw`
+        把 5 个指数加起来，得到分母 $S$。
+
+        $$S = \sum_j u_j = {{S:3}}$$
+      ` },
+    { show: p, label: 'p', title: 'softmax：相除',
+      text: String.raw`
+        每个分量除以 $S$，得到和为 1 的概率。
+
+        $$p_{ {{t+1}} } = \frac{u_{ {{t+1}} }}{S} = {{p[t]:3}}$$
       ` },
     { show: logp, label: 'log p', title: '取对数',
       text: String.raw`$$\log p_{ {{t+1}} } = {{log p[t]:3}}$$` },
-    { show: loss, label: 'ℓ', title: '取目标类，取负号',
+    { show: pick, label: '$\\log p_t$', title: 'nll_loss：按标签取格',
       text: String.raw`
-        交叉熵只看目标类的概率，概率越接近 1，损失越接近 0。
+        <code>F.nll_loss</code> 是一个 kernel，这里拆成三步：按标签取格、取负、取平均。第一步取出目标类那一格，写成 PyTorch 是 <code>logp.gather(-1, t.view(1))</code>。
+
+        $$\log p_t = \log p_{ {{t+1}} } = {{pick:3}}$$
+      ` },
+    { show: lt, label: '$-\\log p_t$', title: 'nll_loss：取负',
+      text: String.raw`
+        取负号。交叉熵只看目标类的概率，概率越接近 1，损失越接近 0。
+
+        $$-\log p_t = {{lt:3}}$$
+      ` },
+    { show: loss, label: 'ℓ', title: 'nll_loss：取平均',
+      text: String.raw`
+        <code>F.nll_loss</code> 默认 <code>reduction='mean'</code>。这里只有一个样本，平均值等于它自己。
 
         $$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$
       ` },

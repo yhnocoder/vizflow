@@ -6,7 +6,7 @@ const OVERVIEW = 0;
 const FORWARD_1 = 1;
 const FORWARD_2 = 2;
 const FORWARD_3 = 3;
-const FORWARD_5 = 5;
+const FORWARD_9 = 9;
 const SETTLE_MS = 900;
 
 async function openScene(page: Page, query = ''): Promise<string[]> {
@@ -144,14 +144,14 @@ test('reset view returns to the framing of the current step', async ({ page }) =
 test('module labels stay visible on every step and use the foreground color', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const errors = await openScene(page, '?follow=0');
-  for (const step of [FORWARD_1, FORWARD_3, FORWARD_5]) {
+  for (const step of [FORWARD_1, FORWARD_3, FORWARD_9]) {
     await goStep(page, step);
     const state = await moduleState(page);
     expect(Object.values(state).every((s) => s.shown && !s.on)).toBe(true);
     const colors = await titleColors(page);
     expect(colors.title).toBe(colors.fg);
   }
-  await shot(page, 'forward-5');
+  await shot(page, 'forward-9');
   await page.getByRole('button', { name: '切换深色' }).click();
   await goStep(page, FORWARD_1);
   const colors = await titleColors(page);
@@ -163,7 +163,7 @@ test('module labels stay visible on every step and use the foreground color', as
 test('nested and stacked brace labels sit outside the graph on their sides', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const errors = await openScene(page, '?follow=0');
-  await goStep(page, FORWARD_5);
+  await goStep(page, FORWARD_9);
   const box = async (title: string) => (await page.locator(`.vf-lb.vf-mod[data-module="${title}"]`).boundingBox())!;
   const lmHead = await box('lm_head');
   const logits = await box('logits');

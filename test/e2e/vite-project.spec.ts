@@ -64,7 +64,7 @@ async function openExample(page: Page, origin: string) {
   await page.goto(`${origin}/`);
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 60_000 });
   await expect(page.locator('.vf-scene canvas')).toHaveCount(1);
-  await expect(page.locator('.vf-st')).toHaveCount(11);
+  await expect(page.locator('.vf-st')).toHaveCount(19);
   await expect(page.locator('.vf-caption .katex').first()).toBeVisible();
   const loaded = await page.evaluate(async () => {
     await document.fonts.ready;

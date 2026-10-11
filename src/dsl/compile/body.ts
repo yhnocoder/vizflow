@@ -4,7 +4,7 @@ import { type Ast, ParseError, parseRange } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { define, marked } from './declare';
-import { compileInstance } from './instance';
+import { compileInstance, usedModule } from './instance';
 import { registerFormula } from './formula';
 import { FOR_KEYS, GROUP_KEYS, ITEM_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
@@ -34,7 +34,7 @@ function countInstances(c: Compiler, items: unknown, env: Env, counts: Map<Modul
     for (const [key, value] of Object.entries(item)) {
       if (!isRecord(value) || !c.enabled(value, { ...at, where: child(at.where, item, key) })) continue;
       if (typeof value.use === 'string') {
-        const def = env.scope.def.namespace.get(value.use);
+        const def = env.scope.def.namespace.get(usedModule(env.scope, value.use));
         if (def !== undefined) counts.set(def, (counts.get(def) ?? 0) + 1);
       } else if (Array.isArray(value.body)) {
         countInstances(c, value.body, { ...at, where: child(child(at.where, item, key), value, 'body') }, counts);

@@ -103,7 +103,9 @@ test('dragging a stack layer writes an offset that puts the block in the same pl
   const dragged = await positions(page, watched);
   expect(Math.abs(dragged[0].x - before[0].x) + Math.abs(dragged[0].y - before[0].y)).toBeGreaterThan(10);
   const code = await copyConfig(page);
-  expect(code).toContain("stack(g.node('z'), g.node('LSE'), g.node('log p'), g.node('loss'), { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { 'log p': [");
+  expect(code).toContain(
+    "stack(g.node('z'), g.node('ex'), g.node('S'), g.node('LSE'), g.node('log p'), g.node('pick'), g.node('lt'), g.node('loss'), { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0], 'log p': [",
+  );
   expect(code).not.toContain('board(g.node(\'h\'), g.node(\'W.T\'), g.node(\'z\'), { at');
   await shot(page, 'edit-desktop-drag');
   await pasteAndReload(page, code);
@@ -121,7 +123,7 @@ test('dragging a board block moves the board at, and the stack on top follows', 
   const dragged = await positions(page, watched);
   const code = await copyConfig(page);
   expect(code).toMatch(/board\(g\.node\('h'\), g\.node\('W\.T'\), g\.node\('z'\), \{ scales: .*, at: \[-?[\d.]+, 0, -?[\d.]+\] \}\)/);
-  expect(code).not.toContain('offsets');
+  expect(code).toContain("offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } })");
   await pasteAndReload(page, code);
   expectSame(await positions(page, watched), dragged);
   expect(errors).toEqual([]);

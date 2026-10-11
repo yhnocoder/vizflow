@@ -3,6 +3,8 @@ lede: DeepSeek V3.2 的结构和 V3 相同，只在每一层的 MLA 里加了一
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
+  LogSoftmax: vizflow/nn/log-softmax
+  NLLLoss: vizflow/nn/nll-loss
   RMSNorm: vizflow/nn/rmsnorm
   MLA:     vizflow/nn/mla
   GLU:     vizflow/nn/glu
@@ -62,7 +64,6 @@ modules:
           inputs: { x: x }
           outputs: { out: n1 }
           tex: { out: '\mathbf{n}_{1}' }
-          folded: true
       - self_attn:
           use: MLA
           subtitle: DeepseekV32Attention
@@ -79,15 +80,13 @@ modules:
           inputs: { x: a }
           outputs: { out: n }
           tex: { out: '\mathbf{n}_{2}' }
-          folded: true
       - mlp:
           use: GLU
           subtitle: DeepseekV32MLP
-          params: { act: silu, f: f }
+          params: { act: SiLU, f: f }
           inputs: { x: n }
           outputs: { down: down }
           tex: { a: '\mathrm{SiLU}(\mathbf{gate})', down: '\mathbf{down}' }
-          folded: true
       - x_out: { op: a + down, tex: '\mathbf{x}' }
     steps:
       - id: res1
@@ -144,6 +143,10 @@ modules:
           outputs: { out: n1 }
           tex: { out: '\mathbf{n}_{3}' }
           folded: true
+          fold:
+            text: |
+              计算和 dense 层的 input_layernorm 相同，那里展开画了每一步；权重是这一层自己的。
+              $$\of{n1}={{ n1 | matrix:2 }}$$
       - self_attn:
           use: MLA
           subtitle: DeepseekV32Attention
@@ -166,6 +169,10 @@ modules:
           outputs: { out: n }
           tex: { out: '\mathbf{n}_{4}' }
           folded: true
+          fold:
+            text: |
+              计算和 dense 层的 post_attention_layernorm 相同，那里展开画了每一步；权重是这一层自己的。
+              $$\of{n}={{ n | matrix:2 }}$$
       - mlp:
           use: MoE
           subtitle: DeepseekV32MoE
@@ -270,11 +277,26 @@ body:
       inputs: { x: x }
       outputs: { out: h }
       folded: true
+      fold:
+        text: |
+          计算和 dense 层的 input_layernorm 相同，那里展开画了每一步；权重是 final norm 自己的。
+          $$\of{h}={{ h | matrix:2 }}$$
   - z:    h @ W.T
-  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
-  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
-  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
-  - loss: { op: mean(lt), tex: '\ell' }
+  - zf:   { op: identity(z), tex: '\mathbf{z}_{\mathrm{fp32}}', dtype: fp32 }
+  - log_softmax:
+      use: LogSoftmax
+      subtitle: F.log_softmax(z.float(), -1)
+      inputs: { x: zf }
+      outputs: { out: logp }
+  - nll_loss:
+      use: NLLLoss
+      subtitle: "F.nll_loss(logp, labels)，reduction='mean'"
+      inputs: { logp: logp, y: y }
+      outputs: { loss: loss, lt: lt }
+      tex: { lt: '\ell_t' }
+      steps:
+        pick:
+          append: HF 的 <code>self.loss_function</code> 先把 logits 转成 float32，在内部把 labels 右移一位，并跳过标签为 -100 的位置（<code>ignore_index</code>）；这里直接给出右移好的标签，也没有要跳过的位置。标签是输入右移一位：位置 1 的标签是 <span class="ctx">{{y[0]:token}}</span>，位置 2 是 <span class="ctx">{{y[1]:token}}</span>，位置 3 是 <span class="ctx">{{y[2]:token}}</span>。
 steps:
   - id: embed
     show: [E, e]
@@ -305,53 +327,16 @@ steps:
       title: 传到 lm_head 权重和 $\of{h}$
       text: |
         $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
-  - id: lse
-    show: LSE
-    segment: log_softmax
-    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
-    label: '$\of{LSE}$'
-    title: log-sum-exp
+  - id: float
+    show: zf
+    segment: lm_head
+    label: '$\of{zf}$'
+    title: 转成 float32
     text: |
-      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+      HF 计算损失前先做 <code>logits.float()</code>，后面的 log_softmax 和 nll_loss 都在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
     backward:
       label: '$\partial\of{z}$'
-      title: 穿过 LSE
-      text: |
-        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
-  - id: logp
-    show: logp
-    segment: log_softmax
-    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
-    label: '$\of{logp}$'
-    title: log_softmax
-    text: |
-      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
-    backward:
-      label: '$\partial\of{z},\ \partial\of{LSE}$'
-      title: 传到 logits 和 LSE
-  - id: nll
-    show: lt
-    segment: nll_loss
-    brace: { title: nll_loss, subtitle: "reduction='mean'" }
-    label: '$\of{lt}$'
-    title: nll_loss（逐位置）
-    text: |
-      每个位置按标签取出目标 token 的 log p，取负号。
-      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
-    backward:
-      label: '$\partial\of{logp}$'
-      title: 穿过 nll
-  - id: mean
-    show: loss
-    segment: nll_loss
-    brace: { title: nll_loss, subtitle: "reduction='mean'" }
-    label: '$\of{loss}$'
-    title: 取平均
-    text: |
-      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
-    backward:
-      label: '$\partial\of{lt}$'
-      title: 从损失出发
+      title: 穿过类型转换
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
   - cost
@@ -383,8 +368,9 @@ panels:
       a = x1 + moe.self_attn(moe.input_layernorm(x1))
       x2 = a + moe.mlp(moe.post_attention_layernorm(a))  # DeepseekV32MoE
       x = layers[4:](x2)                                 # 图里是占位盒子
+      # loss = self.loss_function(logits, labels, V) 展开成下面两行
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
-      loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
+      loss = F.nll_loss(logp.view(-1, V), shift_labels.view(-1), ignore_index=-100)
     note: DeepSeek-V3.2：d = 7168，61 层，前 3 层 dense；MLA 128 个 head，$r_q=1536$，$r_{kv}=512$，$d_n=128$，$d_r=64$，$d_v=128$，rope_theta = $10^4$ 并用 YaRN 把上下文扩到 128K（这一页不画 YaRN）；indexer 有 index_n_heads = 64 个 head，index_head_dim = 128，index_topk = 2048；MoE 256 个路由专家分 8 组，每个 token 选 4 组里的 8 个，另有 1 个共享专家，moe_intermediate_size = 2048，routed_scaling_factor = 2.5；dense 层的 intermediate_size = 18432，V = 129280。权重用 FP8 存储，这一页按 bf16 显示。
 values:
   moe_layer.mlp.bias: [0, 0.1, -0.02, 0, 0.02, -0.03]

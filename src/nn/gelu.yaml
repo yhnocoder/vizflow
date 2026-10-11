@@ -1,0 +1,85 @@
+module: GELU
+subtitle: GELU
+formula: '\step{mul}{\of{out}=}\step{half}{\tfrac{1}{2}\of{x}}\step{mul}{\big(}\step{add}{1+}\step{erf}{\operatorname{erf}\big(}\step{scale}{\of{x}/\sqrt{2}}\step{erf}{\big)}\step{mul}{\big)}'
+params:
+  name: { type: text, default_key: true }
+inputs:
+  x: { shape: [...] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    对应一次 <code>F.gelu</code>（默认 <code>approximate='none'</code>）。逐元素计算。
+    $$\of{out}=\operatorname{GELU}(\of{x})={{ out | matrix:3 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      两条路的梯度相加，合起来是 $\Phi(x)+x\,\varphi(x)$。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - hx:  { op: x * 0.5, tex: '\tfrac{1}{2}\of{x}' }
+  - u:   { op: x * 2 ** -0.5, tex: '\of{x}/\sqrt{2}' }
+  - e:   { op: erf(u), tex: '\operatorname{erf}(\mathbf{u})' }
+  - p:   { op: e + 1, tex: '1+\operatorname{erf}(\mathbf{u})' }
+  - out: { op: hx * p, tex: '\operatorname{GELU}(\of{x})' }
+steps:
+  - id: half
+    show: hx
+    label: '$\tfrac{1}{2}\of{x}$'
+    title: \of{name}：乘 1/2
+    text: |
+      精确的 GELU 是 $x\,\Phi(x)=\tfrac{1}{2}x\big(1+\operatorname{erf}(x/\sqrt{2})\big)$，PyTorch 的 kernel 就按这个式子算：<code>x * 0.5 * (1 + erf(x * M_SQRT1_2))</code>。这里按 kernel 的顺序拆开，第一步乘 $1/2$。
+      $$\of{hx}={{ hx | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: \of{name}：穿过乘 1/2
+      text: |
+        局部导数是 $1/2$。这一条和 erf 那一条在 $\of{x}$ 上相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: scale
+    show: u
+    label: '$\of{x}/\sqrt{2}$'
+    title: \of{name}：除以 $\sqrt{2}$
+    text: |
+      $$\of{u}={{ u | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: \of{name}：穿过除以 $\sqrt{2}$
+      text: 局部导数是 $1/\sqrt{2}$。
+  - id: erf
+    show: e
+    label: '$\operatorname{erf}$'
+    title: \of{name}：误差函数
+    text: |
+      $\operatorname{erf}(u)=\frac{2}{\sqrt{\pi}}\int_0^{u}e^{-t^{2}}dt$，值在 $-1$ 和 $1$ 之间。
+      $$\of{e}={{ e | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{u}$'
+      title: \of{name}：穿过 erf
+      text: |
+        局部导数是 $\frac{2}{\sqrt{\pi}}e^{-u^{2}}$。
+        $$\frac{\partial\ell}{\partial\of{u}}={{ u.grad | matrix:3 }}$$
+  - id: add
+    show: p
+    label: '$\of{p}$'
+    title: \of{name}：加 1
+    text: |
+      $$\of{p}={{ p | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{e}$'
+      title: \of{name}：穿过加 1
+      text: 局部导数是 1。
+  - id: mul
+    show: out
+    label: '$\of{out}$'
+    title: \of{name}：相乘
+    text: |
+      $$\of{out}=\of{hx}\odot\of{p}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{hx},\ \partial(\of{p})$'
+      title: \of{name}：穿过相乘
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。
+        $$\frac{\partial\ell}{\partial\of{p}}={{ p.grad | matrix:3 }}$$

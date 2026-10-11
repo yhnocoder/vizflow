@@ -1,6 +1,6 @@
 module: RMSNorm
 subtitle: RMSNorm
-formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\operatorname{mean}\big(\step{square}{{\of{x}}^{2}}\big)+\epsilon}}'
+formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\step{mean}{\operatorname{mean}\big(}\step{square}{{\of{x}}^{2}}\step{mean}{\big)}\step{eps}{+\epsilon}}}'
 params:
   eps:      { type: float, default: 1e-6 }
   name:     { type: text, default_key: true }
@@ -25,9 +25,10 @@ fold:
 body:
   - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
-  - xh: { op: x * r, tex: '\hat{\of{x}}' }
-  - out: { op: xh * weight, dtype: x }
+  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
+  - r:  { op: rsqrt(mse), tex: r }
+  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
+  - out: xh * weight
 steps:
   - id: square
     show: sq
@@ -42,25 +43,51 @@ steps:
       text: |
         平方这一路的局部导数是 $2x$。两条路相加以后，RMSNorm 交给输入的那部分梯度和这一行的输入垂直，因为 RMSNorm 对整行的缩放不敏感。\of{in_note}
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: rms
-    show: [ms, r]
-    label: '$\of{ms},\ \of{r}$'
-    title: 均方根的倒数
+  - id: mean
+    show: ms
+    label: '$\of{ms}$'
+    title: 平方的平均
     text: |
-      每一行对平方取平均得到 ms，加上 $\epsilon=\of{eps}$ 再取平方根的倒数，得到这一行的 $r$。$T$ 个位置各算各的，互不影响，所以 ms 和 $r$ 都是每行一个。
-      $$\mathrm{ms}={{ ms | matrix:3 }},\qquad r={{ r | matrix:3 }}$$
+      每一行对平方取平均，得到 ms，对应 <code>hidden_states.pow(2).mean(-1, keepdim=True)</code>。T 个位置各算各的，互不影响，所以 ms 是每行一个。
+      $$\mathrm{ms}={{ ms | matrix:3 }}$$
     backward:
-      label: '$\partial\of{ms},\ \partial\of{sq}$'
-      title: 传到 ms 和平方
+      label: '$\partial\of{sq}$'
+      title: 穿过平均
       text: |
-        $\partial r/\partial\,\mathrm{ms}=-r^3/2$。平均值再把梯度均分给这一行的每个平方。
-        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+        平均值的局部导数是 $1/n$，ms 的梯度除以 $n$ 均分给这一行的每个平方。
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: mse
+    label: '$\of{mse}$'
+    title: 加上 $\epsilon$
+    text: |
+      加上 $\epsilon=\of{eps}$，对应 <code>variance + self.variance_epsilon</code>，保证下一步不会除以 0。
+      $$\of{mse}={{ mse | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms}$'
+      title: 穿过加 $\epsilon$
+      text: |
+        加常数的局部导数是 1，梯度原样传下去。
+        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }}$$
+  - id: rms
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      取平方根的倒数，得到这一行的 $r=1/\sqrt{\mathrm{ms}+\epsilon}$，对应一次 <code>torch.rsqrt</code>。
+      $$r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mse}$'
+      title: 穿过 rsqrt
+      text: |
+        $\frac{d}{dv}v^{-1/2}=-\frac{1}{2}v^{-3/2}$，所以局部导数是 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial\of{mse}}={{ mse.grad | matrix:3 }}$$
   - id: normalize
     show: xh
     label: '$\of{xh}$'
     title: 归一化
     text: |
-      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。
+      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。
       $$\of{xh}={{ xh | matrix:2 }}$$
     backward:
       label: '$\partial\of{r},\ \partial\of{x}$'

@@ -155,7 +155,7 @@ const page = document.querySelector('vizflow-page');
 page.graph = g;
 page.steps = { overview: { ... }, forward: [ ... ], backward: 'auto' };
 page.panels = [{ loss: { ... } }, { sliders: h }];
-page.scene = { layout: [board(h, W.T, z), stack(z, L, logp, loss)], hint: '...' };
+page.scene = { layout: [board(h, W.T, z), stack(z, ex, S, L, logp, pick, lt, loss)], hint: '...' };
 page.createdSteps.go(1);
 </script>
 ```
@@ -219,7 +219,7 @@ panels:
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`layernorm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`mla`、`lightning-indexer`、`lm-head-nll`。`layernorm` 是 PyTorch 的 `nn.LayerNorm`，带权重和偏置，参数 `eps` 默认 `1e-5`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{silu}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`mla` 写 `sparse: true` 时是 DeepSeek V3.2 的注意力：多建一个 `lightning-indexer` 实例 `indexer`，注意力的 mask 换成它选出的稀疏 mask，这时还要给 `HI`、`dI`、`kI`（对应 index_n_heads、index_head_dim、index_topk），用法见 `examples/deepseek_v3_2-dsl.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`layernorm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`mla`、`lightning-indexer`、`lm-head-nll`，以及按定义拆开的函数模块 `sigmoid`、`silu`、`softplus`、`gelu`、`relu`、`log-softmax`、`nll-loss`。页面里不要直接调用 `sigmoid(x)`、`silu(x)`、`softplus(x)`、`gelu(x)`、`logsumexp(x)`、`log_softmax(x)`、`nll_loss(...)` 这些复合运算，改用对应的模块，例如 `beta_sigmoid: { use: Sigmoid, inputs: { x: b }, outputs: { out: beta } }`，这样图上每个节点都是一个初等运算。`log-softmax` 不改 dtype；HF 在算损失前做的 `logits.float()` 由页面写成一个节点，例如 `zf: { op: identity(z), dtype: fp32 }`，再把 `zf` 交给 `log_softmax`。每个 Linear 单独写一步。每种模块在页面里第一次出现时不要写 `folded: true`，只有重复出现的实例折叠，并在实例的 `fold.text` 里写明它和哪一层的哪个实例相同。`glu` 的参数 `act` 是 module 类型，写 `act: SiLU`。`layernorm` 是 PyTorch 的 `nn.LayerNorm`，带权重和偏置，参数 `eps` 默认 `1e-5`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{SiLU}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`mla` 写 `sparse: true` 时是 DeepSeek V3.2 的注意力：多建一个 `lightning-indexer` 实例 `indexer`，注意力的 mask 换成它选出的稀疏 mask，这时还要给 `HI`、`dI`、`kI`（对应 index_n_heads、index_head_dim、index_topk），用法见 `examples/deepseek_v3_2-dsl.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 节点、实例、group、for、模块的步骤和步骤补丁可以写 `when: 表达式`，表达式求值成 `false` 时这一项不建。表达式里可以用 `bool` 类型的参数、`not c` 和条件表达式 `a if c else b`，例如 MLA 里 `- indexer: { use: LightningIndexer, when: sparse, ... }` 和 `inputs: { mask: M_sparse if sparse else M }`。模块参数没有值也没有默认值时，只在模块用到它的地方报错，所以只在 `when` 为 `true` 的部分用到的参数可以不写默认值。`min(a, b)`、`max(a, b)` 对数取最小值和最大值，例如 `topk_mask(x, min(kI, T), -1)`。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
 - 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta)`、`rope_sin(T, dh, theta)` 或 `causal_mask(T)`；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
@@ -337,9 +337,14 @@ label 的 shape 要与使用它的运算一致：
 
 ```js
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
 内置运算：
@@ -347,7 +352,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | 运算 | 调用 | 说明 |
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
-| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `reciprocal` `erf` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`reciprocal` 算 $1/a$，`erf` 是误差函数；`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$。内置模块和示例页面不用 `sigmoid`、`silu`、`gelu` 和带 `eps` 的 `rsqrt`，而是把它们拆成初等运算画出来，例如 `rsqrt(ms + eps)` |
 | `softplus` | `g.softplus(a)` | 逐元素 $\log(1+e^{x})$；$x>20$ 时直接输出 $x$，与 torch 的默认值相同 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |
@@ -467,16 +472,22 @@ const steps = createSteps(g, {
 2. 损失节点和它前面第一个可见节点合成第一步，之后每个可见节点一步。
 3. 默认标题是 `∂ℓ/∂节点名`（合成的步骤用其中的非损失节点），按钮文字是 `∂节点名`，正文是该节点反向层名卡片的链式法则公式。
 
-lm_head 页因此得到五步：`ℓ` 与 `log p`、`LSE`、`z`、`W.T`、`h`。再举一个小例子：
+lm_head 页因此得到九步：`loss` 与 `lt`、`pick`、`log p`、`LSE`、`S`、`ex`、`z`、`W.T`、`h`。再举一个小例子：
 
 ```js
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { classes: 5 });
-const logp = g.log_softmax(x, -1, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ex = g.exp(x, { name: 'ex', tex: 'e^{\\mathbf{x}}', elem: 'e^{x}' });
+const S = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L = g.log(S, { name: 'LSE' });
+const logp = g.sub(x, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
-`log_softmax` 在图上是一个节点，不拆成更小的运算。`x`、`logp`、`loss` 都在 `show` 里时，反向有两步：第 1 步是 `loss` 与 `log p`，标题 `∂ℓ/∂log p`，按钮 `∂log p`；第 2 步是 `x`，标题 `∂ℓ/∂x`，按钮 `∂x`。
+示例页把 `F.log_softmax` 按定义拆成取 exp、求和、取 log、相减四个节点，把 `F.nll_loss` 拆成按标签取格、取负、取平均三个节点，每一步都在图上画出来。`ti` 只用来调整 label 的形状，不放进 `show`。其余节点都在 `show` 里时，反向有七步：第 1 步是 `loss` 与 `lt`，按钮 `∂ℓ`；之后依次是 `pick`、`log p`、`LSE`、`S`、`ex`，最后一步是 `x`，标题 `∂ℓ/∂x`，按钮 `∂x`。
 
 要调整时写成对象：
 
@@ -804,7 +815,7 @@ const scene = mountScene('#stage', g, {
   steps,
   layout: [
     board(h, W.T, z),
-    stack(z, L, logp, loss),
+    stack(z, ex, S, L, logp, pick, lt, loss),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
   camera: { direction: [0.62, 0.5, 1], azimuth: [-0.75, 0.6], polar: [0.55, 1.5] },
@@ -952,7 +963,7 @@ const scene = mountScene('#stage', g, {
   edit: true,
   layout: [
     board(h, W.T, z),
-    stack(z, L, logp, loss),
+    stack(z, ex, S, L, logp, pick, lt, loss),
   ],
 });
 ```
@@ -966,7 +977,7 @@ const scene = mountScene('#stage', g, {
 ```js
 layout: [
   board(g.node('h'), g.node('W.T'), g.node('z')),
-  stack(g.node('z'), g.node('LSE'), g.node('log p'), g.node('loss'), { offsets: { 'log p': [1.2, 0, -0.6] } }),
+  stack(g.node('z'), g.node('ex'), g.node('S'), g.node('LSE'), g.node('log p'), g.node('pick'), g.node('lt'), g.node('loss'), { offsets: { 'log p': [1.2, 0, -0.6] } }),
 ],
 camera: { direction: [0.3, 0.8, 1] },
 labels: { z: [24, -10] },
@@ -1061,14 +1072,19 @@ const W = g.param('W', ['V', 'd'], [
 const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 
 const z    = g.matmul(h, W.T, { name: 'z' });
-const L    = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex   = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S    = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L    = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti   = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt   = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
 这里 `logp` 的 shape 是 `(1, 5)`，所以 label 写成 `[0]`，shape `(1,)`，与 `nll_loss` 的 `(N, C)` 配 `(N,)` 对应。
 
-**步骤**：总览加五个前向步骤；反向自动生成五步，用 `override` 改写每一步的标题和正文。正文里用模板代入目标列的数值。
+**步骤**：总览加九个前向步骤；反向自动生成九步，用 `override` 改写每一步的标题和正文。正文里用模板代入目标列的数值。
 
 ```js
 const steps = createSteps(g, {
@@ -1127,7 +1143,7 @@ const steps = createSteps(g, {
 
 `{{W[t, 0]}}` 读的是 `W`（V×d）的第 t 行，对应 `W.T` 的第 t 列。`{{z.grad[t]+1:3}}` 是梯度加 1，即 $p_t$。
 
-**布局**：`board` 把 `h`、`W.T`、`z` 摆成矩阵乘，`stack` 从 `z` 往上叠 LSE、log p 和损失。`z` 已被 board 放置，在 stack 里作为起点。`scales` 让前向和反向的柱子高度合适。
+**布局**：`board` 把 `h`、`W.T`、`z` 摆成矩阵乘，`stack` 从 `z` 往上叠 log_softmax 的四个节点（`ex`、`S`、`LSE`、`log p`）和 nll_loss 的三个节点（`pick`、`lt`、`loss`）。`z` 已被 board 放置，在 stack 里作为起点。`scales` 让前向和反向的柱子高度合适，`offsets` 把上下相邻的标量节点拉开，标签不会挤在一起。
 
 ```js
 mountSteps('#steps', steps);
@@ -1135,7 +1151,7 @@ const scene = mountScene('#stage', g, {
   steps,
   layout: [
     board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
-    stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
+    stack(z, ex, S, L, logp, pick, lt, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } }),
   ],
   hint: '点 logit 柱子换目标 token · 悬停层名看 shape · 反向时悬停连线',
 });
@@ -1278,9 +1294,14 @@ import { mountPanels, mountSteps } from '@yhnocoder/vizflow/ui';
 const g = graph({ dims: { V: 5 } });
 const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
 const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
-const p = g.softmax(x, -1, { name: 'p' });
+const u = g.exp(x, { name: 'u' });
+const S = g.sum(u, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const p = g.div(u, S, { name: 'p' });
 const logp = g.log(p, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti = g.view(t, [1], { name: 'ti', tex: 't', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, { overview: { ... }, forward: [ ... ] });
 mountSteps('#steps', steps);
@@ -1290,7 +1311,7 @@ mountPanels('#values', g, [
 ], { steps });
 ```
 
-这里 `x` 是 `(5,)`，label 写 `0`（shape `()`），对应 `nll_loss` 的 `(C,)` 配 `()`。HTML 用 `.vf-stack` 把步骤条和面板竖排。
+这里 `x` 是 `(5,)`，label 写 `0`（shape `()`），对应 `F.nll_loss` 的 `(C,)` 配 `()`。softmax 按定义拆成取指数、求和、相除，nll_loss 拆成按标签取格、取负、取平均；`gather` 要求 index 与输入维数相同，所以先把 label `view` 成 `(1,)`，对应 `logp.gather(-1, t.view(1))`。HTML 用 `.vf-stack` 把步骤条和面板竖排。
 
 ## 10. 测试页面
 
