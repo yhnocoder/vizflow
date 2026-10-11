@@ -1,3 +1,4 @@
+import { headTailChunks } from '../../autograd';
 import type { Nested } from '../../tensor';
 import type { Num } from './types';
 
@@ -19,6 +20,7 @@ const NUMBER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: 
     shape: [T, T],
     values: [...Array(T.toy).keys()].map((t) => [...Array(T.toy).keys()].map((s) => (s > t ? -Infinity : 0))),
   }),
+  cp_mask: ([T, n, round]) => ({ shape: [T, T], values: cpMask(T.toy, n.toy, round.toy) }),
 };
 
 export const BUFFER_ARITY: Record<string, number | 'any' | { lists: number; optional: number; usage: string }> = {
@@ -26,6 +28,7 @@ export const BUFFER_ARITY: Record<string, number | 'any' | { lists: number; opti
   rope_sin: 3,
   zeros: 'any',
   causal_mask: 1,
+  cp_mask: 3,
   packed_mask: { lists: 1, optional: 2, usage: 'a list of new-token counts, then optionally a list of cached lengths and a window size' },
   packed_positions: { lists: 1, optional: 1, usage: 'a list of new-token counts, then optionally a list of cached lengths' },
   packed_segments: { lists: 1, optional: 0, usage: 'a list of new-token counts' },
@@ -79,6 +82,14 @@ export const BUFFER_FUNCTIONS: Record<string, (args: BufferArg[]) => { shape: Nu
   ...ROPE_FUNCTIONS,
   ...PACKED_FUNCTIONS,
 };
+
+function cpMask(T: number, n: number, round: number): number[][] {
+  if (!Number.isInteger(n) || n < 1 || T % (2 * n) !== 0) throw new Error(`cp_mask: T = ${T} must split into 2n = ${2 * n} equal chunks`);
+  if (!Number.isInteger(round) || round < 0 || round >= n) throw new Error(`cp_mask: round ${round} must be an integer from 0 to ${n - 1}`);
+  const chunks = headTailChunks(n);
+  const rank = (t: number) => chunks[Math.floor(t / (T / (2 * n)))];
+  return [...Array(T).keys()].map((t) => [...Array(T).keys()].map((s) => (s <= t && (rank(s) + round) % n === rank(t) ? 0 : -Infinity)));
+}
 
 function zerosOf(shape: number[]): Nested {
   return shape.length === 0 ? 0 : Array.from({ length: shape[0] }, () => zerosOf(shape.slice(1)));

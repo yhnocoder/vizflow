@@ -9,6 +9,15 @@ export const allReduceExplain: OpExplain = {
   },
 };
 
+export const sendRecvExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{send\\_recv}(${s.in[0]})`,
+    local: () => '1',
+  },
+};
+
 export const dispatchExplain: OpExplain = {
   pattern: 'elementwise',
   local: () => 1,

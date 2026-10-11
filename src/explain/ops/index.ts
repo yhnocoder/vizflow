@@ -22,7 +22,7 @@ import {
   whereExplain,
   geExplain,
 } from './elementwise';
-import { allReduceExplain, combineExplain, dispatchExplain } from './comm';
+import { allReduceExplain, combineExplain, dispatchExplain, sendRecvExplain } from './comm';
 import {
   catExplain,
   causalConv1dExplain,
@@ -43,7 +43,7 @@ import { nllLossExplain } from './loss';
 import { groupedMmExplain, matmulExplain, scaledMmExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
 import { blockScaleExplain, dequantizeExplain, quantizeExplain } from './quant';
-import { logSoftmaxExplain, softmaxExplain } from './softmax';
+import { logSoftmaxExplain, lseMergeExplain, softmaxExplain } from './softmax';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   add: addExplain,
@@ -71,6 +71,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   logsumexp: logsumexpExplain,
   softmax: softmaxExplain,
   log_softmax: logSoftmaxExplain,
+  lse_merge: lseMergeExplain,
   gather: gatherExplain,
   embedding: embeddingExplain,
   narrow: narrowExplain,
@@ -98,5 +99,6 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
 registerExplain('all_reduce', allReduceExplain);
+registerExplain('send_recv', sendRecvExplain);
 registerExplain('dispatch', dispatchExplain);
 registerExplain('combine', combineExplain);

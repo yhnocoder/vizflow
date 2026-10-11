@@ -24,13 +24,13 @@ import {
   transposeOp,
   whereOp,
 } from './elementwise';
-import { allReduceOp, combineOp, dispatchOp } from './comm';
+import { allReduceOp, combineOp, dispatchOp, sendRecvOp } from './comm';
 import { catOp, causalConv1dOp, embeddingOp, gatherOp, indexAddOp, indexCopyOp, narrowOp, repeatInterleaveOp, routeExpertsOp, routeRowsOp, selectOp, topkIndicesOp, topkMaskOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { type ScaledMmAccum, groupedMmOp, matmulOp, scaledMmOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { blockScaleOp, dequantizeOp, quantizeOp } from './quant';
-import { logSoftmaxOp, softmaxOp } from './softmax';
+import { logSoftmaxOp, lseMergeOp, softmaxOp } from './softmax';
 import type { QuantFormat, ScaleRule } from '../quant';
 
 export type { Dim, Reduction, ScaledMmAccum, QuantFormat, ScaleRule };
@@ -118,6 +118,8 @@ export interface BuiltinOps {
   scaled_mm(a: Node, sfa: Node, b: Node, sfb: Node, block_k: number | string, block_n: number | string, accum?: ScaledMmAccum, options?: OpOptions): Node;
   index_add(src: Node, index: Node, size: number | string, options?: OpOptions): Node;
   all_reduce(input: Node, group: string, options?: OpOptions): Node;
+  send_recv(input: Node, group: string, options?: OpOptions): Node;
+  lse_merge(o_a: Node, lse_a: Node, o_b: Node, lse_b: Node, options?: OpOptions): Node;
   dispatch(x: Node, sel: Node, k: number | string, group: string, fp8?: boolean, options?: OpOptions): Node;
   combine(y: Node, sel: Node, w: Node, group: string, options?: OpOptions): Node;
   ge(input: Node, other: number, options?: OpOptions): Node;
@@ -156,6 +158,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   logsumexpOp,
   softmaxOp,
   logSoftmaxOp,
+  lseMergeOp,
   gatherOp,
   embeddingOp,
   narrowOp,
@@ -183,5 +186,6 @@ export const builtinOps: readonly AnyOpDef[] = [
 
 for (const def of builtinOps) defineOp(def);
 defineOp(allReduceOp);
+defineOp(sendRecvOp);
 defineOp(dispatchOp);
 defineOp(combineOp);

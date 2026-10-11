@@ -33,6 +33,7 @@ export interface CommTransfer {
 export interface CommOptions {
   tokens?: number;
   mode?: EpMode;
+  dir?: 'forward' | 'backward';
 }
 
 export function gpusPerNode(topology: MeshTopology): number {
@@ -65,9 +66,21 @@ export function ringAllReduce(topology: MeshTopology, bytes: number): CommTransf
   );
 }
 
+export function ringSendRecv(topology: MeshTopology, bytes: number, dir: 'forward' | 'backward' = 'forward'): CommTransfer[] {
+  const n = topology.size;
+  return Array.from({ length: n }, (_, src) => {
+    const dst = (src + (dir === 'forward' ? 1 : n - 1)) % n;
+    return { src, dst, bytes, link: linkKind(topology, src, dst), hop: 0 };
+  });
+}
+
+export function isParamLike(node: Node): boolean {
+  return node.kind === 'param' || (node.op === 'transpose' && node.inputs[0].kind === 'param');
+}
+
 export function messageBytes(node: Node, tokens: number): number {
   const bytes = DTYPE_BITS[node.dtype] / 8;
-  if (node.kind === 'param') return node.realShape.reduce((a, b) => a * b, 1) * bytes;
+  if (isParamLike(node)) return node.realShape.reduce((a, b) => a * b, 1) * bytes;
   const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
   return tokens * width * bytes;
 }
@@ -95,6 +108,10 @@ export function commTransfers(placements: Placements, node: Node, options: CommO
   if (node.op === 'all_reduce') {
     if (options.tokens === undefined) throw new Error(`commTransfers: all_reduce '${node.name}' needs the number of tokens`);
     return ringAllReduce(mesh, messageBytes(node, options.tokens));
+  }
+  if (node.op === 'send_recv') {
+    if (options.tokens === undefined) throw new Error(`commTransfers: send_recv '${node.name}' needs the number of tokens`);
+    return ringSendRecv(mesh, messageBytes(node, options.tokens / mesh.real.size), options.dir);
   }
   if (node.op === 'dispatch') {
     const [x, sel] = node.inputs;

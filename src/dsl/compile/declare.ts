@@ -1,4 +1,4 @@
-import { type Node, type Placement, QUANT_FORMATS, REPLICATE, SCALE_RULES, opDef } from '../../autograd';
+import { type Node, type Placement, QUANT_FORMATS, REPLICATE, SCALE_RULES, headTailChunks, opDef } from '../../autograd';
 import { QUANT_MODULE } from '../load';
 import type { LayoutEntry } from '../../scene3d';
 import { DslError, type Where, child, fail } from '../source';
@@ -137,12 +137,14 @@ export function placeOf(c: Compiler, spec: unknown, node: Node, where: Where): P
   const at = child(where, spec, mesh.axis);
   const text = spec[mesh.axis];
   if (text === 'replicate') return REPLICATE;
-  const match = typeof text === 'string' ? /^shard\((-?\d+)\)$/.exec(text.replace(/\s+/g, '')) : null;
-  if (match === null) fail(at, 'a placement is replicate or shard(<dim>)');
+  const match = typeof text === 'string' ? /^shard\((-?\d+)(?:,(head_tail))?\)$/.exec(text.replace(/\s+/g, '')) : null;
+  if (match === null) fail(at, 'a placement is replicate, shard(<dim>) or shard(<dim>, head_tail)');
   const dim = Number(match[1]) < 0 ? Number(match[1]) + node.shape.length : Number(match[1]);
   if (dim < 0 || dim >= node.shape.length) fail(at, `shard(${match[1]}) is outside the ${node.shape.length} dimensions of '${node.name}'`);
-  if (node.shape[dim] % mesh.size !== 0) fail(at, `dimension ${dim} of '${node.name}' has size ${node.shape[dim]}, which ${mesh.size} devices cannot split evenly`);
-  return { kind: 'shard', dim };
+  const chunks = match[2] === undefined ? undefined : headTailChunks(mesh.size);
+  const parts = chunks?.length ?? mesh.size;
+  if (node.shape[dim] % parts !== 0) fail(at, `dimension ${dim} of '${node.name}' has size ${node.shape[dim]}, which cannot be split into ${parts} equal chunks`);
+  return chunks === undefined ? { kind: 'shard', dim } : { kind: 'shard', dim, chunks };
 }
 
 export function quantPrelude(scope: Scope, decl: Record<string, unknown>, env: Env): PreludeItem[] {

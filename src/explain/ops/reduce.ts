@@ -49,7 +49,7 @@ export const maxExplain: OpExplain = {
 
 export const logsumexpExplain: OpExplain = {
   pattern: 'reduce',
-  local: (ctx, out, _arg, input) => Math.exp(ctx.inputs[0].get(input) - ctx.out.get(out)),
+  local: (ctx, out, _arg, input) => (ctx.out.get(out) === -Infinity ? 0 : Math.exp(ctx.inputs[0].get(input) - ctx.out.get(out))),
   tex: {
     forward: (s) => `\\log\\sum\\exp(${s.in[0]})`,
     local: (s) => `\\exp(${s.in}-${s.out})`,

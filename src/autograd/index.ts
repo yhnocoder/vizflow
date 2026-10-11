@@ -2,15 +2,17 @@ import './ops';
 
 export { graph, type Graph, type GraphOptions, type OpOptions, type LabelOptions, type SplitOptions } from './graph';
 export { DTYPES, DTYPE_BITS, DEFAULT_DTYPE, LABEL_DTYPE, type Dtype } from './dtype';
-export { placements, placementText, PlacementError, REPLICATE, type Placement, type Placements, type GradPlacement } from './placement';
+export { headTailChunks, placements, placementText, PlacementError, REPLICATE, type BlockFill, type Placement, type Placements, type GradPlacement } from './placement';
 export {
   commTransfers,
   epTopology,
   gpusPerNode,
+  isParamLike,
   linkKind,
   messageBytes,
   rankDevice,
   ringAllReduce,
+  ringSendRecv,
   type CommOptions,
   type CommPhase,
   type CommTransfer,

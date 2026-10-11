@@ -21,7 +21,7 @@ function chip(text: string): HTMLButtonElement {
 
 export const PLATFORMS_TEXT = '按卡分开';
 
-export function buildChrome(root: HTMLDivElement, hint: string | undefined, parallel?: 'ranks' | 'platforms'): void {
+export function buildChrome(root: HTMLDivElement, hint: string | undefined, parallel?: 'ranks' | 'platforms', idle = false): void {
   const key = document.createElement('div');
   key.className = 'vf-key';
   key.innerHTML = `<span><i class="vf-sw" style="background:var(--pos)"></i>正</span><span><i class="vf-sw" style="background:var(--neg)"></i>负</span><span>${KEY_FRAME_TEXT}</span>`;
@@ -29,7 +29,7 @@ export function buildChrome(root: HTMLDivElement, hint: string | undefined, para
   if (parallel !== undefined) {
     const ranks = document.createElement('div');
     ranks.className = 'vf-key vf-ranks';
-    ranks.innerHTML = parallel === 'ranks' ? parallelLegend() : platformLegend();
+    ranks.innerHTML = parallel === 'ranks' ? parallelLegend(idle) : platformLegend();
     root.appendChild(ranks);
   }
   if (hint !== undefined) {

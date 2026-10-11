@@ -211,6 +211,7 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
   const labelsOf = (next: number[]) => (packed === undefined ? next.slice(1) : packedLabels(next, packed));
   const input = make('input', ids.slice(0, T));
   const label = make('label', labelsOf(ids));
+  if (spec.place !== undefined) for (const node of [input, label]) c.leafPlacements.set(node, placeOf(c, spec.place, node, child(where, spec, 'place')));
   const g = c.g;
   return {
     ...(steps === undefined ? {} : { prompt: prompt.length }),

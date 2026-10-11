@@ -102,15 +102,18 @@ export const logsumexpOp: OpDef<ReduceAttrs> = {
   forward: ([a], attrs) => {
     const { shape, map, argmax } = argmaxGroups(a, attrs);
     const out = new Tensor(shape);
-    for (let i = 0; i < map.length; i++) out.data[map[i]] += Math.exp(a.data[i] - a.data[argmax[map[i]]]);
-    for (let j = 0; j < out.size; j++) out.data[j] = a.data[argmax[j]] + Math.log(out.data[j]);
+    for (let i = 0; i < map.length; i++) {
+      const max = a.data[argmax[map[i]]];
+      if (max !== -Infinity) out.data[map[i]] += Math.exp(a.data[i] - max);
+    }
+    for (let j = 0; j < out.size; j++) out.data[j] = a.data[argmax[j]] === -Infinity ? -Infinity : a.data[argmax[j]] + Math.log(out.data[j]);
     return out;
   },
   backward: (gradOut, [a], out, attrs) => {
     const { map } = grouped(a, attrs);
     const grad = new Tensor(a.shape);
     for (let i = 0; i < map.length; i++) {
-      grad.data[i] = gradOut.data[map[i]] * Math.exp(a.data[i] - out.data[map[i]]);
+      if (out.data[map[i]] !== -Infinity) grad.data[i] = gradOut.data[map[i]] * Math.exp(a.data[i] - out.data[map[i]]);
     }
     return [grad];
   },
