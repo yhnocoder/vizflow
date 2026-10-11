@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { Node } from '../../src/core';
 import { type CompiledPage, compilePage, loadPage } from '../../src/dsl';
+import { RING_NOTE, gradReduces } from '../../src/scene3d/modes';
 import { parallelMode, parallelNotes, parallelRows } from '../../src/scene3d/parallel';
 import type { SceneController } from '../../src/scene3d/controller';
 import { createSteps } from '../../src/steps';
@@ -137,6 +138,26 @@ describe('qwen3 tensor parallel page', () => {
     expect(n1.find((r) => r.label === '通信')?.value).toBe('反向 all_reduce');
     const partial = parallelRows(fakeScene(tp, 'backward'), tp.nodes.get('layer.self_attn.att')!);
     expect(partial.find((r) => r.label === '通信')?.value).toContain('反向不通信');
+  });
+
+  it('sizes the gradient all_reduce of a parameter by the parameter, not by the tokens', () => {
+    const gamma = tp.nodes.get('layer.self_attn.q_norm.weight') ?? tp.graph.node('layer.self_attn.q_norm.weight')!;
+    const rows = parallelRows(fakeScene(tp, 'backward'), gamma);
+    expect(rows.find((r) => r.label === '消息大小')?.value).toContain('S=128\\times 2\\,\\mathrm{B}=256\\,\\mathrm{B}');
+    expect(rows.find((r) => r.label === 'token 数')).toBeUndefined();
+    expect(rows.find((r) => r.label === '每卡发送')?.value).toContain('=448\\,\\mathrm{B}');
+    expect(rows.find((r) => r.label === '算法假设')?.value).toBe(RING_NOTE);
+  });
+
+  it('lists the gradients that are all_reduced on each backward step', () => {
+    const steps = fakeScene(tp, 'backward').steps!;
+    const reduced = steps.list.flatMap((info) => gradReduces(tp.placements!, steps.list, info).map((node) => `${info.id} ${node.name}`));
+    expect(reduced).toEqual([
+      'b:33 layer.post_attention_layernorm.out',
+      'B:layer.self_attn.qk_norm layer.self_attn.q_norm.weight',
+      'B:layer.self_attn.qk_norm layer.self_attn.k_norm.weight',
+      'b:6 layer.input_layernorm.out',
+    ]);
   });
 
   it('marks the backward all_reduce on the step that finishes the Partial gradient', () => {
