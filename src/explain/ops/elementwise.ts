@@ -198,6 +198,7 @@ export const remainderExplain = binary(
 );
 export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
 export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
+export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0');
 export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
 export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
 export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');

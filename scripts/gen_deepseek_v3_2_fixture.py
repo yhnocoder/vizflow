@@ -123,15 +123,22 @@ def page_paths(model, lm_head, take):
     paths.update(mlp_paths("dense_layer.mlp", dense.mlp))
     paths.update(mlp_paths("moe_layer.mlp.shared_experts", moe.mlp.shared_experts))
     paths["moe_layer.mlp.Wr"] = moe.mlp.gate.weight
-    paths = {path: take(p) for path, p in paths.items()}
-    experts = moe.mlp.experts
-    mf = DIMS["mf"]
-    for e in range(DIMS["Ne"]):
-        gate_up = take(experts.gate_up_proj)[e]
-        paths[f"moe_layer.mlp.expert[{e + 1}].Wg"] = gate_up[:mf]
-        paths[f"moe_layer.mlp.expert[{e + 1}].Wu"] = gate_up[mf:]
-        paths[f"moe_layer.mlp.expert[{e + 1}].Wd"] = take(experts.down_proj)[e]
-    return paths
+    paths["moe_layer.mlp.experts.Wgu"] = moe.mlp.experts.gate_up_proj
+    paths["moe_layer.mlp.experts.Wd"] = moe.mlp.experts.down_proj
+    return {path: take(p) for path, p in paths.items()}
+
+
+def routing_order(top_k_index, num_experts):
+    expert_mask = F.one_hot(top_k_index, num_classes=num_experts + 1).permute(2, 1, 0)
+    expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+    order = {"topk_indices": top_k_index.tolist(), "experts": {}}
+    for expert_idx in expert_hit:
+        expert_idx = expert_idx[0]
+        if expert_idx == num_experts:
+            continue
+        _, token_idx = torch.where(expert_mask[expert_idx])
+        order["experts"][int(expert_idx)] = [int(i) for i in token_idx]
+    return order
 
 
 def fill(model, lm_head, generator):
@@ -169,6 +176,8 @@ def main():
         model.layers[i].register_forward_hook(lambda _m, _i, out, name=name: captured.__setitem__(name, out[0] if isinstance(out, tuple) else out))
     for layer, name in zip(model.layers, LAYERS):
         layer.self_attn.indexer.register_forward_hook(lambda _m, _i, out, name=name: selected.__setitem__(name, causal_selection(out)))
+    routing = {}
+    model.layers[1].mlp.gate.register_forward_hook(lambda _m, _i, out: routing.update(routing_order(out[2], DIMS["Ne"])))
     hidden = model(input_ids=ids).last_hidden_state
     logp = F.log_softmax(lm_head(hidden).double(), -1)
     loss = F.nll_loss(logp.view(-1, DIMS["V"]), labels)
@@ -187,6 +196,7 @@ def main():
         "nodes": {"x1": encode(captured["x1"][0]), "x2": encode(captured["x2"][0]), "h": encode(hidden[0])},
         "selected": selected,
         "grads": {path: encode(t) for path, t in grads.items()},
+        "routing": routing,
     }
     OUT.write_text(json.dumps(payload, indent=1) + "\n")
     print(f"{OUT.name}: loss {loss.item():.6f}, selected {selected}")

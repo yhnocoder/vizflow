@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { CompiledPage } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
+import { expectRouting } from './deepseek_moe';
 import { loadExample } from './load';
 
 interface DeepseekV32Fixture {
@@ -12,6 +13,7 @@ interface DeepseekV32Fixture {
   nodes: Record<string, EncodedTensor>;
   selected: Record<string, number[][]>;
   grads: Record<string, EncodedTensor>;
+  routing: { topk_indices: number[][]; experts: Record<string, number[]> };
 }
 
 const fixture = loadFixture<never>('deepseek_v3_2.json') as unknown as DeepseekV32Fixture;
@@ -60,6 +62,10 @@ describe('deepseek_v3_2-dsl.yaml against transformers DeepseekV32Model in float6
         mask[t].forEach((m, s) => expect(m).toBe(kept.includes(s) ? 0 : -Infinity));
       });
     }
+  });
+
+  it('routes each position to the same K experts as HF, all from the top group, and expert selection has no gradient', () => {
+    expectRouting(page, fixture.routing);
   });
 
   it('gives the indexer no gradient, as HF runs it under torch.no_grad', () => {

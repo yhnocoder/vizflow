@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { CompiledPage } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
+import { expectRouting } from './deepseek_moe';
 import { loadExample } from './load';
 
 interface DeepseekV3Fixture {
@@ -11,6 +12,7 @@ interface DeepseekV3Fixture {
   loss: number;
   nodes: Record<string, EncodedTensor>;
   grads: Record<string, EncodedTensor>;
+  routing: { topk_indices: number[][]; experts: Record<string, number[]> };
 }
 
 const fixture = loadFixture<never>('deepseek_v3.json') as unknown as DeepseekV3Fixture;
@@ -41,14 +43,11 @@ describe('deepseek_v3-dsl.yaml against transformers DeepseekV3Model in float64',
     for (const [path, grad] of Object.entries(fixture.grads)) expectTensor(page.nodes.get(path)!.grad, grad, `grad of ${path}`);
   });
 
-  it('routes each position to K experts from the top group, and expert selection has no gradient', () => {
-    const sel = page.nodes.get('moe_layer.mlp.sel')!;
-    for (const row of sel.value.toNested() as number[][]) {
-      expect(row.reduce((a, b) => a + b, 0)).toBe(2);
-      expect(row.slice(0, 3).some((v) => v === 1) && row.slice(3).some((v) => v === 1)).toBe(false);
-    }
-    for (const name of ['sc', 'gs', 'gm', 'em', 'choice', 'sel']) expect(page.nodes.get(`moe_layer.mlp.${name}`)!.grad).toBeNull();
+  it('routes each position to the same K experts as HF, all from the top group, and expert selection has no gradient', () => {
+    expectRouting(page, fixture.routing);
+    const dtype = (name: string) => page.nodes.get(`moe_layer.mlp.${name}`)!.dtype;
+    expect([dtype('logits'), dtype('rw'), dtype('score_mask_b'), dtype('experts.scaled'), dtype('experts.cast')]).toEqual(['fp32', 'fp32', 'bool', 'fp32', 'bf16']);
     const steps = createSteps(page.graph, page.steps);
-    expect(steps.list.map((s) => s.title)).toContain('专家的权重');
+    expect(steps.list.map((s) => s.title)).toContain('乘 routed_scaling_factor');
   });
 });

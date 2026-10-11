@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { type PadAttrs, type PermuteAttrs, convTaps, cummaxSources, indexAddTarget, indexSource, padSource, permuteSource, repeatSourceIndex } from '../../autograd/ops/index_ops';
-import { indexOf, normDim, offsetOf } from '../../tensor';
+import { type PadAttrs, type PermuteAttrs, type ScatterAttrs, convTaps, cummaxSources, indexAddTarget, indexSource, padSource, permuteSource, repeatSourceIndex, scatteredOffsets } from '../../autograd/ops/index_ops';
+import { formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
   pattern: 'select',
@@ -276,4 +276,35 @@ export const cummaxExplain: OpExplain = {
     local: () => '1',
   },
   selected: (ctx, out) => [{ arg: 0, index: cummaxSource(ctx, out) }],
+};
+
+const scatteredAt = (ctx: OpCtx, out: number[]) => scatteredOffsets(ctx.inputs[0], ctx.inputs[1], ctx.attrs as ScatterAttrs).has(offsetOf(ctx.out.shape, out));
+
+export const scatterExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out) => (scatteredAt(ctx, out) ? 0 : 1),
+  tex: {
+    forward: (s) => {
+      const { dim, value } = s.attrs as ScatterAttrs;
+      return `\\operatorname{scatter}(${s.in[0]},${dim},${s.in[1]},${formatNumber(value, { tex: true })})`;
+    },
+    local: (s) => (scatteredAt(s.ctx, s.outIndex) ? '0' : '1'),
+  },
+  selected: (ctx, out) => (scatteredAt(ctx, out) ? [] : [{ arg: 0, index: out }]),
+};
+
+export const expandExplain: OpExplain = {
+  ...repeatExplain,
+  tex: {
+    forward: (s) => `\\operatorname{expand}(${s.in[0]},${(s.attrs as { sizes: number[] }).sizes.join(',')})`,
+    local: () => '1',
+  },
+};
+
+export const reshapeExplain: OpExplain = {
+  ...viewExplain,
+  tex: {
+    forward: (s) => `\\operatorname{reshape}(${s.in[0]})`,
+    local: () => '1',
+  },
 };
