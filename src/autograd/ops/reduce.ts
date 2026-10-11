@@ -1,4 +1,4 @@
-import { Tensor, normDims, reduceMap } from '../../tensor';
+import { Tensor, normDims, reduceMap, reducedShape } from '../../tensor';
 import type { OpDef } from '../op';
 
 export type Dim = number | number[];
@@ -22,7 +22,7 @@ function grouped(input: Tensor, attrs: ReduceAttrs): { shape: number[]; map: Int
 }
 
 function reducedShapeOf(shape: number[], attrs: ReduceAttrs): number[] {
-  return reduceMap(shape, normDims(attrs.dim, shape.length), attrs.keepdim).shape;
+  return reducedShape(shape, normDims(attrs.dim, shape.length), attrs.keepdim);
 }
 
 function spread(gradOut: Tensor, inputShape: readonly number[], map: Int32Array, scale: (group: number) => number): Tensor {
