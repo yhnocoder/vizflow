@@ -9,7 +9,7 @@ import:
   MoE:     ./deepseek_v3/moe.yaml
 dims: { T: 3, d: 4, f: 6, V: 5, H: 2, dn: 2, dr: 2, dv: 2, rq: 3, rkv: 3, Ne: 6, G: 2, TG: 1, K: 2, mf: 2, Sh: 1 }
 dtype: bf16
-real: { name: DeepSeek-V3, d: 7168, f: 18432, V: 129280, H: 128, dn: 128, dr: 64, dv: 128, rq: 1536, rkv: 512, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1 }
+real: { name: DeepSeek-V3, T: 4096, d: 7168, f: 18432, V: 129280, H: 128, dn: 128, dr: 64, dv: 128, rq: 1536, rkv: 512, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261011 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
@@ -347,6 +347,7 @@ steps:
       title: 从损失出发
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
   - sequence: true
     title: 序列
     labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']

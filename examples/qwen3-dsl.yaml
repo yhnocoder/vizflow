@@ -8,7 +8,7 @@ import:
   Qwen3Attention: ./qwen3/attention.yaml
 dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 4 }
 dtype: bf16
-real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128 }
+real: { name: Qwen3-8B, T: 4096, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261010 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
@@ -312,6 +312,7 @@ steps:
         $$\frac{\partial\ell}{\partial\ell_t}=\frac{1}{T}=0.333$$
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
   - sequence: true
     title: 序列
     labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']

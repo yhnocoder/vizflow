@@ -1,0 +1,244 @@
+import { DTYPE_BYTES, type Graph, type Node, type OpCost, opDef } from '../autograd';
+import type { StepInfo } from '../steps';
+
+export type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad' | 'grad';
+
+export const MEMORY_KINDS: readonly MemoryKind[] = ['param', 'input', 'buffer', 'saved', 'temp', 'param_grad', 'grad'];
+
+export interface MemoryEntry {
+  node: Node;
+  kind: MemoryKind;
+  shape: readonly number[];
+  bytes: number;
+}
+
+export interface FlopEntry {
+  node: Node;
+  dir: 'forward' | 'backward';
+  terms: number[][];
+  flops: number;
+}
+
+export interface StepCost {
+  overview: boolean;
+  memory: MemoryEntry[];
+  bytes: number;
+  ops: FlopEntry[];
+  flops: number;
+  forward: number;
+  backward: number;
+}
+
+export interface CostTimeline {
+  steps: StepCost[];
+  peak: number;
+  peakStep: number;
+  forward: number;
+  backward: number;
+  uncounted: Node[];
+}
+
+export interface CostOptions {
+  real?: boolean;
+}
+
+const LEAF_KINDS: Readonly<Record<string, MemoryKind>> = { param: 'param', input: 'input', label: 'input', buffer: 'buffer' };
+
+const product = (factors: readonly number[]) => factors.reduce((a, b) => a * b, 1);
+
+class CostModel {
+  readonly nodes: readonly Node[];
+  readonly loss: Node | undefined;
+  readonly root: number[] = [];
+  readonly consumers: Node[][];
+  readonly savers: number[][];
+  readonly gradFrom: number[][];
+  readonly needsGrad: boolean[];
+
+  constructor(
+    readonly g: Graph,
+    readonly real: boolean,
+  ) {
+    this.nodes = g.nodes;
+    this.loss = g.findLoss();
+    const loss = this.loss;
+    this.consumers = this.nodes.map(() => []);
+    this.savers = this.nodes.map(() => []);
+    this.needsGrad = this.nodes.map((n) => loss !== undefined && n.id <= loss.id && n.grad !== null);
+    for (const n of this.nodes) {
+      this.root[n.id] = this.isView(n) ? this.root[n.inputs[0].id] : n.id;
+      n.inputs.forEach((input) => this.consumers[input.id].push(n));
+      for (const saved of this.saved(n)) this.savers[saved.id].push(n.id);
+    }
+    this.gradFrom = this.nodes.map(() => []);
+    for (let id = this.nodes.length - 1; id >= 0; id--) {
+      if (!this.needsGrad[id]) continue;
+      for (const c of this.consumers[id]) {
+        if (!this.needsGrad[c.id] || !c.inputs.some((input, k) => input.id === id && this.differentiable(c, k))) continue;
+        this.gradFrom[id].push(...(this.isView(c) ? this.gradFrom[c.id] : [c.id]));
+      }
+    }
+  }
+
+  cost(n: Node): OpCost | undefined {
+    return n.kind === 'op' ? opDef(n.op as string)?.cost : undefined;
+  }
+
+  isView(n: Node): boolean {
+    return this.cost(n)?.view === true;
+  }
+
+  differentiable(c: Node, k: number): boolean {
+    return opDef(c.op as string)?.differentiable?.[k] ?? true;
+  }
+
+  gradInputs(c: Node): number[] {
+    if (!this.needsGrad[c.id]) return [];
+    return c.inputs.flatMap((input, k) => (this.differentiable(c, k) && this.needsGrad[input.id] ? [k] : []));
+  }
+
+  saved(c: Node): Node[] {
+    if (c.kind !== 'op') return [];
+    const cost = this.cost(c);
+    const picks = this.gradInputs(c).flatMap((k) => (cost === undefined ? c.inputs.map((_, i) => i) : (cost.saves[k] ?? [])));
+    return [...new Set(picks.flatMap((pick) => (pick === 'out' ? [c] : c.inputs[pick] === undefined ? [] : [c.inputs[pick]])))];
+  }
+
+  shape(n: Node): readonly number[] {
+    return this.real ? n.realShape : n.shape;
+  }
+
+  entry(n: Node, kind: MemoryKind): MemoryEntry {
+    const shape = this.shape(n);
+    return { node: n, kind, shape, bytes: product(shape) * DTYPE_BYTES[n.dtype] };
+  }
+
+  forwardMemory(computed: Uint8Array): MemoryEntry[] {
+    const kinds = new Map<number, MemoryKind>();
+    for (const n of this.nodes) {
+      const leaf = LEAF_KINDS[n.kind];
+      if (leaf !== undefined) {
+        kinds.set(n.id, leaf);
+        continue;
+      }
+      if (!computed[n.id] || !this.computes(n)) continue;
+      const root = this.root[n.id];
+      const saved = this.savers[n.id].some((c) => computed[c]);
+      const pending = this.consumers[n.id].length === 0 || this.consumers[n.id].some((c) => !computed[c.id]);
+      if (saved) kinds.set(root, 'saved');
+      else if (pending && !kinds.has(root)) kinds.set(root, 'temp');
+    }
+    return [...kinds].map(([id, kind]) => this.entry(this.nodes[id], kind));
+  }
+
+  backwardMemory(processed: Uint8Array): MemoryEntry[] {
+    const kinds = new Map<number, MemoryKind>();
+    const grads: MemoryEntry[] = [];
+    for (const n of this.nodes) {
+      const leaf = LEAF_KINDS[n.kind];
+      if (leaf !== undefined) kinds.set(n.id, leaf);
+      else if (this.computes(n) && this.savers[n.id].some((c) => !processed[c])) kinds.set(this.root[n.id], 'saved');
+      if (!this.needsGrad[n.id] || this.isView(n) || n === this.loss) continue;
+      const arrived = this.gradFrom[n.id].some((c) => processed[c]);
+      if (arrived && (n.kind !== 'op' || !processed[n.id])) grads.push(this.entry(n, n.kind === 'param' ? 'param_grad' : 'grad'));
+    }
+    return [...[...kinds].map(([id, kind]) => this.entry(this.nodes[id], kind)), ...grads];
+  }
+
+  closure(targets: readonly Node[], computed: Uint8Array): Node[] {
+    const fresh: Node[] = [];
+    const visit = (n: Node) => {
+      if (n.kind !== 'op' || computed[n.id]) return;
+      computed[n.id] = 1;
+      n.inputs.forEach(visit);
+      fresh.push(n);
+    };
+    targets.filter((n) => this.computes(n)).forEach(visit);
+    return fresh.sort((a, b) => a.id - b.id);
+  }
+
+  forwardOps(ops: readonly Node[], uncounted: Set<Node>): FlopEntry[] {
+    const out: FlopEntry[] = [];
+    for (const n of ops) {
+      const cost = this.cost(n);
+      if (cost === undefined) uncounted.add(n);
+      const terms = cost === undefined ? [] : [cost.flops(n.inputs.map((i) => [...this.shape(i)]), [...this.shape(n)]).forward];
+      this.push(out, n, 'forward', terms);
+    }
+    return out;
+  }
+
+  backwardOps(ops: readonly Node[], uncounted: Set<Node>): FlopEntry[] {
+    const out: FlopEntry[] = [];
+    for (const n of [...ops].sort((a, b) => b.id - a.id)) {
+      const ks = this.gradInputs(n);
+      if (ks.length === 0) continue;
+      const cost = this.cost(n);
+      if (cost === undefined) uncounted.add(n);
+      const backward = cost?.flops(n.inputs.map((i) => [...this.shape(i)]), [...this.shape(n)]).backward ?? [];
+      this.push(out, n, 'backward', ks.flatMap((k) => (backward[k] === undefined ? [] : [backward[k]])));
+    }
+    return out;
+  }
+
+  private push(out: FlopEntry[], node: Node, dir: FlopEntry['dir'], terms: number[][]): void {
+    const counted = terms.filter((t) => product(t) > 0);
+    const flops = counted.reduce((sum, t) => sum + product(t), 0);
+    if (flops > 0) out.push({ node, dir, terms: counted, flops });
+  }
+
+  computes(n: Node): boolean {
+    return n.kind === 'op' && LEAF_KINDS[this.nodes[this.root[n.id]].kind] === undefined;
+  }
+
+  startOfGrad(n: Node): number {
+    return n.kind === 'op' ? n.id + 1 : Math.min(...this.gradFrom[n.id]);
+  }
+}
+
+export function costTimeline(g: Graph, list: readonly StepInfo[], options: CostOptions = {}): CostTimeline {
+  const model = new CostModel(g, options.real === true);
+  const uncounted = new Set<Node>();
+  const computed = new Uint8Array(g.nodes.length);
+  const processed = new Uint8Array(g.nodes.length);
+  const batches: { id: string; ops: Node[] }[] = [];
+  let forward = 0;
+  let backward = 0;
+  const backwardBatch = (info: StepInfo): Node[] => {
+    const at = batches.findIndex((batch) => batch.id === info.forwardId);
+    if (at >= 0) return batches.splice(at).flatMap((batch) => batch.ops);
+    const start = Math.min(...info.nodes.map((n) => model.startOfGrad(n)));
+    return g.nodes.filter((n) => n.kind === 'op' && n.id >= start && !processed[n.id]);
+  };
+  const lastBackward = list.reduce((last, info, i) => (info.dir === 'backward' && info.kind !== 'overview' ? i : last), -1);
+  const steps = list.map((info, i): StepCost => {
+    if (info.kind === 'overview') return { overview: true, memory: [], bytes: 0, ops: [], flops: 0, forward: 0, backward: 0 };
+    let memory: MemoryEntry[];
+    let ops: FlopEntry[];
+    if (info.dir === 'forward') {
+      const fresh = model.closure(info.nodes, computed);
+      batches.push({ id: info.id, ops: fresh });
+      ops = model.forwardOps(fresh, uncounted);
+      memory = model.forwardMemory(computed);
+    } else {
+      const batch = i === lastBackward ? g.nodes.filter((n) => n.kind === 'op' && !processed[n.id]) : backwardBatch(info);
+      batch.forEach((n) => (processed[n.id] = 1));
+      ops = model.backwardOps(batch, uncounted);
+      memory = model.backwardMemory(processed);
+    }
+    const flops = ops.reduce((sum, op) => sum + op.flops, 0);
+    if (info.dir === 'forward') forward += flops;
+    else backward += flops;
+    return { overview: false, memory, bytes: memory.reduce((sum, m) => sum + m.bytes, 0), ops, flops, forward, backward };
+  });
+  let peakStep = -1;
+  steps.forEach((step, i) => {
+    if (!step.overview && (peakStep < 0 || step.bytes > steps[peakStep].bytes)) peakStep = i;
+  });
+  const peak = peakStep < 0 ? 0 : steps[peakStep].bytes;
+  for (const step of steps) {
+    if (!step.overview || peakStep < 0) continue;
+    Object.assign(step, { memory: steps[peakStep].memory, bytes: peak, forward, backward });
+  }
+  return { steps, peak, peakStep, forward, backward, uncounted: [...uncounted] };
+}

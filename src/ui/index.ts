@@ -28,3 +28,4 @@ export {
 } from './panels';
 export { mountSections, type SectionItem, type SectionRow, type SectionBlock, type SectionsOptions, type JumpButton, type RopeSpec, type RopeCompareSpec } from './sections';
 export type { Mounted } from './mounted';
+export type { CostPanelOptions } from './cost';

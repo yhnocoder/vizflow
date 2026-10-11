@@ -1,5 +1,8 @@
 import { Tensor, forEachIndex, formatShape, normDim, offsetOf, reduceMap } from '../../tensor';
 import type { OpDef } from '../op';
+import { VIEW_COST, movement } from './cost';
+
+const CONV_MULTIPLY_ADD = 2;
 
 export interface GatherAttrs {
   dim: number;
@@ -50,6 +53,7 @@ export const gatherOp: OpDef<GatherAttrs> = {
     for (let i = 0; i < offsets.length; i++) grad.data[offsets[i]] += gradOut.data[i];
     return [grad, null];
   },
+  cost: movement(true, [[1], []]),
 };
 
 function embeddingRow(weight: Tensor, id: number, position: number[]): number {
@@ -89,6 +93,7 @@ export const embeddingOp: OpDef<Record<string, never>> = {
     });
     return [null, grad];
   },
+  cost: movement(true, [[], [0]]),
 };
 
 export interface NarrowAttrs {
@@ -138,6 +143,7 @@ export const narrowOp: OpDef<NarrowAttrs> = {
     });
     return [grad];
   },
+  cost: VIEW_COST,
 };
 
 export interface CatAttrs {
@@ -205,6 +211,7 @@ export const catOp: OpDef<CatAttrs> = {
     });
     return grads;
   },
+  cost: movement(false, []),
 };
 
 export interface ViewAttrs {
@@ -230,6 +237,7 @@ export const viewOp: OpDef<ViewAttrs> = {
   shape: ([input], attrs) => viewShape(input, attrs),
   forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+  cost: VIEW_COST,
 };
 
 export interface SelectAttrs {
@@ -271,6 +279,7 @@ export const selectOp: OpDef<SelectAttrs> = {
     });
     return [grad];
   },
+  cost: VIEW_COST,
 };
 
 export interface RepeatInterleaveAttrs {
@@ -314,6 +323,7 @@ export const repeatInterleaveOp: OpDef<RepeatInterleaveAttrs> = {
     });
     return [grad];
   },
+  cost: movement(true, [[]]),
 };
 
 function convShape(input: readonly number[], weight: readonly number[]): number[] {
@@ -366,6 +376,13 @@ export const causalConv1dOp: OpDef<Record<string, never>> = {
     }
     return [gx, gw];
   },
+  cost: {
+    saves: [[1], [0]],
+    flops: ([input, weight]) => {
+      const count = [CONV_MULTIPLY_ADD, input[0], input[1], weight[1]];
+      return { forward: count, backward: [count, count] };
+    },
+  },
 };
 
 export interface TopkMaskAttrs {
@@ -409,4 +426,5 @@ export const topkMaskOp: OpDef<TopkMaskAttrs> = {
     return out;
   },
   backward: () => [null],
+  cost: movement(false, [[]]),
 };

@@ -21,6 +21,7 @@ export interface OpOptions extends NodeOptions {
 export interface LabelOptions extends NodeOptions {
   tokens?: string[];
   classes?: number;
+  shape?: (number | string)[];
 }
 
 export interface SplitOptions {
@@ -148,7 +149,7 @@ class GraphImpl {
   }
 
   label(name: string, values: Nested, options: LabelOptions = {}): Node {
-    const shape = inferShape(values);
+    const shape = options.shape ?? inferShape(values);
     const classes = options.classes ?? options.tokens?.length;
     const attrs = classes === undefined ? {} : { classes };
     return this.leaf('label', name, shape, values, options, options.tokens, attrs);

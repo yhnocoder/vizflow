@@ -1,5 +1,6 @@
 import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, normDim, offsetOf, unbroadcast } from '../../tensor';
-import type { OpDef } from '../op';
+import type { OpCost, OpDef } from '../op';
+import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
 
 type NoAttrs = Record<string, never>;
 
@@ -26,9 +27,11 @@ function binary(
   name: string,
   forward: (x: number, y: number) => number,
   local: (x: number, y: number) => [number, number],
+  cost: OpCost,
 ): OpDef<ScalarAttrs> {
   return {
     name,
+    cost,
     args: ['input', 'other'],
     tensors: ['input', 'other'],
     scalars: ['other'],
@@ -57,16 +60,19 @@ export const whereOp: OpDef<{ other: number }> = {
   shape: ([condition, input]) => broadcastShapes(condition, input),
   forward: ([condition, input], { other }) => zipWith(condition, input, (keep, x) => (keep !== 0 ? x : other)),
   backward: (gradOut, [condition, input]) => [null, unbroadcast(zipWith(condition, gradOut, (keep, g) => (keep !== 0 ? g : 0)), input.shape)],
+  cost: movement(false, [[], [0]]),
 };
 
 function unary<A extends object = NoAttrs>(
   name: string,
   forward: (x: number, attrs: A) => number,
   local: (x: number, y: number, attrs: A) => number,
+  cost: OpCost,
   args: string[] = ['input'],
 ): OpDef<A> {
   return {
     name,
+    cost,
     args,
     tensors: ['input'],
     shape: ([a]) => [...a],
@@ -82,32 +88,53 @@ export function sigmoid(x: number): number {
   return e / (1 + e);
 }
 
-export const addOp = binary('add', (x, y) => x + y, () => [1, 1]);
-export const subOp = binary('sub', (x, y) => x - y, () => [1, -1]);
-export const mulOp = binary('mul', (x, y) => x * y, (x, y) => [y, x]);
-export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)]);
-export const negOp = unary('neg', (x) => -x, () => -1);
-export const expOp = unary('exp', Math.exp, (_x, y) => y);
-export const logOp = unary('log', Math.log, (x) => 1 / x);
+function additive(negated: boolean[]): OpCost {
+  return {
+    saves: [[], []],
+    flops: (inputs, out) => ({
+      forward: [numel(out)],
+      backward: inputs.map((shape, k) => (negated[k] || numel(shape) < numel(out) ? [numel(out)] : NO_FLOPS)),
+    }),
+  };
+}
+
+const NONLINEAR_FORWARD = 1;
+const NONLINEAR_BACKWARD = 2;
+const DIV_OTHER_BACKWARD = 3;
+
+const nonlinear = (saved: 0 | 'out') => pointwise(NONLINEAR_FORWARD, NONLINEAR_BACKWARD, [[saved]]);
+
+export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([false, false]));
+export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
+export const mulOp = binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]]));
+export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
+  saves: [[1], [0, 1]],
+  flops: (inputs, out) => ({ forward: [numel(out)], backward: inputs.map((_, k) => (k === 0 ? [numel(out)] : [DIV_OTHER_BACKWARD, numel(out)])) }),
+});
+export const negOp = unary('neg', (x) => -x, () => -1, pointwise(1, 1, [[]]));
+export const expOp = unary('exp', Math.exp, (_x, y) => y, nonlinear('out'));
+export const logOp = unary('log', Math.log, (x) => 1 / x, nonlinear(0));
 export const powOp = unary<{ exponent: number }>(
   'pow',
   (x, { exponent }) => x ** exponent,
   (x, _y, { exponent }) => exponent * x ** (exponent - 1),
+  nonlinear(0),
   ['input', 'exponent'],
 );
 export const rsqrtOp: OpDef<{ eps: number }> = {
-  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3),
+  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3, nonlinear('out')),
   defaults: { eps: 0 },
 };
-export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
-export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
+export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y, nonlinear('out'));
+export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y), nonlinear('out'));
 export const SOFTPLUS_THRESHOLD = 20;
 export const softplusOp = unary(
   'softplus',
   (x) => (x > SOFTPLUS_THRESHOLD ? x : Math.log1p(Math.exp(x))),
   (x) => (x > SOFTPLUS_THRESHOLD ? 1 : sigmoid(x)),
+  nonlinear(0),
 );
-export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));
+export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))), nonlinear(0));
 
 export function erf(x: number): number {
   const a = Math.abs(x);
@@ -124,9 +151,9 @@ export function erf(x: number): number {
 export const normalCdf = (x: number) => 0.5 * (1 + erf(x / Math.SQRT2));
 export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 
-export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0));
-export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
-export const identityOp = unary('identity', (x) => x, () => 1);
+export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0), nonlinear('out'));
+export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
+export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
 
 function rotateHalf(input: Tensor, sign: number): Tensor {
   const width = input.shape[input.ndim - 1];
@@ -148,6 +175,7 @@ export const rotateHalfOp: OpDef<NoAttrs> = {
   },
   forward: ([a]) => rotateHalf(a, 1),
   backward: (gradOut) => [rotateHalf(gradOut, -1)],
+  cost: pointwise(1, 1, [[]]),
 };
 
 interface TransposeAttrs {
@@ -183,4 +211,5 @@ export const transposeOp: OpDef<TransposeAttrs> = {
   shape: ([a], attrs) => swapped(a, attrs).shape,
   forward: ([a], attrs) => transposeTensor(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [transposeTensor(gradOut, attrs)],
+  cost: VIEW_COST,
 };
