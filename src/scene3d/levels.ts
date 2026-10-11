@@ -631,7 +631,7 @@ class Plan implements LevelPlan {
         }
         lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
       }
-      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => (e.title = i === 0 ? 'left' : 'below'));
+      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => { if (i === 0) e.title = 'left'; });
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
     }
