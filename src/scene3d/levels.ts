@@ -329,7 +329,7 @@ class Plan implements LevelPlan {
       !this.boards.has(n) && !isLeafLike(n) &&
       (n.shape.length === 2 || (n.shape.length === 3 && n.shape[2] === 1)) &&
       this.consumers(n).some((u) => {
-        if (u.inputs[0] === n && this.isDisc(u)) return true;
+        if (u.inputs[0] === n && u.shape.join() === n.shape.join() && this.isDisc(u)) return true;
         const main = u.inputs[0];
         return main !== n && u.inputs.slice(1).includes(n) && main.shape.join() === u.shape.join() && this.shapeOf(u)[1] > cols;
       });

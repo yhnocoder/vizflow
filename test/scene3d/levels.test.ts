@@ -97,3 +97,63 @@ describe('levelPlan with rank-3 tensors', () => {
     expect(boxes.map((b) => b.module.id)).toEqual(['norm']);
   });
 });
+
+function flatGraph() {
+  const D = 4;
+  const g = graph({ dims: { T, d: D } });
+  const ids = g.label('ids', [1, 0], { tokens: ['a', 'b', 'c'] });
+  const E = g.param('E', [3, D], Array.from({ length: 3 }, (_, v) => Array.from({ length: D }, (_, c) => Math.cos(v + c * 0.6))));
+  const e = g.embedding(ids, E, { name: 'e' });
+  const gamma = g.param('gamma', [D], [0.9, 1.1, 1.0, 0.8]);
+  const sq = g.pow(e, 2, { name: 'sq' });
+  const ms = g.mean(sq, -1, { keepdim: true, name: 'ms' });
+  const r = g.rsqrt(g.add(ms, 1e-6, { name: 'shifted' }), { name: 'r' });
+  const hat = g.mul(e, r, { name: 'hat' });
+  const y = g.mul(hat, gamma, { name: 'y' });
+  const loss = g.loss(g.sum(y, null, { name: 'loss' }));
+  const module: StepModule = {
+    id: 'norm',
+    parent: null,
+    title: 'norm',
+    subtitle: '',
+    inputs: [e],
+    outputs: [y],
+    nodes: [sq, ms, g.node('shifted')!, r, hat, y],
+    params: [gamma],
+    fixed: false,
+    folded: false,
+    segment: 'norm',
+    forward: {},
+    backward: {},
+  };
+  const step = (show: Node[]) => ({ show, title: show.map((n) => n.name).join(', '), segment: 'norm', module: 'norm' });
+  const spec: StepsSpec = {
+    forward: [
+      { show: [ids, E, gamma], title: 'inputs', kind: 'inputs' },
+      { show: [e], title: 'e', segment: 'embed' },
+      step([sq]),
+      step([ms, g.node('shifted')!, r]),
+      step([hat]),
+      step([y]),
+      { show: [loss], title: 'loss', segment: 'loss' },
+    ],
+    backward: 'reverse',
+    modules: [module],
+  };
+  return { spec, e, sq, ms, r, hat, y, D };
+}
+
+describe('levelPlan with rank-2 activations', () => {
+  it('draws (T, d) activations as plates of bars and only the (T, 1) statistics as discs', () => {
+    const { spec, e, sq, ms, r, hat, y, D } = flatGraph();
+    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    for (const node of [e, sq, hat, y]) {
+      const block = blockOf(blocks, node);
+      expect([node.name, block.shape, block.rows, block.cols, block.plate !== undefined]).toEqual([node.name, 'bar', T, D, true]);
+    }
+    for (const node of [ms, r]) {
+      const block = blockOf(blocks, node);
+      expect([node.name, block.shape, block.rows, block.cols]).toEqual([node.name, 'disc', T, 1]);
+    }
+  });
+});
