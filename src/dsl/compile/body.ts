@@ -1,4 +1,4 @@
-import { Node } from '../../autograd';
+import { DTYPES, Node } from '../../autograd';
 import type { LayoutEntry, LayoutTree } from '../../scene3d';
 import { type Ast, ParseError, parseRange } from '../expr';
 import type { ModuleDef } from '../load';
@@ -201,9 +201,18 @@ function compileItem(
   return { name: undefined, beside: undefined };
 }
 
+function itemDtype(c: Compiler, value: unknown, env: Env): string {
+  if (typeof value !== 'string') fail(env.where, 'dtype must be a dtype name or the name of a tensor');
+  if ((DTYPES as readonly string[]).includes(value)) return value;
+  const node = c.expression(value, env, undefined);
+  if (!(node instanceof Node)) fail(env.where, `dtype '${value}' is neither a dtype (${DTYPES.join(', ')}) nor a tensor`);
+  return node.dtype;
+}
+
 function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, indices: number[], value: unknown, env: Env, entries: LayoutEntry[], before: number): Slot {
   let expr: unknown = value;
   let declared: string | undefined;
+  let dtype: string | undefined;
   let exprWhere = env.where;
   if (isRecord(value)) {
     checkKeys(value, ITEM_KEYS, env.where);
@@ -214,6 +223,7 @@ function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, 
       if (typeof value.tex !== 'string') fail(child(env.where, value, 'tex'), 'tex must be a string');
       declared = value.tex;
     }
+    if (value.dtype !== undefined) dtype = itemDtype(c, value.dtype, { ...env, where: child(env.where, value, 'dtype') });
   }
   if (scope.local(name) !== undefined || scope.groups.has(name)) fail(env.where, `name '${name}' is already defined in ${c.scopeLabel(scope)}`);
   const override = scope.texOverride.get(name) ?? scope.texOverride.get(base);
@@ -222,7 +232,7 @@ function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, 
   else if (declared !== undefined) tex = marked(c.ofText(declared, env), scope, declared.includes('\\of{'));
   else if (scope.outputTex.has(name)) tex = scope.outputTex.get(name) as string;
   else tex = marked(c.loopTex(base, indices), scope, false);
-  const make: Make = { path: join(scope.path, name), tex, anon: [], counter: 0 };
+  const make: Make = { path: join(scope.path, name), tex, anon: [], counter: 0, dtype };
   const result = c.expression(expr, { ...env, where: exprWhere }, make);
   if (!(result instanceof Node) || result.name !== make.path) fail(exprWhere, `'${name}' must compute a new node; its expression only refers to an existing value`);
   scope.anon.set(result, make.anon);

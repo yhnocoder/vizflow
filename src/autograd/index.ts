@@ -1,6 +1,7 @@
 import './ops';
 
 export { graph, type Graph, type GraphOptions, type OpOptions, type LabelOptions, type SplitOptions } from './graph';
+export { DTYPES, DEFAULT_DTYPE, LABEL_DTYPE, type Dtype } from './dtype';
 export { Node, type NodeKind, type NodeOptions, type CardText } from './node';
 export type { OpDef, OpExplain, OpCtx, Pattern, ForwardTexArgs, LocalTexArgs } from './op';
 export { defineOp, opDef } from './registry';

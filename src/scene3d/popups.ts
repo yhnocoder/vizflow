@@ -96,7 +96,7 @@ export class ScenePopups {
     fragment.appendChild(line);
     const name = document.createElement('div');
     name.className = 'vf-s';
-    name.textContent = node.name;
+    name.textContent = `${node.name} · ${node.dtype}`;
     fragment.appendChild(name);
     const target = targetOf(c, block, element.row);
     if (label !== undefined && target !== element.col && !backward) {
@@ -191,7 +191,7 @@ export class ScenePopups {
   }
 
   showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
-    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id));
+    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;
     const rect = this.c.root.getBoundingClientRect();
     placePop(this.c.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -214,7 +214,7 @@ export class ScenePopups {
       product: { tex: `\\frac{\\partial ${outTex}}{\\partial ${inTex}}\\cdot\\frac{\\partial\\ell}{\\partial ${outTex}}`, value: jac.value * upstream },
       note: JACOBIAN_CARD_NOTE,
     };
-    return edgeCardElement(card, d.edge.id);
+    return edgeCardElement(card, d.edge.id, d.fromNode.dtype);
   }
 
   private linkCard(d: DrawnEdge): DocumentFragment {
@@ -226,7 +226,10 @@ export class ScenePopups {
     const note = document.createElement('p');
     note.className = 'vf-nt';
     note.textContent = LINK_CARD_NOTE;
-    fragment.append(title, note);
+    const dtype = document.createElement('div');
+    dtype.className = 'vf-dtype';
+    dtype.textContent = `dtype ${d.fromNode.dtype}`;
+    fragment.append(title, note, dtype);
     return fragment;
   }
 }

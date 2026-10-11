@@ -5,7 +5,7 @@ import { addMark, defaultTex, elemOf } from '../tex';
 import { reshapeNested } from './buffer-functions';
 import type { Compiler } from './text';
 import { type BufferValue, type Env, NeedDim, type Num, type OpValue, type ParamType, type Scope } from './types';
-import { checkKeys, isNum, isRecord, join, num, record } from './util';
+import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
 
 const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
@@ -89,7 +89,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, weightDecl] of Object.entries(weights)) {
     const at = child(weightsWhere, weights, name);
     if (!isRecord(weightDecl)) fail(at, `weight '${name}' must be a mapping`);
-    checkKeys(weightDecl, new Set(['shape', 'init', 'tex']), at);
+    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype']), at);
     const shape = shapeOf(c, weightDecl.shape, { ...env, where: child(at, weightDecl, 'shape') }, child(at, weightDecl, 'shape'));
     const binding = bound?.map[name];
     if (binding !== undefined) {
@@ -109,7 +109,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
     const values = c.takeValue(path) ?? c.initValues(init, shape.map((d) => d.toy));
     let node: Node;
     try {
-      node = c.g.param(path, leafSpec(c, shape), values, { tex, elem: elemOf(tex) });
+      node = c.g.param(path, leafSpec(c, shape), values, { tex, elem: elemOf(tex), ...dtypeOption(weightDecl, at) });
     } catch (error) {
       if (error instanceof DslError || error instanceof NeedDim) throw error;
       fail(at, (error as Error).message);
@@ -125,7 +125,8 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, bufferDecl] of Object.entries(buffers)) {
     const at = child(buffersWhere, buffers, name);
     if (!isRecord(bufferDecl)) fail(at, `buffer '${name}' must be a mapping`);
-    checkKeys(bufferDecl, new Set(['value', 'shape', 'tex']), at);
+    checkKeys(bufferDecl, new Set(['value', 'shape', 'tex', 'dtype']), at);
+    const bufferDtype = dtypeOption(bufferDecl, at);
     const valueWhere = child(at, bufferDecl, 'value');
     const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
     if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
@@ -143,7 +144,7 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
     const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
     const node = c.bufferNode(key, () => {
       try {
-        const created = c.g.buffer(join(scope.path, name), leafSpec(c, buffer.shape), buffer.values, { tex, elem: elemOf(tex) });
+        const created = c.g.buffer(join(scope.path, name), leafSpec(c, buffer.shape), buffer.values, { tex, elem: elemOf(tex), ...bufferDtype });
         c.setOwner(created, entries);
         return created;
       } catch (error) {

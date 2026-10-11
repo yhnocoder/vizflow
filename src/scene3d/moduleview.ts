@@ -104,7 +104,7 @@ export class ModuleBraces {
       const offset = braceOffset(brace, direction);
       this.labels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
       const points = bracePoints(brace, offset);
-      const line = { points, opacity: BRACE_OPACITY, dashed: false };
+      const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];
       return [line, { ...line, points: points.map((v, i) => (i % 3 === 0 ? v + BRACE_THICK_OFFSET : v)) }];
     });

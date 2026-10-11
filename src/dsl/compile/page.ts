@@ -14,7 +14,7 @@ import { type SectionSources, compileSections } from './sections';
 import { moduleBackward, moduleSteps } from './steps';
 import type { Compiler } from './text';
 import type { Env } from './types';
-import { checkKeys, isRecord, list, record } from './util';
+import { checkKeys, dtypeOption, isRecord, list, record } from './util';
 
 export interface CompiledPage {
   graph: Graph;
@@ -56,7 +56,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
         node = c.g.label(name, given ?? tokenIds(c, spec.tokens as unknown[], child(at, spec, 'tokens')), { tokens: vocab as string[], tex, elem: elemOf(tex) });
       } else if (spec.value !== undefined) {
         const values = (given ?? spec.value) as Nested;
-        node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex) });
+        node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex), ...dtypeOption(spec, at) });
       } else {
         fail(at, 'a page input needs tokens or value');
       }

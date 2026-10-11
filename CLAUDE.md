@@ -70,7 +70,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 每个目录负责什么、从哪个文件读起。这里只写目录和入口文件，不写函数名和行号；文件改名或移动时同时改这一节，`scripts/check_map.py` 检查这里写到的路径都存在。
 
 - `src/tensor/`：张量、形状与广播、数值格式化。入口 `src/tensor/index.ts`。
-- `src/autograd/`：计算图、节点、运算注册与反向传播，`src/autograd/ops/` 每个文件是一类运算的前向与反向，`src/autograd/check.ts` 做有限差分检查。入口 `src/autograd/index.ts`。
+- `src/autograd/`：计算图、节点、dtype、运算注册与反向传播，`src/autograd/ops/` 每个文件是一类运算的前向与反向，`src/autograd/check.ts` 做有限差分检查。入口 `src/autograd/index.ts`。
 - `src/explain/`：由运算定义推导讲解内容，包括逐元素公式、连线和悬停卡片，`src/explain/ops/` 与 `src/autograd/ops/` 一一对应。入口 `src/explain/index.ts`。
 - `src/formula/`：KaTeX 渲染与公式文本。入口 `src/formula/index.ts`。
 - `src/steps/`：步骤序列与讲解文本模板。入口 `src/steps/index.ts`。
@@ -82,7 +82,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
   - 柱子与数值标签：`src/scene3d/renderable.ts`、`src/scene3d/blockview.ts`、`src/scene3d/blocks.ts`；
   - 连线：`src/scene3d/edges.ts`、`src/scene3d/edgelines.ts`、`src/scene3d/lines.ts`；
   - 模块大括号、折叠盒子、token 标签：`src/scene3d/moduleview.ts`、`src/scene3d/boxes.ts`、`src/scene3d/chips.ts`；
-  - 悬停与点击：`src/scene3d/pointer.ts`、`src/scene3d/popups.ts`；
+  - 悬停与点击：`src/scene3d/pointer.ts`、`src/scene3d/popups.ts`，悬停柱子时的相关连线与同 token 框在 `src/scene3d/hover.ts`；
   - 场景上的按钮与图例：`src/scene3d/chrome.ts`；
   - 交互编辑：`src/scene3d/edit.ts`。
 - `src/dsl/`：YAML 页面描述的加载与编译。入口 `src/dsl/index.ts`，编译从 `src/dsl/compile.ts` 读起，编译器各部分在 `src/dsl/compile/`；表达式在 `src/dsl/expr.ts`，讲解段落的 Markdown 在 `src/dsl/section-md.ts`。

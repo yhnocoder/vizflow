@@ -28,6 +28,7 @@ export interface Make {
   tex: string;
   anon: Node[];
   counter: number;
+  dtype?: string;
 }
 
 export interface Env {

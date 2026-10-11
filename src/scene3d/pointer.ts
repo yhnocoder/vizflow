@@ -67,6 +67,7 @@ export function bindPointer(c: SceneController): () => void {
   const onMove = (ev: PointerEvent) => {
     const found = hit(c, ev);
     const rect = c.root.getBoundingClientRect();
+    edgeLines.setBar(found);
     if (found === undefined) {
       popups.hideTip();
       const edge = edgeLines.edgeAt(ev.clientX - rect.left, ev.clientY - rect.top);
@@ -86,6 +87,7 @@ export function bindPointer(c: SceneController): () => void {
   };
   const onLeave = () => {
     popups.hideTip();
+    edgeLines.setBar(undefined);
     edgeLines.setHover(undefined);
     popups.hideUnpinned();
   };

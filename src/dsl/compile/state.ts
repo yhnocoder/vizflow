@@ -54,7 +54,13 @@ export class CompilerState {
     }
     for (const [name, value] of extraDims) real[name] = value.real;
     this.real = page.real !== undefined;
-    this.g = graph(this.real ? { dims, real } : { dims });
+    const dtype = page.dtype;
+    if (dtype !== undefined && typeof dtype !== 'string') fail(child(pageWhere, page, 'dtype'), 'dtype must be a string');
+    try {
+      this.g = graph({ dims, ...(this.real ? { real } : {}), ...(dtype === undefined ? {} : { dtype }) });
+    } catch (error) {
+      fail(child(pageWhere, page, 'dtype'), (error as Error).message);
+    }
     this.values = record(page.values, child(pageWhere, page, 'values'), 'values');
     const init = record(page.init, child(pageWhere, page, 'init'), 'init');
     this.random = rng(typeof init.seed === 'number' ? init.seed : DEFAULT_SEED);

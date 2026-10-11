@@ -222,10 +222,14 @@ mountPanels('#side', g, [
   dims?: Record&lt;string, number&gt;;
   real?: { name?: string } &amp; Record&lt;string, number | string&gt;;
   check?: boolean;
+  dtype?: Dtype;
 }): Graph
+
+type Dtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
 
 interface NodeOptions {
   tex?: string;
+  dtype?: Dtype;
   elem?: string;
   card?: { forward?: Partial&lt;CardText&gt;; backward?: Partial&lt;CardText&gt; };
 }
@@ -235,6 +239,7 @@ interface SplitOptions { names?: string[]; tex?: string[]; elem?: string[] }
 interface Graph {
   readonly dims: Readonly&lt;Record&lt;string, number&gt;&gt;;
   readonly real: Readonly&lt;Record&lt;string, number | string&gt;&gt; | undefined;
+  readonly dtype: Dtype;
   readonly nodes: readonly Node[];
   readonly version: number;
   input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
@@ -258,6 +263,7 @@ interface Graph {
     <tr><td><code>dims</code></td><td>命名维度，例如 <code>{ d: 4, V: 5 }</code>。shape 中的字符串在建图时解析成数字，未定义的名字抛错。</td></tr>
     <tr><td><code>real</code></td><td>真实模型的尺寸，例如 <code>{ d: 4096, V: 151936, name: 'Qwen3-8B' }</code>。每个节点的 <code>realShape</code> 用这些尺寸重算，层名卡片多显示一行「真实模型」。</td></tr>
     <tr><td><code>check</code></td><td>打开有限差分检查，见「正确性怎么保证」。</td></tr>
+    <tr><td><code>dtype</code></td><td>真实模型里张量的默认 dtype，默认 <code>fp32</code>；Qwen3 等以 bfloat16 发布的模型写 <code>bf16</code>。dtype 只用于显示，计算内核始终用 float64 计算。各节点的取值规则见下文「节点」。不在 <code>Dtype</code> 列表里的值抛错 <code>graph: unknown dtype 'x', expected one of ...</code>。</td></tr>
     <tr><td><code>input</code>、<code>param</code></td><td>叶子节点。<code>values</code> 可以是扁平数组或嵌套数组，元素个数必须等于 shape 的元素个数。两者的区别是 param 可以被损失面板的「更新一步」更新。</td></tr>
     <tr><td><code>label</code></td><td>整数标签，shape 从 <code>values</code> 推断：<code>0</code> 是 <code>()</code>，<code>[0]</code> 是 <code>(1,)</code>，<code>[[0],[1],[2]]</code> 是 <code>(3, 1)</code>。<code>tokens</code> 是每个类别的显示名，<code>classes</code> 是类别数，默认等于 <code>tokens.length</code>。</td></tr>
     <tr><td><code>buffer</code></td><td>常量叶子，对应 torch 的 <code>register_buffer</code>，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 <code>-Infinity</code>。它没有梯度：<code>grad</code> 为 <code>null</code>，不进入自动生成的反向步骤，不能放进损失面板的 <code>sgd.params</code> 与 <code>random.nodes</code>，模板里对它取 <code>.grad</code> 在编译时报错。它可以 <code>set</code>，<code>reset</code> 时恢复创建时的值。3D 场景照常画出它，它连到运算的边与 label 一样不画。用 input 表示这类张量时，读者会在反向步骤和梯度下降里看到一个本不该训练的量，所以单独设一种叶子。</td></tr>
@@ -283,6 +289,7 @@ interface Graph {
   readonly attrs: Readonly&lt;Record&lt;string, unknown&gt;&gt;;
   readonly shape: readonly number[];
   readonly realShape: readonly number[];
+  readonly dtype: Dtype;
   readonly tex: string;
   readonly elem: string;
   readonly tokens: readonly string[] | undefined;
@@ -295,6 +302,7 @@ interface Graph {
 }</code></pre>
 <ul>
   <li><code>tex</code> 是张量级的 LaTeX，例如 <code>\mathbf{h}</code>；<code>elem</code> 是元素级的底，元素写作 <code>elem</code> 加下标，下标从 1 开始，例如 <code>h_{2}</code>、<code>W^{\top}_{2,3}</code>。<code>elem</code> 本身以下标结尾时（<code>_{...}</code>，或 <code>_</code> 加一个字符），元素下标并进这个下标：<code>\mathrm{ms}_{1}</code> 的元素写作 <code>\mathrm{ms}_{1,2}</code>，<code>r_1</code> 写作 <code>r_{1,2}</code>。直接在后面再加一个下标会得到双下标，KaTeX 报错。卡片、连线卡片和 3D 标签都经过同一个函数拼元素名，规则只在这一处；判断 <code>elem</code> 是否以下标结尾的 <code>trailingSubscript</code> 由 <code>explain</code> 入口导出，页面描述文件的编译器用它合并实例下标。默认值：名字是单个字母时 <code>elem</code> 为该字母，<code>tex</code> 对非标量为粗体字母、对标量为字母本身；名字更长时两者都是 <code>\mathrm{名字}</code>。</li>
+  <li><code>dtype</code> 是这个张量在真实模型里的 dtype，悬停提示、层名卡片和连线卡片都显示它。选项里给了 <code>dtype</code> 时用给出的值，否则：label 是 <code>int64</code>；input、param、buffer 取 <code>graph({ dtype })</code>；运算节点按输入推导，整数和 bool 输入不参与，浮点输入取位数最大的那个，位数相同但类型不同（<code>bf16</code> 与 <code>fp16</code>）时取高一级的 <code>fp32</code>，没有浮点输入时按位数取最宽的整数类型（<code>bool</code> 最窄，<code>uint8</code> 与 <code>int8</code> 混用得到 <code>int16</code>）；<code>fp8_e4m3</code> 与 <code>fp8_e5m2</code> 混用时抛错 <code>add 'x': cannot promote fp8_e4m3 with fp8_e5m2, give the dtype explicitly</code>，torch 对这种组合也报错。这条规则与 torch 的类型提升一致，所以只有模型显式转换类型的地方需要写 <code>dtype</code>，例如 RMSNorm 先转成 float32 计算、最后转回输入的 dtype。</li>
   <li><code>grad</code> 对 label 和 buffer 为 <code>null</code>；不在损失上游的节点，以及损失之后创建的节点，梯度为全零。</li>
   <li><code>W.T</code> 是二维节点的转置。第一次访问时创建 transpose 节点并缓存，之后返回同一个节点。<code>g.matmul(h, W.T)</code> 和 <code>board(h, W.T, z)</code> 各取一次 <code>W.T</code>，布局必须找到计算图里的同一个节点，所以缓存不能去掉。转置节点名为 <code>W.T</code>，<code>tex</code> 与 <code>elem</code> 默认在原节点的写法后加 <code>^{\top}</code>；原写法含 <code>^</code>、<code>'</code> 或 <code>_</code> 时先整体加花括号，例如 <code>{W_{q}}^{\top}</code>，否则追加元素下标时会出现双下标。</li>
   <li><code>set</code> 只允许 input、param、label、buffer 调用。<code>index</code> 返回 label 的整数值，等于 <code>Math.round(value.get(idx))</code>。</li>
@@ -501,7 +509,7 @@ isLeafLike(node: Node): boolean</code></pre>
 </ol>
 <p>图里没有损失节点时（例如只演示 softmax 的小部件），自动反向生成 0 步；这时给了 <code>merge</code> 或 <code>override</code> 会抛错。</p>
 <p>自动步骤的默认标题为 <code>$\partial\ell/\partial X$</code>，$X$ 是节点的 tex（合并的步骤用其中第一个非损失节点），按钮文字默认 <code>$\partial X$</code>，默认正文是该节点反向层名卡片的公式。<code>override</code> 按反向步骤的下标覆盖标题、正文或按钮文字。<code>steps</code> 入口导出 <code>backwardGroups(g, visible, spec)</code>，按反向步骤的顺序返回每一步包含的节点（<code>visible</code> 是前向步骤里出现过的节点），<code>createSteps</code> 和页面描述文件的编译器都用它，所以编译器算出的下标与实际生成的步骤一致。</p>
-<p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边画成虚线，读者可以直接看出哪些路径上没有梯度。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
+<p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边的不透明度降低（当前步骤 0.35，总览 0.12），读者可以直接看出哪些路径上没有梯度。所有连线都画成实线：虚线在边很多的场景里会形成大片断续的纹理，干扰阅读，所以只用不透明度区分状态。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
 <p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
 <p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），输入步骤是 <code>f:inputs</code>，反向步骤是 <code>b:k</code>，反向总览是 <code>b:overview</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>。<code>segment</code> 是步骤条上的分段名，默认是按钮文字；<code>sub</code> 是段内小标题；<code>module</code> 是这一步所属的最内层模块。</p>
@@ -563,15 +571,15 @@ isLeafLike(node: Node): boolean</code></pre>
 <p>悬停卡片分两种，内容都由 <code>explain</code> 根据运算定义生成。<code>ui</code> 和 <code>scene3d</code> 只负责显示，以后增加 2D 渲染时卡片可以直接复用。</p>
 <p><b>层名卡片</b>在悬停层名时出现。</p>
 <ul>
-  <li>前向：标题为节点的 tex（<code>$\mathbf{z}$</code>）；公式为 <code>tex = 前向模板</code>，例如 $\mathbf{z} = \mathbf{h}W^{\top}$；下面依次列出 shape、真实模型（给了 <code>real</code> 时，写作 <code>Qwen3-8B：(1, 151936)</code>）、当前值。当前值超过 8 个元素时只列前 8 个，后面加省略号。</li>
+  <li>前向：标题为节点的 tex（<code>$\mathbf{z}$</code>）；公式为 <code>tex = 前向模板</code>，例如 $\mathbf{z} = \mathbf{h}W^{\top}$；下面依次列出 shape、真实模型（给了 <code>real</code> 时，写作 <code>Qwen3-8B：(1, 151936)</code>）、dtype、当前值。当前值超过 8 个元素时只列前 8 个，后面加省略号。</li>
   <li>反向：标题为 <code>$\frac{\partial\ell}{\partial X}$</code>，$X$ 是节点的 tex；公式是链式法则展开，对节点 $X$ 的每个消费者 $Y$ 写一项（只计结构上通向损失的运算，旁支和损失之后的节点不列，它们的项恒为 0），只有一个消费者时不写求和：</li>
 </ul>
 \begin{equation}
 \frac{\partial\ell}{\partial X} = \sum_{Y} \Big(\frac{\partial Y}{\partial X}\Big)^{\top} \frac{\partial\ell}{\partial Y} \label{eq:chain}
 \end{equation}
-<p>反向卡片的行依次为 shape、真实模型、Jacobian、当前梯度。Jacobian 每个消费者一行，写作 <code>$\partial Y/\partial X$：(...)</code>，括号里是输出 shape 与输入 shape 各自去掉大小为 1 的维度后拼接，例如 $\partial\mathbf{z}/\partial\mathbf{h}$ 写作 <code>(V, d)</code>。作者在节点的 <code>card</code> 选项里给出的字段覆盖自动内容，没给的字段用自动内容。卡片的标题和各行都按 <code>renderText</code> 渲染，所以只用 LaTeX 写数学符号。</p>
+<p>反向卡片的行依次为 shape、真实模型、dtype、Jacobian、当前梯度。Jacobian 每个消费者一行，写作 <code>$\partial Y/\partial X$：(...)</code>，括号里是输出 shape 与输入 shape 各自去掉大小为 1 的维度后拼接，例如 $\partial\mathbf{z}/\partial\mathbf{h}$ 写作 <code>(V, d)</code>。作者在节点的 <code>card</code> 选项里给出的字段覆盖自动内容，没给的字段用自动内容。卡片的标题和各行都按 <code>renderText</code> 渲染，所以只用 LaTeX 写数学符号。</p>
 <p>3D 场景显示层名卡片时，用一张数值格子代替「当前值」「当前梯度」和 Jacobian 三行：格子按张量的行列排开（三维张量按 $(T, H d_h)$），前向显示值、反向显示梯度，保留 2 位小数，底色按正负取 <code>--pos</code> 或 <code>--neg</code>，深浅为 8% 加上按这张格子的最大绝对值线性增加的 0 到 62%；列数超过 10 时格子只着色、不写数字。非有限值（mask 的 $-\infty$）写成 $-\infty$，不着色。读者可以在卡片里一次看全整个张量，不必逐个悬停柱子。</p>
-<p><b>连线卡片</b>只在反向时悬停连线出现，分三行：这条边的局部导数、上游传来的梯度、两者相乘后沿这条边传回的量。节点有多条出边时，卡片说明各条边的贡献相加并给出合计，例如 $z_i$ 经 $\log p_i$ 与经 LSE 的两条边相加得到 $p_i - \delta_{it}$。</p>
+<p><b>连线卡片</b>只在反向时悬停连线出现，分三行：这条边的局部导数、上游传来的梯度、两者相乘后沿这条边传回的量。节点有多条出边时，卡片说明各条边的贡献相加并给出合计，例如 $z_i$ 经 $\log p_i$ 与经 LSE 的两条边相加得到 $p_i - \delta_{it}$。卡片最后一行写传回的梯度的 dtype，等于这条边起点张量的 dtype。</p>
 <pre><code class="language-ts">interface NodeCard { title: string; tex: string[]; note?: string; rows: { label: string; value: string }[] }
 interface EdgeCard {
   title: string;
@@ -627,7 +635,7 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
   <li>坐标轴刻度固定。拖动滑块时只有柱子变化，坐标不重新缩放，读者可以比较前后两个状态。每个张量前向、反向各有一个固定刻度，默认在挂载时由初始值决定：初始值中的最大绝对值对应高度上限的 0.8 倍，非有限值（例如 causal mask 的 $-\infty$）不参与计算，这些元素按截断画。之后刻度不随数值变化，作者也可以在布局模板的选项里直接指定刻度。柱子高度超过上限时截断，截断处留一道 0.07 个单位厚的缝。高度上限按块的种类取：平面张量的柱子 1.2，矩阵乘的权重板 0.85，一维权重 1.0。</li>
   <li>颜色只用一组：橙色（<code>--pos</code>）表示正，蓝色（<code>--neg</code>）表示负，前向数值和反向梯度共用。目标类用墨线框标出，不额外占用颜色。</li>
   <li>没有辉光、粒子和自动旋转。动效只有三种：数值变化时柱子高度的过渡，模块大括号显示、隐藏和变色时的透明度过渡，时长都是 200 毫秒，缓出；相机跟随时换步骤后的相机过渡，见「相机」。<code>prefers-reduced-motion</code> 时都直接跳到终值。</li>
-  <li>未出现的柱子高度为 0，不画轮廓线；底板不透明度 0.2，目标列的墨线框 0.15。已出现的柱子轮廓线在当前步骤高亮时为 0.85，其余为 0.32，权重板的轮廓线再乘 0.85；底板 0.5，墨线框 0.95。不在当前步骤的柱子颜色向画布底色混合 55%。标量节点（圆柱和方块）的轮廓线已出现时 0.9，未出现时 0.3。反向时上游梯度恒为零的边画成虚线。</li>
+  <li>未出现的柱子高度为 0，不画轮廓线；底板不透明度 0.2，目标列的墨线框 0.15。已出现的柱子轮廓线在当前步骤高亮时为 0.85，其余为 0.32，权重板的轮廓线再乘 0.85；底板 0.5，墨线框 0.95。不在当前步骤的柱子颜色向画布底色混合 55%。标量节点（圆柱和方块）的轮廓线已出现时 0.9，未出现时 0.3。反向时上游梯度恒为零的边不透明度降低，连线都画成实线。</li>
   <li>柱子的数值标签只在已出现并且属于当前步骤的张量上显示，分层布局里 RMSNorm 这类按行归一化的模块内部的中间张量不显示数值；总览步骤所有张量都属于当前步骤。批量时数值标签和标量节点的标签只显示选中样本那一行。每个数值按 <code>formatNumber</code> 的默认规则单独决定小数位数。</li>
   <li>只在数值、相机或步骤变化以及过渡进行中时渲染，静止时不重绘。</li>
   <li>浏览器不支持 WebGL 时，画布位置显示一行提示，讲解和面板照常可用。</li>
@@ -750,7 +758,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
   <li><code>matmul</code> 与 <code>select_matmul</code> 画成板：$B$ 画成权重板放在输出所在的层，输出的每一列对着 $B$ 的一列。$B$ 是权重（或权重的转置）的线性层，如果输入 $A$ 只被下一个单元的板使用、并且这些板的 $A$ 都是它，$A$ 移到板的那一层，与板并排（例如 q、k、v 投影共用一个输入）。$B$ 是激活（注意力里的 $\mathbf{k}^{\top}$、$\mathbf{v}$）时，$B$ 移到板的那一层。</li>
   <li><code>embedding</code> 的输出与 embedding 表画在同一层，表画成权重板。</li>
   <li><code>view</code> 节点不单独画，图上用它的源节点代表它，块的标题写成 <code>view 的 tex = 源节点的 tex</code>。</li>
-  <li>一个节点在某个顶层模块里算出、在另一个模块里被使用时，使用的模块里画一份副本：副本独占一层，放在第一个使用它的单元之前；被线性层的板当作 $A$ 使用时，副本放在板的那一层。原件和副本之间画一条虚线，已出现时不透明度 0.32，否则 0.06。读者在每个模块的入口都能看到这个模块拿到的输入，不必回头找。</li>
+  <li>一个节点在某个顶层模块里算出、在另一个模块里被使用时，使用的模块里画一份副本：副本独占一层，放在第一个使用它的单元之前；被线性层的板当作 $A$ 使用时，副本放在板的那一层。原件和副本之间画一条连线，已出现时不透明度 0.32，否则 0.06。读者在每个模块的入口都能看到这个模块拿到的输入，不必回头找。</li>
   <li>一维权重（RMSNorm 的 $\boldsymbol{\gamma}$）和 buffer 放在使用它的节点所在的层。</li>
 </ul>
 <p><b>块的种类。</b>平面张量画成柱子板（plate）；矩阵乘的 $B$ 和 embedding 表画成权重板（tile），放在板层的后方；一维权重画成一排柱子（vector），放在这一层后方；每行一个数、并且被更宽的逐元素运算使用的张量（RMSNorm 的 $\mathrm{ms}$、$r$，softmax 的 $Z$）画成圆柱（disc），放在源张量右侧；0 维的损失画成方块（box）。三维张量按 $(T, H d_h)$ 画，每个 head 的 $d_h$ 列之间多留一道缝；一个节点被 <code>narrow</code> 按固定宽度切开使用时也按这个宽度分组。</p>
@@ -803,7 +811,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
 </table>
 <ul>
   <li>盒子的标签是「标题 · 已折叠」，占位模块是「标题 · 占位」。点击标签展开（占位模块不能展开）；悬停时卡片显示这个模块的整体 Jacobian（<code>moduleJacobian</code>）的数值格子、「输入 → 输出」和参数，说明「点这个标签可以展开。」或「这个盒子只用来示意，数值按恒等映射处理，不能展开。」。</li>
-  <li>盒子里不再画内部运算的连线，改为从模块输入到输出画整体 Jacobian 的连线：每个绝对值大于 $10^{-12}$ 的元素一条，上游梯度为 0 时画成虚线；写了 <code>split</code> 的模块（例如整个 decoder 层）跨越的层多，连线向外弯 1.4，不穿过中间的块。反向时悬停这条线，卡片显示 $(J_{\text{标题}})_{i,j}$、上游梯度和两者的乘积，说明「折叠后的整体 Jacobian 元素。」。位置 $t$ 的输出只依赖 $s \le t$ 的输入，所以注意力模块的连线是块下三角，读者从连线就能看出因果结构。</li>
+  <li>盒子里不再画内部运算的连线，改为从模块输入到输出画整体 Jacobian 的连线：每个绝对值大于 $10^{-12}$ 的元素一条，上游梯度为 0 时不透明度降低；写了 <code>split</code> 的模块（例如整个 decoder 层）跨越的层多，连线向外弯 1.4，不穿过中间的块。反向时悬停这条线，卡片显示 $(J_{\text{标题}})_{i,j}$、上游梯度和两者的乘积，说明「折叠后的整体 Jacobian 元素。」。位置 $t$ 的输出只依赖 $s \le t$ 的输入，所以注意力模块的连线是块下三角，读者从连线就能看出因果结构。</li>
 </ul>
 <p><b>大括号。</b>每个模块记录一个大括号，竖直范围从它最低一层往下 0.6（是板时 0.9）到最高一层往上 1.0（只有一层且是板时 1.4），折叠时是盒子的范围。位置分三种：</p>
 <ul>
@@ -859,9 +867,10 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
 <h3>标签与交互</h3>
 <p>层名、数值、刻度、token 等标签用 HTML 覆盖在画布上，按投影位置放置，公式由 KaTeX 渲染。标签投影到屏幕后先处理越界：放在节点上方的节点标签右端超出画布（离右边缘不足 12px）时翻到节点左侧，右端对齐节点中心；左端越界时翻到右侧。放在节点侧面的标签不翻转，取景已为它们留出位置。锚点投影到画布以外的标签不显示，读者平移、缩放或跟随取景以后，画面外的块不会把标签挤到画布边缘。然后做一次重叠检测：按优先级（块标题与模块标签 5、节点标签 4、数值 3、类别 2、行号与刻度 1）依次放置；块标题、模块标签和节点标签可以移动，与已放置的标签相交时按上、下、左、右的顺序以 4px 为步长尝试平移，最多 12 步，取第一个不相交、并且离画布边缘至少 12px 的位置，找不到时隐藏这个标签，它不占位置，后放置的标签可以用它原来的地方；读者用 <code>labels</code> 指定了偏移的标签不移动也不隐藏，按指定位置显示；其余标签不移动，与已放置的标签相交或越出安全区时隐藏。优先级高的标签先放置，所以被隐藏的是优先级低的标签。隐藏只影响显示，自动取景仍按全部标签的原位计算，切换步骤或转动视角后有了空位的标签重新显示。标签的像素尺寸在文字或样式变化时测量一次并缓存，字体加载完成后重新测量；每帧只做投影和重叠检测。位置只在相机、布局或数值变化时重新计算。相机跟随时不做重叠检测，见「相机」。块的标题写节点的 tex，反向时写 $\partial\ell/\partial$ 加节点的 tex。</p>
 <p>元素之间的连线是竖直切线的三次贝塞尔曲线，两个控制点沿竖直方向离端点两端高度差的 0.45 倍，起点向上、终点向下，不会在端点处回钩。高度差超过 4.2 的长连线在深度方向弯出去，控制点改为高度差的 0.3 倍：默认向前弯 0.9；连到权重板（板的 $B$）的向后弯 2.6；连到残差相加（<code>add</code>）的向前弯 1.8。长连线因此不穿过中间各层的块。</p>
-<p>悬停柱子的提示依次显示元素名（反向时是 $\partial\ell/\partial$ 元素名）、类别对齐的列的 token 名、当前值（保留 3 位小数，$-\infty$ 写成 $-\infty$）、节点名，可以点击设为目标的柱子最后写「点击设为目标 token」（label 只给了 <code>classes</code> 时为「点击设为目标类」）。连线卡片只在反向时出现，取屏幕空间距离 6px 以内最近的一条已出现的边。卡片优先放在指针右下 18px，越界时翻到另一侧。</p>
+<p>悬停柱子的提示依次显示元素名（反向时是 $\partial\ell/\partial$ 元素名）、类别对齐的列的 token 名、当前值（保留 3 位小数，$-\infty$ 写成 $-\infty$）、节点名和 dtype（写作 <code>节点名 · bf16</code>），可以点击设为目标的柱子最后写「点击设为目标 token」（label 只给了 <code>classes</code> 时为「点击设为目标类」）。连线卡片只在反向时出现，取屏幕空间距离 6px 以内最近的一条已出现的边。卡片优先放在指针右下 18px，越界时翻到另一侧。</p>
 <ul>
   <li>悬停柱子显示数值提示；悬停层名显示层名卡片。</li>
+  <li>悬停柱子时，起点或终点是这个元素的连线不透明度提到至少 0.95，其余连线乘 0.3，读者能直接看出这个元素从哪里来、流向哪里。有 token 轴的张量，再在和这个元素同一个 token 的那些元素（token 轴上的下标相同，$(T, d)$ 的张量是一行，$(T, H, d_h)$ 的张量是所有 head 的这一行）底下画一个框：框比这些柱子的底面外扩 0.12，填充 <code>--pos</code>，不透明度 0.3，边线 0.9，抬高 0.012 以免与底板重叠。哪个轴是 token 按运算的语义沿计算图推导，不比较尺寸：input 和 label 的第 0 轴是 token；param 和 buffer 没有 token 轴；逐元素运算按广播把输入的 token 轴对到输出；matmul 保留左操作数没有被收缩的 token 轴，右操作数的 token 轴是最后一维时成为输出的最后一维；transpose 交换、select 去掉或前移、view 在前面各维的乘积不变时保留这个轴；embedding 沿用索引的 token 轴；softmax 与 log_softmax 保留，sum、mean、max、logsumexp 沿 token 轴归约时去掉，否则按 keepdim 平移；没有列出规则的运算没有 token 轴。所以 $\mathbf{k}^{\top}$ 的 token 轴是第 1 维，悬停时框出的是一列；$T$ 与 $d_h$ 相等时结果也不变。</li>
   <li>反向时悬停连线显示连线卡片，并加粗这条连线。</li>
   <li>前向时点击 logits 或 $\log\mathbf{p}$ 的柱子，把它设为目标类，即更新对应的 label 节点；批量时同时选中这一行的样本。页面有序列输入（<code>sequence</code> 选项），并且这个 label 的值是序列里连续的一段时，改的是序列里对应位置的 token：标签是输入右移一位，所以输入和标签一起变化，图上其他位置的预测也随之改变。提示里的 token 名与类别标签相同，不加引号，前导空格显示为 ␣。</li>
   <li>悬停层名显示层名卡片，点击层名把卡片固定住；buffer 是 $(T, d_h)$ 的 RoPE cos 或 sin 表时，前向卡片里还画出 <code>rope_wave</code> 小图。</li>
@@ -893,6 +902,7 @@ mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { 
 mountSections(el: string | HTMLElement, g: Graph, items: SectionItem[], options?: { steps?: Steps; onJump?: () =&gt; void }): Mounted
 interface Mounted { dispose(): void }</code></pre>
 <p><code>mountSteps</code> 画出步骤条、左右按钮和讲解正文，正文里的 <code>&lt;vf-figure&gt;</code> 换成内置小图。步骤条有两种样式。<code>steps.modules</code> 为空时是前向、反向两组按钮。不为空时是时间轴：第一行是「前向」「反向」两个标签页、一条分段进度条和「当前位置/总步数」，进度条按当前方向的步骤的 <code>segment</code> 把相邻的同名步骤分成一段，每段的宽度与段内步数成正比，当前段内按位置填充，点击一段跳到它的第一步；第二行是当前段的名字（折叠模块的段后加「（已折叠）」）、段内各步的按钮，<code>sub</code> 变化处插入小标题。几十步的页面用分段代替一长排按钮，读者能看出自己在哪个模块里。</p>
+<p>指针移到进度条的一段上（或用键盘聚焦它）时，这一段上方弹出一张小卡片，箭头指向这一段：第一行是段名和状态，状态是「第 i / n 步」（当前段，用 <code>--pos</code> 着色）、「n 步」（还没到）或「n 步 · 已完成」；下面最多列出 5 个步骤的按钮文字，已完成的圆点实心，当前步用 <code>--pos</code>；段内多于 5 步时列出当前步附近的 5 步，前后各写「前 k 步」「后 k 步」。只有一步、且按钮文字等于段名时不列步骤。读者不用点进去就能知道每一段讲什么。</p>
 <p>键盘的左右方向键切换步骤。焦点在输入框或步骤条以外的按钮上，或按着 Alt、Ctrl、Meta 时不响应；焦点在步骤条自己的按钮上时照常切换。同一页有多个步骤条时，只有最近一次点击或聚焦落在其中的那个响应方向键，点击步骤条以外的地方不改变这一选择。</p>
 <p>步骤按钮的左右内边距为 9px，桌面宽度下 lm_head 页的 11 个按钮在约 860px 宽的步骤卡片里排成一行。步骤卡片宽度不超过 560px 时按钮排成一行横向滚动，右端 24px 渐隐，提示还可以往右滚。讲解正文和面板里的独立公式块超出宽度时在公式块内横向滚动，不截断。</p>
 

@@ -39,11 +39,11 @@ fold:
   backward:
     title: 穿过 \of{name}（已折叠）
 body:
-  - sq: { op: x ** 2, tex: '\of{x}^{2}' }
+  - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
   - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}' }
-  - out: xh * weight
+  - out: { op: xh * weight, dtype: x }
 steps:
   - id: rms
     show: [ms, r]
@@ -67,11 +67,12 @@ steps:
     <tr><td><code>subtitle</code></td><td>两种</td><td>大括号上的副标题</td></tr>
     <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, default_key?, values? } }</code></td></tr>
     <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
+    <tr><td><code>dtype</code></td><td>页面</td><td>传给 <code>graph({ dtype })</code> 的默认 dtype，例如 <code>bf16</code>，不写时是 <code>fp32</code></td></tr>
     <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
-    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组 } }</code> 建 input 节点</td></tr>
+    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组, dtype? } }</code> 建 input 节点</td></tr>
     <tr><td><code>outputs</code></td><td>模块</td><td>输出节点的名字列表</td></tr>
-    <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex? } }</code>，建 param 节点</td></tr>
-    <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, shape?, tex? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点；<code>shape</code> 把数值按这个形状重排，元素个数必须相同，否则报错 <code>buffer 'x' has N values, which do not fit the shape (...)</code></td></tr>
+    <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex?, dtype? } }</code>，建 param 节点</td></tr>
+    <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, shape?, tex?, dtype? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点；<code>shape</code> 把数值按这个形状重排，元素个数必须相同，否则报错 <code>buffer 'x' has N values, which do not fit the shape (...)</code></td></tr>
     <tr><td><code>body</code></td><td>两种</td><td>节点、子模块实例、group 与 for 的列表，按顺序建图</td></tr>
     <tr><td><code>steps</code></td><td>两种</td><td>本模块的前向步骤：<code>id</code>、<code>show</code>、<code>active?</code>、<code>label?</code>、<code>title?</code>、<code>text?</code>、<code>segment?</code>、<code>backward?</code>。<code>backward: { label?, title?, text? }</code> 是这一步对应的反向步骤的默认文字，<code>segment</code> 覆盖步骤条上的分段名</td></tr>
     <tr><td><code>backward</code></td><td>两种</td><td>按节点名给对应反向步骤的 <code>title</code>、<code>label</code>、<code>text</code></td></tr>
@@ -87,7 +88,7 @@ steps:
 </table>
 <p>body 的每一项是只有一个键的映射，或者一个 for：</p>
 <ul>
-  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex }</code> 同时给出 tex。</li>
+  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex, dtype }</code> 同时给出 tex 和 dtype。<code>dtype</code> 写 dtype 名（<code>fp32</code>），或者写一个张量的名字，表示取那个张量的 dtype，对应 torch 里的 <code>.to(x.dtype)</code>。示例里 RMSNorm 把平方写成 <code>fp32</code>，之后的 ms、$r$、$\hat{x}$ 按类型提升都是 fp32，输出写 <code>dtype: x</code> 转回输入的 dtype，所以输入是 bf16 或 fp32 时模块都不用改。名字既不是 dtype、也不是张量时报错。</li>
   <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside?, inline?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。其余字段决定这个实例作为一个模块怎么显示和折叠，见下面的「模块记录」。</li>
   <li><code>name: { body, steps?, beside?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，用来画大括号、把步骤分组和整体折叠。</li>
   <li><code>{ for: h, in: '1..H', name?, brace?, beside?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。</li>

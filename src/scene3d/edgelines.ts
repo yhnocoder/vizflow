@@ -1,9 +1,13 @@
 import { CubicBezierCurve3, Color, Mesh, MeshBasicMaterial, TubeGeometry, Vector3 } from 'three';
+import type { Node } from '../autograd';
+import type { FlowEdge } from '../explain';
 import type { ThemeColors } from '../theme';
 import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
+import { TokenFrame, relatedOpacity, tokenAxes, tokenRect } from './hover';
 import type { Vec3 } from './layout';
 import { LineBatch } from './lines';
+import type { Renderable } from './renderable';
 
 export const EDGE_HOVER_DISTANCE = 6;
 export const LONG_EDGE = 4.2;
@@ -51,12 +55,18 @@ export class EdgeLines {
   private readonly highlightMaterial: MeshBasicMaterial;
   private highlight: Mesh | undefined;
   private screenCached = -1;
+  private readonly tokenFrame: TokenFrame;
+  private readonly tokenAxes: Map<Node, number>;
   edges: DrawnEdge[] = [];
   hover: DrawnEdge | undefined;
+  bar: { renderable: Renderable; index: number } | undefined;
 
   constructor(private readonly c: SceneController) {
     this.lines = new LineBatch(c.theme.ink, c.theme.surface);
     c.scene.add(this.lines.object);
+    this.tokenAxes = tokenAxes(c.g.nodes);
+    this.tokenFrame = new TokenFrame(c.theme);
+    c.scene.add(this.tokenFrame.group);
     this.highlightMaterial = new MeshBasicMaterial({ color: new Color(...c.theme.ink) });
   }
 
@@ -65,8 +75,20 @@ export class EdgeLines {
       const [a, b] = d.endpoints();
       d.points = sampleCurve(a, b, d.flat, d.bow);
     }
-    this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity, dashed: d.style.dashed })));
+    this.restyle();
     this.updateHighlight();
+  }
+
+  private restyle(): void {
+    const bar = this.bar;
+    const block = bar?.renderable.block;
+    const element = bar === undefined ? undefined : block!.elements[bar.index];
+    const touches = (end: FlowEdge['from']) => 'index' in end && end.node === block!.node && end.index.every((v, i) => v === element!.index[i]);
+    this.lines.setPolylines(
+      this.edges.map((d) => ({ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, touches(d.edge.from) || touches(d.edge.to)) })),
+    );
+    const axis = block === undefined ? undefined : this.tokenAxes.get(block.node);
+    this.tokenFrame.set(block !== undefined && element !== undefined && axis !== undefined ? tokenRect(block, element, axis) : undefined);
   }
 
   private updateHighlight(): void {
@@ -120,13 +142,22 @@ export class EdgeLines {
     this.c.requestFrame();
   }
 
+  setBar(found: { renderable: Renderable; index: number } | undefined): void {
+    if (found?.renderable === this.bar?.renderable && found?.index === this.bar?.index) return;
+    this.bar = found;
+    this.restyle();
+    this.c.requestFrame();
+  }
+
   setTheme(theme: ThemeColors): void {
     this.lines.setColor(theme.ink, theme.surface);
+    this.tokenFrame.setTheme(theme);
     this.highlightMaterial.color.setRGB(...theme.ink);
   }
 
   dispose(): void {
     this.lines.dispose();
+    this.tokenFrame.dispose();
     this.highlight?.geometry.dispose();
     this.highlightMaterial.dispose();
   }

@@ -57,7 +57,7 @@ describe('mountSteps timeline', () => {
     const forwardCount = steps.list.filter((s) => s.dir === 'forward').length;
     const barsOf = () => [...el.querySelectorAll<HTMLButtonElement>('.vf-tb')];
     let bars = barsOf();
-    expect(bars.map((b) => b.title)).toEqual(['总览', '输入', 'self_attn', '⋯ 第 1 到 N−1 层']);
+    expect(bars.map((b) => b.getAttribute('aria-label'))).toEqual(['总览', '输入', 'self_attn', '⋯ 第 1 到 N−1 层']);
     expect(bars.map((b) => b.style.flex)).toEqual(['1 1 0px', '1 1 0px', '3 1 0px', '1 1 0px']);
     expect(bars[0].classList.contains('vf-on')).toBe(true);
     expect(bars[0].style.getPropertyValue('--vf-fr')).toBe('100%');
@@ -85,6 +85,26 @@ describe('mountSteps timeline', () => {
 
     barsOf()[1].click();
     expect(steps.current).toBe(1);
+  });
+
+  it('shows a preview of a segment while the pointer is over its bar', () => {
+    const steps = timelineSteps();
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    steps.go(3);
+    const bars = [...el.querySelectorAll<HTMLButtonElement>('.vf-tb')];
+    expect(el.querySelector('.vf-peek')).toBeNull();
+    bars[2].dispatchEvent(new Event('pointerenter'));
+    const peek = el.querySelector('.vf-peek')!;
+    expect(text(peek.querySelector('.vf-peek-name'))).toBe('self_attn');
+    expect(text(peek.querySelector('.vf-peek-count'))).toBe('第 2 / 3 步');
+    expect([...peek.querySelectorAll('li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on:b', ':c']);
+    bars[3].dispatchEvent(new Event('pointerenter'));
+    expect(text(el.querySelector('.vf-peek-name'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
+    expect(text(el.querySelector('.vf-peek-count'))).toBe('1 步');
+    el.querySelector('.vf-tl-bar')!.dispatchEvent(new Event('pointerleave'));
+    expect(el.querySelector('.vf-peek')).toBeNull();
   });
 
   it('switches direction with the tabs and counts positions inside a direction', () => {

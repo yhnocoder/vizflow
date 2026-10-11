@@ -168,7 +168,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
         flat: false,
         link: true,
         points: [],
-        style: { opacity, dashed: true },
+        style: { opacity },
         screen: [],
       });
     });

@@ -223,7 +223,8 @@ export class ExpressionCompiler extends CompilerState {
     const elem = top ? elemOf(tex) : `(${elemOf(tex)})`;
     let node: Node;
     try {
-      node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem });
+      const dtype = top && make.dtype !== undefined ? { dtype: make.dtype } : {};
+      node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem, ...dtype });
     } catch (error) {
       if (error instanceof NeedDim || error instanceof DslError) throw error;
       this.fail(env, (error as Error).message, at);
