@@ -4,7 +4,7 @@ import type { BackwardOverride } from '../../steps';
 import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
-import { type Env, type FormulaRec, type ModuleRec, NeedDim, type Num, Scope } from './types';
+import { type Env, type FormulaRec, type ModuleRec, type Num, Scope } from './types';
 import { isRecord, record } from './util';
 
 const DEFAULT_SEED = 1;
@@ -44,16 +44,14 @@ export class CompilerState {
     readonly pageWhere: Where,
     rootDef: ModuleDef,
     rootDims: Map<string, Num>,
-    extraDims: Map<string, Num>,
   ) {
     const dims: Record<string, number> = {};
     const real: Record<string, number | string> = { ...(isRecord(page.real) ? (page.real as Record<string, number | string>) : {}) };
-    for (const [name, value] of [...rootDims, ...extraDims]) {
+    for (const [name, value] of rootDims) {
       dims[name] = value.toy;
       if (!(name in real)) real[name] = value.real;
       this.namedDims.set(`${value.toy}:${value.real}`, name);
     }
-    for (const [name, value] of extraDims) real[name] = value.real;
     this.real = page.real !== undefined;
     const dtype = page.dtype;
     if (dtype !== undefined && typeof dtype !== 'string') fail(child(pageWhere, page, 'dtype'), 'dtype must be a string');
@@ -73,8 +71,10 @@ export class CompilerState {
     if (!this.real || value.toy === value.real) return value.toy;
     const key = `${value.toy}:${value.real}`;
     const name = this.namedDims.get(key);
-    if (name === undefined) throw new NeedDim(key, value);
-    return name;
+    if (name !== undefined) return name;
+    this.g.addDim(key, value.toy, value.real);
+    this.namedDims.set(key, key);
+    return key;
   }
 
   checkValuesUsed(): void {

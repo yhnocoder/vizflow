@@ -57,6 +57,7 @@ export interface ForItem {
   for: Name;
   in: string;
   brace?: Text;
+  sequential?: boolean;
   body: Item[];
 }
 

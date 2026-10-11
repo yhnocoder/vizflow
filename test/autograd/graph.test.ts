@@ -104,6 +104,19 @@ describe('graph building', () => {
     expect(plain.real).toBeUndefined();
   });
 
+  it('adds a dimension after the graph is built', () => {
+    const g = graph({ dims: { d: 4 }, real: { d: 4096 } });
+    g.addDim('w', 8, 8192);
+    expect(g.input('x', [1, 'w'], new Array(8).fill(0)).realShape).toEqual([1, 8192]);
+    expect(g.dims).toEqual({ d: 4, w: 8 });
+    expect(g.real).toEqual({ d: 4096, w: 8192 });
+    g.addDim('w', 8, 8192);
+    expect(() => g.addDim('w', 6, 8192)).toThrow("addDim: dimension 'w' is already defined");
+    const plain = graph();
+    plain.addDim('n', 3);
+    expect(plain.input('y', ['n'], [1, 2, 3]).realShape).toEqual([3]);
+  });
+
   it('validates op arguments and options', () => {
     const g = graph();
     const x = g.input('x', [2], [1, 2]);

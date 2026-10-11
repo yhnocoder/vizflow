@@ -5,7 +5,7 @@ import { DslError } from '../source';
 import { elemOf, numberTex } from '../tex';
 import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
-import { type Env, type Make, NeedDim, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
+import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
 import { isNum, isRecord, num } from './util';
 
 function isOp(value: unknown): value is OpValue {
@@ -122,6 +122,11 @@ export class ExpressionCompiler extends CompilerState {
         return this.binary(ast, env, make, offset, top);
       case 'call':
         return this.call(ast, env, make, offset, top);
+      case 'list': {
+        const items = ast.items.map((item) => this.evaluate(item, env, make, offset));
+        if (items.length === 0 || !items.every((item) => item instanceof Node)) this.fail(env, 'a list must hold one or more nodes', offset + ast.pos);
+        return items as Node[];
+      }
       case 'member': {
         const base = this.evaluate(ast.obj, env, make, offset);
         if (!(base instanceof Node)) this.fail(env, "'.T' needs a node", offset + ast.pos);
@@ -173,8 +178,9 @@ export class ExpressionCompiler extends CompilerState {
     const kwargs: Record<string, Value> = {};
     for (const [key, arg] of ast.kwargs) kwargs[key] = this.evaluate(arg, env, make, offset);
     if (env.buffers && fnName in BUFFER_FUNCTIONS) {
-      if (args.length !== BUFFER_ARITY[fnName] || ast.kwargs.length > 0 || !args.every(isNum)) {
-        this.fail(env, `${fnName} takes ${BUFFER_ARITY[fnName]} numbers`, at);
+      const arity = BUFFER_ARITY[fnName];
+      if ((arity === 'any' ? args.length === 0 : args.length !== arity) || ast.kwargs.length > 0 || !args.every(isNum)) {
+        this.fail(env, `${fnName} takes ${arity === 'any' ? 'one or more' : arity} numbers`, at);
       }
       return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
     }
@@ -226,7 +232,7 @@ export class ExpressionCompiler extends CompilerState {
       const dtype = top && make.dtype !== undefined ? { dtype: make.dtype } : {};
       node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem, ...dtype });
     } catch (error) {
-      if (error instanceof NeedDim || error instanceof DslError) throw error;
+      if (error instanceof DslError) throw error;
       this.fail(env, (error as Error).message, at);
     }
     if (!top) make.anon.push(node);

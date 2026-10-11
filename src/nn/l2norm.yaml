@@ -1,0 +1,62 @@
+module: L2Norm
+subtitle: l2norm
+params:
+  eps:  { type: float, default: 1e-6 }
+  name: { type: text, default_key: true }
+inputs:
+  x: { shape: [..., n] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    每一行除以自己的 L2 范数，变成单位向量。
+    $$\of{out}=\frac{\of{x}}{\sqrt{\lVert\of{x}\rVert^{2}+\epsilon}}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - sq:  { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
+  - ss:  { op: 'sum(sq, -1, keepdim=true)', tex: '\lVert\of{x}\rVert^{2}' }
+  - r:   { op: 'rsqrt(ss, eps=eps)', tex: r }
+  - out: { op: x * r, tex: '\hat{\of{x}}' }
+steps:
+  - id: square
+    show: sq
+    label: '$\of{sq}$'
+    title: \of{name}：逐元素平方
+    text: |
+      L2 归一化和 RMSNorm 很像，区别是对平方求和，不除以长度，也没有权重。范围是最后一维。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 传到输入
+      text: |
+        平方这一路和直连那一路相加。单位向量对整行的缩放不敏感，所以交回去的梯度和这一行的输入垂直。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: norm
+    show: [ss, r]
+    label: '$\of{ss},\ \of{r}$'
+    title: 平方和与它的平方根倒数
+    text: |
+      每一行的平方和加上 $\epsilon=\of{eps}$ 再取平方根的倒数，得到这一行的 $r$。
+      $$r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ss},\ \partial\of{sq}$'
+      title: 传到平方和与平方
+      text: |
+        $\partial r/\partial\lVert\mathbf{x}\rVert^{2}=-r^{3}/2$，求和再把梯度原样复制给这一行的每个平方。
+  - id: normalize
+    show: out
+    label: '$\of{out}$'
+    title: 归一化
+    text: |
+      每个分量乘上自己那一行的 $r$，每一行的长度都变成 1。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial\of{x}$'
+      title: 传到 r 和输入的直连那条
+      text: |
+        $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$

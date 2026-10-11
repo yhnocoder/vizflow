@@ -15,11 +15,12 @@ import {
   reluExplain,
   rotateHalfExplain,
   siluExplain,
+  softplusExplain,
   sqrtExplain,
   subExplain,
   transposeExplain,
 } from './elementwise';
-import { catExplain, embeddingExplain, gatherExplain, narrowExplain, selectExplain, viewExplain } from './index_ops';
+import { catExplain, causalConv1dExplain, embeddingExplain, gatherExplain, narrowExplain, repeatInterleaveExplain, selectExplain, viewExplain } from './index_ops';
 import { nllLossExplain } from './loss';
 import { matmulExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -38,6 +39,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   sqrt: sqrtExplain,
   sigmoid: sigmoidExplain,
   silu: siluExplain,
+  softplus: softplusExplain,
   relu: reluExplain,
   gelu: geluExplain,
   identity: identityExplain,
@@ -58,6 +60,8 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   view: viewExplain,
   select: selectExplain,
   select_matmul: selectMatmulExplain,
+  repeat_interleave: repeatInterleaveExplain,
+  causal_conv1d: causalConv1dExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

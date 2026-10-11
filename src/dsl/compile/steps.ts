@@ -79,7 +79,7 @@ export function moduleSteps(c: Compiler, scope: Scope, decl: Record<string, unkn
         containers.push({ key, steps: resolveSteps(c, scope, slot.decl, { ...env, where: slot.where, loops: slot.loops }, 'steps') });
         flatten(slot.slots, key);
       } else if (slot.kind === 'loop') {
-        for (const iteration of slot.iterations) flatten(iteration, `${key}*`);
+        slot.iterations.forEach((iteration, n) => flatten(iteration, slot.sequential ? `${key}*${n}` : `${key}*`));
       } else {
         events.push({ slot, key });
       }

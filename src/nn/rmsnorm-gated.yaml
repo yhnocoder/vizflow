@@ -1,0 +1,99 @@
+module: GatedRMSNorm
+subtitle: RMSNorm 后乘 SiLU 门
+params:
+  eps:  { type: float, default: 1e-6 }
+  name: { type: text, default_key: true }
+inputs:
+  x:    { shape: [..., n] }
+  gate: { shape: [..., n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    $$\of{out}=\big(\of{weight}\odot\mathrm{RMSNorm}(\of{x})\big)\odot\mathrm{SiLU}(\of{gate})={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{weight},\ \partial\of{x},\ \partial\of{gate}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
+  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
+  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
+  - xw: { op: xh * weight, tex: '\of{weight}\odot\hat{\of{x}}' }
+  - s:  { op: silu(gate), tex: '\mathrm{SiLU}(\of{gate})', dtype: fp32 }
+  - out: { op: xw * s, dtype: x }
+steps:
+  - id: square
+    show: sq
+    label: '$\of{sq}$'
+    title: \of{name}：逐元素平方
+    text: |
+      先对 $\of{x}$ 的每个 head 单独做 RMSNorm，范围是最后一维。输入先转成 float32。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 传到 $\of{x}$
+      text: |
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: rms
+    show: [ms, r]
+    label: '$\of{ms},\ \of{r}$'
+    title: 均方根的倒数
+    text: |
+      每个位置、每个 head 各有一个 $r$。
+      $$r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms},\ \partial\of{sq}$'
+      title: 传到 ms 和平方
+  - id: normalize
+    show: xh
+    label: '$\of{xh}$'
+    title: 归一化
+    text: |
+      乘上 $r$ 以后转回输入的 dtype。
+      $$\of{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial\of{x}$'
+      title: 传到 r 和输入的直连那条
+  - id: scale
+    show: [weight, xw]
+    label: '$\of{xw}$'
+    title: 乘上权重 $\of{weight}$
+    text: |
+      这里的权重初始化为 1，乘的就是 $\of{weight}$ 本身。所有位置和所有 head 共用这一个向量。
+      $$\of{xw}={{ xw | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weight},\ \partial\of{xh}$'
+      title: 传到 $\of{weight}$ 和 $\of{xh}$
+      text: |
+        $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: act
+    show: s
+    label: '$\of{s}$'
+    title: 门：SiLU
+    text: |
+      门 $\of{gate}$ 在 float32 里经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。它和归一化的结果形状相同，逐元素对应。
+      $$\of{s}={{ s | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gate}$'
+      title: 穿过 SiLU
+      text: |
+        $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
+  - id: gate
+    show: out
+    label: '$\of{out}$'
+    title: 门控相乘
+    text: |
+      归一化后的结果逐元素乘上门，再转回输入的 dtype。门接近 0 的分量被关掉。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{xw},\ \partial\of{s}$'
+      title: 传到两个因子
+      text: |
+        逐元素乘，两个输入互为对方的局部导数。
+        $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$

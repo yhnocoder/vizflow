@@ -4,13 +4,18 @@ import type { Num } from './types';
 export const BUFFER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: Nested }> = {
   rope_cos: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.cos) }),
   rope_sin: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.sin) }),
+  zeros: (shape) => ({ shape, values: zerosOf(shape.map((n) => n.toy)) }),
   causal_mask: ([T]) => ({
     shape: [T, T],
     values: [...Array(T.toy).keys()].map((t) => [...Array(T.toy).keys()].map((s) => (s > t ? -Infinity : 0))),
   }),
 };
 
-export const BUFFER_ARITY: Record<string, number> = { rope_cos: 3, rope_sin: 3, causal_mask: 1 };
+export const BUFFER_ARITY: Record<string, number | 'any'> = { rope_cos: 3, rope_sin: 3, zeros: 'any', causal_mask: 1 };
+
+function zerosOf(shape: number[]): Nested {
+  return shape.length === 0 ? 0 : Array.from({ length: shape[0] }, () => zerosOf(shape.slice(1)));
+}
 
 function ropeTable(T: number, dh: number, theta: number, fn: (x: number) => number): number[][] {
   const inv = [...Array(dh / 2).keys()].map((i) => 1 / theta ** ((2 * i) / dh));

@@ -347,6 +347,7 @@ interface Graph {
   <tbody>
     <tr><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code></td><td><code>g.add(a, b)</code>、<code>g.mul(a, 0.5)</code></td><td>广播。反向把梯度按广播过的维度求和回输入的 shape。第二个参数可以是数。</td></tr>
     <tr><td><code>neg</code>、<code>exp</code>、<code>log</code>、<code>rsqrt</code>、<code>sqrt</code>、<code>sigmoid</code>、<code>silu</code>、<code>relu</code>、<code>gelu</code>、<code>identity</code></td><td><code>g.exp(a)</code></td><td>逐元素。<code>sigmoid</code> 对负数用 $e^{x}/(1+e^{x})$ 计算，绝对值很大时不溢出。<code>relu</code> 在 0 处的导数取 0。<code>gelu</code> 是 $x\,\Phi(x)$ 的精确 erf 形式，与 PyTorch 的默认 <code>approximate='none'</code> 一致。<code>identity</code> 原样输出，用于在图上单独画出一个与输入相同的张量（例如 Qwen3 页的 $\mathbf{x}_0$）。<code>rsqrt</code> 有关键字参数 <code>eps</code>（默认 0），计算 $1/\sqrt{x+\epsilon}$，对应 RMSNorm 里 <code>torch.rsqrt(variance + eps)</code>；<code>eps</code> 不成为节点，图上少一个只为加常数而存在的块。</td></tr>
+    <tr><td><code>softplus</code></td><td><code>g.softplus(a)</code></td><td>逐元素 $\log(1+e^{x})$，与 <code>torch.nn.functional.softplus</code> 的默认值相同：$x&gt;20$ 时直接输出 $x$。导数是 $\sigma(x)$，$x&gt;20$ 时是 1。</td></tr>
     <tr><td><code>rotate_half</code></td><td><code>g.rotate_half(a)</code></td><td>最后一维分成前后两半 $(\mathbf{a}_1, \mathbf{a}_2)$，输出 $(-\mathbf{a}_2, \mathbf{a}_1)$，与 HF transformers 的 <code>rotate_half</code> 相同。最后一维必须是偶数。</td></tr>
     <tr><td><code>pow</code></td><td><code>g.pow(a, exponent)</code></td><td><code>exponent</code> 是数</td></tr>
     <tr><td><code>matmul</code></td><td><code>g.matmul(a, b)</code></td><td>2 维乘 2 维，以及 1 维与 2 维的组合，按 torch 规则</td></tr>
@@ -362,11 +363,13 @@ interface Graph {
     <tr><td><code>view</code></td><td><code>g.view(a, shape)</code>、<code>g.view(a, T, H, dh)</code></td><td>改变形状，元素按行主序不动。形状可以写成数组，也可以逐个写在后面；元素可以是维度名，可以有一个 <code>-1</code> 由元素个数推出。形状不合法或元素个数不符时报错 <code>view: shape (..) is invalid for input (..) of size N</code>。</td></tr>
     <tr><td><code>select</code></td><td><code>g.select(a, dim, index)</code></td><td>取出 <code>dim</code> 上的第 <code>index</code> 个切片并去掉这一维，与 <code>torch.select</code> 相同。<code>index</code> 可以为负数。越界时报错 <code>select: index i is out of range for input (..) along dim d</code>。</td></tr>
     <tr><td><code>select_matmul</code></td><td><code>g.select_matmul(a, b, index)</code></td><td><code>a</code> 是 $(T, H, K)$，<code>b</code> 是 $(K, N)$，结果是 $(T, N)$，等于 <code>a[:, index, :] @ b</code>。注意力里每个 head 的打分 $S^{(h)} = \mathbf{q}^{(h)}\mathbf{k}^{(h)\top}$ 用它直接从 $(T, H, d_h)$ 的 $\mathbf{q}$ 计算，图上不必为每个 head 再画一个 <code>select</code> 出来的 $\mathbf{q}^{(h)}$。形状不符或 <code>index</code> 越界时报错 <code>select_matmul: cannot multiply (..)[:, i, :] by (..)</code>。</td></tr>
+    <tr><td><code>repeat_interleave</code></td><td><code>g.repeat_interleave(a, repeats, dim)</code></td><td>与 <code>torch.repeat_interleave</code> 相同：沿 <code>dim</code> 把每个切片连续复制 <code>repeats</code> 份，输出第 $i$ 个切片来自输入第 $\lfloor i/\mathit{repeats}\rfloor$ 个。<code>repeats</code> 可以是维度名。反向把几份梯度加回同一个输入元素。</td></tr>
+    <tr><td><code>causal_conv1d</code></td><td><code>g.causal_conv1d(x, w)</code></td><td>因果深度卷积。<code>x</code> 是 $(T, C)$，<code>w</code> 是 $(C, K)$，输出 $(T, C)$，$y_{t,c}=\sum_{j=0}^{K-1}w_{c,j}\,x_{t-K+1+j,\,c}$，序列开头以前的位置按 0 计。等于 HF 里 <code>F.conv1d(x, w, padding=K-1, groups=C)[..., :T]</code>，<code>w</code> 是 conv1d 权重 $(C, 1, K)$ 去掉中间一维。</td></tr>
     <tr><td><code>nll_loss</code></td><td><code>g.nll_loss(input, target, { reduction, ignore_index })</code></td><td>input $(C,)$ 配 target $()$，或 $(N,C)$ 配 $(N,)$。<code>reduction</code> 默认 <code>'mean'</code>，可选 <code>'sum'</code>、<code>'none'</code>；<code>ignore_index</code> 默认 <code>-100</code>。全部样本被忽略且 reduction 为 mean 时结果为 NaN，与 torch 一致。</td></tr>
   </tbody>
 </table>
 <p>logsumexp、softmax 这类运算在 vizflow 里是原子运算，不拆成基础运算组合，因为读者要在图上看到 LSE 是一个节点。</p>
-<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
+<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
 
 <h3>定义新运算</h3>
 <p>每个运算定义四件事，反向传播和全部讲解内容都由它们推导。数值部分是前向怎么算、反向怎么算（给定输出梯度，求每个输入的梯度）；讲解部分是元素级的连线模式，以及每条边的局部导数（一个数值函数加一段公式模板）。讲解部分放在 <code>explain</code> 模块，只需要数值的场合不会加载。</p>
@@ -596,7 +599,7 @@ interface EdgeCard {
     <tr><th>模式</th><th>运算</th><th>边</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>elementwise</code></td><td>add、sub、mul、div、neg、exp、log、pow、rsqrt、sqrt、sigmoid、silu、relu、gelu、identity、rotate_half、transpose、embedding、narrow、cat、view、select</td><td>每个输出元素连到每个张量参数的对应元素；广播的输入一对多，例如 LSE 连到每个 $\log p_i$。给了 <code>selected</code> 的运算按它给出的元素连线：transpose 按交换后的下标对应，embedding 的输出元素只连到 weight 被取到的那一行的同一列，narrow 连到平移 <code>start</code> 后的元素，cat 连到它来自的那个输入元素，view 连到行主序位置相同的元素，select 连到被取出的切片里的对应元素，局部导数都是 1。标量运算数不是节点，没有边。</td></tr>
+    <tr><td><code>elementwise</code></td><td>add、sub、mul、div、neg、exp、log、pow、rsqrt、sqrt、sigmoid、silu、softplus、relu、gelu、identity、rotate_half、transpose、embedding、narrow、cat、view、select、repeat_interleave、causal_conv1d</td><td>每个输出元素连到每个张量参数的对应元素；广播的输入一对多，例如 LSE 连到每个 $\log p_i$。给了 <code>selected</code> 的运算按它给出的元素连线：transpose 按交换后的下标对应，embedding 的输出元素只连到 weight 被取到的那一行的同一列，narrow 连到平移 <code>start</code> 后的元素，cat 连到它来自的那个输入元素，view 连到行主序位置相同的元素，select 连到被取出的切片里的对应元素，repeat_interleave 连到复制来源的元素，局部导数都是 1；causal_conv1d 的输出元素连到同一列里它用到的 $K$ 个输入元素和这一列的 $K$ 个权重，局部导数分别是对应的权重和输入。标量运算数不是节点，没有边。</td></tr>
     <tr><td><code>reduce</code></td><td>sum、mean、max、logsumexp</td><td>被归约的一组元素各连到一个输出元素</td></tr>
     <tr><td><code>dense</code></td><td>softmax、log_softmax</td><td>输出元素连到同一切片（<code>dim</code> 方向）里的全部输入元素</td></tr>
     <tr><td><code>contract</code></td><td>matmul、select_matmul</td><td>经过乘积格子：$A_{r,k}$ 连到格子 $(r,k,i)$，局部导数 $B_{k,i}$；$B_{k,i}$ 连到同一格子，局部导数 $A_{r,k}$；格子连到输出 $C_{r,i}$，局部导数 1。select_matmul 的 $A_{r,k}$ 是输入的 $(r, \mathit{index}, k)$ 元素，其余相同。</td></tr>
@@ -840,9 +843,10 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
   </tbody>
 </table>
 <p><b>全图取景。</b>取景根据所有元素与标签的包围盒在相机坐标下的投影自动计算，元素移动或缩放后不需要手动调整相机：几何体的投影四周留 12px，每个标签按它的像素尺寸和锚点计入，外沿离画布边缘也留 12px，在这个约束下取能放下全部内容的最大缩放，内容尽量填满画布。放在节点上方的节点标签按「翻到节点左侧」的位置计入，所以画布右侧不必为它们预留宽度；放在节点侧面的标签按实际位置计入。节点标签的宽度取前向与反向两种文字中较宽的一种，切换步骤时不需要重新取景。挂载、画布尺寸变化、字体加载完成与「复位视角」时重新取景。柱子按取景时的实际高度计入；读者拖动滑块让柱子变高时不重新取景，避免画面随数值跳动，柱子超出画布时按「复位视角」重新取景。</p>
-<p><b>相机跟随。</b>块很多的图（例如 Qwen3 从 token 到损失的一整页）放进一屏时每个块都太小，读者看不清正在讲的内容，所以跟随模式用固定的比例尺，只上下移动相机去看当前步骤的那几层：</p>
+<p><b>相机跟随。</b>块很多的图（例如 Qwen3 从 token 到损失的一整页）放进一屏时每个块都太小，读者看不清正在讲的内容，所以跟随模式用固定的比例尺，上下移动相机去看当前步骤的那几层，场景比画面宽时也左右移动：</p>
 <ul>
-  <li>比例尺：缩放为 1 时每个单位 44 像素；画布很窄时保证至少能看到 35.2 个单位宽，即视锥的半高取 $\max(H/88,\ 17.6/\text{宽高比})$，$H$ 是画布高度的像素数。水平方向和深度方向的取景中心是全图的中心，不随步骤变化。</li>
+  <li>比例尺：缩放为 1 时每个单位 44 像素；画布很窄时保证至少能看到 35.2 个单位宽，即视锥的半高取 $\max(H/88,\ 17.6/\text{宽高比})$，$H$ 是画布高度的像素数。水平方向和深度方向的取景中心默认是全图的中心，不随步骤变化。</li>
+  <li>场景比画面宽时水平跟随：把全部块、标签锚点和大括号投影到屏幕水平方向（与斜视方向和竖直方向都垂直的水平向量），场景的范围超过视锥宽度减去两侧各 4 个单位时，取景中心沿这个方向移到当前步骤高亮块的范围中点，并限制在场景两端往里各半个视锥宽度再加 4 个单位以内，画面不移出场景。当前步骤的块比画面宽时（例如 Qwen3.5 的 q_proj 输出宽一倍），缩放再取 $\min$ 于「视锥宽度减 8 个单位」与这些块宽度之比。场景能放进画面时（例如 Qwen3 一层的页面），取景与上一条相同。4 个单位留给左侧大括号的标题。</li>
   <li>每次步骤变化后，目标高度是当前步骤高亮块所在层的 $y$ 范围中点再往上 0.9，缩放是 $\min(1,\ 2h/(\Delta y + 10))$，$h$ 是视锥的半高、$\Delta y$ 是这个范围的高度，所以跨几层的步骤会缩小一些，单层的步骤保持原尺寸。目标高度限制在 $[\,y_{\min} + 0.82\,h' - 2,\ y_{\max} - 0.82\,h' + 1\,]$，$y_{\min}$、$y_{\max}$ 是最低层和场景顶部，$h'$ 是按目标缩放算出的半高，画面不会移到场景以外。</li>
   <li>总览步骤、输入步骤和没有高亮块的步骤看全图：高度是全图的中点，缩放是 $\min(1,\ 2h/(\text{全图高度} + 6))$。</li>
   <li>相机每帧向目标靠近剩余距离的 $1 - e^{-9\,\Delta t}$，高度差小于 0.01 并且缩放差小于 0.002 时停止；<code>prefers-reduced-motion</code> 时直接跳到目标。读者用滚轮缩放时取消这次过渡。</li>

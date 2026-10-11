@@ -1,0 +1,156 @@
+module: Qwen3_5GatedDeltaNet
+subtitle: Qwen3_5GatedDeltaNet
+import:
+  GatedDeltaRule: vizflow/nn/gated-delta-rule
+  GatedRMSNorm:   vizflow/nn/rmsnorm-gated
+params:
+  Hk: { type: dim }
+  Hv: { type: dim }
+  dk: { type: dim }
+  dv: { type: dim }
+  K:  { type: dim }
+inputs:
+  x: { shape: [T, d] }
+outputs: [out]
+weights:
+  Wqkv:    { shape: [2*Hk*dk + Hv*dv, d] }
+  Wz:      { shape: [Hv*dv, d] }
+  Wb:      { shape: [Hv, d] }
+  Wa:      { shape: [Hv, d] }
+  Wconv:   { shape: [2*Hk*dk + Hv*dv, K], tex: 'W_{\mathrm{conv}}' }
+  dt_bias: { shape: [Hv], init: ones, tex: '\mathbf{b}_{\Delta}' }
+  A_log:   { shape: [Hv], tex: '\mathbf{a}_{\log}' }
+  Wout:    { shape: [d, Hv*dv], tex: 'W_{\mathrm{out}}' }
+fold:
+  label: '$\of{out}=\mathrm{linear\_attn}(\of{x})$'
+  title: linear_attn（已折叠）
+  text: |
+    投影、短卷积、gated delta rule、门控 RMSNorm 和 out_proj 都收进了盒子，对应 HF 里 <code>self.linear_attn(hidden_states)</code> 这一次调用。位置 $t$ 的输出只依赖 $s\le t$ 的输入，和 softmax 注意力一样是块下三角，但每一步只需要一个固定大小的状态。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 linear_attn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - mixed_qkv: { op: x @ Wqkv.T, tex: '\mathbf{u}' }
+  - z: { op: 'view(x @ Wz.T, T, Hv, dv)', tex: '\mathbf{z}_{o}' }
+  - b: x @ Wb.T
+  - a: { op: x @ Wa.T, tex: '\mathbf{a}_{\Delta}' }
+  - conv: { op: 'causal_conv1d(mixed_qkv, Wconv)', tex: '\mathbf{c}' }
+  - cs: { op: silu(conv), tex: '\mathrm{SiLU}(\mathbf{c})' }
+  - q: 'view(narrow(cs, -1, 0, Hk*dk), T, Hk, dk)'
+  - k: 'view(narrow(cs, -1, Hk*dk, Hk*dk), T, Hk, dk)'
+  - v: 'view(narrow(cs, -1, 2*Hk*dk, Hv*dv), T, Hv, dv)'
+  - beta: { op: sigmoid(b), tex: '\boldsymbol{\beta}' }
+  - dt: { op: softplus(a + dt_bias), tex: '\Delta', dtype: fp32 }
+  - g: { op: -exp(A_log) * dt, tex: '\mathbf{g}', dtype: fp32 }
+  - qr: { op: 'repeat_interleave(q, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{q})' }
+  - kr: { op: 'repeat_interleave(k, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{k})' }
+  - gated_delta_rule:
+      use: GatedDeltaRule
+      inline: true
+      inputs: { q: qr, k: kr, v: v, g: g, beta: beta }
+      outputs: { o: core }
+      tex: { o: '\mathbf{o}' }
+  - norm:
+      use: GatedRMSNorm
+      subtitle: Qwen3_5RMSNormGated
+      suffix: o
+      inputs: { x: core, gate: z }
+      outputs: { out: cn }
+      tex: { out: '\bar{\mathbf{o}}' }
+  - out: { op: 'view(cn, T, Hv*dv) @ Wout.T', tex: '\mathbf{att}' }
+steps:
+  - id: proj
+    brace: { title: in_proj, subtitle: 'qkv $\cdot$ z $\cdot$ b $\cdot$ a，nn.Linear $\times$ 4' }
+    show: [Wqkv.T, Wz.T, Wb.T, Wa.T, mixed_qkv, z, b, a]
+    label: '$\of{mixed_qkv},\ \of{z},\ \of{b},\ \of{a}$'
+    title: 四个输入投影
+    text: |
+      四个投影的输入都是 $\of{x}$，权重拼成一块板来画。in_proj_qkv 一次算出 q、k、v 三段，宽 $2H_k d_k+H_v d_v=\of{2*Hk*dk+Hv*dv}$；in_proj_z 算出输出门 $\mathbf{z}_{o}$，按 value head 分组；in_proj_b 和 in_proj_a 每个 value head 只出一个数，分别决定写入强度和衰减。四个 Linear 都没有 bias。
+      $$\mathbf{u}=\of{x}W_{qkv}^{\top}={{ mixed_qkv | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: 传到四个投影的权重和 $\of{x}$
+      text: |
+        四块权重的梯度都是「输入的转置乘输出的梯度」，$\of{x}$ 的梯度是四路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: conv
+    brace: { title: conv1d, subtitle: '因果深度卷积，核长 $\of{K}$' }
+    show: [Wconv, conv]
+    label: '$\of{conv}$'
+    title: 因果短卷积
+    text: |
+      q、k、v 三段在进入递推之前先过一个深度卷积：每个通道 $c$ 有自己的 $\of{K}$ 个系数，输出 $c_{t,c}=\sum_{j}W_{c,j}\,u_{t-\of{K}+1+j,\,c}$，只看当前和之前的 $\of{K}-1$ 个位置，序列开头不够的部分补 0。这一步让每个 token 先和相邻的几个 token 混合一下。连线只在同一列之内。
+      $$\mathbf{c}={{ conv | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{conv}},\ \partial\mathbf{u}$'
+      title: 穿过短卷积
+      text: |
+        $u_{s,c}$ 的梯度来自它之后 $\of{K}$ 个位置的输出，各乘对应的系数；$W_{c,j}$ 的梯度是这一列所有位置的贡献之和。
+        $$\frac{\partial\ell}{\partial\mathbf{u}}={{ mixed_qkv.grad | matrix:3 }}$$
+  - id: act
+    show: cs
+    label: '$\mathrm{SiLU}$'
+    title: 卷积后的 SiLU
+    text: |
+      卷积的输出逐元素经过 SiLU，HF 把它作为卷积的 activation 参数传进去。
+      $$\mathrm{SiLU}(\mathbf{c})={{ cs | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{c}$'
+      title: 穿过 SiLU
+  - id: split
+    show: [q, k, v]
+    label: '$\of{q},\ \of{k},\ \of{v}$'
+    title: 切成 q、k、v，按 head 分组
+    text: |
+      <code>torch.split</code> 按列切成三段，再 reshape 成 head：q 和 k 各有 $H_k=\of{Hk}$ 个 key head，每个宽 $d_k=\of{dk}$；v 有 $H_v=\of{Hv}$ 个 value head，每个宽 $d_v=\of{dv}$。
+      $$\mathbf{v}={{ v | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{SiLU}(\mathbf{c})$'
+      title: 拼回卷积的输出
+  - id: beta
+    show: beta
+    label: '$\of{beta}$'
+    title: 写入强度 $\beta$
+    text: |
+      $\beta=\sigma(\mathbf{b})$ 在 0 和 1 之间，是每个位置、每个 value head 写入状态的强度。
+      $$\boldsymbol{\beta}={{ beta | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{b}$'
+      title: 穿过 sigmoid
+  - id: gate
+    show: [dt_bias, dt, A_log, g]
+    label: '$\of{g}$'
+    title: 衰减 $g$
+    text: |
+      衰减的对数是 $g=-e^{\mathbf{a}_{\log}}\cdot\mathrm{softplus}(\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta})$，在 float32 里计算。$e^{\mathbf{a}_{\log}}$ 和 softplus 都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间。这和 Mamba2 的离散化相同：$\mathbf{b}_{\Delta}$ 和 $\mathbf{a}_{\log}$ 是每个 value head 一个的参数，$\mathbf{a}_{\Delta}$ 由输入决定，所以忘多少因位置而异。
+      $$\Delta={{ dt | matrix:3 }},\qquad \mathbf{g}={{ g | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{a}_{\Delta},\ \partial\mathbf{a}_{\log},\ \partial\mathbf{b}_{\Delta}$'
+      title: 传到 $\mathbf{a}_{\Delta}$、$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$
+      text: |
+        softplus 的导数是 sigmoid。$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$ 被所有位置共用，梯度把各位置加起来。
+        $$\frac{\partial\ell}{\partial\mathbf{a}_{\log}}={{ A_log.grad | matrix:3 }}$$
+  - id: repeat
+    show: [qr, kr]
+    label: '$\mathrm{repeat\_interleave}$'
+    title: 把 key head 复制给 value head
+    text: |
+      value head 比 key head 多：$H_v/H_k=\of{Hv//Hk}$。<code>repeat_interleave</code> 把每个 key head 的 q 和 k 连续复制 $\of{Hv//Hk}$ 份，第 $j$ 个 value head 用第 $\lfloor j/\of{Hv//Hk}\rfloor$ 个 key head。这和 GQA 里 kv head 少于 query head 的做法方向相反：这里是 value 多、key 少。
+      $$\mathrm{rep}(\mathbf{k})={{ kr | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{q},\ \partial\of{k}$'
+      title: 几份梯度加回一份
+  - id: out_proj
+    brace: { title: out_proj, subtitle: nn.Linear }
+    show: [Wout.T, out]
+    label: out_proj
+    title: out_proj
+    text: |
+      各个 value head 的输出拼回 $T\times H_v d_v$，再投影回 $d$ 维。
+      $$\mathbf{att}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{out}},\ \partial\bar{\mathbf{o}}$'
+      title: 传到 out_proj 权重和门控 RMSNorm 的输出

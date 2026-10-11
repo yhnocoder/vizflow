@@ -272,3 +272,98 @@ export const selectOp: OpDef<SelectAttrs> = {
     return [grad];
   },
 };
+
+export interface RepeatInterleaveAttrs {
+  repeats: number;
+  dim: number;
+}
+
+function repeated(shape: readonly number[], attrs: RepeatInterleaveAttrs): { dim: number; shape: number[] } {
+  if (shape.length === 0) throw new Error('repeat_interleave: input must have at least one dimension');
+  if (!Number.isInteger(attrs.repeats) || attrs.repeats < 1) throw new Error(`repeat_interleave: repeats ${attrs.repeats} must be a positive integer`);
+  const dim = normDim(attrs.dim, shape.length);
+  const out = [...shape];
+  out[dim] *= attrs.repeats;
+  return { dim, shape: out };
+}
+
+export function repeatSource(inputShape: readonly number[], attrs: RepeatInterleaveAttrs, out: readonly number[]): number[] {
+  const { dim } = repeated(inputShape, attrs);
+  const index = [...out];
+  index[dim] = Math.floor(out[dim] / attrs.repeats);
+  return index;
+}
+
+export const repeatInterleaveOp: OpDef<RepeatInterleaveAttrs> = {
+  name: 'repeat_interleave',
+  args: ['input', 'repeats', 'dim'],
+  tensors: ['input'],
+  sizes: ['repeats'],
+  shape: ([input], attrs) => repeated(input, attrs).shape,
+  forward: ([input], attrs) => {
+    const out = new Tensor(repeated(input.shape, attrs).shape);
+    forEachIndex(out.shape, (index, offset) => {
+      out.data[offset] = input.get(repeatSource(input.shape, attrs, index));
+    });
+    return out;
+  },
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (index, offset) => {
+      grad.data[offsetOf(input.shape, repeatSource(input.shape, attrs, index))] += gradOut.data[offset];
+    });
+    return [grad];
+  },
+};
+
+function convShape(input: readonly number[], weight: readonly number[]): number[] {
+  if (input.length !== 2 || weight.length !== 2 || input[1] !== weight[0]) {
+    throw new Error(`causal_conv1d: input ${formatShape(input)} must be (T, C) and weight ${formatShape(weight)} must be (C, K)`);
+  }
+  return [...input];
+}
+
+export function convTaps(T: number, K: number, t: number): { s: number; j: number }[] {
+  const taps: { s: number; j: number }[] = [];
+  for (let j = 0; j < K; j++) {
+    const s = t - K + 1 + j;
+    if (s >= 0 && s < T) taps.push({ s, j });
+  }
+  return taps;
+}
+
+export const causalConv1dOp: OpDef<Record<string, never>> = {
+  name: 'causal_conv1d',
+  args: ['input', 'weight'],
+  tensors: ['input', 'weight'],
+  shape: ([input, weight]) => convShape(input, weight),
+  forward: ([input, weight]) => {
+    const [T, C] = convShape(input.shape, weight.shape);
+    const K = weight.shape[1];
+    const out = new Tensor([T, C]);
+    for (let t = 0; t < T; t++) {
+      for (let c = 0; c < C; c++) {
+        let total = 0;
+        for (const { s, j } of convTaps(T, K, t)) total += weight.data[c * K + j] * input.data[s * C + c];
+        out.data[t * C + c] = total;
+      }
+    }
+    return out;
+  },
+  backward: (gradOut, [input, weight]) => {
+    const [T, C] = input.shape;
+    const K = weight.shape[1];
+    const gx = new Tensor(input.shape);
+    const gw = new Tensor(weight.shape);
+    for (let t = 0; t < T; t++) {
+      for (let c = 0; c < C; c++) {
+        const g = gradOut.data[t * C + c];
+        for (const { s, j } of convTaps(T, K, t)) {
+          gx.data[s * C + c] += g * weight.data[c * K + j];
+          gw.data[c * K + j] += g * input.data[s * C + c];
+        }
+      }
+    }
+    return [gx, gw];
+  },
+};

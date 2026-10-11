@@ -17,11 +17,12 @@ import {
   rsqrtOp,
   sigmoidOp,
   siluOp,
+  softplusOp,
   sqrtOp,
   subOp,
   transposeOp,
 } from './elementwise';
-import { catOp, embeddingOp, gatherOp, narrowOp, selectOp, viewOp } from './index_ops';
+import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
@@ -64,6 +65,7 @@ export interface BuiltinOps {
   sqrt(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;
+  softplus(input: Node, options?: OpOptions): Node;
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
@@ -85,6 +87,8 @@ export interface BuiltinOps {
   view(input: Node, ...shape: (number | string)[]): Node;
   select(input: Node, dim: number, index: number, options?: OpOptions): Node;
   select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
+  repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
+  causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -100,6 +104,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   sqrtOp,
   sigmoidOp,
   siluOp,
+  softplusOp,
   reluOp,
   geluOp,
   identityOp,
@@ -120,6 +125,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   viewOp,
   selectOp,
   selectMatmulOp,
+  repeatInterleaveOp,
+  causalConv1dOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

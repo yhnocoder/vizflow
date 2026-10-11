@@ -219,11 +219,11 @@ panels:
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`gqa`、`lm-head-nll`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k` 和 `v: (T, H_kv, d_h)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_h)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`lm-head-nll`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{silu}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k` 和 `v: (T, H_kv, d_h)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_h)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
 - 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta)`、`rope_sin(T, dh, theta)` 或 `causal_mask(T)`；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
 - 实例写 `inline: true` 时不单独成为一个模块：没有自己的大括号、折叠和步骤分组，节点和步骤算作外层模块的，路径仍然带实例名。它不能写 `title`、`subtitle`、`fixed`、`folded`、`split`、`fold`。
-- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给迭代加一层大括号，各次迭代的括号合并成一个，标题用 ` · ` 连接（例如 `head 1 · head 2`），迭代的节点已经由实例的大括号标出时不必写。`cat(o[1..H], dim=1)` 这类按维度范围取出的列表，在真实模型里块数不同，编译器自动给 `cat` 加上 `pieces`，例如 `H` 在 `real` 里是 32、每块真实宽 128 时，拼接结果的真实 shape 是 `(T, 4096)`，后面的 o_proj 也按 4096 计算。
+- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给迭代加一层大括号，各次迭代的括号合并成一个，标题用 ` · ` 连接（例如 `head 1 · head 2`），迭代的节点已经由实例的大括号标出时不必写。`cat(o[1..H], dim=1)` 这类按维度范围取出的列表，在真实模型里块数不同，编译器自动给 `cat` 加上 `pieces`，例如 `H` 在 `real` 里是 32、每块真实宽 128 时，拼接结果的真实 shape 是 `(T, 4096)`，后面的 o_proj 也按 4096 计算。后一次迭代要用前一次的结果时（例如按位置递推的状态 `S[t] = f(S[t-1])`）写 `sequential: true`：各次迭代按顺序往上叠，每次迭代的步骤单独成步；`S[0]` 写成 buffer，例如 `'S[0]': { value: 'zeros(H, dk, dv)' }`。表达式里的 `[a, b]` 是节点列表，例如 `cat([q_rot, q_pass], dim=2)`。
 - 实例、group 和 for 可以写 `beside: 名字`，让这一项画在前一项的旁边、从同一层开始。名字是紧挨着的前一项的名字，或者是已经 beside 前一项的某一项的名字，几项连成一组，每项一条竖道，从左到右按书写顺序；这一组之后的项从最高的竖道上方继续。for 要被引用时写 `name: 名字`。并排的同一个模块的实例，id 相同的步骤合并成一步：显示各实例的节点，标签和反向标签把各实例不同的标签用逗号连起来，标题和正文用第一个实例的（模块默认值或这个实例的补丁）。其余情况下 `beside` 只影响布局，步骤不变。实例的步骤补丁在所在的 body 全部建完后才编译，所以第一个实例的补丁可以引用后面并排实例的节点。Qwen3 的注意力里，q_norm 和 k_norm 是并排的两个 RMSNorm，合成 `q_norm $\cdot$ k_norm` 一组：
 
   ```yaml
@@ -347,6 +347,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
 | `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
+| `softplus` | `g.softplus(a)` | 逐元素 $\log(1+e^{x})$；$x>20$ 时直接输出 $x$，与 torch 的默认值相同 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合 |
@@ -362,6 +363,8 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `select` | `g.select(a, dim, index)` | 取出 `dim` 上的第 `index` 个，去掉这一维；`index` 可以为负数 |
 | `select_matmul` | `g.select_matmul(a, b, index)` | `a` 是 `(T, H, K)`，`b` 是 `(K, N)`，结果是 `a[:, index, :] @ b`，即某个 head 直接参与矩阵乘，不另建切片节点 |
 | `cat` | `g.cat([a, b, c], dim)`、`g.cat(heads, 1, { pieces: 'H' })` | 节点数组，个数任意，至少一个；`dim` 默认 0。`pieces` 说明真实模型里有几块：各块在 `dim` 上一样长，真实 shape 的这一维是一块的真实长度乘 `pieces` 的真实值；按 `dims` 取的值必须等于实际给出的块数 |
+| `repeat_interleave` | `g.repeat_interleave(a, 2, 1)` | 与 `torch.repeat_interleave` 相同，沿 `dim` 把每个切片连续复制 `repeats` 份；`repeats` 可以是维度名 |
+| `causal_conv1d` | `g.causal_conv1d(x, w)` | 因果深度卷积：`x` 是 `(T, C)`，`w` 是 `(C, K)`，每个通道用自己的 $K$ 个系数加权当前和之前 $K-1$ 个位置，序列开头之前按 0 计 |
 | `nll_loss` | `g.nll_loss(input, target, { reduction, ignore_index })` | `reduction` 默认 `'mean'`，可选 `'sum'`、`'none'`；`ignore_index` 默认 `-100` |
 
 选项对象里可以写的键：该运算的 torch 关键字参数（例如 `keepdim`、`reduction`），以及 `name`、`tex`、`elem`、`card`。写了其他键会抛错 `<运算名>: unknown option '<键>'`。`dim` 可以用负数。shape 不匹配在建图时就抛错，例如 `matmul: cannot multiply (1, 4) by (5, 4)`。
@@ -378,7 +381,7 @@ const [q1, q2] = g.split(q, 'dh', 1, {
 });
 ```
 
-**尺寸参数写维度名**：`narrow` 的 `length`、`view` 的形状、`cat` 的 `pieces` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。
+**尺寸参数写维度名**：`narrow` 的 `length`、`view` 的形状、`cat` 的 `pieces` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。建图以后需要新的维度名时，用 `g.addDim('w', 8, 8192)` 加上，第三个参数是真实值，省略时等于第二个参数。
 
 `W.T` 是二维节点的转置。第一次访问时创建名为 `W.T` 的 transpose 节点，之后每次访问返回同一个节点，所以 `g.matmul(h, W.T)` 和 `board(h, W.T, z)` 里的 `W.T` 是同一个节点。
 
@@ -845,7 +848,7 @@ stack(x, u, S, p, y, logy, loss, {
 ### 6.4 交互与卡片
 
 - 左键拖动旋转，右键拖动平移（触屏用双指），滚轮按光标位置缩放。「复位视角」回到默认方向和当前步骤的取景。
-- 打开 `camera.follow` 时，每次换步骤后相机在 0.45 秒内平滑移到新的取景（系统设置了减少动态效果时直接跳过去）：框住当前步骤高亮的块和它们的标签，模块的括号和标签不计入。高亮块的范围在 x 方向不足 14 个单位、y 方向不足 8 个单位时按中心扩展到这个大小，一个标量节点不会被放得很大。总览步骤和没有高亮块的步骤框住全部块。手动旋转、平移或缩放以后，下一次换步骤仍然重新取景。
+- 打开 `camera.follow` 时，每次换步骤后相机在 0.45 秒内平滑移到新的取景（系统设置了减少动态效果时直接跳过去）：框住当前步骤高亮的块和它们的标签，模块的括号和标签不计入。高亮块的范围在 x 方向不足 14 个单位、y 方向不足 8 个单位时按中心扩展到这个大小，一个标量节点不会被放得很大。总览步骤和没有高亮块的步骤框住全部块。场景比画面宽时（例如 Qwen3.5 页面里 q_proj 的输出），相机也左右移动到当前步骤的块，不移出场景两端。手动旋转、平移或缩放以后，下一次换步骤仍然重新取景。
 - 锚点移出画布的标签不显示，例如平移或跟随取景以后画面外的块名。
 - 悬停柱子显示元素名、当前值、节点名和 dtype，同时加深和这个元素相连的线、淡化其余的线，打开「只画最前一行」时后面几行的柱子也显示自己的连线；有 token 轴的张量还会在同一个 token 的那一行底下画一个框。token 轴从 input 和 label 的第 0 维开始，按运算的语义沿图推导，权重和 RoPE、mask 这类 buffer 不画框。可以点击设目标的柱子，提示末尾写「点击设为目标 token」（label 给了 `tokens`）或「点击设为目标类」（只给了 `classes`）。
 - 数值标签只在当前步骤的节点上显示，同一个节点的数值保留相同的小数位数；批量时数值标签和标量节点的标签只显示选中的样本。

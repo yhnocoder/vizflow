@@ -536,6 +536,26 @@ def transformer_op_fixtures():
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
     cases += head_cases()
+    cases += linear_attention_cases()
+    return cases
+
+
+def causal_conv1d(x, w):
+    T, C = x.shape
+    K = w.shape[1]
+    return F.conv1d(x.T.unsqueeze(0), w.unsqueeze(1), padding=K - 1, groups=C)[0, :, :T].T
+
+
+def linear_attention_cases():
+    cases = pointwise_cases("softplus", F.softplus, lambda *shape: randn(*shape) * 3)
+    x = torch.tensor([-800.0, -30.0, 0.0, 19.0, 21.0, 800.0], dtype=torch.float64)
+    cases.append(finite(op_case("softplus", "large magnitudes", F.softplus, [("input", x)], [tensor_arg(0)])))
+    for shape, repeats, dim in [((3, 2, 4), 2, 1), ((3, 4), 3, 0), ((2, 1, 3), 3, -2)]:
+        cases.append(
+            op_case("repeat_interleave", f"{shape} repeats {repeats} dim {dim}", lambda x, repeats=repeats, dim=dim: torch.repeat_interleave(x, repeats, dim), [("input", randn(*shape))], [tensor_arg(0), repeats, dim])
+        )
+    for T, C, K in [(3, 8, 4), (5, 2, 3), (2, 3, 1)]:
+        cases.append(op_case("causal_conv1d", f"T {T} channels {C} kernel {K}", causal_conv1d, [("input", randn(T, C)), ("input", randn(C, K))], [tensor_arg(0), tensor_arg(1)]))
     return cases
 
 
