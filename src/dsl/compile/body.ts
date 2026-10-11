@@ -9,8 +9,8 @@ import { registerFormula } from './formula';
 import { FOR_KEYS, GROUP_KEYS, ITEM_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
 import type { Compiler } from './text';
-import type { Env, Make, Scope, Slot } from './types';
-import { checkKeys, isRecord, join } from './util';
+import type { Env, Make, Num, Scope, Slot } from './types';
+import { checkKeys, combine, isRecord, join } from './util';
 
 interface Lanes {
   start: number;
@@ -22,26 +22,28 @@ type Beside = { value: unknown; env: Env; where: Where };
 
 function countInstances(c: Compiler, items: unknown, env: Env, counts: Map<ModuleDef, number>): void {
   if (!Array.isArray(items)) return;
-  for (const item of items) {
-    if (!isRecord(item)) continue;
+  items.forEach((item, index) => {
+    if (!isRecord(item)) return;
+    const at = { ...env, where: child(env.where, items, index) };
     if ('for' in item) {
-      const iterations = rangeOf(c, item.in, env);
-      for (const v of iterations) countInstances(c, item.body, { ...env, loops: new Map(env.loops).set(String(item.for), v) }, counts);
-      continue;
+      if (!c.enabled(item, at)) return;
+      const { values } = rangeOf(c, item.in, at);
+      for (const v of values) countInstances(c, item.body, { ...at, where: child(at.where, item, 'body'), loops: new Map(env.loops).set(String(item.for), v) }, counts);
+      return;
     }
-    for (const value of Object.values(item)) {
-      if (!isRecord(value)) continue;
+    for (const [key, value] of Object.entries(item)) {
+      if (!isRecord(value) || !c.enabled(value, { ...at, where: child(at.where, item, key) })) continue;
       if (typeof value.use === 'string') {
         const def = env.scope.def.namespace.get(usedModule(env.scope, value.use));
         if (def !== undefined) counts.set(def, (counts.get(def) ?? 0) + 1);
       } else if (Array.isArray(value.body)) {
-        countInstances(c, value.body, env, counts);
+        countInstances(c, value.body, { ...at, where: child(child(at.where, item, key), value, 'body') }, counts);
       }
     }
-  }
+  });
 }
 
-function rangeOf(c: Compiler, text: unknown, env: Env): number[] {
+function rangeOf(c: Compiler, text: unknown, env: Env): { values: number[]; real: Num } {
   if (typeof text !== 'string') c.fail(env, "'in' must be a range like '1..H'");
   let from: Ast;
   let to: Ast;
@@ -53,14 +55,18 @@ function rangeOf(c: Compiler, text: unknown, env: Env): number[] {
   }
   const a = c.int(from, env, 0);
   const b = c.int(to, env, 0);
-  return Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+  const start = c.evaluate(from, env, undefined, 0) as Num;
+  const end = c.evaluate(to, env, undefined, 0) as Num;
+  const values = Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+  const count = { ...combine([end, start], (b, a) => Math.max(0, b - a + 1)), toy: values.length };
+  return { values, real: start.toy === 1 && start.real === 1 && start.derive === undefined ? end : count };
 }
 
 export function compileBody(c: Compiler, scope: Scope, decl: Record<string, unknown>, env: Env, entries: LayoutEntry[]): { slots: Slot[] } {
   const bodyWhere = child(env.where, decl, 'body');
   if (!Array.isArray(decl.body)) fail(bodyWhere, 'body must be a list');
   const counts = new Map<ModuleDef, number>();
-  countInstances(c, decl.body, env, counts);
+  countInstances(c, decl.body, { ...env, where: bodyWhere }, counts);
   const ordinals = new Map<ModuleDef, number>();
   return { slots: compileItems(c, scope, decl.body, { ...env, where: bodyWhere }, entries, counts, ordinals) };
 }
@@ -145,6 +151,7 @@ function compileItem(
     'beside' in owner ? { value: owner.beside, env, where: child(ownerWhere, owner, 'beside') } : undefined;
   if ('for' in item) {
     checkKeys(item, FOR_KEYS, at);
+    if (!c.enabled(item, env)) return { name: undefined, beside: undefined };
     if (typeof item.for !== 'string') fail(child(at, item, 'for'), 'for needs a variable name');
     if (!Array.isArray(item.body)) fail(child(at, item, 'body'), 'for needs a body list');
     let forName: string | undefined;
@@ -157,13 +164,16 @@ function compileItem(
     }
     const branches: LayoutTree[] = [];
     const iterations: Slot[][] = [];
-    for (const v of rangeOf(c, item.in, { ...env, where: child(at, item, 'in') })) {
+    const range = rangeOf(c, item.in, { ...env, where: child(at, item, 'in') });
+    for (const v of range.values) {
       const loopEnv: Env = { ...env, loops: new Map(env.loops).set(item.for, v), where: child(at, item, 'body') };
       const branch: LayoutTree = { kind: 'module', children: [] };
       const start = c.g.nodes.length;
       if (typeof item.brace === 'string') branch.title = c.ofText(item.brace, { ...loopEnv, where: child(at, item, 'brace') });
       const rec = branch.title === undefined ? undefined : openModule(c, join(scope.path, `${forName ?? item.for}[${v}]`), branch.title, undefined, {}, loopEnv);
-      iterations.push(compileItems(c, scope, item.body, loopEnv, branch.children, counts, ordinals));
+      const body = () => compileItems(c, scope, item.body as unknown[], loopEnv, branch.children, counts, ordinals);
+      const real = c.dimSpec(range.real);
+      iterations.push(real === range.values.length ? body() : c.g.realCopies(range.values.length, real, body));
       branches.push(branch);
       if (rec !== undefined) closeModule(c, rec, c.g.nodes.slice(start));
     }
@@ -182,6 +192,7 @@ function compileItem(
   const valueEnv = { ...env, where: valueWhere };
   const { name, base, indices } = c.concreteName(key, valueEnv);
   const braceTitle = env.loops.size > 0 ? base : name;
+  if (isRecord(value) && !c.enabled(value, valueEnv)) return { name: undefined, beside: undefined };
   if (isRecord(value) && 'use' in value) {
     slots.push(compileInstance(c, scope, name, braceTitle, indices, value, valueEnv, entries, counts, ordinals, before));
     return { name, beside: besideOf(value, valueWhere) };

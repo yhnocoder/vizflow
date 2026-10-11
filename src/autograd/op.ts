@@ -38,6 +38,19 @@ export interface OpExplain {
   selected?(ctx: OpCtx, out: number[]): { arg: number; index: number[] }[];
 }
 
+export type Saved = number | 'out';
+
+export interface OpFlops {
+  forward: number[];
+  backward: number[][];
+}
+
+export interface OpCost {
+  view?: boolean;
+  saves: Saved[][];
+  flops(inputs: number[][], out: number[]): OpFlops;
+}
+
 export interface OpDef<A extends object = Record<string, unknown>> {
   name: string;
   args: string[];
@@ -52,6 +65,7 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
   explain?: OpExplain;
+  cost?: OpCost;
 }
 
 export type AnyOpDef = OpDef<any>;

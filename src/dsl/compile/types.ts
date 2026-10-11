@@ -4,9 +4,13 @@ import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import type { Where } from '../source';
 
+export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
+
 export interface Num {
   toy: number;
   real: number;
+  dim?: string;
+  derive?: RealSize;
 }
 
 export interface OpValue {
@@ -23,7 +27,7 @@ export interface BufferValue {
   values: Nested;
 }
 
-export type ParamType = 'int' | 'float' | 'dim' | 'op' | 'module' | 'tex' | 'text';
+export type ParamType = 'int' | 'float' | 'dim' | 'bool' | 'op' | 'module' | 'tex' | 'text';
 export type Value = Node | Num | Node[] | string | boolean | OpValue | ModuleValue | BufferValue;
 export type Resolved = Value | Scope;
 
@@ -51,6 +55,7 @@ export interface ModuleRec {
   fixed: boolean;
   folded: boolean;
   split: boolean;
+  repeat: { like: string; count: number; where: Where }[];
   nodes: Node[];
   fold: { forward: BackwardOverride; backward: BackwardOverride };
   decl: Record<string, unknown>;
@@ -79,7 +84,8 @@ export type Slot =
 export class Scope {
   readonly entries = new Map<string, Node>();
   readonly children = new Map<string, Scope>();
-  readonly params = new Map<string, { type: ParamType; value: Num | string | OpValue | ModuleValue }>();
+  readonly params = new Map<string, { type: ParamType; value: Num | string | boolean | OpValue | ModuleValue }>();
+  readonly missing = new Map<string, Where>();
   readonly dims = new Map<string, Num>();
   readonly inputTex = new Map<string, string>();
   readonly anon = new Map<Node, Node[]>();

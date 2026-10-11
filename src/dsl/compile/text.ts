@@ -74,6 +74,7 @@ export class Compiler extends ExpressionCompiler {
         if (param.type === 'float') return numberTex((param.value as Num).toy);
         if (param.type === 'tex') return param.value as string;
         if (param.type === 'text') return this.ofText(param.value as string, env);
+        if (param.type === 'bool') return String(param.value);
         return String((param.value as Num).toy);
       }
       const inputTex = env.scope.inputTex.get(ref);

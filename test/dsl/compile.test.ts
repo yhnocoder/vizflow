@@ -1073,3 +1073,89 @@ body:
     await expect(page(formulaPage('\\step{square}{x}'), files)).rejects.toThrow(/formula: \\step\{square\}: 'n' has no step 'square'; its steps are rms, scale/);
   });
 });
+
+describe('when', () => {
+  const gated = `
+module: Gated
+import: { Norm: ./norm.yaml }
+params:
+  gate:  { type: bool, default: false }
+  extra: { type: dim }
+inputs:
+  x: { shape: [T, n] }
+outputs: [out]
+body:
+  - base: x * 2
+  - g: { op: base * extra, when: gate }
+  - gn: { use: Norm, when: gate, inputs: { x: g }, outputs: { out: h } }
+  - out: { op: 'h + 1 if gate else base + 1' }
+steps:
+  - { id: plain, show: out, title: plain, when: not gate }
+  - { id: plain, show: out, title: gated, when: gate }
+`;
+  const files = { 'mem:/pages/gated.yaml': gated, 'mem:/pages/norm.yaml': NORM };
+  const use = (params: string, extra = '') => page(`
+title: t
+import: { Gated: ./gated.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2], [3, 4]] }
+body:
+  - m: { use: Gated, params: ${params}, inputs: { x: x }, outputs: { out: y }${extra} }
+`, files);
+
+  it('leaves out the items and steps whose condition is false, and needs their parameters only when they are built', async () => {
+    const plain = await use('{}');
+    expect(plain.graph.nodes.map((n) => n.name)).toEqual(['x', 'm.base', 'm.out']);
+    expect(plain.steps.forward.map((s) => s.title)).toContain('plain');
+    expect(plain.nodes.get('y')!.value.toNested()).toEqual([[3, 5], [7, 9]]);
+    const gatedPage = await use('{ gate: true, extra: 3 }');
+    expect(gatedPage.nodes.get('m.gn.out')).toBe(gatedPage.nodes.get('m.h'));
+    expect(gatedPage.nodes.get('m.out')!.inputs[0]).toBe(gatedPage.nodes.get('m.h'));
+    expect(gatedPage.steps.forward.map((s) => s.title)).toEqual(expect.arrayContaining(['gated', 'rms of $\\mathbf{g}$']));
+    expect(gatedPage.steps.forward.map((s) => s.title)).not.toContain('plain');
+    await expect(use('{ gate: true }')).rejects.toThrow(/parameter 'extra' has no value and no default, and module Gated uses it/);
+  });
+
+  it('applies a step patch only when its condition, read where the patch is written, holds', async () => {
+    const patch = (when: string) => `, steps: { 'gn.rms': { when: ${when}, title: patched } }`;
+    expect((await use('{ gate: true, extra: 3 }', patch('true'))).steps.forward.map((s) => s.title)).toContain('patched');
+    expect((await use('{}', patch('false'))).steps.forward.map((s) => s.title)).not.toContain('patched');
+    await expect(use('{}', patch('true'))).rejects.toThrow(/step 'gn.rms' does not exist/);
+    await expect(use('{}', patch('gate'))).rejects.toThrow(/name 'gate' is not defined in the page/);
+  });
+
+  it('rejects conditions that are not booleans', async () => {
+    await expect(use('{ gate: 1, extra: 3 }')).rejects.toThrow(/parameter 'gate' must be true or false/);
+    await expect(page(`
+title: t
+dims: {}
+inputs:
+  x: { value: [1, 2] }
+body:
+  - a: { op: x * 2, when: 3 }
+`)).rejects.toThrow(/when must be true or false, got 3/);
+    await expect(page(`
+title: t
+dims: {}
+inputs:
+  x: { value: [1, 2] }
+body:
+  - a: 'x * 2 if 1 else x'
+`)).rejects.toThrow(/a condition must be true or false/);
+  });
+
+  it('takes the smaller or larger of two numbers with min and max', async () => {
+    const result = await page(`
+title: t
+dims: { n: 3 }
+inputs:
+  x: { value: [3, 1, 2] }
+body:
+  - m: 'topk_mask(x, min(n, 2), -1)'
+  - v: 'view(x, max(n, 1), 1)'
+`);
+    expect(result.nodes.get('m')!.value.toNested()).toEqual([1, 0, 1]);
+    expect(result.nodes.get('v')!.shape).toEqual([3, 1]);
+  });
+});

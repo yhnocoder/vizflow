@@ -7,7 +7,7 @@ import type { Compiler } from './text';
 import { type BufferValue, type Env, type ModuleValue, type Num, type OpValue, type ParamType, type Scope } from './types';
 import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
 
-const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'module', 'tex', 'text']);
+const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'bool', 'op', 'module', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
 
@@ -22,15 +22,20 @@ export function marked(tex: string, scope: Scope, hasOf: boolean): string {
   return scope.marks.reduce((acc, mark) => addMark(acc, mark), tex);
 }
 
-function paramValue(c: Compiler, decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where, instance?: string): { type: ParamType; value: Num | string | OpValue | ModuleValue } {
+function paramValue(c: Compiler, decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where, instance?: string): { type: ParamType; value: Num | string | boolean | OpValue | ModuleValue } | undefined {
   const type = decl.type;
-  if (typeof type !== 'string' || !PARAM_TYPES.has(type)) fail(where, `parameter '${name}' needs a type: int, float, dim, op, module, tex or text`);
+  if (typeof type !== 'string' || !PARAM_TYPES.has(type)) fail(where, `parameter '${name}' needs a type: int, float, dim, bool, op, module, tex or text`);
   if (decl.default_key !== undefined && (decl.default_key !== true || type !== 'text')) fail(where, `parameter '${name}': default_key must be true and needs type text`);
   const keyDefault = decl.default_key === true ? instance : undefined;
   const raw = given !== undefined ? given : (keyDefault ?? decl.default);
-  if (raw === undefined) fail(where, `parameter '${name}' has no value and no default`);
+  if (raw === undefined) return undefined;
   const sourceEnv = given !== undefined && parentEnv !== undefined ? parentEnv : env;
   const t = type as ParamType;
+  if (t === 'bool') {
+    const value = c.expression(raw, { ...sourceEnv, where }, undefined);
+    if (typeof value !== 'boolean') fail(where, `parameter '${name}' must be true or false`);
+    return { type: t, value };
+  }
   if (t === 'op') {
     if (typeof raw !== 'string') fail(where, `parameter '${name}' must name an op`);
     const parentParam = given !== undefined ? parentEnv?.scope.params.get(raw) : undefined;
@@ -70,6 +75,10 @@ export function declareParams(c: Compiler, scope: Scope, decl: Record<string, un
     const at = given[name] !== undefined && parentEnv !== undefined ? child(parentEnv.where, given, name) : child(paramsWhere, params, name);
     if (!isRecord(paramDecl)) fail(at, `parameter '${name}' must be a mapping`);
     const value = paramValue(c, paramDecl, given[name], name, env, parentEnv, at, instance);
+    if (value === undefined) {
+      scope.missing.set(name, parentEnv?.where ?? at);
+      continue;
+    }
     scope.params.set(name, value);
     if (value.type === 'dim') scope.dims.set(name, value.value as Num);
   }
@@ -177,7 +186,7 @@ export function matchShape(c: Compiler, scope: Scope, pattern: unknown, node: No
   pattern.forEach((entry, at) => {
     if (at === rest) return;
     const i = rest >= 0 && at > rest ? at - 1 + extra : at;
-    const actual: Num = { toy: node.shape[i], real: node.realShape[i] };
+    const actual: Num = { toy: node.shape[i], real: node.realShape[i], derive: (_, shapes) => shapes[node.id][i] };
     if (typeof entry === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry) && !scope.dims.has(entry) && !scope.params.has(entry)) {
       scope.dims.set(entry, actual);
       return;

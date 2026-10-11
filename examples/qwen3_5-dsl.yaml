@@ -11,7 +11,7 @@ import:
   GatedAttention:      ./qwen3_5/attention.yaml
 dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4 }
 dtype: bf16
-real: { name: Qwen3.5-27B, d: 5120, f: 17408, V: 248320, H: 24, Hkv: 4, dh: 256, rd: 64, Hk: 16, Hv: 48, dk: 128, dv: 128, K: 4 }
+real: { name: Qwen3.5-27B, T: 4096, d: 5120, f: 17408, V: 248320, H: 24, Hkv: 4, dh: 256, rd: 64, Hk: 16, Hv: 48, dk: 128, dv: 128, K: 4 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261011 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
@@ -205,6 +205,7 @@ body:
       title: $\cdots$ 第 1 到 $N-2$ 层
       subtitle: Qwen3_5DecoderLayer $\times$ ($N-2$)
       fixed: true
+      repeat: [{ like: linear_layer, count: 47 }, { like: full_layer, count: 15 }]
       fold:
         label: '$\of{x0}$'
         title: $\cdots$ 第 1 到 $N-2$ 层（占位）
@@ -293,6 +294,7 @@ steps:
         $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
   - sequence: true
     title: 序列
     labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']

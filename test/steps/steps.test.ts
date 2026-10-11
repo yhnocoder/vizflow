@@ -94,6 +94,20 @@ describe('automatic backward steps', () => {
     expect(plain.list.filter((st) => st.dir === 'backward').map((st) => st.nodes)).toEqual([[loss, lb], [y], [P], [s], [U], [x]]);
   });
 
+  it('skips the backward step of a node that gets no gradient, even when its input has one', () => {
+    const g = graph({ dims: { n: 3 } });
+    const x = g.param('x', ['n'], [0.5, -1, 2]);
+    const a = g.mul(x, 2, { name: 'a' });
+    const m = g.topk_mask(a, 1, -1, { name: 'm' });
+    const b = g.mul(a, m, { name: 'b' });
+    const loss = g.sum(b, { name: 'loss' });
+    const steps = createSteps(g, { forward: [{ show: a, title: 'a' }, { show: m, title: 'm' }, { show: b, title: 'b' }, { show: loss, title: 'loss' }] });
+    expect(m.grad).toBeNull();
+    expect(a.grad).not.toBeNull();
+    const backward = steps.list.filter((s) => s.dir === 'backward');
+    expect(backward.map((s) => s.nodes.map((n) => n.name))).toEqual([['loss', 'b'], ['a']]);
+  });
+
   it('generates no backward steps for a graph without a loss node', () => {
     const g = graph();
     const x = g.input('x', [5], [1, 2, 3, 4, 5]);

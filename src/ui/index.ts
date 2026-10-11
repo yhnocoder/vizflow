@@ -11,6 +11,7 @@ if (!document.getElementById(styleId)) {
 }
 
 export { mountSteps } from './steps';
+export { mountSettings } from './settings';
 export { renderFigures } from './figures';
 export { figureNames } from './figure-spec';
 export {
@@ -28,3 +29,4 @@ export {
 } from './panels';
 export { mountSections, type SectionItem, type SectionRow, type SectionBlock, type SectionsOptions, type JumpButton, type RopeSpec, type RopeCompareSpec } from './sections';
 export type { Mounted } from './mounted';
+export type { CostPanelOptions } from './cost';

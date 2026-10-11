@@ -2,7 +2,7 @@ import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
 import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, promoteDtypes } from './dtype';
-import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
+import { Node, type NodeCopies, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
 import { opDef } from './registry';
@@ -21,6 +21,7 @@ export interface OpOptions extends NodeOptions {
 export interface LabelOptions extends NodeOptions {
   tokens?: string[];
   classes?: number;
+  shape?: (number | string)[];
 }
 
 export interface SplitOptions {
@@ -42,13 +43,20 @@ export interface Graph extends BuiltinOps {
   split(tensor: Node, split_size: number | string, dim?: number | SplitOptions, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
-  addDim(name: string, value: number, real?: number): void;
+  addDim(name: string, value: number, real?: number, derive?: RealSize): void;
+  realSizes(dims?: Record<string, number>): Readonly<Record<string, number>>;
+  realShapes(dims?: Record<string, number>): number[][];
+  realCopies<T>(drawn: number, real: number | string, fn: () => T): T;
   node(name: string): Node | undefined;
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
   reset(): void;
   jacobian(out: Node, input: Node, options?: { row?: number }): Tensor;
 }
+
+type RealDerivation = (table: Readonly<Record<string, number>>, shapes: readonly number[][]) => number[];
+
+export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
 
 interface NodeState {
   value: Tensor;
@@ -111,6 +119,9 @@ class GraphImpl {
   private readonly touched = new Map<number, Tensor>();
   private detachedKey = '';
   private detached = new Set<number>();
+  private readonly realDerivations: RealDerivation[] = [];
+  private copies: NodeCopies = { drawn: 1, real: [] };
+  private readonly derivedSizes = new Map<string, RealSize>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -126,16 +137,52 @@ class GraphImpl {
     }
   }
 
-  addDim(name: string, value: number, real = value): void {
+  addDim(name: string, value: number, real = value, derive?: RealSize): void {
     const known = this.dims[name];
     if (known !== undefined) {
       if (known !== value || (this.realDims?.[name] ?? known) !== real) throw new Error(`addDim: dimension '${name}' is already defined`);
       return;
     }
     this.dims = Object.freeze({ ...this.dims, [name]: value });
+    if (derive !== undefined) this.derivedSizes.set(name, derive);
     if (this.real !== undefined && this.realDims !== undefined) {
       this.real = Object.freeze({ ...this.real, [name]: real });
       this.realDims = Object.freeze({ ...this.realDims, [name]: real });
+    }
+  }
+
+  realSizes(dims: Record<string, number> = {}): Readonly<Record<string, number>> {
+    return this.realLayout(dims).sizes;
+  }
+
+  realShapes(dims: Record<string, number> = {}): number[][] {
+    return this.realLayout(dims).shapes;
+  }
+
+  private realLayout(dims: Record<string, number>): { sizes: Readonly<Record<string, number>>; shapes: number[][] } {
+    if (this.realDims === undefined) throw new Error('realSizes: the graph has no real dimensions');
+    for (const [name, value] of Object.entries(dims)) {
+      if (!(name in this.realDims)) throw new Error(`realSizes: dimension '${name}' is not defined`);
+      if (!Number.isInteger(value) || value < 1) throw new Error(`realSizes: dimension '${name}' needs a positive integer, got ${value}`);
+    }
+    const sizes: Record<string, number> = { ...this.realDims, ...dims };
+    const shapes: number[][] = [];
+    for (const [name, derive] of this.derivedSizes) {
+      if (!(name in dims)) Object.defineProperty(sizes, name, { enumerable: true, get: () => derive(sizes, shapes) });
+    }
+    this.realDerivations.forEach((derivation) => shapes.push(derivation(sizes, shapes)));
+    return { sizes: Object.freeze(sizes), shapes };
+  }
+
+  realCopies<T>(drawn: number, real: number | string, fn: () => T): T {
+    if (!Number.isInteger(drawn) || drawn < 1) throw new Error(`realCopies: ${drawn} drawn copies need a positive integer`);
+    resolveShape([real], this.realDims ?? this.dims, 'realCopies');
+    const outer = this.copies;
+    this.copies = Object.freeze({ drawn: outer.drawn * drawn, real: Object.freeze([...outer.real, real]) });
+    try {
+      return fn();
+    } finally {
+      this.copies = outer;
     }
   }
 
@@ -148,7 +195,7 @@ class GraphImpl {
   }
 
   label(name: string, values: Nested, options: LabelOptions = {}): Node {
-    const shape = inferShape(values);
+    const shape = options.shape ?? inferShape(values);
     const classes = options.classes ?? options.tokens?.length;
     const attrs = classes === undefined ? {} : { classes };
     return this.leaf('label', name, shape, values, options, options.tokens, attrs);
@@ -310,7 +357,7 @@ class GraphImpl {
     const value = this.tensorFor(name, shape, values);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: value.clone(), transposed: undefined };
     const dtype = kind === 'label' ? LABEL_DTYPE : this.dtype;
-    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state);
+    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state, (table) => resolveShape(shapeSpec, table, name));
   }
 
   private createOp(def: AnyOpDef, inputs: Node[], given: Record<string, unknown>, options: OpOptions): Node {
@@ -323,7 +370,9 @@ class GraphImpl {
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
-    return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
+    return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state, (table, shapes) =>
+      def.shape(inputs.map((n) => [...shapes[n.id]]), resolveSizes(def, given, table)),
+    );
   }
 
   private addNode(
@@ -338,6 +387,7 @@ class GraphImpl {
     dtype: Dtype,
     tokens: string[] | undefined,
     state: NodeState,
+    deriveReal: RealDerivation,
   ): Node {
     if (this.node(name) !== undefined) throw new Error(`node '${name}' already exists`);
     const id = this.nodes.length;
@@ -357,6 +407,7 @@ class GraphImpl {
       elem: options.elem ?? defaults.elem,
       tokens: tokens === undefined ? undefined : Object.freeze([...tokens]),
       card: options.card,
+      copies: this.copies,
       internals: {
         value: () => this.states[id].value,
         grad: () => this.gradOf(id),
@@ -367,6 +418,7 @@ class GraphImpl {
     const node = new Node(init);
     this.nodes.push(node);
     this.states.push(state);
+    this.realDerivations.push(deriveReal);
     this.backwardValid = false;
     return node;
   }

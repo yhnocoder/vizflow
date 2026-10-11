@@ -73,6 +73,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - `src/tensor/`：张量、形状与广播、数值格式化。入口 `src/tensor/index.ts`。
 - `src/autograd/`：计算图、dtype、运算注册与反向传播；`src/autograd/ops/` 是各类运算的前向与反向。入口 `src/autograd/index.ts`。
 - `src/explain/`：由运算定义推导讲解内容（逐元素公式、连线、悬停卡片）；`src/explain/ops/` 与 `src/autograd/ops/` 对应。入口 `src/explain/index.ts`。
+- `src/cost/`：按步骤推算显存里活着的张量与每步 FLOP，供显存与计算量面板使用。入口 `src/cost/index.ts`。
 - `src/formula/`：KaTeX 渲染与公式文本。入口 `src/formula/index.ts`。
 - `src/steps/`：步骤序列与讲解文本模板。入口 `src/steps/index.ts`。
 - `src/ui/`：页面上的 DOM 组件，使用 Solid。入口 `src/ui/index.ts`。

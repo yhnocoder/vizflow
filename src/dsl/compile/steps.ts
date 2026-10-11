@@ -37,10 +37,11 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
   const stepsWhere = child(env.where, decl, field);
   if (!Array.isArray(decl.steps)) fail(stepsWhere, 'steps must be a list');
   const seen = new Set<string>();
-  return decl.steps.map((step, i) => {
+  return decl.steps.flatMap((step, i): ResolvedStep[] => {
     const at = child(stepsWhere, decl.steps as unknown[], i);
     if (!isRecord(step)) fail(at, 'a step must be a mapping');
     checkKeys(step, STEP_KEYS, at);
+    if (!c.enabled(step, { ...env, where: at })) return [];
     if (typeof step.id !== 'string') fail(at, 'a step needs an id');
     if (seen.has(step.id)) fail(child(at, step, 'id'), `step id '${step.id}' is used twice`);
     seen.add(step.id);
@@ -63,7 +64,7 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
     if (step.brace !== undefined) forward.brace = braceOf(c, step.brace, fieldEnv('brace'));
     if (step.backward !== undefined) forward.backward = c.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
     if (step.notes !== undefined) forward.notes = notesOf(c, step.notes, fieldEnv('notes'));
-    return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
+    return [{ rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show }];
   });
 }
 
@@ -160,6 +161,7 @@ export function patchSteps(c: Compiler, scope: Scope, steps: StepRec[], use: Rec
     const at = child(where, patches, path);
     const spec = record(patchSpec, at, 'a step patch');
     checkKeys(spec, PATCH_KEYS, at);
+    if (!c.enabled(spec, { ...env, where: at })) continue;
     const dot = path.lastIndexOf('.');
     const owner = dot < 0 ? scope.path : join(scope.path, path.slice(0, dot));
     const id = dot < 0 ? path : path.slice(dot + 1);

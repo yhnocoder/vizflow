@@ -219,7 +219,8 @@ panels:
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`mla`、`lm-head-nll`，以及按定义拆开的函数模块 `sigmoid`、`silu`、`softplus`、`gelu`、`relu`、`log-softmax`、`nll-loss`。页面里不要直接调用 `sigmoid(x)`、`silu(x)`、`softplus(x)`、`gelu(x)`、`logsumexp(x)`、`log_softmax(x)`、`nll_loss(...)` 这些复合运算，改用对应的模块，例如 `beta_sigmoid: { use: Sigmoid, inputs: { x: b }, outputs: { out: beta } }`，这样图上每个节点都是一个初等运算。`glu` 的参数 `act` 是 module 类型，写 `act: SiLU`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{SiLU}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`layernorm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`mla`、`lightning-indexer`、`lm-head-nll`，以及按定义拆开的函数模块 `sigmoid`、`silu`、`softplus`、`gelu`、`relu`、`log-softmax`、`nll-loss`。页面里不要直接调用 `sigmoid(x)`、`silu(x)`、`softplus(x)`、`gelu(x)`、`logsumexp(x)`、`log_softmax(x)`、`nll_loss(...)` 这些复合运算，改用对应的模块，例如 `beta_sigmoid: { use: Sigmoid, inputs: { x: b }, outputs: { out: beta } }`，这样图上每个节点都是一个初等运算。`glu` 的参数 `act` 是 module 类型，写 `act: SiLU`。`layernorm` 是 PyTorch 的 `nn.LayerNorm`，带权重和偏置，参数 `eps` 默认 `1e-5`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{SiLU}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`mla` 写 `sparse: true` 时是 DeepSeek V3.2 的注意力：多建一个 `lightning-indexer` 实例 `indexer`，注意力的 mask 换成它选出的稀疏 mask，这时还要给 `HI`、`dI`、`kI`（对应 index_n_heads、index_head_dim、index_topk），用法见 `examples/deepseek_v3_2-dsl.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- 节点、实例、group、for、模块的步骤和步骤补丁可以写 `when: 表达式`，表达式求值成 `false` 时这一项不建。表达式里可以用 `bool` 类型的参数、`not c` 和条件表达式 `a if c else b`，例如 MLA 里 `- indexer: { use: LightningIndexer, when: sparse, ... }` 和 `inputs: { mask: M_sparse if sparse else M }`。模块参数没有值也没有默认值时，只在模块用到它的地方报错，所以只在 `when` 为 `true` 的部分用到的参数可以不写默认值。`min(a, b)`、`max(a, b)` 对数取最小值和最大值，例如 `topk_mask(x, min(kI, T), -1)`。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
 - 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta)`、`rope_sin(T, dh, theta)` 或 `causal_mask(T)`；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
 - 实例写 `inline: true` 时不单独成为一个模块：没有自己的大括号、折叠和步骤分组，节点和步骤算作外层模块的，路径仍然带实例名。它不能写 `title`、`subtitle`、`fixed`、`folded`、`split`、`fold`。
@@ -313,7 +314,7 @@ const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'
 ```
 
 - `g.input(name, shape, values, options?)` 与 `g.param(...)` 创建数值叶子。`values` 可以是扁平数组，也可以是嵌套数组，元素个数必须等于 shape 的元素个数。两者在计算上没有区别，都有梯度，都可以 `set`，都可以放进损失面板的 `sgd.params`、`random.nodes` 和滑块。区分它们是为了表达含义：模型权重用 `param`，输入数据和 logits 用 `input`。只有一个 logits 输入的小部件把它放进 `sgd.params`，「梯度下降一步」就直接更新 logits（见 9.3）。
-- `g.label(name, values, options?)` 创建整数标签，shape 从 `values` 推断：`0` 是 `()`，`[0]` 是 `(1,)`，`[0, 1, 2]` 是 `(3,)`，`[[0], [1], [2]]` 是 `(3, 1)`。`tokens` 是每个类别的显示名，`classes` 是类别数，默认等于 `tokens.length`。没有 `tokens` 时必须给 `classes`，否则 tokens 面板和 3D 场景的目标列无法工作。
+- `g.label(name, values, options?)` 创建整数标签，shape 从 `values` 推断：`0` 是 `()`，`[0]` 是 `(1,)`，`[0, 1, 2]` 是 `(3,)`，`[[0], [1], [2]]` 是 `(3, 1)`。`shape` 可以写维度名，例如 `{ shape: ['T'] }`，这时真实尺寸按 `real` 里的 `T` 计算。`tokens` 是每个类别的显示名，`classes` 是类别数，默认等于 `tokens.length`。没有 `tokens` 时必须给 `classes`，否则 tokens 面板和 3D 场景的目标列无法工作。
 
 - `g.buffer(name, shape, values, options?)` 创建常量叶子，对应 torch 的 `register_buffer`，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 `-Infinity`，causal mask 写成 `s > t ? -Infinity : 0`。buffer 没有梯度：`grad` 为 `null`，不进入自动生成的反向步骤，不能放进损失面板的 `sgd.params` 和 `random.nodes`，模板里对它取 `.grad` 报错。它可以 `set`，`g.reset()` 时恢复创建时的值。3D 场景照常画出它，但它与 label 一样，到运算节点的边不画。
 
@@ -658,6 +659,24 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 `sgd.params` 与 `random.nodes` 可以是 input 或 param 节点。所有字段都可以省略；只要读数时写 `'loss'`。读数保留 3 位小数。图里没有损失节点时挂载 loss 面板会抛错 `graph has no loss node`。`sgd.label` 省略时为「更新一步 节点名」，`random.label` 省略时为「随机 节点名」。
 
+**cost**：显存与计算量，需要传入 `steps`。
+
+```js
+'cost'
+{ cost: { title: '显存与计算量', dims: 'real' } }
+```
+
+卡片显示当前步骤已分配的显存和峰值，按参数、输入、缓冲区、为反向保存的激活、临时激活、参数梯度、激活梯度分类堆叠成一根横条；指针移到一段上列出这一类的张量、shape 和大小。下面是本步的 FLOP 与前向、反向累计，指针移到「本步」上列出这一步的运算和 FLOP 公式；再下面是每一步一根柱子的 FLOP 图，叠一条显存折线，点柱子跳到那一步。点击会固定弹出的列表，触屏也能查看。图有 `real` 时卡片上可以在页面尺寸和真实尺寸之间切换，`dims` 是初始选择，默认用真实尺寸。统计方式（按 PyTorch eager 的 autograd 推算哪些张量还活着，FLOP 计数表）在卡片底部的「怎么统计的」里，自定义运算要给 `cost` 才计入，见 2.3。YAML 页面写 `- cost`。真实尺寸下的序列长度取 `real` 里的 `T`，例如 `real: { name: Qwen3-8B, T: 4096, d: 4096, ... }`。真实尺寸下卡片上有 $B$（批大小）和 $T$（序列长度）两个滑块，数字随之重算。`for` 循环在图里只画几份（例如 2 个 head）时，真实尺寸按 `real` 里的份数统计，列表里标出倍数。占位盒子写 `repeat` 后，盒子里的层按画出的同类层推算并画斜线标出，例如：
+
+```yaml
+- layers:
+    title: $\cdots$ 第 1 到 $N-1$ 层
+    fixed: true
+    repeat: [{ like: layer, count: 35 }]
+```
+
+不写 `repeat` 的占位盒子不计入。
+
 **sliders**：一个节点的每个元素一个滑块。
 
 ```js
@@ -964,6 +983,8 @@ ui 和 scene3d 自动注入样式与字体。只用 core、steps 的页面需要
 - 布局类：`.vf-page`（页面容器，最大宽 1360px）；`.vf-split`（左侧自适应，右侧面板 360px，980px 以下改为单列）；`.vf-stack`（单列）；`.vf-inline`（与正文同宽，用于文章里的小部件）。
 - 尺寸变量：`--vf-side-width`（右侧宽度，默认 360px）、`--vf-gap`（间距，默认 20px）、`--vf-stage-height`（画布高度，默认 `min(68vh, 640px)`，980px 以下 62vh）。
 - `readTheme()` 返回线性空间的颜色，`onThemeChange(fn)` 在主题变化时调用，两者在 theme 入口，页面自己画图时使用。
+- 主题设置：`setTheme('default' | 'catppuccin-latte' | 'liquid-glass', origin?)` 切换主题并保存到浏览器本地，`setBackgroundImage(file | null)` 设置或移除背景图片（只存在本机的 IndexedDB）。页面引入 theme 时自动应用已保存的设置。给用户一个设置页时，用 ui 的 `mountSettings('#settings')` 挂载现成的界面，见 `examples/settings.html`。
+- 页面自己的样式里，卡片类的元素加 `data-vf-glass` 属性后，在 Liquid Glass 主题下也显示为玻璃。
 
 ## 8. 自定义运算
 
@@ -999,6 +1020,7 @@ const y = g.square(x, { name: 'y' });
 - `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`；参数是数组时逐个元素换算；只按关键字传的参数也可以列在这里，例如内置的 `cat` 写 `sizes: ['pieces']`，`pieces` 只出现在 `defaults` 里。
 - `rest` 写最后一个参数名，调用时从这个位置起的位置参数收集成一个数组，例如内置的 `view` 写 `args: ['input', 'shape']`、`rest: 'shape'`，`g.view(a, T, H, dh)` 与 `g.view(a, [T, H, dh])` 相同。规则见 2.3 的「尺寸参数写维度名」。
 - 讲解部分（`explain`）可以写在 `defineOp` 的 `explain` 字段里，也可以用 `registerExplain` 单独注册。`pattern` 从 `'elementwise'`、`'reduce'`、`'dense'`、`'contract'`、`'select'` 中选一个，决定连线怎么画。`local` 返回一条边的局部导数，`tex.forward` 与 `tex.local` 给出卡片上的公式。接口定义见设计文档「定义新运算」与「连线模式」两节。
+- `cost` 给显存与计算量面板用：`{ saves: [[0]], flops: (inputs, out) => ({ forward: [n], backward: [[2, n]] }) }` 表示输入 0 的梯度需要保存输入 0，前向计 $n$ 次、反向计 $2n$ 次（`n` 是输出的元素个数，每一项写成因子列表，面板把因子连乘写成公式）。`saves` 里的数字是输入下标，`'out'` 是输出；与输入共用存储的运算写 `view: true`。不写 `cost` 时按反向保存全部输入、FLOP 为 0 统计。上面的 `square` 可以写 `cost: { saves: [[0]], flops: (_, out) => { const n = out.reduce((a, b) => a * b, 1); return { forward: [n], backward: [[2, n]] }; } }`。
 - 只有数值、没有讲解的运算可以用在只引入 core 的场合。用到 steps 或 scene3d 时必须有讲解，否则抛错 `explain: op '<名字>' of node '<节点>' has no explain definition`。
 - 同名运算只能注册一次。运算名不能与计算图已有的成员同名（例如 `input`、`loss`、`node`）。
 - 写自定义运算时打开 `graph({ check: true })`，`backward` 写错会立即抛出 `gradient check failed`。

@@ -9,6 +9,7 @@
 <body>
 <h1>vizflow 示例</h1>
 <p id="status">loading</p>
+<p><a href="settings.html">设置</a>：主题（默认、Catppuccin Latte、Liquid Glass）与背景图片，保存在浏览器本地，所有示例页面共用。</p>
 <h2>完整页面</h2>
 <ul id="pages">
   <li><a href="lm-head-nll.html">lm_head 与 NLL Loss</a>：3D 场景、步骤条与面板。</li>
@@ -19,6 +20,7 @@
   <li><a href="qwen3-dsl.html">Qwen3 一层（YAML 页面描述）</a>：和上一页同样的模型与数值，用 <code>qwen3-dsl.yaml</code> 页面描述文件写成，由 <code>&lt;vizflow-page src&gt;</code> 在浏览器里编译。</li>
   <li><a href="qwen3_5-dsl.html">Qwen3.5 最后两层（YAML 页面描述）</a>：Qwen3.5 的混合结构，倒数第二层是 Gated DeltaNet 线性注意力，按位置展开状态的递推；最后一层是带输出门、只转部分维度 RoPE 的 softmax 注意力。用 <code>qwen3_5-dsl.yaml</code> 写成。</li>
   <li><a href="deepseek_v3-dsl.html">DeepSeek V3：MLA 与 MoE（YAML 页面描述）</a>：第 3 层（最后一个 dense 层）和第 4 层（第一个 MoE 层）。注意力是 multi-head latent attention，q 和 kv 先压缩成 latent 再展开；MoE 用 sigmoid 亲和度、按组限制的 top-k 路由和一个共享专家。用 <code>deepseek_v3-dsl.yaml</code> 写成。</li>
+  <li><a href="deepseek_v3_2-dsl.html">DeepSeek V3.2：DeepSeek Sparse Attention（YAML 页面描述）</a>：和上一页的结构相同，每一层的 MLA 里多一个 lightning indexer，给每对位置打分，每个位置只保留分数最高的 <code>index_topk</code> 个 key 参与注意力。用 <code>deepseek_v3_2-dsl.yaml</code> 写成。</li>
   <li><a href="element-lmhead.html">lm_head 与 NLL Loss（vizflow-page 元素）</a>：同一页用 <code>&lt;vizflow-page&gt;</code> 元素写成，页面只给元素设置属性。</li>
 </ul>
 <h2>模块与写作说明的检查页</h2>

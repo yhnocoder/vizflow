@@ -1,5 +1,6 @@
 import { Tensor, formatShape } from '../../tensor';
 import type { OpDef } from '../op';
+import { NO_FLOPS, numel } from './cost';
 
 export type Reduction = 'mean' | 'sum' | 'none';
 
@@ -72,4 +73,5 @@ export const nllLossOp: OpDef<NllLossAttrs> = {
     });
     return [grad, null];
   },
+  cost: { saves: [[1], []], flops: ([, target]) => ({ forward: [numel(target)], backward: [[numel(target)], NO_FLOPS] }) },
 };
