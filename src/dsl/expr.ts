@@ -8,7 +8,9 @@ export type Ast =
   | { k: 'call'; fn: Ast; args: Ast[]; kwargs: [string, Ast][]; pos: number }
   | { k: 'list'; items: Ast[]; pos: number }
   | { k: 'neg'; arg: Ast; pos: number }
-  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number };
+  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number }
+  | { k: 'not'; arg: Ast; pos: number }
+  | { k: 'cond'; test: Ast; then: Ast; otherwise: Ast; pos: number };
 
 export type BinaryOp = '+' | '-' | '*' | '/' | '//' | '@' | '**';
 
@@ -91,7 +93,28 @@ class Parser {
     if (token.t !== 'end') throw new ParseError(`unexpected '${token.v}'`, token.pos);
   }
 
+  private isWord(v: string): boolean {
+    const token = this.peek();
+    return token.t === 'id' && token.v === v;
+  }
+
   expr(): Ast {
+    const then = this.negation();
+    if (!this.isWord('if')) return then;
+    const word = this.take();
+    const test = this.negation();
+    if (!this.isWord('else')) throw new ParseError("expected 'else'", this.peek().pos);
+    this.take();
+    return { k: 'cond', test, then, otherwise: this.expr(), pos: word.pos };
+  }
+
+  private negation(): Ast {
+    if (!this.isWord('not')) return this.sum();
+    const word = this.take();
+    return { k: 'not', arg: this.negation(), pos: word.pos };
+  }
+
+  private sum(): Ast {
     let left = this.prod();
     while (this.isOp('+') || this.isOp('-')) {
       const op = this.take();
@@ -195,9 +218,9 @@ class Parser {
   }
 
   range(): [Ast, Ast] {
-    const from = this.expr();
+    const from = this.sum();
     this.expect('..');
-    return [from, this.expr()];
+    return [from, this.sum()];
   }
 }
 

@@ -266,7 +266,7 @@ interface Graph {
     <tr><td><code>dtype</code></td><td>真实模型里张量的默认 dtype，默认 <code>fp32</code>；Qwen3 等以 bfloat16 发布的模型写 <code>bf16</code>。dtype 只用于显示，计算内核始终用 float64 计算。各节点的取值规则见下文「节点」。不在 <code>Dtype</code> 列表里的值抛错 <code>graph: unknown dtype 'x', expected one of ...</code>。</td></tr>
     <tr><td><code>input</code>、<code>param</code></td><td>叶子节点。<code>values</code> 可以是扁平数组或嵌套数组，元素个数必须等于 shape 的元素个数。两者的区别是 param 可以被损失面板的「更新一步」更新。</td></tr>
     <tr><td><code>label</code></td><td>整数标签，shape 从 <code>values</code> 推断：<code>0</code> 是 <code>()</code>，<code>[0]</code> 是 <code>(1,)</code>，<code>[[0],[1],[2]]</code> 是 <code>(3, 1)</code>。<code>tokens</code> 是每个类别的显示名，<code>classes</code> 是类别数，默认等于 <code>tokens.length</code>。</td></tr>
-    <tr><td><code>buffer</code></td><td>常量叶子，对应 torch 的 <code>register_buffer</code>，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 <code>-Infinity</code>。它没有梯度：<code>grad</code> 为 <code>null</code>，不进入自动生成的反向步骤，不能放进损失面板的 <code>sgd.params</code> 与 <code>random.nodes</code>，模板里对它取 <code>.grad</code> 在编译时报错。它可以 <code>set</code>，<code>reset</code> 时恢复创建时的值。3D 场景照常画出它，它连到运算的边与 label 一样不画。用 input 表示这类张量时，读者会在反向步骤和梯度下降里看到一个本不该训练的量，所以单独设一种叶子。</td></tr>
+    <tr><td><code>buffer</code></td><td>常量叶子，对应 torch 的 <code>register_buffer</code>，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 <code>-Infinity</code>。它没有梯度：<code>grad</code> 为 <code>null</code>，不进入自动生成的反向步骤，不能放进损失面板的 <code>sgd.params</code> 与 <code>random.nodes</code>，模板里对它取 <code>.grad</code> 在编译时报错。它可以 <code>set</code>，<code>reset</code> 时恢复创建时的值。3D 场景照常画出它；它连到运算的边在前向画出，反向不画，因为反向连线表示梯度经过的路径，而 buffer 没有梯度。用 input 表示这类张量时，读者会在反向步骤和梯度下降里看到一个本不该训练的量，所以单独设一种叶子。</td></tr>
     <tr><td><code>split</code></td><td>对应 <code>torch.split(tensor, split_size, dim)</code>，返回若干个 <code>narrow</code> 节点组成的数组，本身不是运算节点。<code>split_size</code> 不整除时最后一块较小。<code>split_size</code> 可以是 <code>dims</code> 里的维度名，规则见「尺寸参数可以写维度名」。<code>options</code> 的 <code>names</code>、<code>tex</code>、<code>elem</code> 按块逐个给出，个数必须等于块数；没给 <code>names</code> 时第 $i$ 块（从 1 开始）命名为 <code>名字_i</code>，例如 <code>q_1</code>。任何一块的名字已经存在时抛错，这时一个节点也不创建。<code>dim</code> 默认 0，第三个参数是对象时视为 <code>options</code>。</td></tr>
     <tr><td><code>loss</code>、<code>findLoss</code></td><td><code>loss(node)</code> 指定损失节点。<code>findLoss()</code> 返回当前损失节点：指定过时返回指定的节点，否则取最后创建的、元素个数为 1 的运算节点，都没有时返回 <code>undefined</code>。不传参数的 <code>loss()</code> 与 <code>findLoss()</code> 相同，但没有损失节点时抛错；steps、explain 与 scene3d 用 <code>findLoss()</code> 判断一个节点是否是损失。</td></tr>
     <tr><td><code>node</code></td><td>按名字查找节点，比较时忽略空白，<code>'log p'</code> 与 <code>'logp'</code> 相同。</td></tr>
@@ -372,8 +372,8 @@ interface Graph {
   </tbody>
 </table>
 <p>logsumexp、softmax 这类运算在 vizflow 里是原子运算，不拆成基础运算组合，因为读者要在图上看到 LSE 是一个节点。</p>
-<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
-<p><b>按其他真实尺寸重算。</b><code>g.realSizes(dims?)</code> 返回真实尺寸表，<code>dims</code> 覆盖其中的同名值；<code>g.realShapes(dims?)</code> 按这张表重新推导每个节点的真实 shape，结果按节点编号排列，不改变节点本身的 <code>realShape</code>。显存面板的 $T$ 滑块用它们。只有直接写维度名的尺寸会跟着变，表达式登记的 <code>"示例值:真实值"</code> 维度保持原值。<code>dims</code> 里的名字不在真实尺寸表里时抛错 <code>realSizes: dimension 'x' is not defined</code>，值不是正整数时抛错 <code>realSizes: dimension 'x' needs a positive integer, got v</code>；图没有 <code>real</code> 时抛错 <code>realSizes: the graph has no real dimensions</code>。</p>
+<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?, derive?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
+<p><b>按其他真实尺寸重算。</b><code>g.realSizes(dims?)</code> 返回真实尺寸表，<code>dims</code> 覆盖其中的同名值；<code>g.realShapes(dims?)</code> 按这张表重新推导每个节点的真实 shape，结果按节点编号排列，不改变节点本身的 <code>realShape</code>。显存面板的 $T$ 滑块用它们。<code>g.addDim(name, value, real?, derive?)</code> 的 <code>derive(sizes, shapes)</code> 给出这个维度怎样由其他维度和已经推导出的 shape 算出，重算时按它求值；没有 <code>derive</code> 的维度保持登记时的真实值。DSL 编译器登记的维度都带 <code>derive</code>，所以 $T \times H$ 这样由表达式算出的尺寸也跟着 $T$ 变。<code>dims</code> 里的名字不在真实尺寸表里时抛错 <code>realSizes: dimension 'x' is not defined</code>，值不是正整数时抛错 <code>realSizes: dimension 'x' needs a positive integer, got v</code>；图没有 <code>real</code> 时抛错 <code>realSizes: the graph has no real dimensions</code>。</p>
 <p><b>循环画出的份数。</b>图里只画出循环的几份、真实模型有更多份时（例如画 2 个 head，真实有 32 个），<code>g.realCopies(drawn, real, fn)</code> 在 <code>fn</code> 里建的每个节点的 <code>copies</code> 记下「画出 drawn 份，真实有 real 份」，<code>real</code> 是数或维度名，嵌套时 <code>drawn</code> 相乘、<code>real</code> 依次记下。不在 <code>realCopies</code> 里建的节点是 <code>{ drawn: 1, real: [] }</code>。显存面板在真实尺寸下把每个这样的节点按 real/drawn 倍统计。</p>
 
 <h3>定义新运算</h3>
@@ -536,7 +536,7 @@ isLeafLike(node: Node): boolean</code></pre>
   <li>折叠状态的初值是 <code>fixed || folded</code>。<code>folded(id)</code> 读取，<code>setFolded(id, b)</code> 与 <code>setAllFolded(b)</code> 修改，id 不存在时抛错 <code>folded: module 'x' does not exist</code>、<code>setFolded: module 'x' does not exist</code>。<code>fixed</code> 的模块不受这两个方法影响。状态改变后步骤列表重建，然后通知订阅者。</li>
   <li>前向：总览之后，<code>kind: 'inputs'</code> 的步骤（有的话）是第 1 步。其余每个步骤声明是一个单元：<code>show</code> 里不是叶子的节点是它算出的节点，没有时取全部 <code>show</code>；它用到的节点是这些节点的输入（权重的转置同时带上权重）；<code>active</code> 默认是两者的并集。叶子指 input、param、label、buffer 和权重的转置（<code>isLeafLike</code>），它们在输入步骤里出现。前向第 $k$ 步的 revealed 是输入步骤的 <code>show</code> 加上到这一步为止各单元算出的节点。</li>
   <li>单元所属的模块链上有折叠的模块时，从最外层的折叠模块开始，连续属于它的单元合成一个 <code>kind: 'module'</code> 步骤：显示模块的输出，高亮输出、输入和参数，标题默认「标题（已折叠）」，按钮文字默认是模块标题。</li>
-  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点时跳过，只有第一步例外。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。<code>overview.backward</code> 给出时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
+  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点，或者单元显示的节点都没有梯度时跳过，只有第一步例外。后一条让 <code>topk_mask</code> 这类不可导的选择不出现在反向里，即使它的输入从别的路径收到了梯度。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，输出都没有梯度时同样跳过；标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。<code>overview.backward</code> 给出时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
   <li>折叠或展开以后，当前位置尽量保持：依次找 id 相同的步骤、同一方向里节点有重叠的步骤、包含原来那一步的折叠模块步骤，都没有时回到同一方向的第一步。</li>
 </ul>
 <p>反向按单元倒序，而不是按节点倒序，是因为读者在前向里按单元建立的分组（例如 RMSNorm 的四步）在反向里应当一一对应；折叠后一个模块只占一步，前向与反向的步数随之一起变化。</p>
@@ -599,10 +599,11 @@ isLeafLike(node: Node): boolean</code></pre>
 interface EdgeCard {
   title: string;
   local: { tex: string; value: number };
-  upstream: { tex: string; value: number };
-  product: { tex: string; value: number };
+  upstream?: { tex: string; value: number };
+  product?: { tex: string; value: number };
   note?: string;
 }</code></pre>
+<p>起点是 buffer 的边带 <code>constant: true</code>。它的连线卡片只有局部导数，没有上游梯度和传回的量，说明写「常量，不需要梯度，这条边只表示前向依赖。」3D 场景在反向步骤不画这类边。</p>
 
 <h3>连线模式</h3>
 <p>每个运算从一个固定的小集合里选一种连线模式，scene3d 根据模式和布局模板决定线怎么画，卡片根据局部导数和公式模板生成文字，两者都不需要知道具体是哪个运算。新运算选定一种模式，就能得到全部讲解内容。</p>
@@ -620,7 +621,7 @@ interface EdgeCard {
 </table>
 <p>乘积格子只存在于 <code>explain</code>，不是计算图的节点，数值为 $A_{r,k}B_{k,i}$。这样计算图与 torch 保持一致，讲解仍然可以画出「一行乘一列再累加」的过程。每条边有稳定的 <code>id</code>：同一个运算、同一位置的边在 label 变化前后 id 相同，select 模式的 id 用输出下标。</p>
 <p>embedding、narrow、cat 选 <code>elementwise</code> 加 <code>selected</code>，不选 <code>select</code>。scene3d 把 <code>select</code> 运算的输入当作按类别对齐的张量，并把输出画成标量节点；embedding 的 weight 按行对应类别，narrow 与 cat 的输出是完整的张量，按 <code>select</code> 处理会画错。</p>
-<p>一个张量参数是 label 或 buffer、或在 <code>differentiable</code> 里为 <code>false</code> 时，它的元素没有边，<code>selected</code> 给出的这类元素也被跳过。</p>
+<p>一个张量参数是 label、或在 <code>differentiable</code> 里为 <code>false</code> 时，它的元素没有边，<code>selected</code> 给出的这类元素也被跳过。buffer 参数照常生成边，3D 场景只在前向画这些边，反向跳过。</p>
 <p>所有公式模板只使用 KaTeX 和 MathJax 都支持的命令：<code>\frac</code>、<code>\partial</code>、<code>\mathbf</code>、<code>\top</code>、<code>\operatorname</code>、<code>\mathrm</code>、<code>\sum</code>、<code>\log</code>、<code>\exp</code>、<code>\sqrt</code>、<code>\sigma</code>、<code>\Big</code>、<code>\left</code>、<code>\right</code>、<code>\cdot</code>、<code>\times</code>、<code>\to</code>、<code>\delta</code>、<code>\odot</code>、<code>\epsilon</code>、<code>\infty</code>。embedding 的前向公式写作 $E[\mathbf{x}]$，用两个输入节点的 <code>tex</code>；narrow 与 cat 写作 $\operatorname{narrow}(\mathbf{x},1,0,4)$、$\operatorname{cat}(\mathbf{a},\mathbf{b})$；view、select、select_matmul 写作 $\operatorname{view}(\mathbf{x})$、$\operatorname{select}(\mathbf{x},1,0)$、$\operatorname{select}(\mathbf{q},1,h)\,\mathbf{k}$；指数为 2 的 pow 写作 $\mathbf{x}\odot\mathbf{x}$；给了 <code>eps</code> 的 rsqrt 写作 $\frac{1}{\sqrt{a+\epsilon}}$。<code>formatNumber</code> 把 $\pm\infty$ 写成 <code>∞</code>，LaTeX 里写成 <code>\infty</code>。</p>
 
 <h2>3D 场景怎么画</h2>

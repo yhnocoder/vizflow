@@ -27,7 +27,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$；MoE 层里，每个位置的梯度只进入选中它的那几个路由专家和共享专家，挑选专家的那部分计算没有梯度。
+      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$；MoE 层里，每个位置的梯度只进入选中它的那几个路由专家和共享专家，挑选专家的那部分计算没有梯度。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入

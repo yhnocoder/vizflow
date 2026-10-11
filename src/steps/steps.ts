@@ -407,6 +407,8 @@ class StepsImpl implements Steps {
     for (const group of [...groups].reverse()) {
       if (group.module !== undefined) {
         const m = group.module;
+        const recv = moduleUse(m).filter(hasGrad);
+        if ((recv.length === 0 || !m.outputs.some(hasGrad)) && position > 0) continue;
         const info: Omit<StepInfo, 'index' | 'dir'> = {
           id: `B:${m.id}`,
           forwardId: forwardIds.get(group),
@@ -419,12 +421,12 @@ class StepsImpl implements Steps {
           module: m.id,
         };
         if (m.sub !== undefined) info.sub = m.sub;
-        pushBackward(info, moduleUse(m).filter(hasGrad));
+        pushBackward(info, recv);
         continue;
       }
       const unit = group.unit as Unit;
       const recv = unit.use.filter(hasGrad);
-      if (recv.length === 0 && position > 0) continue;
+      if ((recv.length === 0 || !unit.prod.some(hasGrad)) && position > 0) continue;
       const subject = recv[0] ?? unit.prod[0];
       const override = unit.step.backward ?? {};
       const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;

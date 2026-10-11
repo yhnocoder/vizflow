@@ -1,0 +1,390 @@
+title: DeepSeek V3.2：DeepSeek Sparse Attention，从 token 到损失
+lede: DeepSeek V3.2 的结构和 V3 相同，只在每一层的 MLA 里加了一个 lightning indexer。indexer 给每个位置和它之前的每个位置打一个分，每个位置只保留分数最高的 $k_I$ 个 key，注意力只在这些 key 上算，这就是 DeepSeek Sparse Attention（DSA）。这一页从 token id 开始，经过占位的第 1、2 层、第 3 层（dense）、第 4 层（MoE）、占位的第 5 到 61 层、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，$k_I=2$，所以只有最后一个位置少看一个 key。点两侧的大括号可以折叠或展开一个模块。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  MLA:     vizflow/nn/mla
+  GLU:     vizflow/nn/glu
+  MoE:     ./deepseek_v3/moe.yaml
+dims: { T: 3, d: 4, f: 6, V: 5, H: 2, dn: 2, dr: 4, dv: 2, rq: 3, rkv: 3, Ne: 6, G: 2, TG: 1, K: 2, mf: 2, Sh: 1, HI: 2, dI: 6, kI: 2 }
+dtype: bf16
+real: { name: DeepSeek-V3.2, T: 4096, d: 7168, f: 18432, V: 129280, H: 128, dn: 128, dr: 64, dv: 128, rq: 1536, rkv: 512, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1, HI: 64, dI: 128, kI: 2048 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
+inputs: {}
+weights:
+  E: { shape: [V, d] }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失。DeepSeek V3.2 和 V3 一样有 $N=61$ 层，前 3 层的 MLP 是 SwiGLU，后面 58 层是 MoE；这里展开第 3 层和第 4 层，其余的层收成占位盒子。和 V3 不同的是注意力：每一层的 MLA 里多了一个 lightning indexer。它有自己的 $H_I=\of{HI}$ 个小 head，用 ReLU 点积给每个位置 $t$ 和它之前的每个位置 $s$ 打分，按位置给出的权重把各个 head 的分数加起来，每个位置只保留分数最高的 $k_I=\of{kI}$ 个 key。没选中的 key 在 attention mask 里记成 $-\infty$，MLA 的其余部分不变。真实模型里 $k_I=2048$，每个 query 的注意力开销不再随上下文长度增长。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span>。尺寸用 $d=4$、$V=5$；MLA 有 2 个 head，$d_n=d_v=2$，RoPE 的一段 $d_r=4$，这样能看出 RoPE 前把相邻的分量拆开的重排，两个 latent 都是 3 维；indexer 有 2 个 head，每个宽 $d_I=6$，前 4 维做 RoPE；MoE 有 6 个路由专家，分 2 组。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$；indexer 只决定哪些 key 参与注意力，选择不可导，所以它没有梯度。MoE 层里，每个位置的梯度只进入选中它的那几个路由专家和共享专家，挑选专家的那部分计算没有梯度。
+      $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id，其余都是参数和常量。MLA 有五个投影和两个 RMSNorm；indexer 有三个投影 wq_b、wk、weights_proj 和一个带偏置的 LayerNorm。MoE 层的 gate 有一块 $W_r$，每个路由专家和共享专家各有三块权重。gate 的偏置 $\mathbf{b}$ 是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和 causal mask 由形状决定，不需要梯度。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+
+modules:
+  DenseDecoderLayer:
+    subtitle: DeepseekV32DecoderLayer
+    params: { H: { type: dim }, dn: { type: dim }, dr: { type: dim }, dv: { type: dim }, rq: { type: dim }, rkv: { type: dim }, HI: { type: dim }, dI: { type: dim }, kI: { type: dim }, f: { type: dim } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: dense 层（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，对应 <code>model.layers[2](hidden_states)</code>。
+        $$\of{x_out}={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 dense 层（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV32RMSNorm
+          suffix: '1'
+          params: { intro: '注意力之前先做一次 RMSNorm，也就是 input_layernorm。' }
+          inputs: { x: x }
+          outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{1}' }
+          folded: true
+      - self_attn:
+          use: MLA
+          subtitle: DeepseekV32Attention
+          suffix: '1'
+          params: { H: H, dn: dn, dr: dr, dv: dv, rq: rq, rkv: rkv, sparse: true, HI: HI, dI: dI, kI: kI }
+          inputs: { x: n1 }
+          outputs: { att: att }
+          tex: { att: '\mathbf{att}_{1}' }
+      - a: { op: x + att, tex: '\mathbf{a}_{1}' }
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV32RMSNorm
+          suffix: '2'
+          inputs: { x: a }
+          outputs: { out: n }
+          tex: { out: '\mathbf{n}_{2}' }
+          folded: true
+      - mlp:
+          use: GLU
+          subtitle: DeepseekV32MLP
+          params: { act: silu, f: f }
+          inputs: { x: n }
+          outputs: { down: down }
+          tex: { a: '\mathrm{SiLU}(\mathbf{gate})', down: '\mathbf{down}' }
+          folded: true
+      - x_out: { op: a + down, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          self_attn 的输出加回 residual stream。
+          $$\of{a}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 self_attn 的残差
+          text: |
+            梯度复制成两份，一份进入 self_attn，一份沿残差直接交给 $\of{x}$。
+            $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{down}$' }
+        label: '$\of{x_out}=\of{a}+\of{down}$'
+        title: 残差相加
+        text: |
+          MLP 的输出加回 residual stream，得到这一层的输出，它是第一个 MoE 层的输入。
+          $$\of{x_out}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{down}$'
+          title: 穿过 MLP 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+  MoEDecoderLayer:
+    subtitle: DeepseekV32DecoderLayer
+    params: { H: { type: dim }, dn: { type: dim }, dr: { type: dim }, dv: { type: dim }, rq: { type: dim }, rkv: { type: dim }, HI: { type: dim }, dI: { type: dim }, kI: { type: dim }, E: { type: dim }, G: { type: dim }, TG: { type: dim }, K: { type: dim }, mf: { type: dim }, Sh: { type: dim } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: MoE 层（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，对应 <code>model.layers[3](hidden_states)</code>。
+        $$\of{x_out}={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 MoE 层（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV32RMSNorm
+          suffix: '3'
+          inputs: { x: x }
+          outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{3}' }
+          folded: true
+      - self_attn:
+          use: MLA
+          subtitle: DeepseekV32Attention
+          suffix: '2'
+          params: { H: H, dn: dn, dr: dr, dv: dv, rq: rq, rkv: rkv, sparse: true, HI: HI, dI: dI, kI: kI }
+          inputs: { x: n1 }
+          outputs: { att: att }
+          tex: { att: '\mathbf{att}_{2}' }
+          folded: true
+          fold:
+            text: |
+              和第 3 层的 self_attn 结构相同：MLA 加上 lightning indexer，indexer 给出的稀疏 mask 代替 causal mask。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
+              $$\of{att}={{ att | matrix:2 }}$$
+      - a: { op: x + att, tex: '\mathbf{a}_{2}' }
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV32RMSNorm
+          suffix: '4'
+          inputs: { x: a }
+          outputs: { out: n }
+          tex: { out: '\mathbf{n}_{4}' }
+          folded: true
+      - mlp:
+          use: MoE
+          subtitle: DeepseekV32MoE
+          params: { E: E, G: G, TG: TG, K: K, mf: mf, Sh: Sh }
+          inputs: { x: n }
+          outputs: { out: moe }
+      - x_out: { op: a + moe, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          这一层的 self_attn 和上一层结构相同，只是参数不同，默认折叠。
+          $$\of{a}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 self_attn 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{moe}$' }
+        label: '$\of{x_out}=\of{a}+\of{moe}$'
+        title: 残差相加
+        text: |
+          MoE 的输出加回 residual stream，得到这一层的输出。
+          $$\of{x_out}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{moe}$'
+          title: 穿过 MoE 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - first_layers:
+      title: $\cdots$ 第 1、2 层
+      subtitle: DeepseekV32DecoderLayer $\times$ 2，dense
+      fixed: true
+      repeat: [{ like: dense_layer, count: 2 }]
+      fold:
+        label: '$\of{x0}$'
+        title: $\cdots$ 第 1、2 层（占位）
+        text: |
+          第 3 层之前还有两个 dense 层，结构和第 3 层相同。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，数值按恒等映射处理。这个盒子不能展开。
+          $$\of{x0}=\mathrm{layers}_{1,2}(\of{e})\;\approx\;\of{e}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{e}$'
+          title: 穿过占位的第 1、2 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{e}}={{ e.grad | matrix:3 }}$$
+      body:
+        - x0: { op: identity(e), tex: '\mathbf{x}_0' }
+  - dense_layer:
+      use: DenseDecoderLayer
+      title: DeepseekV32DecoderLayer
+      subtitle: 第 3 层，dense
+      split: true
+      params: { H: H, dn: dn, dr: dr, dv: dv, rq: rq, rkv: rkv, HI: HI, dI: dI, kI: kI, f: f }
+      inputs: { x: x0 }
+      outputs: { x_out: x1 }
+      tex: { x_out: '\mathbf{x}_{1}' }
+  - moe_layer:
+      use: MoEDecoderLayer
+      title: DeepseekV32DecoderLayer
+      subtitle: 第 4 层，MoE
+      split: true
+      params: { H: H, dn: dn, dr: dr, dv: dv, rq: rq, rkv: rkv, HI: HI, dI: dI, kI: kI, E: Ne, G: G, TG: TG, K: K, mf: mf, Sh: Sh }
+      inputs: { x: x1 }
+      outputs: { x_out: x2 }
+      tex: { x_out: '\mathbf{x}_{2}' }
+  - last_layers:
+      title: $\cdots$ 第 5 到 $N$ 层
+      subtitle: DeepseekV32DecoderLayer $\times$ ($N-4$)，MoE
+      fixed: true
+      repeat: [{ like: moe_layer, count: 57 }]
+      fold:
+        label: '$\of{x}$'
+        title: $\cdots$ 第 5 到 $N$ 层（占位）
+        text: |
+          第 4 层之后还有 $N-4=57$ 个 MoE 层，结构和第 4 层相同。这里同样收成一个只用来示意的盒子，数值按恒等映射处理。
+          $$\of{x}=\mathrm{layers}_{5..N}(\of{x2})\;\approx\;\of{x2}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{x2}$'
+          title: 穿过占位的第 5 到 $N$ 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x2}}={{ x2.grad | matrix:3 }}$$
+      body:
+        - x: { op: identity(x2), tex: '\mathbf{x}' }
+  - norm:
+      use: RMSNorm
+      title: model.norm
+      subtitle: DeepseekV32RMSNorm
+      params:
+        name: final norm
+        intro: 从这里开始是 final norm（<code>model.norm</code>），在所有 decoder 层之后、lm_head 之前。
+        out_note: $\of{out}$ 是 lm_head 的输入。
+      inputs: { x: x }
+      outputs: { out: h }
+      folded: true
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。DeepSeek V3.2 的词表有 129280 个 token，hidden size 是 7168。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每个位置的 $\mathbf{h}_t$ 乘同一块 $W^{\top}$，得到下一个 token 的 logits。DeepSeek V3.2 的 lm_head 不和 embedding 共享权重。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      每个位置按标签取出目标 token 的 log p，取负号。
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
+  - sequence: true
+    title: 序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']
+    note: 前三个是输入，后三个是标签。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    random: true
+    reset: true
+  - attention: 'dense_layer.self_attn.eager_attention_forward.P[1..H]'
+    ids: ids
+    title: 第 3 层的注意力权重 P
+    note: 行是 query 的位置，列是 key 的位置。indexer 没选中的 key，权重是 0。
+  - title: 对应的 PyTorch
+    code: |-
+      # transformers DeepseekV32，first_k_dense_replace = 3
+      x0 = layers[:2](model.embed_tokens(input_ids))     # 图里是占位盒子
+      dense, moe = model.layers[2], model.layers[3]
+      h = dense.input_layernorm(x0)
+      attn = dense.self_attn                             # DeepseekV32Attention：MLA + indexer
+      q_resid = attn.q_a_layernorm(attn.q_a_proj(h))
+      # ... MLA 的 q、k、v 与 V3 相同，RoPE 用 apply_rotary_pos_emb_interleave
+      topk = attn.indexer(h, q_resid, (cos, sin), causal_mask[:, 0])  # no_grad
+      index_mask = ones(T, T, dtype=bool).scatter(-1, topk, False)    # True = 没选中
+      mask = causal_mask.masked_fill(index_mask, finfo(dtype).min)
+      a = x0 + attn.o_proj(eager_attention_forward(q, k, v, mask))
+      x1 = a + dense.mlp(dense.post_attention_layernorm(a))  # DeepseekV32MLP
+      a = x1 + moe.self_attn(moe.input_layernorm(x1))
+      x2 = a + moe.mlp(moe.post_attention_layernorm(a))  # DeepseekV32MoE
+      x = layers[4:](x2)                                 # 图里是占位盒子
+      logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
+      loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
+    note: DeepSeek-V3.2：d = 7168，61 层，前 3 层 dense；MLA 128 个 head，$r_q=1536$，$r_{kv}=512$，$d_n=128$，$d_r=64$，$d_v=128$，rope_theta = $10^4$ 并用 YaRN 把上下文扩到 128K（这一页不画 YaRN）；indexer 有 index_n_heads = 64 个 head，index_head_dim = 128，index_topk = 2048；MoE 256 个路由专家分 8 组，每个 token 选 4 组里的 8 个，另有 1 个共享专家，moe_intermediate_size = 2048，routed_scaling_factor = 2.5；dense 层的 intermediate_size = 18432，V = 129280。权重用 FP8 存储，这一页按 bf16 显示。
+values:
+  moe_layer.mlp.bias: [0, 0.1, -0.02, 0, 0.02, -0.03]

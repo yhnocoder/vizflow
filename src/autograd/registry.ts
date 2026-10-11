@@ -20,6 +20,8 @@ export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'detachedKey',
   'detached',
   'realDerivations',
+  'derivedSizes',
+  'realLayout',
   'copies',
   'realSizes',
   'realShapes',

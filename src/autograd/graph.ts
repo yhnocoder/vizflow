@@ -43,7 +43,7 @@ export interface Graph extends BuiltinOps {
   split(tensor: Node, split_size: number | string, dim?: number | SplitOptions, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
-  addDim(name: string, value: number, real?: number): void;
+  addDim(name: string, value: number, real?: number, derive?: RealSize): void;
   realSizes(dims?: Record<string, number>): Readonly<Record<string, number>>;
   realShapes(dims?: Record<string, number>): number[][];
   realCopies<T>(drawn: number, real: number | string, fn: () => T): T;
@@ -55,6 +55,8 @@ export interface Graph extends BuiltinOps {
 }
 
 type RealDerivation = (table: Readonly<Record<string, number>>, shapes: readonly number[][]) => number[];
+
+export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
 
 interface NodeState {
   value: Tensor;
@@ -119,6 +121,7 @@ class GraphImpl {
   private detached = new Set<number>();
   private readonly realDerivations: RealDerivation[] = [];
   private copies: NodeCopies = { drawn: 1, real: [] };
+  private readonly derivedSizes = new Map<string, RealSize>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -134,13 +137,14 @@ class GraphImpl {
     }
   }
 
-  addDim(name: string, value: number, real = value): void {
+  addDim(name: string, value: number, real = value, derive?: RealSize): void {
     const known = this.dims[name];
     if (known !== undefined) {
       if (known !== value || (this.realDims?.[name] ?? known) !== real) throw new Error(`addDim: dimension '${name}' is already defined`);
       return;
     }
     this.dims = Object.freeze({ ...this.dims, [name]: value });
+    if (derive !== undefined) this.derivedSizes.set(name, derive);
     if (this.real !== undefined && this.realDims !== undefined) {
       this.real = Object.freeze({ ...this.real, [name]: real });
       this.realDims = Object.freeze({ ...this.realDims, [name]: real });
@@ -148,19 +152,26 @@ class GraphImpl {
   }
 
   realSizes(dims: Record<string, number> = {}): Readonly<Record<string, number>> {
+    return this.realLayout(dims).sizes;
+  }
+
+  realShapes(dims: Record<string, number> = {}): number[][] {
+    return this.realLayout(dims).shapes;
+  }
+
+  private realLayout(dims: Record<string, number>): { sizes: Readonly<Record<string, number>>; shapes: number[][] } {
     if (this.realDims === undefined) throw new Error('realSizes: the graph has no real dimensions');
     for (const [name, value] of Object.entries(dims)) {
       if (!(name in this.realDims)) throw new Error(`realSizes: dimension '${name}' is not defined`);
       if (!Number.isInteger(value) || value < 1) throw new Error(`realSizes: dimension '${name}' needs a positive integer, got ${value}`);
     }
-    return Object.freeze({ ...this.realDims, ...dims });
-  }
-
-  realShapes(dims: Record<string, number> = {}): number[][] {
-    const table = this.realSizes(dims);
+    const sizes: Record<string, number> = { ...this.realDims, ...dims };
     const shapes: number[][] = [];
-    this.realDerivations.forEach((derive) => shapes.push(derive(table, shapes)));
-    return shapes;
+    for (const [name, derive] of this.derivedSizes) {
+      if (!(name in dims)) Object.defineProperty(sizes, name, { enumerable: true, get: () => derive(sizes, shapes) });
+    }
+    this.realDerivations.forEach((derivation) => shapes.push(derivation(sizes, shapes)));
+    return { sizes: Object.freeze(sizes), shapes };
   }
 
   realCopies<T>(drawn: number, real: number | string, fn: () => T): T {
