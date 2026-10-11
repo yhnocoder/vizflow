@@ -91,7 +91,7 @@ steps:
   <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex, dtype }</code> 同时给出 tex 和 dtype。<code>dtype</code> 写 dtype 名（<code>fp32</code>），或者写一个张量的名字，表示取那个张量的 dtype，对应 torch 里的 <code>.to(x.dtype)</code>。示例里 RMSNorm 把平方写成 <code>fp32</code>，之后的 ms、$r$、$\hat{x}$ 按类型提升都是 fp32，输出写 <code>dtype: x</code> 转回输入的 dtype，所以输入是 bf16 或 fp32 时模块都不用改。名字既不是 dtype、也不是张量时报错。</li>
   <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside?, inline?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。其余字段决定这个实例作为一个模块怎么显示和折叠，见下面的「模块记录」。</li>
   <li><code>name: { body, steps?, beside?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，用来画大括号、把步骤分组和整体折叠。</li>
-  <li><code>{ for: h, in: '1..H', name?, brace?, beside?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。</li>
+  <li><code>{ for: h, in: '1..H', name?, brace?, beside?, sequential?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。<code>sequential</code>（默认 <code>false</code>）为 <code>true</code> 时，各次迭代按顺序往上叠在主列上，每次迭代的步骤单独成步，用于后一次迭代依赖前一次结果的递推，例如 gated delta rule 按位置更新的状态 $S_t$；默认的迭代互相独立，并排画出、步骤合并，例如 GQA 的各个 head。</li>
 </ul>
 <p><b>模块记录。</b>每个不是 inline 的实例、每个 group 和写了 <code>brace</code> 的 for 迭代对应一个模块记录，编译结果的 <code>modules</code> 列出其中含运算节点的那些（<code>PageModule</code>，见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」）。记录的字段来自使用处：</p>
 <ul>
@@ -133,7 +133,8 @@ steps:
     <tr><td><code>a @ b</code>、<code>a ** n</code></td><td><code>matmul</code>；<code>pow</code>，<code>n</code> 是数</td></tr>
     <tr><td><code>a + b</code>、<code>a - b</code>、<code>a * b</code>、<code>a / b</code></td><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code>。右边可以是数；<code>数 + 节点</code> 和 <code>数 * 节点</code> 交换成节点在左；<code>数 - 节点</code> 和 <code>数 / 节点</code> 报错</td></tr>
     <tr><td><code>-a</code>、<code>a.T</code></td><td>乘 −1；转置，图上已有同一个转置时复用</td></tr>
-    <tr><td><code>q[h]</code>、<code>o[1..H]</code></td><td>循环下标；按顺序列出全部下标，用在 <code>cat</code> 这类接受节点列表的参数里</td></tr>
+    <tr><td><code>q[h]</code>、<code>o[1..H]</code></td><td>循环下标；按顺序列出全部下标，用在 <code>cat</code> 这类接受节点列表的参数里。下标可以是表达式，例如 <code>S[t-1]</code></td></tr>
+    <tr><td><code>[a, b]</code></td><td>节点列表，至少一项，例如 <code>cat([q_rot, q_pass], dim=2)</code></td></tr>
     <tr><td><code>//</code>、<code>1e-6</code>、<code>"none"</code>、<code>true</code></td><td>整除；科学计数法；字符串字面量，只用于关键字参数；布尔值</td></tr>
     <tr><td><code>act(x)</code></td><td><code>act</code> 是 op 类型的参数时，调用它的值对应的运算</td></tr>
   </tbody>
@@ -147,7 +148,7 @@ steps:
   <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。模式里可以有一个 <code>...</code>，匹配任意个维度，这些维度不绑定名字；例如 RMSNorm 的 <code>[..., n]</code> 只要求最后一维，输入可以是 $(T, d)$，也可以是按 head 分好的 $(T, H, d_h)$。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
   <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>。<code>text</code> 类型的参数可以写 <code>default_key: true</code>，没给时取实例的键，例如 <code>input_layernorm</code>；这样实例名就是显示的模块名，不用在实例里再写一遍。两者都没有时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
   <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
-  <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code> 与 <code>causal_mask(T)</code>，数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
+  <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code>、<code>causal_mask(T)</code> 与 <code>zeros(...)</code>，前三个的数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同，<code>zeros</code> 接受任意个维度，给出全 0 的张量，例如递推的初始状态 <code>'S[0]': { value: 'zeros(H, dk, dv)' }</code>。buffer 的名字可以带下标，供 for 里的 <code>S[t-1]</code> 在第一次迭代时引用。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
   <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块见下表。</li>
 </ol>
 <table>
@@ -159,6 +160,10 @@ steps:
     <tr><td><code>glu</code></td><td>GLU</td><td>输入 <code>x: [T, d]</code>，输出 <code>down</code>；参数 <code>act</code>（op，可选 <code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code>，默认 <code>silu</code>）、<code>f</code>（中间维度，dim）和 <code>name</code>（text）。</td></tr>
     <tr><td><code>rope</code></td><td>RoPE</td><td>输入 <code>q: [T, Hq, dh]</code>、<code>k: [T, Hk, dh]</code>，输出 <code>q_embed</code>、<code>k_embed</code>；参数只有 <code>theta</code>（默认 $10^4$），$d_h$ 从输入推出；cos、sin 表是 $(T, 1, d_h)$ 的 buffer。步骤 cos、rh、sin、add。</td></tr>
     <tr><td><code>gqa</code></td><td>GQA</td><td>grouped-query attention。输入 <code>q: [T, H, dh]</code>、<code>k</code> 与 <code>v: [T, Hkv, dh]</code>、<code>mask: [T, T]</code>，输出 <code>o</code>，形状 $(T, H d_h)$。每个 query head $h$ 用 <code>select</code> 取出下标为 $\lfloor (h-1)/(H/H_{kv}) \rfloor$ 的 kv head（下标从 0 起，对应 HF 的 <code>repeat_kv</code>），再算 $S = \operatorname{select}(\mathbf{q},1,h-1)\,\mathbf{k}^{\top}$（<code>select_matmul</code>）、乘 $d_h^{-1/2}$、加 mask、exp、按行求和、相除、乘 $\mathbf{v}$，最后 <code>cat(o[1..H], dim=1)</code>。$H = H_{kv}$ 时是普通的多头注意力。步骤 krep、vrep、kT、S、Ssc、mask、exp、sum、div、pv、concat。</td></tr>
+    <tr><td><code>rmsnorm-zero-centered</code></td><td>ZeroCenteredRMSNorm</td><td>Qwen3.5 的 <code>Qwen3_5RMSNorm</code>。接口与 <code>rmsnorm</code> 相同；权重初值全 0，输出是 $\hat{x}\odot(1+\boldsymbol{\gamma})$，乘之前在 fp32 里算 $1+\boldsymbol{\gamma}$，最后转回输入的 dtype。步骤 square、rms、normalize、scale。</td></tr>
+    <tr><td><code>rmsnorm-gated</code></td><td>GatedRMSNorm</td><td>Qwen3.5 Gated DeltaNet 的 <code>Qwen3_5RMSNormGated</code>。输入 <code>x: [..., n]</code> 和形状相同的 <code>gate</code>，输出 <code>out</code> $=\boldsymbol{\gamma}\odot\operatorname{norm}(x)\odot\operatorname{silu}(\mathit{gate})$，silu 在 fp32 里算；权重初值全 1；参数 <code>eps</code>。步骤 square、rms、normalize、scale、act、gate。</td></tr>
+    <tr><td><code>l2norm</code></td><td>L2Norm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code> $=x/\sqrt{\sum x^2+\epsilon}$，在 fp32 里算；参数 <code>eps</code>（默认 $10^{-6}$）。没有权重。步骤 square、norm、normalize。</td></tr>
+    <tr><td><code>gated-delta-rule</code></td><td>GatedDeltaRule</td><td>HF <code>torch_recurrent_gated_delta_rule</code>（<code>use_qk_l2norm_in_kernel=True</code>）。输入 <code>q</code>、<code>k: [T, H, dk]</code>，<code>v: [T, H, dv]</code>，<code>g</code>、<code>beta: [T, H]</code>，输出 <code>o: [T, H, dv]</code>。q、k 先过 L2Norm，q 再乘 $d_k^{-1/2}$；然后用 <code>sequential</code> 的 for 按位置递推状态 $S_t\in\mathbb{R}^{H\times d_k\times d_v}$：衰减 $\alpha_tS_{t-1}$，读出 $\hat{\mathbf{v}}_t$，写入 $\mathbf{k}_t\boldsymbol{\delta}_t^{\top}$，输出 $S_t^{\top}\mathbf{q}_t$。$S_0$ 是 fp32 的全 0 buffer。模块步骤 scale、stack，每个位置的步骤 decay、read、write、output。</td></tr>
     <tr><td><code>lm-head-nll</code></td><td>LMHeadNLL</td><td>参数 <code>V</code>（dim）；输入 <code>h: [T, d]</code> 与标签 <code>y: [T]</code>，输出 <code>loss</code>、<code>z</code>、<code>logp</code>。</td></tr>
   </tbody>
 </table>
@@ -198,7 +203,7 @@ steps:
 <ol>
   <li>每个模块的 steps 插在该实例在父模块 body 里的位置。一个 step 放在它 <code>show</code> 的节点里最早创建的那一个之后；同一个模块里后写的 step 不排在先写的 step 前面。这样「按 head 拆开」这类步骤可以写在模块末尾，仍然出现在循环之前。</li>
   <li>body 里没有被任何 step 的 <code>show</code> 覆盖的节点自动生成一步，标题和标签取节点名。这一步同时显示该节点用到的、还没有出现过的权重、权重的转置和 buffer。权重和 buffer 不单独生成步骤。</li>
-  <li>同一个 for 的各次迭代生成的步骤合并成一步：id 相同的步骤（包括子实例和 group 的步骤）合并，自动生成的步骤按节点在迭代中的位置合并。合并后的 <code>show</code> 和 <code>active</code> 取所有迭代的并集，<code>label</code>、<code>title</code>、<code>text</code> 用第一次迭代的，位置也是第一次迭代的位置。这样 GQA 每个 head 的 $S^{(h)}$、$P^{(h)}$ 共用一组步骤，步骤数不随 head 数增长，与按 head 并排画出的场景一致。并排的同一模块的实例按同样的方式合并，规则见上文「并排」。</li>
+  <li>没有写 <code>sequential: true</code> 的 for，各次迭代生成的步骤合并成一步：id 相同的步骤（包括子实例和 group 的步骤）合并，自动生成的步骤按节点在迭代中的位置合并。合并后的 <code>show</code> 和 <code>active</code> 取所有迭代的并集，<code>label</code>、<code>title</code>、<code>text</code> 用第一次迭代的，位置也是第一次迭代的位置。这样 GQA 每个 head 的 $S^{(h)}$、$P^{(h)}$ 共用一组步骤，步骤数不随 head 数增长，与按 head 并排画出的场景一致。并排的同一模块的实例按同样的方式合并，规则见上文「并排」。</li>
   <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm.square</code>。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔，<code>backward</code> 逐个字段覆盖这一步的反向默认文字。循环里合并的步骤用任一次迭代的路径都能找到。id 不存在时报错 <code>step 'x' does not exist in '路径'</code>。补丁在所在 body 建完后才编译。</li>
   <li>页面写了 <code>leaves</code> 时，总览之后的第一步是输入步骤（<code>kind: 'inputs'</code>），显示全部叶子；之后各步只显示自己算出的节点，用到的叶子已经在输入步骤里出现。</li>
   <li>反向步骤用 <code>createSteps</code> 的 <code>backward: 'reverse'</code> 生成：前向步骤倒过来，每一步一个反向步骤，规则见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。反向步骤的文字按字段取，优先级从高到低是：模块或页面的 <code>backward</code> 按节点名写的文字（写进算出这个节点的那个前向步骤，节点不在任何前向步骤里时报错 <code>node 'x' is not computed in any forward step</code>）、补丁的 <code>backward</code>、步骤声明的 <code>backward</code>。三处都没写的字段用自动内容。</li>
@@ -254,7 +259,7 @@ interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; childr
 <ul>
   <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 和 <code>sequence</code> 建的两个节点是它的第一批 node 条目。inline 实例生成一个 title 为空的子树。</li>
   <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
-  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
+  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空；<code>sequential: true</code> 的 for 不生成 parallel，各次迭代的条目依次接在外层的 children 里。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
   <li>一项和 beside 它的各项合成一个 parallel，每项一个分支。实例和 group 的分支就是它们自己的 LayoutTree；for 的分支是一个 title 为空的 LayoutTree，里面是这个 for 自己的 parallel。</li>
 </ul>
 

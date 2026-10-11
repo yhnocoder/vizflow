@@ -440,6 +440,32 @@ body:
     expect((forward[3].active as Node[]).map((n) => n.name)).toEqual(['n[1].out', 'n[2].out', 'n[3].out']);
   });
 
+  it('keeps the iterations of a sequential loop as separate steps stacked on the main column', async () => {
+    const result = await page(`
+title: t
+dims: { T: 3 }
+inputs:
+  x: { value: [[1, 2], [3, 4], [5, 6]] }
+buffers:
+  'S[0]': { value: 'zeros(2)' }
+body:
+  - for: t
+    in: 1..T
+    sequential: true
+    body:
+      - g[t]:
+          body:
+            - S[t]: 'S[t-1] + select(x, 0, t-1)'
+          steps:
+            - { id: add, show: 'S[t]', title: 'add \\of{t}' }
+  - y: 'cat([S[1], S[3]], dim=0)'
+`);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['add 1', 'add 2', 'add 3', 'y']);
+    expect([...result.graph.nodes.find((n) => n.name === 'y')!.value.data]).toEqual([1, 2, 9, 12]);
+    const iteration = (children: string[]) => ({ title: undefined, children: [{ title: 'g', children }] });
+    expect(names(result.tree.children)).toEqual(['x', iteration(['S[1]/1', 'S[0]', 'S[1]']), iteration(['S[2]/1', 'S[2]']), iteration(['S[3]/1', 'S[3]']), 'y']);
+  });
+
   it('applies a patch for a later iteration to the merged step', async () => {
     const result = await page(`
 title: t

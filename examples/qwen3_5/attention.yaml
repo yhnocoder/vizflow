@@ -32,9 +32,9 @@ weights:
 buffers:
   M: { value: causal_mask(T) }
 body:
-  - qg: { op: 'view(x @ Wq.T, T, H, 2*dh)', tex: '[\mathbf{q}\,|\,\mathbf{gate}]' }
+  - qg: { op: 'view(x @ Wq.T, T, H, 2*dh)', tex: '[\mathbf{q}\,|\,\mathbf{g}_{o}]' }
   - q: 'narrow(qg, -1, 0, dh)'
-  - gate: 'view(narrow(qg, -1, dh, dh), T, H*dh)'
+  - gate: { op: 'view(narrow(qg, -1, dh, dh), T, H*dh)', tex: '\mathbf{g}_{o}' }
   - k: 'view(x @ Wk.T, T, Hkv, dh)'
   - v: 'view(x @ Wv.T, T, Hkv, dh)'
   - qk_norm:
@@ -121,7 +121,7 @@ body:
       inputs: { q: qr, k: kr, v: v, mask: M }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
-  - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{gate})' }
+  - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{g}_{o})' }
   - og: { op: o * sg, tex: '\tilde{\mathbf{o}}' }
   - att: { op: og @ Wo.T, tex: '\mathbf{att}' }
 steps:
@@ -132,7 +132,7 @@ steps:
     title: q_proj、k_proj、v_proj
     text: |
       和 Qwen3 相比，q_proj 的输出宽了一倍：每个 query head 得到 $2d_h$ 个数，前 $d_h$ 个是 query，后 $d_h$ 个是这个 head 的输出门。一共 \of{H} 个 query head、\of{Hkv} 个 kv head，$d_h=\of{dh}$。三个 Linear 都没有 bias。
-      $$[\mathbf{q}\,|\,\mathbf{gate}]={{ qg | matrix:2 }}$$
+      $$[\mathbf{q}\,|\,\mathbf{g}_{o}]={{ qg | matrix:2 }}$$
     backward:
       label: '$\partial W,\ \partial\of{x}$'
       title: 传到三个投影的权重和 $\of{x}$
@@ -144,23 +144,23 @@ steps:
     title: 拆出 query 和输出门
     text: |
       <code>torch.chunk(..., 2, dim=-1)</code> 把每个 head 的 $2d_h$ 列切成两半。query 留在 $(T, H, d_h)$ 继续往上走，门展平成 $(T, H d_h)$，等注意力算完再用。
-      $$\mathbf{gate}={{ gate | matrix:2 }}$$
+      $$\mathbf{g}_{o}={{ gate | matrix:2 }}$$
     backward:
-      label: '$\partial[\mathbf{q}\,|\,\mathbf{gate}]$'
+      label: '$\partial[\mathbf{q}\,|\,\mathbf{g}_{o}]$'
       title: 两半拼回去
   - id: output_gate
     show: [sg, og]
     label: '$\of{og}$'
     title: 输出门
     text: |
-      注意力的输出逐元素乘上 $\sigma(\mathbf{gate})$。门由当前位置的输入决定，每个 head 的每一维都有自己的门，可以把某个 head 的输出整个关掉。这是 Qwen3.5 的 gated attention：它让模型不必把注意力分给第一个 token 来「什么也不做」，训练也更稳定。
-      $$\tilde{\mathbf{o}}=\mathbf{o}\odot\sigma(\mathbf{gate})={{ og | matrix:2 }}$$
+      注意力的输出逐元素乘上 $\sigma(\mathbf{g}_{o})$。门由当前位置的输入决定，每个 head 的每一维都有自己的门，可以把某个 head 的输出整个关掉。这是 Qwen3.5 的 gated attention：它让模型不必把注意力分给第一个 token 来「什么也不做」，训练也更稳定。
+      $$\tilde{\mathbf{o}}=\mathbf{o}\odot\sigma(\mathbf{g}_{o})={{ og | matrix:2 }}$$
     backward:
-      label: '$\partial\mathbf{o},\ \partial\mathbf{gate}$'
+      label: '$\partial\mathbf{o},\ \partial\mathbf{g}_{o}$'
       title: 传到注意力输出和门
       text: |
-        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{gate})$，门关上的地方，注意力几乎收不到梯度；$\partial\ell/\partial\,\mathbf{gate}$ 再乘上 sigmoid 的导数 $\sigma(1-\sigma)$。
-        $$\frac{\partial\ell}{\partial\,\mathbf{gate}}={{ gate.grad | matrix:3 }}$$
+        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{g}_{o})$，门关上的地方，注意力几乎收不到梯度；$\partial\ell/\partial\,\mathbf{g}_{o}$ 再乘上 sigmoid 的导数 $\sigma(1-\sigma)$。
+        $$\frac{\partial\ell}{\partial\,\mathbf{g}_{o}}={{ gate.grad | matrix:3 }}$$
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]

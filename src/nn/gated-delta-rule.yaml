@@ -32,7 +32,7 @@ body:
       suffix: q
       inputs: { x: q }
       outputs: { out: qn }
-      tex: { out: '\hat{\of{q}}', ss: '\lVert\of{q}\rVert^{2}', r: 'r^{q}' }
+      tex: { out: '\hat{\mathbf{q}}', sq: '\mathbf{q}\odot\mathbf{q}', ss: '\lVert\mathbf{q}\rVert^{2}', r: 'r^{q}' }
   - k_l2norm:
       use: L2Norm
       inline: true
@@ -40,8 +40,8 @@ body:
       beside: q_l2norm
       inputs: { x: k }
       outputs: { out: kn }
-      tex: { out: '\hat{\of{k}}', ss: '\lVert\of{k}\rVert^{2}', r: 'r^{k}' }
-  - qs: { op: qn * dk ** -0.5, tex: '\tilde{\of{q}}' }
+      tex: { out: '\hat{\mathbf{k}}', sq: '\mathbf{k}\odot\mathbf{k}', ss: '\lVert\mathbf{k}\rVert^{2}', r: 'r^{k}' }
+  - qs: { op: qn * dk ** -0.5, tex: '\tilde{\mathbf{q}}' }
   - for: t
     in: 1..T
     sequential: true
@@ -49,23 +49,23 @@ body:
       - token[t]:
           title: 位置 $\of{t}$
           body:
-            - qt[t]:    { op: 'select(qs, 0, t-1)', tex: '\mathbf{q}_{\of{t}}' }
-            - kt[t]:    { op: 'select(kn, 0, t-1)', tex: '\mathbf{k}_{\of{t}}' }
+            - qt[t]:    { op: 'view(select(qs, 0, t-1), H, dk, 1)', tex: '\tilde{\mathbf{q}}_{\of{t}}' }
+            - kt[t]:    { op: 'view(select(kn, 0, t-1), H, dk, 1)', tex: '\hat{\mathbf{k}}_{\of{t}}' }
             - vt[t]:    { op: 'select(v, 0, t-1)', tex: '\mathbf{v}_{\of{t}}', dtype: fp32 }
             - alpha[t]: { op: 'exp(select(g, 0, t-1))', tex: '\alpha_{\of{t}}' }
             - bt[t]:    { op: 'select(beta, 0, t-1)', tex: '\beta_{\of{t}}', dtype: fp32 }
             - Sd[t]:    { op: 'S[t-1] * view(alpha[t], H, 1, 1)', tex: '\alpha_{\of{t}}S_{\of{t-1}}' }
-            - m[t]:     { op: 'sum(Sd[t] * view(kt[t], H, dk, 1), -2)', tex: '\mathbf{m}_{\of{t}}' }
+            - m[t]:     { op: 'sum(Sd[t] * kt[t], -2)', tex: '\hat{\mathbf{v}}_{\of{t}}' }
             - delta[t]: { op: '(vt[t] - m[t]) * view(bt[t], H, 1)', tex: '\boldsymbol{\delta}_{\of{t}}' }
-            - S[t]:     { op: 'Sd[t] + view(kt[t], H, dk, 1) * view(delta[t], H, 1, dv)', tex: 'S_{\of{t}}' }
-            - ot[t]:    { op: 'sum(S[t] * view(qt[t], H, dk, 1), -2)', tex: '\mathbf{o}_{\of{t}}' }
+            - S[t]:     { op: 'Sd[t] + kt[t] * view(delta[t], H, 1, dv)', tex: 'S_{\of{t}}' }
+            - ot[t]:    { op: 'sum(S[t] * qt[t], -2)', tex: '\mathbf{o}_{\of{t}}' }
           steps:
             - id: decay
               show: ['qt[t]', 'kt[t]', 'vt[t]', 'alpha[t]', 'bt[t]', 'Sd[t]']
               label: '$\of{Sd[t]}$'
               title: 位置 $\of{t}$：取出这一位置，状态衰减
               text: |
-                从 $\tilde{\mathbf{q}}$、$\hat{\mathbf{k}}$、$\mathbf{v}$、$g$、$\beta$ 里取出第 $\of{t}$ 个位置，每个 head 一份。上一步的状态 $S_{\of{t-1}}$ 先整体乘上衰减 $\alpha_{\of{t}}=e^{g_{\of{t}}}$，它在 0 和 1 之间，越接近 0 忘得越多。每个 head 有自己的 $\alpha$。
+                从 $\tilde{\mathbf{q}}$、$\hat{\mathbf{k}}$、$\mathbf{v}$、$g$、$\beta$ 里取出第 $\of{t}$ 个位置，每个 head 一份；q 和 k 竖起来成为列向量，对应代码里的 <code>unsqueeze(-1)</code>。上一步的状态 $S_{\of{t-1}}$ 先整体乘上衰减 $\alpha_{\of{t}}=e^{g_{\of{t}}}$，它在 0 和 1 之间，越接近 0 忘得越多。每个 head 有自己的 $\alpha$。
                 $$\alpha_{\of{t}}={{ alpha[t] | matrix:3 }},\qquad \alpha_{\of{t}}S_{\of{t-1}}={{ Sd[t] | matrix:3 }}$$
               backward:
                 label: '$\partial S_{\of{t-1}},\ \partial\alpha_{\of{t}}$'
@@ -78,8 +78,8 @@ body:
               label: '$\of{m[t]}$'
               title: 位置 $\of{t}$：用 key 读出旧的记忆
               text: |
-                用这一位置的 key 读衰减后的状态：$\mathbf{m}_{\of{t}}=(\alpha_{\of{t}}S_{\of{t-1}})^{\top}\hat{\mathbf{k}}_{\of{t}}$，代码里是 <code>(state * k_t.unsqueeze(-1)).sum(dim=-2)</code>。它是状态目前对这个 key 记住的 value。
-                $$\mathbf{m}_{\of{t}}={{ m[t] | matrix:3 }}$$
+                用这一位置的 key 读衰减后的状态：$\hat{\mathbf{v}}_{\of{t}}=(\alpha_{\of{t}}S_{\of{t-1}})^{\top}\hat{\mathbf{k}}_{\of{t}}$，代码里是 <code>(state * k_t.unsqueeze(-1)).sum(dim=-2)</code>。它是状态目前对这个 key 记住的 value。
+                $$\hat{\mathbf{v}}_{\of{t}}={{ m[t] | matrix:3 }}$$
               backward:
                 label: '$\partial(\alpha S),\ \partial\mathbf{k}_{\of{t}}$'
                 title: 位置 $\of{t}$：传回状态和 key
@@ -88,7 +88,7 @@ body:
               label: '$\of{S[t]}$'
               title: 位置 $\of{t}$：delta rule 写入
               text: |
-                新的 value 和旧记忆的差乘上写入强度 $\beta_{\of{t}}$，得到 $\boldsymbol{\delta}_{\of{t}}=\beta_{\of{t}}(\mathbf{v}_{\of{t}}-\mathbf{m}_{\of{t}})$，再用外积 $\hat{\mathbf{k}}_{\of{t}}\boldsymbol{\delta}_{\of{t}}^{\top}$ 写回状态。$\beta=1$ 时，写完以后用同一个 key 读出的正好是 $\mathbf{v}_{\of{t}}$；$\beta=0$ 时什么也不写。普通线性注意力直接加 $\mathbf{k}\mathbf{v}^{\top}$，同一个 key 写多次会一直累加，delta rule 只写差值。
+                新的 value 和旧记忆的差乘上写入强度 $\beta_{\of{t}}$，得到 $\boldsymbol{\delta}_{\of{t}}=\beta_{\of{t}}(\mathbf{v}_{\of{t}}-\hat{\mathbf{v}}_{\of{t}})$，再用外积 $\hat{\mathbf{k}}_{\of{t}}\boldsymbol{\delta}_{\of{t}}^{\top}$ 写回状态。$\beta=1$ 时，写完以后用同一个 key 读出的正好是 $\mathbf{v}_{\of{t}}$；$\beta=0$ 时什么也不写。普通线性注意力直接加 $\mathbf{k}\mathbf{v}^{\top}$，同一个 key 写多次会一直累加，delta rule 只写差值。
                 $$\boldsymbol{\delta}_{\of{t}}={{ delta[t] | matrix:3 }},\qquad S_{\of{t}}={{ S[t] | matrix:3 }}$$
               backward:
                 label: '$\partial\boldsymbol{\delta}_{\of{t}},\ \partial\mathbf{k}_{\of{t}},\ \partial\beta_{\of{t}}$'

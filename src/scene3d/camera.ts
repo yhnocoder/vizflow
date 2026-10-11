@@ -1,8 +1,9 @@
 import { OrthographicCamera, Vector3 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SceneController } from './controller';
-import { CAMERA_DISTANCE, allPoints, center, frameAll } from './framing';
+import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
+import type { Renderable } from './renderable';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
@@ -21,13 +22,21 @@ export const FOLLOW_STEP_LIFT = 0.9;
 export const FOLLOW_EDGE_FILL = 0.82;
 export const FOLLOW_BOTTOM_SLACK = 2;
 export const FOLLOW_TOP_SLACK = 1;
+export const FOLLOW_SIDE_ROOM = 4;
 
 const FOLLOW_SETTLE_Y = 0.01;
 const FOLLOW_SETTLE_ZOOM = 0.002;
+const UP = new Vector3(0, 1, 0);
 
 interface FollowGoal {
   y: number;
+  side: number;
   zoom: number;
+}
+
+interface SideRange {
+  lo: number;
+  hi: number;
 }
 
 export class CameraRig {
@@ -80,20 +89,63 @@ export class CameraRig {
   }
 
   jumpTo(y: number): void {
-    this.goal = { y: this.clampFollowY(y, this.halfHeight()), zoom: 1 };
+    this.goal = { y: this.clampFollowY(y, this.halfHeight()), side: this.controls.target.dot(this.sideAxis()), zoom: 1 };
   }
 
   applyGoal(k: number): boolean {
     const goal = this.goal;
     if (goal === undefined) return false;
+    const axis = this.sideAxis();
     const dy = (goal.y - this.controls.target.y) * k;
+    const ds = (goal.side - this.controls.target.dot(axis)) * k;
     this.controls.target.y += dy;
     this.camera.position.y += dy;
+    this.controls.target.addScaledVector(axis, ds);
+    this.camera.position.addScaledVector(axis, ds);
     this.camera.zoom += (goal.zoom - this.camera.zoom) * k;
     this.camera.updateProjectionMatrix();
-    if (Math.abs(goal.y - this.controls.target.y) < FOLLOW_SETTLE_Y && Math.abs(goal.zoom - this.camera.zoom) < FOLLOW_SETTLE_ZOOM) this.goal = undefined;
+    const settled = Math.abs(goal.y - this.controls.target.y) < FOLLOW_SETTLE_Y && Math.abs(goal.side - this.controls.target.dot(axis)) < FOLLOW_SETTLE_Y;
+    if (settled && Math.abs(goal.zoom - this.camera.zoom) < FOLLOW_SETTLE_ZOOM) this.goal = undefined;
     this.c.markLabelsDirty();
     return true;
+  }
+
+  private halfWidth(): number {
+    return (this.camera.right - this.camera.left) / 2;
+  }
+
+  private sideAxis(): Vector3 {
+    return new Vector3().crossVectors(UP, this.direction).normalize();
+  }
+
+  private sideRange(points: Vec3[]): SideRange {
+    const axis = this.sideAxis();
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const [x, , z] of points) {
+      const s = x * axis.x + z * axis.z;
+      lo = Math.min(lo, s);
+      hi = Math.max(hi, s);
+    }
+    return { lo, hi };
+  }
+
+  private followSide(zoom: number, keys: Renderable[]): number {
+    const points = allPoints(this.c);
+    const scene = this.sideRange(points);
+    const middle = center(points).dot(this.sideAxis());
+    const half = this.halfWidth() / zoom - FOLLOW_SIDE_ROOM;
+    if (keys.length === 0 || scene.hi - scene.lo <= 2 * half) return middle;
+    const step = this.sideRange(framingPoints(keys));
+    return Math.min(Math.max((step.lo + step.hi) / 2, scene.lo + half), scene.hi - half);
+  }
+
+  private sideZoom(keys: Renderable[]): number {
+    const scene = this.sideRange(allPoints(this.c));
+    const width = 2 * (this.halfWidth() - FOLLOW_SIDE_ROOM);
+    if (scene.hi - scene.lo <= width) return 1;
+    const step = this.sideRange(framingPoints(keys));
+    return Math.min(1, width / (step.hi - step.lo));
   }
 
   private halfHeight(): number {
@@ -132,12 +184,15 @@ export class CameraRig {
     const hh = this.halfHeight();
     const { lo, top } = this.levelRange();
     const keys = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
-    if (keys.length === 0) return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, zoom: Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN)) };
+    if (keys.length === 0) {
+      const zoom = Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN));
+      return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys), zoom };
+    }
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
-    const zoom = Math.min(1, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN));
-    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), zoom };
+    const zoom = Math.min(1, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys));
+    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys), zoom };
   }
 
   placeCamera(): void {
@@ -146,6 +201,7 @@ export class CameraRig {
     if (this.c.follow) {
       const goal = this.followGoal();
       middle.y = goal.y;
+      middle.addScaledVector(this.sideAxis(), goal.side - middle.dot(this.sideAxis()));
       zoom = goal.zoom;
     }
     this.goal = undefined;

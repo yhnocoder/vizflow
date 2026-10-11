@@ -34,9 +34,9 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 body:
   - mixed_qkv: { op: x @ Wqkv.T, tex: '\mathbf{u}' }
-  - z: 'view(x @ Wz.T, T, Hv, dv)'
+  - z: { op: 'view(x @ Wz.T, T, Hv, dv)', tex: '\mathbf{z}_{o}' }
   - b: x @ Wb.T
-  - a: x @ Wa.T
+  - a: { op: x @ Wa.T, tex: '\mathbf{a}_{\Delta}' }
   - conv: { op: 'causal_conv1d(mixed_qkv, Wconv)', tex: '\mathbf{c}' }
   - cs: { op: silu(conv), tex: '\mathrm{SiLU}(\mathbf{c})' }
   - q: 'view(narrow(cs, -1, 0, Hk*dk), T, Hk, dk)'
@@ -45,8 +45,8 @@ body:
   - beta: { op: sigmoid(b), tex: '\boldsymbol{\beta}' }
   - dt: { op: softplus(a + dt_bias), tex: '\Delta', dtype: fp32 }
   - g: { op: -exp(A_log) * dt, tex: '\mathbf{g}', dtype: fp32 }
-  - qr: { op: 'repeat_interleave(q, Hv // Hk, 1)', tex: '\mathbf{q}' }
-  - kr: { op: 'repeat_interleave(k, Hv // Hk, 1)', tex: '\mathbf{k}' }
+  - qr: { op: 'repeat_interleave(q, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{q})' }
+  - kr: { op: 'repeat_interleave(k, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{k})' }
   - gated_delta_rule:
       use: GatedDeltaRule
       inline: true
@@ -56,18 +56,19 @@ body:
   - norm:
       use: GatedRMSNorm
       subtitle: Qwen3_5RMSNormGated
+      suffix: o
       inputs: { x: core, gate: z }
       outputs: { out: cn }
       tex: { out: '\bar{\mathbf{o}}' }
   - out: { op: 'view(cn, T, Hv*dv) @ Wout.T', tex: '\mathbf{att}' }
 steps:
   - id: proj
-    brace: { title: 'in_proj_qkv $\cdot$ in_proj_z $\cdot$ in_proj_b $\cdot$ in_proj_a', subtitle: 'nn.Linear $\times$ 4' }
+    brace: { title: in_proj, subtitle: 'qkv $\cdot$ z $\cdot$ b $\cdot$ a，nn.Linear $\times$ 4' }
     show: [Wqkv.T, Wz.T, Wb.T, Wa.T, mixed_qkv, z, b, a]
     label: '$\of{mixed_qkv},\ \of{z},\ \of{b},\ \of{a}$'
     title: 四个输入投影
     text: |
-      四个投影的输入都是 $\of{x}$，权重拼成一块板来画。in_proj_qkv 一次算出 q、k、v 三段，宽 $2H_k d_k+H_v d_v=\of{2*Hk*dk+Hv*dv}$；in_proj_z 算出输出门 $\mathbf{z}$，按 value head 分组；in_proj_b 和 in_proj_a 每个 value head 只出一个数，分别决定写入强度和衰减。四个 Linear 都没有 bias。
+      四个投影的输入都是 $\of{x}$，权重拼成一块板来画。in_proj_qkv 一次算出 q、k、v 三段，宽 $2H_k d_k+H_v d_v=\of{2*Hk*dk+Hv*dv}$；in_proj_z 算出输出门 $\mathbf{z}_{o}$，按 value head 分组；in_proj_b 和 in_proj_a 每个 value head 只出一个数，分别决定写入强度和衰减。四个 Linear 都没有 bias。
       $$\mathbf{u}=\of{x}W_{qkv}^{\top}={{ mixed_qkv | matrix:2 }}$$
     backward:
       label: '$\partial W,\ \partial\of{x}$'
@@ -124,11 +125,11 @@ steps:
     label: '$\of{g}$'
     title: 衰减 $g$
     text: |
-      衰减的对数是 $g=-e^{\mathbf{a}_{\log}}\cdot\mathrm{softplus}(\mathbf{a}+\mathbf{b}_{\Delta})$，在 float32 里计算。$e^{\mathbf{a}_{\log}}$ 和 softplus 都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间。这和 Mamba2 的离散化相同：$\mathbf{b}_{\Delta}$ 和 $\mathbf{a}_{\log}$ 是每个 value head 一个的参数，$\mathbf{a}$ 由输入决定，所以忘多少因位置而异。
+      衰减的对数是 $g=-e^{\mathbf{a}_{\log}}\cdot\mathrm{softplus}(\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta})$，在 float32 里计算。$e^{\mathbf{a}_{\log}}$ 和 softplus 都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间。这和 Mamba2 的离散化相同：$\mathbf{b}_{\Delta}$ 和 $\mathbf{a}_{\log}$ 是每个 value head 一个的参数，$\mathbf{a}_{\Delta}$ 由输入决定，所以忘多少因位置而异。
       $$\Delta={{ dt | matrix:3 }},\qquad \mathbf{g}={{ g | matrix:3 }}$$
     backward:
-      label: '$\partial\mathbf{a},\ \partial\mathbf{a}_{\log},\ \partial\mathbf{b}_{\Delta}$'
-      title: 传到 $\mathbf{a}$、$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$
+      label: '$\partial\mathbf{a}_{\Delta},\ \partial\mathbf{a}_{\log},\ \partial\mathbf{b}_{\Delta}$'
+      title: 传到 $\mathbf{a}_{\Delta}$、$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$
       text: |
         softplus 的导数是 sigmoid。$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$ 被所有位置共用，梯度把各位置加起来。
         $$\frac{\partial\ell}{\partial\mathbf{a}_{\log}}={{ A_log.grad | matrix:3 }}$$
@@ -138,7 +139,7 @@ steps:
     title: 把 key head 复制给 value head
     text: |
       value head 比 key head 多：$H_v/H_k=\of{Hv//Hk}$。<code>repeat_interleave</code> 把每个 key head 的 q 和 k 连续复制 $\of{Hv//Hk}$ 份，第 $j$ 个 value head 用第 $\lfloor j/\of{Hv//Hk}\rfloor$ 个 key head。这和 GQA 里 kv head 少于 query head 的做法方向相反：这里是 value 多、key 少。
-      $$\mathbf{k}={{ kr | matrix:2 }}$$
+      $$\mathrm{rep}(\mathbf{k})={{ kr | matrix:2 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\of{k}$'
       title: 几份梯度加回一份

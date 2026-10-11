@@ -57,35 +57,42 @@ modules:
       - input_layernorm:
           use: ZeroCenteredRMSNorm
           subtitle: Qwen3_5RMSNorm
+          suffix: '1'
           params: { intro: 'token mixer 之前先做一次 RMSNorm，也就是 input_layernorm。' }
           inputs: { x: x }
           outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{1}' }
           folded: true
       - linear_attn:
           use: GatedDeltaNet
           params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K }
           inputs: { x: n1 }
           outputs: { out: att }
-      - a: x + att
+          tex: { out: '\mathbf{att}_{1}' }
+      - a: { op: x + att, tex: '\mathbf{a}_{1}' }
       - post_attention_layernorm:
           use: ZeroCenteredRMSNorm
           subtitle: Qwen3_5RMSNorm
+          suffix: '2'
           inputs: { x: a }
           outputs: { out: n }
+          tex: { out: '\mathbf{n}_{2}' }
           folded: true
       - mlp:
           use: GLU
           subtitle: Qwen3_5MLP
+          suffix: '1'
           params: { act: silu, f: f }
           inputs: { x: n }
           outputs: { down: down }
+          tex: { a: '\mathrm{SiLU}(\mathbf{gate}_{1})', down: '\mathbf{down}_{1}' }
           folded: true
       - x_out: { op: a + down, tex: '\mathbf{x}' }
     steps:
       - id: res1
         show: a
         segment: 残差
-        brace: { title: 残差相加, subtitle: '$\mathbf{x}+\mathbf{att}$' }
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
         label: '$\of{a}=\of{x}+\of{att}$'
         title: 残差相加
         text: |
@@ -100,7 +107,7 @@ modules:
       - id: res2
         show: x_out
         segment: 残差
-        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{down}$' }
         label: '$\of{x_out}=\of{a}+\of{down}$'
         title: 残差相加
         text: |
@@ -131,34 +138,41 @@ modules:
       - input_layernorm:
           use: ZeroCenteredRMSNorm
           subtitle: Qwen3_5RMSNorm
+          suffix: '3'
           inputs: { x: x }
           outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{3}' }
           folded: true
       - self_attn:
           use: GatedAttention
           params: { H: H, Hkv: Hkv, dh: dh, rd: rd, theta: theta }
           inputs: { x: n1 }
           outputs: { att: att }
-      - a: x + att
+          tex: { att: '\mathbf{att}_{2}' }
+      - a: { op: x + att, tex: '\mathbf{a}_{2}' }
       - post_attention_layernorm:
           use: ZeroCenteredRMSNorm
           subtitle: Qwen3_5RMSNorm
+          suffix: '4'
           inputs: { x: a }
           outputs: { out: n }
+          tex: { out: '\mathbf{n}_{4}' }
           folded: true
       - mlp:
           use: GLU
           subtitle: Qwen3_5MLP
+          suffix: '2'
           params: { act: silu, f: f }
           inputs: { x: n }
           outputs: { down: down }
+          tex: { a: '\mathrm{SiLU}(\mathbf{gate}_{2})', down: '\mathbf{down}_{2}' }
           folded: true
       - x_out: { op: a + down, tex: '\mathbf{x}' }
     steps:
       - id: res1
         show: a
         segment: 残差
-        brace: { title: 残差相加, subtitle: '$\mathbf{x}+\mathbf{att}$' }
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
         label: '$\of{a}=\of{x}+\of{att}$'
         title: 残差相加
         text: |
@@ -172,7 +186,7 @@ modules:
       - id: res2
         show: x_out
         segment: 残差
-        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{down}$' }
         label: '$\of{x_out}=\of{a}+\of{down}$'
         title: 残差相加
         text: |
@@ -337,3 +351,13 @@ panels:
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
     note: Qwen3.5-27B：d = 5120，64 层，每 4 层一个 full_attention；softmax 注意力 24 个 query head、4 个 kv head，head_dim = 256，只有前 64 维做 RoPE，rope_theta = $10^7$；Gated DeltaNet 16 个 key head、48 个 value head，$d_k=d_v=128$，卷积核长 4；intermediate_size = 17408，V = 248320。
+values:
+  linear_layer.input_layernorm.weight: [0.03, -0.04, 0.02, 0.05]
+  linear_layer.post_attention_layernorm.weight: [-0.02, 0.04, 0.01, -0.03]
+  full_layer.input_layernorm.weight: [0.04, 0.01, -0.03, 0.02]
+  full_layer.post_attention_layernorm.weight: [0.02, -0.05, 0.03, 0.01]
+  full_layer.self_attn.q_norm.weight: [0.02, -0.01, 0.03, 0, -0.02, 0.01, 0.04, -0.03]
+  full_layer.self_attn.k_norm.weight: [-0.01, 0.03, 0, 0.02, 0.01, -0.02, 0.03, 0.01]
+  norm.weight: [-0.04, 0.03, 0.04, 0.01]
+  linear_layer.linear_attn.A_log: [0.3, -0.9]
+  linear_layer.linear_attn.dt_bias: [0.2, -0.3]
