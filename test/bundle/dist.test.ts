@@ -211,4 +211,16 @@ describe('package.json sideEffects', () => {
     expect(injecting).toContain(join('src', 'ui', 'index.ts'));
     for (const file of injecting) expect(packageJson.sideEffects, file).toContain(`./${file}`);
   });
+
+  test('every module imported only for its side effects is marked as having side effects', () => {
+    const sources = readdirSync('src', { recursive: true, encoding: 'utf8' }).filter((file) => /\.tsx?$/.test(file));
+    const targets = sources.flatMap((file) =>
+      [...readFileSync(join('src', file), 'utf8').matchAll(/^import '(\.[^'?]*)';$/gm)].map(([, specifier]) => {
+        const base = join('src', dirname(file), specifier);
+        return existsSync(`${base}.ts`) ? `${base}.ts` : join(base, 'index.ts');
+      }),
+    );
+    expect(targets).toContain(join('src', 'explain', 'ops', 'index.ts'));
+    for (const target of targets) expect(packageJson.sideEffects, target).toContain(`./${target}`);
+  });
 });
