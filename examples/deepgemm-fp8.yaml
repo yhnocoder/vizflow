@@ -1,0 +1,226 @@
+title: DeepGEMM：一次分块缩放的 FP8 GEMM
+lede: DeepGEMM 在 Hopper（SM90）上算 $D=AB^{\top}$ 时，$A$ 按 $1\times 128$、$B$ 按 $128\times 128$ 分块量化成 FP8 E4M3，每块带一个 FP32 缩放因子。Tensor Core 在每个 K 块内用有限精度累加，每块结束后由 CUDA core 乘上两个缩放因子，加进 FP32 的结果。这一页把块缩小到 $1\times 4$ 和 $2\times 4$，$M=2$、$N=4$、$K=8$，每个数都能看清。每个节点的值按它的 dtype 真实舍入。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 悬停柱子看数值和 dtype
+camera: { follow: true }
+dims: { M: 2, N: 4, K: 8, bk: 4, bn: 2, Kb: 2, Nb: 2 }
+dtype: bf16
+rounding: true
+inputs:
+  A: { value: [[-0.59375, -0.640625, -1.109375, 0.0078125, 1.046875, 0.421875, 0.421875, 0.671875], [-0.796875, 2.078125, 1.640625, 0.15625, 0.09375, -0.578125, 0.25, -0.515625]] }
+  B: { value: [[-0.15625, 0.203125, 0.4375, 0.015625, 0.1875, 0.203125, 0.71875, 0.734375], [-0.875, 1.09375, 0.78125, -0.609375, 0.59375, 0.515625, -0.234375, 0.96875], [-0.3125, 0.09375, -0.40625, 0.609375, -1.015625, -0.203125, -0.15625, 0.328125], [-0.234375, 0.609375, 0.203125, 0.046875, -0.4375, 0.28125, 0.5625, 0.328125]] }
+buffers:
+  one_a: { value: 'zeros(M, 1)', dtype: fp32, tex: '\mathbf{1}^{A}' }
+  one_b: { value: 'zeros(Nb, 1)', dtype: fp32, tex: '\mathbf{1}^{B}' }
+values:
+  one_a: [[1], [1]]
+  one_b: [[1], [1]]
+overview:
+  label: 总览
+  title: 一次 FP8 GEMM
+  text: |
+    DeepGEMM 的 <code>fp8_gemm_nt</code> 是 NT 布局：$A$ 的形状是 $(M,K)$，$B$ 的形状是 $(N,K)$，两者都沿 $K$ 连续存放，结果 $D=AB^{\top}$。两个输入都先量化成 FP8 E4M3，并各带一组缩放因子：$A$ 每行每 $b_k$ 个元素一个 $s^{A}$，$B$ 每 $b_n\times b_k$ 块一个 $s^{B}$。真实 kernel 里 $b_k=b_n=128$，这一页用 $b_k=\of{bk}$、$b_n=\of{bn}$，于是 $K$ 方向有 2 个块，$N$ 方向也有 2 个块。
+
+    整个计算可以写成下式，$j$ 是 K 块的序号，$\mathcal{K}_j$ 是第 $j$ 块的 $b_k$ 个下标：
+    $$D_{m,n}=\sum_{j}s^{A}_{m,j}\,s^{B}_{\lceil n/b_n\rceil,j}\sum_{k\in\mathcal{K}_j}A_{q;m,k}\,B_{q;n,k}$$
+
+    内层求和在 Tensor Core 上做，外层乘缩放因子再相加在 CUDA core 上做。这一页依次画出量化 $A$、量化 $B$、两个 K 块各自的 Tensor Core 累加、乘缩放因子后加进 FP32 结果、写回 bf16，最后和 float64 的参考结果比较。
+    $$D={{ D | matrix:4 }}$$
+leaves:
+  label: 输入
+  title: 输入 A 和 B
+  text: |
+    $A$ 和 $B$ 是 bf16。这里的值都是 $1/128$ 的整数倍，在 bf16 里能精确表示。$A$ 第 1 行第 4 个元素特意取得很小（$1/128$），后面 Tensor Core 累加那一步会用到它。
+
+    图上每个运算先在 float64 里算出结果，再舍入到节点自己的 dtype。这一页用到的取绝对值、取最大值、FP32 的除法和乘法、类型转换，这样算出的结果与 FP32 运算逐位相同；Tensor Core 的累加是例外，后面单独说明。
+
+    $\mathbf{1}^{A}$、$\mathbf{1}^{B}$ 是全为 1 的缩放因子，只用来在图上单独算出每个 K 块的 Tensor Core 累加器，真实 kernel 里没有它们。
+    $$A={{ A | matrix:7 }}$$
+    $$B={{ B | matrix:6 }}$$
+body:
+  - quant_a:
+      title: 量化 A
+      subtitle: per_token_cast_to_fp8
+      body:
+        - Av: { op: 'view(A, M, Kb, bk)', tex: 'A_{\mathrm{tile}}' }
+        - Aabs: { op: abs(Av), dtype: fp32, tex: '\lvert A_{\mathrm{tile}}\rvert' }
+        - amax_a: { op: 'max(Aabs, -1)', tex: '\mathrm{amax}^{A}' }
+        - sfa: { op: amax_a / 448, tex: 's^{A}' }
+        - rsa: { op: sfa ** -1, tex: 'r^{A}' }
+        - rsa3: { op: 'view(rsa, M, Kb, 1)', tex: '\bar{r}^{A}' }
+        - Aq3: { op: Av * rsa3, dtype: fp8_e4m3, tex: 'A_{q,\mathrm{tile}}' }
+        - Aq: { op: 'view(Aq3, M, K)', tex: 'A_{q}' }
+  - quant_b:
+      title: 量化 B
+      subtitle: per_block_cast_to_fp8
+      body:
+        - Bv: { op: 'view(B, N, Kb, bk)', tex: 'B_{\mathrm{tile}}' }
+        - Babs: { op: abs(Bv), dtype: fp32, tex: '\lvert B_{\mathrm{tile}}\rvert' }
+        - rmax_b: { op: 'max(Babs, -1)', tex: '\mathrm{rmax}^{B}' }
+        - rmax_b3: { op: 'view(rmax_b, Nb, bn, Kb)', tex: '\overline{\mathrm{rmax}}^{B}' }
+        - amax_b: { op: 'max(rmax_b3, 1)', tex: '\mathrm{amax}^{B}' }
+        - sfb: { op: amax_b / 448, tex: 's^{B}' }
+        - rsb: { op: sfb ** -1, tex: 'r^{B}' }
+        - rsb_n: { op: 'repeat_interleave(rsb, bn, 0)', tex: 'r^{B}_{\mathrm{row}}' }
+        - rsb3: { op: 'view(rsb_n, N, Kb, 1)', tex: '\bar{r}^{B}' }
+        - Bq3: { op: Bv * rsb3, dtype: fp8_e4m3, tex: 'B_{q,\mathrm{tile}}' }
+        - Bq: { op: 'view(Bq3, N, K)', tex: 'B_{q}' }
+  - gemm:
+      title: GEMM
+      subtitle: sm90_fp8_gemm_1d2d
+      body:
+        - Aq1: { op: 'narrow(Aq, 1, 0, bk)', tex: 'A^{(1)}_{q}' }
+        - Bq1: { op: 'narrow(Bq, 1, 0, bk)', tex: 'B^{(1)}_{q}' }
+        - acc1: { op: 'scaled_mm(Aq1, one_a, Bq1, one_b, bk, bn, accum="tc")', dtype: fp32, tex: '\mathrm{acc}^{(1)}' }
+        - Aq2: { op: 'narrow(Aq, 1, bk, bk)', tex: 'A^{(2)}_{q}' }
+        - Bq2: { op: 'narrow(Bq, 1, bk, bk)', tex: 'B^{(2)}_{q}' }
+        - acc2: { op: 'scaled_mm(Aq2, one_a, Bq2, one_b, bk, bn, accum="tc")', dtype: fp32, tex: '\mathrm{acc}^{(2)}' }
+        - Dacc: { op: 'scaled_mm(Aq, sfa, Bq, sfb, bk, bn, accum="tc")', dtype: fp32, tex: 'D_{\mathrm{fp32}}' }
+        - D: { op: identity(Dacc), dtype: bf16, tex: 'D' }
+  - check:
+      title: 与参考结果比较
+      body:
+        - Dref: { op: A @ B.T, dtype: fp64, tex: 'D_{\mathrm{ref}}' }
+        - Dx: { op: 'scaled_mm(Aq, sfa, Bq, sfb, bk, bn, accum="fp32")', dtype: fp64, tex: 'D_{\mathrm{exact}}' }
+        - e_q: { op: Dx - Dref, dtype: fp64, tex: '\varepsilon_{q}' }
+        - e_acc: { op: Dacc - Dx, dtype: fp64, tex: '\varepsilon_{\mathrm{acc}}' }
+        - err: { op: D - Dref, dtype: fp64, tex: '\varepsilon' }
+steps:
+  - id: a_amax
+    show: [Av, Aabs, amax_a]
+    segment: 量化 A
+    label: '$\of{amax_a}$'
+    title: A 按 $1\times b_k$ 分块取 amax
+    text: |
+      $A$ 的每一行沿 $K$ 切成 $K/b_k=\of{Kb}$ 块，每块 $b_k=\of{bk}$ 个元素。<code>view</code> 把 $(M,K)$ 看成 $(M,K/b_k,b_k)$，再对最后一维取绝对值的最大值。DeepGEMM 的 <code>per_token_cast_to_fp8</code> 先把 bf16 转成 FP32 再取 amax，所以 $\lvert A_{\mathrm{tile}}\rvert$ 是 FP32。
+
+      源码还对 amax 做 <code>clamp(1e-4)</code>，防止全零的块得到为 0 的缩放因子。这一页的 amax 都大于 $10^{-4}$，所以图上省略了这一步。真实 kernel 的一块是 128 个元素，这一页用 4 个元素，是为了每个数都能看清。
+      $$\mathrm{amax}^{A}_{m,j}=\max_{k\in\mathcal{K}_j}\lvert A_{m,k}\rvert={{ amax_a | matrix:6 }}$$
+      第 2 行的两块差别很大：第 1 块里有 $A_{2,2}={{A[1,1]:4}}$，第 2 块的绝对值最大只有 ${{amax_a[1,1]:4}}$。整行共用一个缩放因子时，第 2 块的数只能用到 FP8 的一小段范围；分块后每块各用自己的 amax。
+  - id: a_scale
+    show: [sfa, rsa, rsa3]
+    segment: 量化 A
+    label: '$\of{sfa},\ \of{rsa}$'
+    title: 缩放因子 $s^{A}=\mathrm{amax}/448$
+    text: |
+      FP8 E4M3 能表示的最大有限值是 448。缩放因子取 $s=\mathrm{amax}/448$，块里绝对值最大的元素除以 $s$ 之后正好落在 448 附近。源码先算 $r=1/s$，再用乘法代替除法，两个值都是 FP32。$s^{A}$ 的形状是 $(M,K/b_k)$，它就是交给 GEMM 的 A 缩放因子。
+      $$s^{A}={{ sfa | matrix:7 }},\qquad r^{A}={{ rsa | matrix:3 }}$$
+      $r^{A}$ 再加一个长度为 1 的维度，和 $A_{\mathrm{tile}}$ 广播相乘。这一页的缩放因子直接取 $\mathrm{amax}/448$，与 SM90 这条路径一致。SM100 的路径把缩放因子向上取到 2 的幂（UE8M0 格式，只存指数），这一页不画这种情况。
+  - id: a_quant
+    show: [Aq3, Aq]
+    segment: 量化 A
+    label: '$\of{Aq}$'
+    title: 转成 FP8 E4M3
+    text: |
+      每个元素乘自己所在块的 $r^{A}$，结果在 FP32 里舍入一次，再转成 FP8 E4M3。E4M3 只有 3 位尾数，在 $[256,448]$ 之间相邻两个数相差 32，在 $[4,8)$ 之间相差 0.5。每块的 amax 那个元素变成 $\pm 448$。
+      $$A_{q}={{ Aq | matrix:2 }}$$
+      $A_{1,4}={{A[0,3]:7}}$ 乘 ${{rsa[0,0]:3}}$ 约为 3.155，舍入到 E4M3 的 ${{Aq[0,3]:2}}$。
+  - id: b_rmax
+    show: [Bv, Babs, rmax_b]
+    segment: 量化 B
+    label: '$\of{rmax_b}$'
+    title: B 按 $b_n\times b_k$ 分块：先在每行内取最大值
+    text: |
+      $B$ 是权重，按 $b_n\times b_k$ 的二维块量化，对应 DeepGEMM 的 <code>per_block_cast_to_fp8</code>。源码把 $B$ 看成四维，一次对两个维度取 amax。图上只画三维以内的张量，所以分两次取最大值，结果相同。第一次对每行的每个 K 块取最大值：
+      $$\mathrm{rmax}^{B}={{ rmax_b | matrix:6 }}$$
+  - id: b_amax
+    show: [rmax_b3, amax_b]
+    segment: 量化 B
+    label: '$\of{amax_b}$'
+    title: 再在 $b_n$ 行之间取最大值
+    text: |
+      把相邻的 $b_n=\of{bn}$ 行归成一组，再取最大值，得到每个 $b_n\times b_k$ 块的 amax，形状 $(N/b_n,K/b_k)$。
+      $$\mathrm{amax}^{B}={{ amax_b | matrix:6 }}$$
+  - id: b_scale
+    show: [sfb, rsb, rsb_n, rsb3]
+    segment: 量化 B
+    label: '$\of{sfb},\ \of{rsb}$'
+    title: 缩放因子 $s^{B}$
+    text: |
+      和 $A$ 一样，$s^{B}=\mathrm{amax}^{B}/448$，再取倒数。倒数按块复制到块里的每一行（<code>repeat_interleave</code>），再加一个长度为 1 的维度，和 $B_{\mathrm{tile}}$ 广播相乘。
+      $$s^{B}={{ sfb | matrix:7 }},\qquad r^{B}={{ rsb | matrix:3 }}$$
+  - id: b_quant
+    show: [Bq3, Bq]
+    segment: 量化 B
+    label: '$\of{Bq}$'
+    title: 转成 FP8 E4M3
+    text: |
+      $$B_{q}={{ Bq | matrix:2 }}$$
+      每个块里至少有一个元素变成 $\pm 448$。$B_{1,4}={{B[0,3]:6}}$ 乘 ${{rsb[0,0]:1}}$ 约为 6.4，舍入到 ${{Bq[0,3]:1}}$。
+  - id: tc1
+    show: [Aq1, Bq1, acc1]
+    active: [Aq1, Bq1, acc1]
+    segment: Tensor Core
+    label: '$\of{acc1}$'
+    title: 第 1 个 K 块：Tensor Core 累加
+    text: |
+      <code>sm90_fp8_gemm_1d2d</code> 对每个 K 块（真实 kernel 是 <code>BLOCK_K = 128</code>）连续发 4 条 WGMMA，每条算 $K=32$。第一条 WGMMA 覆盖累加器，后面三条加进去，所以每个 K 块的累加器从 0 开始，只含这一块的乘积，不乘缩放因子：
+      $$\mathrm{acc}^{(1)}_{m,n}=\sum_{k=1}^{b_k}A_{q;m,k}\,B_{q;n,k}={{ acc1 | matrix:2 }}$$
+      DeepSeek-V3 论文报告，H800 上 FP8 GEMM 的累加只保留约 14 位。图上的 <code>scaled_mm</code> 用 <code>accum="tc"</code> 模拟这一点：一个 K 块的全部乘积按其中绝对值最大的乘积的指数 $e$ 对齐，每个乘积只保留从 $2^{e}$ 这一位往下的 14 位，更低的位向零截断，再相加。这是按论文的描述建立的近似模型。硬件按每条 WGMMA 的 $K=32$ 处理，模型却把整个 $b_k$ 组一起对齐，对齐的粒度和截断的方式都是假设，不是硬件的确切行为。
+
+      第 1 行第 1 列的四个乘积里绝对值最大的是 $(-448)\times 176=-78848$，指数是 16，保留 14 位时最小单位是 $2^{16-13}=8$。另外两个大乘积 15360 和 $-20480$ 都是 8 的倍数，不受影响；$A_{q;1,4}\,B_{q;1,4}={{Aq[0,3]:2}}\times{{Bq[0,3]:1}}=21.125$ 被截断成 16，少了 5.125。所以 $\mathrm{acc}^{(1)}_{1,1}={{acc1[0,0]:0}}$，精确的和是 $-83946.875$。
+  - id: tc2
+    show: [Aq2, Bq2, acc2]
+    active: [Aq2, Bq2, acc2]
+    segment: Tensor Core
+    label: '$\of{acc2}$'
+    title: 第 2 个 K 块：Tensor Core 累加
+    text: |
+      第 2 个 K 块重新从 0 开始累加，规则相同，用的也是上一步说明的近似模型。
+      $$\mathrm{acc}^{(2)}={{ acc2 | matrix:2 }}$$
+  - id: promote
+    show: Dacc
+    active: Dacc
+    segment: CUDA core 提升
+    label: '$\of{Dacc}$'
+    title: 每个 K 块结束后在 CUDA core 上乘缩放因子
+    text: |
+      一个 K 块的 WGMMA 做完以后，kernel 在 CUDA core 上把两个缩放因子相乘，乘上 Tensor Core 的累加器，加进 FP32 寄存器里的结果：
+      $$D_{\mathrm{fp32}}\mathrel{+}=\big(s^{A}_{m,j}\,s^{B}_{\lceil n/b_n\rceil,j}\big)\cdot\mathrm{acc}^{(j)}_{m,n}$$
+      所以 Tensor Core 的有限精度只作用在一个 K 块的 128 个乘积上，块与块之间的相加都在 FP32 里做。DeepSeek-V3 论文把这一步叫做提升到 CUDA core，间隔是 128 个元素，也就是 4 条 WGMMA。以第 1 行第 1 列为例：
+      $$ {{sfa[0,0]:7}}\times{{sfb[0,0]:7}}\times({{acc1[0,0]:0}})+{{sfa[0,1]:7}}\times{{sfb[0,1]:7}}\times{{acc2[0,0]:0}}={{Dacc[0,0]:7}}$$
+      $$D_{\mathrm{fp32}}={{ Dacc | matrix:7 }}$$
+      图上的 <code>scaled_mm</code> 一次算完两个 K 块，Tensor Core 那一步用的是同样的近似模型。悬停 $D_{\mathrm{fp32}}$ 的柱子可以看到它连到哪些元素。
+  - id: epilogue
+    show: D
+    segment: 写回
+    label: '$\of{D}$'
+    title: 写回 bf16
+    text: |
+      所有 K 块做完以后，FP32 的结果转成 bf16 写回显存。bf16 只有 8 位有效数字，在这一页的数据上，这一步的舍入误差比 Tensor Core 截断的误差大。
+      $$D={{ D | matrix:6 }}$$
+  - id: reference
+    show: [Dref, Dx]
+    segment: 比较
+    label: '$\of{Dref},\ \of{Dx}$'
+    title: 两个参考结果
+    text: |
+      $D_{\mathrm{ref}}$ 直接用 bf16 的 $A$、$B$ 在 float64 里算 $AB^{\top}$，没有量化。$D_{\mathrm{exact}}$ 用量化后的 $A_q$、$B_q$ 和缩放因子，但所有乘法和加法都在 float64 里精确地做（<code>accum="fp32"</code>）。
+      $$D_{\mathrm{ref}}={{ Dref | matrix:6 }},\qquad D_{\mathrm{exact}}={{ Dx | matrix:6 }}$$
+  - id: errors
+    show: [e_q, e_acc, err]
+    segment: 比较
+    label: '$\of{e_q},\ \of{e_acc},\ \of{err}$'
+    title: 误差来自哪里
+    text: |
+      $\varepsilon_q=D_{\mathrm{exact}}-D_{\mathrm{ref}}$ 是 FP8 量化本身带来的误差。E4M3 只有 3 位尾数，每个元素的相对误差最大约 $2^{-4}$，这是误差的主要部分。
+      $$\varepsilon_q={{ e_q | matrix:5 }}$$
+      $\varepsilon_{\mathrm{acc}}=D_{\mathrm{fp32}}-D_{\mathrm{exact}}$ 是累加带来的误差。第 1 行第 1 列和第 4 列有 $10^{-5}$ 量级的误差，来自 Tensor Core 那一步截断掉的小乘积；其余元素的绝对值都小于 $10^{-7}$，只来自 FP32 舍入。这些数值由近似模型算出，模型的位数、对齐粒度和截断方式都是假设，它们不是硬件上的测量值。$K$ 只有 8 时截断的影响很小；真实的 $K$ 有几千，论文报告不做提升时误差会明显变大，这一页没有画这种情况。
+      $$\varepsilon_{\mathrm{acc}}={{ e_acc | matrix:8 }}$$
+      最后 $\varepsilon=D-D_{\mathrm{ref}}$ 是写回 bf16 以后的总误差。
+      $$\varepsilon={{ err | matrix:5 }}$$
+
+      Blackwell（SM100）上没有 CUDA core 提升这一步：缩放因子用 UE8M0 格式，由 tcgen05 的 block-scaled MMA 在 Tensor Core 内部乘上，累加在 Tensor Memory 的 FP32 里进行。
+panels:
+  - title: 对应的 DeepGEMM 调用
+    code: |-
+      # a: (M, K) bf16, b: (N, K) bf16
+      a8, sfa = per_token_cast_to_fp8(
+          a, use_ue8m0=False)
+      b8, sfb = per_block_cast_to_fp8(
+          b, use_ue8m0=False)
+      d = torch.empty((M, N), device='cuda',
+                      dtype=torch.bfloat16)
+      deep_gemm.fp8_gemm_nt(
+          (a8, sfa), (b8, sfb), d)
+      # d = a @ b.T
+    note: SM90 上这个调用走 sm90_fp8_gemm_1d2d：A 的缩放因子是一维的（每行每 128 个元素一个），B 的是二维的（每 128×128 块一个）。

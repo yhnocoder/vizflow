@@ -25,6 +25,7 @@
   <li><a href="serving-schedulers.html">推理调度：vLLM 与 SGLang</a>：同一组请求按两个引擎的调度规则逐步推演，看连续批处理、分块 prefill、前缀缓存、抢占与撤回、CUDA graph 填充和重叠调度。两个模拟器与真实调度器在 CPU 上跑出的轨迹逐步一致。</li>
   <li><a href="serving-packed.html">打包批次的注意力</a>：推理引擎一步的单 head 注意力，几个请求的新 token 拼成一块，读各自的 KV cache，分块的因果 mask 让请求互不可见，只取每个请求的最后一行去算 logits。可以切换混合、只有 prefill、只有 decode 三种批次。只有前向。</li>
   <li><a href="deepep-deepgemm-exec.html">DeepEP 与 DeepGEMM 的执行过程</a>：一个 MoE 层在多卡上的执行顺序。dispatch、grouped GEMM 的 tile 调度、一个 SM 上的流水线、combine 和两个 micro-batch 的重叠，简图、表格和时间线都由 <code>src/sim</code> 的模拟器算出。</li>
+  <li><a href="deepgemm-fp8.html">DeepGEMM：一次分块缩放的 FP8 GEMM（YAML 页面描述）</a>：A 按 1×128、B 按 128×128 分块量化成 FP8 E4M3，Tensor Core 在每个 K 块内累加，CUDA core 乘缩放因子后加进 FP32 结果。块缩小到 1×4 和 2×4，节点值按 dtype 真实舍入。用 <code>deepgemm-fp8.yaml</code> 写成。</li>
   <li><a href="element-lmhead.html">lm_head 与 NLL Loss（vizflow-page 元素）</a>：同一页用 <code>&lt;vizflow-page&gt;</code> 元素写成，页面只给元素设置属性。</li>
 </ul>
 <h2>模块与写作说明的检查页</h2>
