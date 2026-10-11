@@ -965,6 +965,8 @@ ui 和 scene3d 自动注入样式与字体。只用 core、steps 的页面需要
 - 布局类：`.vf-page`（页面容器，最大宽 1360px）；`.vf-split`（左侧自适应，右侧面板 360px，980px 以下改为单列）；`.vf-stack`（单列）；`.vf-inline`（与正文同宽，用于文章里的小部件）。
 - 尺寸变量：`--vf-side-width`（右侧宽度，默认 360px）、`--vf-gap`（间距，默认 20px）、`--vf-stage-height`（画布高度，默认 `min(68vh, 640px)`，980px 以下 62vh）。
 - `readTheme()` 返回线性空间的颜色，`onThemeChange(fn)` 在主题变化时调用，两者在 theme 入口，页面自己画图时使用。
+- 主题设置：`setTheme('default' | 'catppuccin-latte' | 'liquid-glass', origin?)` 切换主题并保存到浏览器本地，`setBackgroundImage(file | null)` 设置或移除背景图片（只存在本机的 IndexedDB）。页面引入 theme 时自动应用已保存的设置。给用户一个设置页时，用 ui 的 `mountSettings('#settings')` 挂载现成的界面，见 `examples/settings.html`。
+- 页面自己的样式里，卡片类的元素加 `data-vf-glass` 属性后，在 Liquid Glass 主题下也显示为玻璃。
 
 ## 8. 自定义运算
 
