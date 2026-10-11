@@ -131,13 +131,23 @@ function paragraphs(source: string, markdown: boolean): Segment[] {
   });
 }
 
+const closingPunctuation = /^[，。、；：！？）」』》〉]/u;
+
 function fill(segments: Segment[], target: HTMLElement): void {
   const formulas: { tex: string; display: boolean }[] = [];
+  let carried = 0;
   const markup = segments
-    .map((segment) => {
-      if (segment.kind === 'html') return segment.html;
+    .map((segment, index) => {
+      const skip = carried;
+      carried = 0;
+      if (segment.kind === 'html') return segment.html.slice(skip);
       formulas.push(segment);
-      return `<span data-vf-tex="${formulas.length - 1}"></span>`;
+      const marker = `<span data-vf-tex="${formulas.length - 1}"></span>`;
+      const next = segments[index + 1];
+      const punctuation = !segment.display && next?.kind === 'html' ? closingPunctuation.exec(next.html)?.[0] : undefined;
+      if (punctuation === undefined) return marker;
+      carried = punctuation.length;
+      return `<span style="white-space:nowrap">${marker}${punctuation}</span>`;
     })
     .join('');
   const template = document.createElement('template');
