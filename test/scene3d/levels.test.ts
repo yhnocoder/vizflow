@@ -192,3 +192,42 @@ describe('levelPlan with views and head-selecting boards', () => {
   });
 });
 
+function groupedGraph() {
+  const g = graph({ dims: {} });
+  const x = g.input('x', [4, 2], [[1, 2], [3, 4], [5, 6], [7, 8]]);
+  const ids = g.input('ids', [4], [1, 1, 3, 3]);
+  const W = g.param('W', [4, 3, 2], Array.from({ length: 4 }, (_, e) => Array.from({ length: 3 }, (_, o) => [e + o * 0.1, e - o * 0.2])));
+  const xs = g.mul(x, 2, { name: 'xs' });
+  const group = g.add(ids, 0, { name: 'expert_idx' });
+  const out = g.grouped_linear(xs, W, group, { name: 'out' });
+  const loss = g.loss(g.sum(out, null, { name: 'loss' }));
+  const spec: StepsSpec = {
+    forward: [
+      { show: [x, ids, W], title: 'inputs', kind: 'inputs' },
+      { show: [xs, group], title: 'xs', segment: 'a' },
+      { show: [W, out], title: 'out', segment: 'a' },
+      { show: [loss], title: 'loss', segment: 'loss' },
+    ],
+    backward: 'reverse',
+  };
+  return { spec, xs, W, out };
+}
+
+describe('levelPlan with grouped_linear', () => {
+  it('draws the weight as one slab per group beside the rows of that group', () => {
+    const { spec, xs, W, out } = groupedGraph();
+    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const weight = blockOf(blocks, W);
+    expect(weight.slabs!.map((s) => s.used)).toEqual([false, true, false, true]);
+    expect(weight.rowLabels.map((l) => l.text)).toEqual(['expert_idx=0', 'expert_idx=1', 'expert_idx=2', 'expert_idx=3']);
+    const zOf = (block: Block, pick: (index: number[]) => boolean) => block.elements.filter((e) => pick(e.index)).map((e) => e.z);
+    const mid = (zs: number[]) => (Math.min(...zs) + Math.max(...zs)) / 2;
+    const xsBlock = blockOf(blocks, xs);
+    expect(mid(zOf(weight, (i) => i[0] === 1))).toBeCloseTo(mid(zOf(xsBlock, (i) => i[0] < 2)), 9);
+    expect(mid(zOf(weight, (i) => i[0] === 3))).toBeCloseTo(mid(zOf(xsBlock, (i) => i[0] >= 2)), 9);
+    for (let g = 1; g < 4; g++) expect(Math.min(...zOf(weight, (i) => i[0] === g))).toBeGreaterThan(Math.max(...zOf(weight, (i) => i[0] === g - 1)));
+    expect(blockOf(blocks, out).rowGroups).toEqual([1, 1, 3, 3]);
+    expect(xsBlock.rowLabels.filter((l) => l.text !== '').map((l) => l.text)).toEqual(['expert_idx=1', 'expert_idx=3']);
+  });
+});
+

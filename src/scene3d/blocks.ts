@@ -219,11 +219,12 @@ export class NodeMesh {
 
 export class PlateMesh {
   readonly group = new Group();
-  readonly mesh: Mesh;
-  private readonly geometry: BoxGeometry;
-  private readonly edges: EdgesGeometry;
+  readonly meshes: Mesh[] = [];
+  private readonly geometries: BoxGeometry[] = [];
+  private readonly edges: EdgesGeometry[] = [];
   private readonly material: MeshLambertMaterial;
-  private readonly outlineMaterial: LineBasicMaterial;
+  private readonly outlineMaterials: LineBasicMaterial[] = [];
+  private readonly faded: boolean[];
   private readonly frames: LineLoop[] = [];
   private readonly frameMaterial: LineBasicMaterial;
   private readonly frameGeometry: BufferGeometry | undefined;
@@ -234,15 +235,22 @@ export class PlateMesh {
     readonly block: Block,
     theme: ThemeColors,
   ) {
-    const plate = block.plate!;
-    this.geometry = new BoxGeometry(plate.w, PLATE_THICKNESS, plate.d);
+    const plates = block.slabs?.map((slab) => slab.plate) ?? [block.plate!];
+    this.faded = block.slabs?.map((slab) => !slab.used) ?? [false];
     this.material = new MeshLambertMaterial({ color: new Color(...theme.line) });
-    this.mesh = new Mesh(this.geometry, this.material);
-    this.mesh.position.set(plate.x, plate.y - PLATE_THICKNESS / 2 - FRAME_LIFT, plate.z);
-    this.edges = new EdgesGeometry(this.geometry);
-    this.outlineMaterial = inkMaterial(theme);
-    this.mesh.add(new LineSegments(this.edges, this.outlineMaterial));
-    this.group.add(this.mesh);
+    for (const plate of plates) {
+      const geometry = new BoxGeometry(plate.w, PLATE_THICKNESS, plate.d);
+      const mesh = new Mesh(geometry, this.material);
+      mesh.position.set(plate.x, plate.y - PLATE_THICKNESS / 2 - FRAME_LIFT, plate.z);
+      const edges = new EdgesGeometry(geometry);
+      const outlineMaterial = inkMaterial(theme);
+      mesh.add(new LineSegments(edges, outlineMaterial));
+      this.group.add(mesh);
+      this.meshes.push(mesh);
+      this.geometries.push(geometry);
+      this.edges.push(edges);
+      this.outlineMaterials.push(outlineMaterial);
+    }
     this.frameMaterial = inkMaterial(theme);
     if (block.frameHalf !== undefined) {
       const [hw, hd] = block.frameHalf;
@@ -268,7 +276,7 @@ export class PlateMesh {
 
   setTheme(theme: ThemeColors): void {
     this.material.color.setRGB(...theme.line);
-    this.outlineMaterial.color.setRGB(...theme.ink);
+    for (const material of this.outlineMaterials) material.color.setRGB(...theme.ink);
     this.frameMaterial.color.setRGB(...theme.ink);
     this.axisMaterial.color.setRGB(...theme.ink);
   }
@@ -277,7 +285,9 @@ export class PlateMesh {
     const { revealed, seeThrough } = state;
     const ink = inkFactor(seeThrough);
     seeThroughFill(this.material, seeThrough);
-    this.outlineMaterial.opacity = (state.far ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN) * ink;
+    this.outlineMaterials.forEach((material, i) => {
+      material.opacity = (state.far || this.faded[i] ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN) * ink;
+    });
     this.frameMaterial.opacity = (revealed ? FRAME_REVEALED : FRAME_HIDDEN) * ink;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];
@@ -301,10 +311,10 @@ export class PlateMesh {
   }
 
   dispose(): void {
-    this.geometry.dispose();
-    this.edges.dispose();
+    for (const geometry of this.geometries) geometry.dispose();
+    for (const edges of this.edges) edges.dispose();
     this.material.dispose();
-    this.outlineMaterial.dispose();
+    for (const material of this.outlineMaterials) material.dispose();
     this.frameMaterial.dispose();
     this.frameGeometry?.dispose();
     this.axis?.geometry.dispose();

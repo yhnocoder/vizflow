@@ -20,7 +20,7 @@ export function blockAt(c: SceneController, clientX: number, clientY: number): {
   const owners = new Map<Object3D, Renderable>();
   for (const renderable of c.renderables) {
     for (const object of renderable.pickables) owners.set(object, renderable);
-    if (renderable.plate !== undefined) owners.set(renderable.plate.mesh, renderable);
+    for (const mesh of renderable.plate?.meshes ?? []) owners.set(mesh, renderable);
   }
   const hits = raycaster.intersectObjects([...owners.keys()], false);
   if (hits.length === 0) return undefined;

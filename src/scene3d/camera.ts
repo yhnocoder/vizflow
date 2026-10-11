@@ -23,6 +23,7 @@ export const FOLLOW_EDGE_FILL = 0.82;
 export const FOLLOW_BOTTOM_SLACK = 2;
 export const FOLLOW_TOP_SLACK = 1;
 export const FOLLOW_SIDE_ROOM = 4;
+export const FOLLOW_SLAB_ZOOM = 1.4;
 
 const FOLLOW_SETTLE_Y = 0.01;
 const FOLLOW_SETTLE_ZOOM = 0.002;
@@ -140,12 +141,12 @@ export class CameraRig {
     return Math.min(Math.max((step.lo + step.hi) / 2, scene.lo + half), scene.hi - half);
   }
 
-  private sideZoom(keys: Renderable[]): number {
+  private sideZoom(keys: Renderable[], cap: number): number {
     const scene = this.sideRange(allPoints(this.c));
     const width = 2 * (this.halfWidth() - FOLLOW_SIDE_ROOM);
-    if (scene.hi - scene.lo <= width) return 1;
+    if (cap === 1 && scene.hi - scene.lo <= width) return 1;
     const step = this.sideRange(framingPoints(keys));
-    return Math.min(1, width / (step.hi - step.lo));
+    return Math.min(cap, width / (step.hi - step.lo));
   }
 
   private halfHeight(): number {
@@ -183,7 +184,10 @@ export class CameraRig {
     const c = this.c;
     const hh = this.halfHeight();
     const { lo, top } = this.levelRange();
-    const keys = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
+    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
+    const slabbed = active.some((r) => r.block.slabs !== undefined);
+    const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
+    const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
     if (keys.length === 0) {
       const zoom = Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN));
       return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys), zoom };
@@ -191,7 +195,8 @@ export class CameraRig {
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
-    const zoom = Math.min(1, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys));
+    const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
+    const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap));
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys), zoom };
   }
 

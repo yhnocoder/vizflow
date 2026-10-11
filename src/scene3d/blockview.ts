@@ -249,8 +249,9 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   const far = renderable.far;
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
-    colors.push(barColor(values[i], c.theme, { active: revealed && active, far, focused }));
-    outline.push(outlineOpacity({ active: active && revealed, far, tile: block.shape === 'tile' }));
+    const faded = far || block.slabs?.[element.index[0]]?.used === false;
+    colors.push(barColor(values[i], c.theme, { active: revealed && active, far: faded, focused }));
+    outline.push(outlineOpacity({ active: active && revealed, far: faded, tile: block.shape === 'tile' }));
     const label = renderable.values[i];
     if (label !== undefined) {
       const h = heights[i];
