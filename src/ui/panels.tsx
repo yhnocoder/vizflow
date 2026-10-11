@@ -166,9 +166,11 @@ function Spark(props: { history: number[]; hint?: string }) {
       <Show
         when={props.history.length >= 2}
         fallback={
-          <text x="120" y="26" text-anchor="end" font-size="9.5" fill="var(--muted)">
-            {props.hint}
-          </text>
+          <foreignObject x="0" y="17" width="120" height="14">
+            <div class="vf-fo vf-spark-hint">
+              <Rich text={props.hint ?? ''} />
+            </div>
+          </foreignObject>
         }
       >
         <line x1="4" x2="116" y1="37" y2="37" stroke="var(--line-strong)" />

@@ -84,13 +84,14 @@ describe('new panels', () => {
     const all = g.nodes.filter((n) => n.kind === 'param');
     mounted.push(
       mountPanels(el, g, [
-        { loss: { parts: lt, hint: '走几步看损失下降' } },
+        { loss: { parts: lt, hint: '走几步看 $\\ell$ 下降' } },
         { sequence: true, labels: ['$x_1$', '$x_2 \\cdot y_1$', '$x_3 \\cdot y_2$', '$y_3$'], sgd: { params: all, lr: 0.5, label: '更新一步全部参数' }, random: true, reset: true, title: '序列' },
       ], { steps, sequence: sequenceOf(ids, y, g) }),
     );
     const rows = [...el.querySelectorAll('.vf-lossrows > span')].map(text);
     expect(rows).toEqual(Array.from(lt.value.data, (v, t) => `$\\ell_{${t + 1}}$ = ${v.toFixed(3)}`));
-    expect(text(el.querySelector('.vf-spark text'))).toBe('走几步看损失下降');
+    expect(text(el.querySelector('.vf-spark-hint'))).toBe('走几步看 $\\ell$ 下降');
+    expect(el.querySelector('.vf-spark-hint')!.namespaceURI).toBe('http://www.w3.org/1999/xhtml');
     const selects = [...el.querySelectorAll<HTMLSelectElement>('.vf-seqrow select')];
     expect(selects.map((s) => s.value)).toEqual(['0', '2', '1', '0']);
     expect([...el.querySelectorAll('.vf-seqrow label')].map((l) => text(l.firstElementChild))).toEqual(['$x_1$', '$x_2 \\cdot y_1$', '$x_3 \\cdot y_2$', '$y_3$']);
@@ -100,7 +101,7 @@ describe('new panels', () => {
     button(el, '更新一步全部参数（$\\eta = 0.5$）').click();
     expect(g.loss().value.data[0]).toBeLessThan(before);
     expect(el.querySelector('.vf-spark path')).not.toBeNull();
-    expect(el.querySelector('.vf-spark text')).toBeNull();
+    expect(el.querySelector('.vf-spark-hint')).toBeNull();
 
     selects[1].value = '1';
     selects[1].dispatchEvent(new Event('change', { bubbles: true }));

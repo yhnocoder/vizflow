@@ -49,7 +49,14 @@ test('every step renders without console errors', async ({ page }, info) => {
   const errors = await open(page);
   const count = await page.evaluate(() => (window as unknown as { vizflow: Win }).vizflow.steps.list.length);
   expect(count).toBe(STEP_NAMES.length);
-  await expect(page.locator('.vf-st')).toHaveText(['整张图', 'h, Wᵀ', 'z = hWᵀ', 'LSE', 'log p', 'ℓ', '∂log p', '∂LSE', '∂z', '∂Wᵀ', '∂h']);
+  const labels = await page.locator('.vf-st').evaluateAll((els) =>
+    els.map((el) => {
+      const copy = el.cloneNode(true) as Element;
+      for (const k of copy.querySelectorAll('.katex')) k.replaceWith(`$${k.querySelector('annotation')?.textContent ?? ''}$`);
+      return copy.textContent;
+    }),
+  );
+  expect(labels).toEqual(['整张图', 'h, Wᵀ', 'z = hWᵀ', 'LSE', 'log p', 'ℓ', '$\\partial \\log\\mathbf{p}$', '$\\partial \\mathrm{LSE}$', '$\\partial \\mathbf{z}$', '∂Wᵀ', '$\\partial \\mathbf{h}$']);
   for (let i = 0; i < count; i++) {
     await goStep(page, i);
     await expect(page.locator('.vf-st[aria-current="step"]')).toHaveCount(1);

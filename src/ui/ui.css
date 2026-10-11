@@ -836,3 +836,9 @@ vf-figure {
   white-space: nowrap;
   font-family: var(--serif);
 }
+
+.vf-spark-hint {
+  text-align: right;
+  font-size: 9.5px;
+  color: var(--muted);
+}
