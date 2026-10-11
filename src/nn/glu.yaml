@@ -1,0 +1,43 @@
+module: GLU
+subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
+params:
+  act: { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+  f:   { type: dim }
+inputs:
+  x: { shape: [T, d] }
+outputs: [down]
+weights:
+  Wg: { shape: [f, d] }
+  Wu: { shape: [f, d] }
+  Wd: { shape: [d, f] }
+body:
+  - gate: x @ Wg.T
+  - up:   x @ Wu.T
+  - a:    { op: act(gate), tex: '\of{act}(\mathbf{gate})' }
+  - m:    a * up
+  - down: m @ Wd.T
+steps:
+  - id: proj
+    show: [Wg.T, Wu.T, gate, up]
+    label: '$\mathbf{gate},\ \mathbf{up}$'
+    title: gate_proj 和 up_proj
+    text: 两个投影的输入都是 $\of{x}$，维度从 $d$ 扩大到 $f$。两个 Linear 都没有 bias。
+  - id: act
+    show: a
+    label: '$\of{act}$'
+    title: 激活
+    text: |
+      gate 逐元素经过 $\of{act}$：
+      $$\of{act.def}$$
+  - id: gate
+    show: m
+    label: '$\of{a}\odot\mathbf{up}$'
+    title: 门控相乘
+    text: 激活后的 gate 和 up 逐元素相乘，决定 up 的每个分量放行多少。
+  - id: down
+    show: [Wd.T, down]
+    label: '$\of{down}$'
+    title: down_proj
+    text: |
+      再投影回 $d$ 维。
+      $$\of{down} = \of{m}W_d^{\top} = {{ down | matrix }}$$

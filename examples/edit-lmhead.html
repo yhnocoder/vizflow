@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vizflow scene3d：编辑模式</title>
+<link rel="icon" href="data:,">
+<style>
+h1 { font-family: var(--serif); font-weight: 400; font-size: 28px; margin: 0 0 12px; }
+#stage { height: var(--vf-stage-height); min-height: 360px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <h1>lm_head 与 NLL Loss（编辑模式）</h1>
+  <div id="stage"></div>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountScene, board, stack, node } from '@yhnocoder/vizflow/scene3d';
+
+const g = graph({ dims: { d: 4, V: 5 }, real: { d: 4096, V: 151936, name: 'Qwen3-8B' } });
+const h = g.input('h', [1, 'd'], [0.8, -1.1, 0.5, 1.4]);
+const W = g.param('W', ['V', 'd'], [
+  [0.9, -0.6, 0.3, 0.6],
+  [0.2, -0.8, 0.6, 0.2],
+  [-0.4, 0.2, 0.9, 0.3],
+  [0.5, 0.7, -0.6, -0.2],
+  [-0.7, 0.4, -0.3, -0.5],
+], { tex: 'W', elem: 'W' });
+const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
+const z = g.matmul(h, W.T, { name: 'z' });
+const L = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+
+const steps = createSteps(g, {
+  overview: { title: '整张图', text: String.raw`$$\ell = {{loss:3}}$$` },
+  forward: [
+    { show: [h, W.T], label: 'h, Wᵀ', title: '输入', text: '' },
+    { show: z, label: 'z', title: 'lm_head', text: '' },
+    { show: L, label: 'LSE', title: 'log-sum-exp', text: '' },
+    { show: logp, label: 'log p', title: 'log_softmax', text: '' },
+    { show: loss, label: 'ℓ', title: 'nll_loss', text: '' },
+  ],
+  backward: 'auto',
+});
+
+const scene = mountScene('#stage', g, {
+  steps,
+  edit: true,
+  layout: [
+    board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
+    stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
+  ],
+});
+
+window.vizflow = { g, steps, scene };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

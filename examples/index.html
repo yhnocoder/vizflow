@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:,">
+<title>vizflow 示例</title>
+</head>
+<body>
+<h1>vizflow 示例</h1>
+<p id="status">loading</p>
+<h2>完整页面</h2>
+<ul id="pages">
+  <li><a href="lm-head-nll.html">lm_head 与 NLL Loss</a>：3D 场景、步骤条与面板。</li>
+  <li><a href="softmax-ce.html">Softmax 与交叉熵</a>：单样本与批量两种模式。</li>
+  <li><a href="widget-softmax.html">Softmax 小部件</a>：只用步骤条和面板，不加载 3D。</li>
+  <li><a href="qwen3-structure.html">Qwen3 一层的前向与反向</a>：从 token id 到损失，一个 decoder 层完整展开。页面代码按 HF 的模块层级写成嵌套函数，每个模块在场景侧面有一个大括号，相机跟随当前步骤。</li>
+  <li><a href="auto-layout-qwen3.html">Qwen3 一层：自动布局</a>：建图代码与上一页相同，布局由 <code>autoLayout</code> 按模块层级生成，用来和手写布局对比。</li>
+  <li><a href="qwen3-dsl.html">Qwen3 一层（YAML 页面描述）</a>：和上一页同样的模型与数值，用 <code>qwen3-dsl.yaml</code> 页面描述文件写成，由 <code>&lt;vizflow-page src&gt;</code> 在浏览器里编译。</li>
+  <li><a href="element-lmhead.html">lm_head 与 NLL Loss（vizflow-page 元素）</a>：同一页用 <code>&lt;vizflow-page&gt;</code> 元素写成，页面只给元素设置属性。</li>
+</ul>
+<h2>模块与写作说明的检查页</h2>
+<ul id="checks">
+  <li><a href="scene-lmhead.html">scene3d：lm_head 与 NLL Loss</a>：只挂载 3D 场景。</li>
+  <li><a href="scene-modules.html">scene3d：模块大括号与相机跟随</a>：模块大括号的嵌套与错开，换步骤时相机跟随当前步骤。</li>
+  <li><a href="edit-lmhead.html">scene3d：编辑模式</a>：拖动块与标签，复制布局配置。</li>
+  <li><a href="guide-check-log-softmax.html">log_softmax 与 nll_loss 小部件</a>：按写作说明独立写出的页面，用来检查说明是否够用。</li>
+  <li><a href="theme.html">theme</a>：颜色变量与字体。</li>
+</ul>
+<h2>用构建工具的项目</h2>
+<p><code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，从 npm 包的构建工具产物引用 vizflow，内容与 lm_head 页面相同。它要在自己的目录里安装和运行，步骤见其中的 README.md。</p>
+<script type="module">
+import * as core from '@yhnocoder/vizflow/core';
+document.getElementById('status').textContent = `core exports: ${Object.keys(core).length}`;
+</script>
+</body>
+</html>

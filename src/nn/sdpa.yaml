@@ -1,0 +1,63 @@
+module: SDPA
+subtitle: 单个 head 的因果注意力
+inputs:
+  q: { shape: [T, dh] }
+  k: { shape: [T, dh] }
+  v: { shape: [T, dh] }
+outputs: [o, P]
+buffers:
+  M: { value: causal_mask(T) }
+body:
+  - S:  q @ k.T
+  - Ss: { op: S * dh ** -0.5, tex: '\tilde{S}' }
+  - Sm: { op: Ss + M, tex: '\bar{S}' }
+  - ex: { op: exp(Sm), tex: '\mathrm{ex}' }
+  - Z:  'sum(ex, -1, keepdim=true)'
+  - P:  ex / Z
+  - o:  P @ v
+steps:
+  - id: score
+    show: S
+    label: '${\of{q}}{\of{k}}^\top$'
+    title: 打分
+    text: |
+      $S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积，每个 head 各算一个 $T\times T$ 的分数表。
+      $$\of{S}={{ S | matrix }}$$
+  - id: scale
+    show: Ss
+    label: '$\div\sqrt{d_h}$'
+    title: 缩放
+    text: 乘上 $1/\sqrt{d_h}$。点积的方差随 $d_h$ 增长，缩放让 softmax 的输入不至于太大。
+  - id: mask
+    show: [M, Sm]
+    label: '$+M$'
+    title: causal mask
+    text: |
+      加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度，所以没有连线。
+  - id: exp
+    show: ex
+    label: exp
+    title: softmax：取 exp
+    text: softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。
+  - id: sum
+    show: Z
+    label: '$Z$'
+    title: 按行求和
+    text: |
+      每一行各有一个 $Z$。
+      $$\of{Z}={{ Z | matrix:3 }}$$
+  - id: div
+    show: P
+    label: '$P$'
+    title: 注意力权重
+    text: |
+      每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以左上角是 1。
+      $$\of{P}={{ P | matrix:3 }}$$
+  - id: pv
+    show: o
+    active: [P, v, o]
+    label: '$P\of{v}$'
+    title: P v
+    text: |
+      用注意力权重对 $\of{v}$ 的各行做加权平均。
+      $$\of{o}=\of{P}\of{v}={{ o | matrix }}$$

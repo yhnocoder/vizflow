@@ -1,0 +1,342 @@
+.vf-scene {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  container-type: inline-size;
+}
+
+.vf-scene canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.vf-scene canvas:active {
+  cursor: grabbing;
+}
+
+.vf-scene canvas.vf-cursor-pointer {
+  cursor: pointer;
+}
+
+.vf-scene canvas.vf-cursor-help {
+  cursor: help;
+}
+
+.vf-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.vf-lb {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  transition: opacity 0.25s;
+}
+
+.vf-lb.vf-val {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+}
+
+.vf-lb.vf-val.vf-target {
+  font-weight: 600;
+}
+
+.vf-lb.vf-tick {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.vf-lb.vf-ttl {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 17px;
+  color: var(--fg);
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.vf-lb.vf-node {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--surface) 82%, transparent);
+  padding: 0 6px;
+  border-radius: 4px;
+}
+
+.vf-lb.vf-cls,
+.vf-lb.vf-kk,
+.vf-lb.vf-colh {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: pre;
+}
+
+.vf-lb.vf-kk,
+.vf-lb.vf-colh {
+  font-size: 10.5px;
+}
+
+.vf-lb.vf-cls.vf-on {
+  color: var(--fg);
+  font-weight: 500;
+  border-bottom: 1.5px solid var(--ink);
+}
+
+.vf-lb.vf-colh.vf-on {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.vf-lb.vf-mod {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.3;
+  padding-right: 6px;
+}
+
+.vf-lb.vf-mod-right {
+  align-items: flex-start;
+  padding-right: 0;
+  padding-left: 6px;
+}
+
+.vf-mod-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.vf-lb.vf-mod.vf-on .vf-mod-title {
+  color: var(--ink);
+}
+
+.vf-mod-sub {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+}
+
+.vf-lb.vf-off {
+  opacity: 0;
+  pointer-events: none !important;
+}
+
+.vf-lb.vf-ttl,
+.vf-lb.vf-node {
+  pointer-events: auto;
+  cursor: help;
+}
+
+.vf-lb.vf-ttl:hover,
+.vf-lb.vf-node:hover {
+  background: color-mix(in srgb, var(--ink) 7%, var(--surface));
+}
+
+.vf-lb .vf-tex .katex {
+  font-size: 1em;
+}
+
+.vf-key {
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+
+.vf-sw {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border: 1px solid var(--ink);
+}
+
+.vf-hint {
+  position: absolute;
+  left: 14px;
+  top: 34px;
+  max-width: min(420px, calc(100% - 28px));
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.vf-stage-tools {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  display: flex;
+  gap: 6px;
+}
+
+.vf-chip {
+  font: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 11px;
+  cursor: pointer;
+}
+
+.vf-chip:hover {
+  color: var(--fg);
+  border-color: var(--line-strong);
+}
+
+.vf-chip:focus-visible {
+  outline: 2px solid var(--pos);
+  outline-offset: 2px;
+}
+
+.vf-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  max-width: 270px;
+  box-shadow: 0 6px 20px rgba(20, 20, 19, 0.1);
+  z-index: 2;
+}
+
+.vf-tip .vf-f {
+  font-family: var(--serif);
+  font-size: 14px;
+}
+
+.vf-tip .vf-m {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-tip .vf-s {
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.vf-pop {
+  position: absolute;
+  z-index: 3;
+  width: min(360px, calc(100% - 24px));
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 12px 14px 13px;
+  box-shadow: 0 10px 30px rgba(20, 20, 19, 0.12);
+  pointer-events: none;
+  font-size: 13px;
+}
+
+.vf-pop .vf-pop-title {
+  font-family: var(--serif);
+  font-weight: 400;
+  font-size: 17px;
+  margin: 0 0 4px;
+}
+
+.vf-pop .vf-eqs,
+.vf-pop .vf-eq {
+  color: var(--fg);
+  overflow: hidden;
+}
+
+.vf-pop .katex-display {
+  margin: 6px 0;
+  text-align: left;
+}
+
+.vf-pop .katex-display > .katex {
+  text-align: left;
+}
+
+.vf-pop .vf-rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 12px;
+  margin: 8px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.vf-pop dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.vf-pop dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.vf-pop .vf-nt {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 6px 0 0;
+}
+
+.vf-pop .vf-lab {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 6px;
+  letter-spacing: 0.02em;
+}
+
+.vf-pop .vf-lab + .vf-eq .katex-display {
+  margin: 2px 0 4px;
+}
+
+.vf-nogl {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-lb {
+    transition: none;
+  }
+}
+
+@container (max-width: 600px) {
+  .vf-hint {
+    display: none;
+  }
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>log_softmax 小部件</title>
+<link rel="icon" href="data:,">
+</head>
+<body>
+<main class="vf-page">
+  <h1>log_softmax 与 nll_loss</h1>
+  <div class="vf-stack">
+    <div id="steps"></div>
+    <div id="side"></div>
+  </div>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountSteps, mountPanels } from '@yhnocoder/vizflow/ui';
+
+const g = graph({ dims: { V: 5 }, check: true });
+const x = g.input('x', ['V'], [2.0, 1.0, 0.2, -0.6, -1.4]);
+const t = g.label('t', 0, { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
+const logp = g.log_softmax(x, -1, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
+const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+
+const steps = createSteps(g, {
+  overview: {
+    title: '整张图',
+    text: String.raw`
+      目标 token 是 <span class="ctx">{{t:token}}</span>。
+
+      $$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$
+    `,
+  },
+  forward: [
+    { show: x, label: 'x', title: '输入：logits x',
+      text: String.raw`$$\mathbf{x} = ({{x[0]:2}},\; {{x[1]:2}},\; {{x[2]:2}},\; {{x[3]:2}},\; {{x[4]:2}})$$` },
+    { show: logp, label: 'log p', title: 'log_softmax',
+      text: String.raw`$$\log p_{ {{t+1}} } = {{log p[t]:3}}$$` },
+    { show: loss, label: 'ℓ', title: 'nll_loss',
+      text: String.raw`$$\ell = -\log p_{ {{t+1}} } = {{loss:3}}$$` },
+  ],
+  backward: 'auto',
+});
+
+mountSteps('#steps', steps);
+mountPanels('#side', g, [
+  { loss: {
+      sgd: { params: [x], lr: 1, label: '梯度下降一步' },
+      random: { nodes: [x], range: [-3, 3], label: '随机' },
+      reset: true,
+      text: '目标 "{{t:token}}"，log p = {{log p[t]:3}}',
+  } },
+  { tokens: t, sliders: x, min: -6, max: 6, columns: [logp, { node: x, grad: true, title: '∂ℓ/∂x' }], title: 'logits 与目标类' },
+], { steps });
+
+window.vizflow = { g, steps };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>

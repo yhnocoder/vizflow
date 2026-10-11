@@ -1,0 +1,136 @@
+import { type Node, type OpCtx, type OpExplain, opDef } from '../autograd';
+import { broadcastIndex, forEachIndex, indexOf, normDim, normDims, reduceMap } from '../tensor';
+import { type CellRef, type ElemRef, matmulOperands } from './elem';
+
+export interface FlowEdge {
+  id: string;
+  op: Node;
+  arg: number;
+  from: ElemRef | CellRef;
+  to: ElemRef | CellRef;
+}
+
+export function contextOf(node: Node): OpCtx {
+  return { node, inputs: node.inputs.map((n) => n.value), out: node.value, attrs: node.attrs };
+}
+
+function differentiableArgs(node: Node): number[] {
+  const def = opDef(node.op as string);
+  const flags = def?.differentiable;
+  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (flags === undefined || flags[arg]));
+}
+
+function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
+  return { id: `${op.name}:${arg}:${suffix}`, op, arg, from, to };
+}
+
+function oneToOne(op: Node, args: number[], inputIndex: (arg: number, out: number[]) => number[]): FlowEdge[] {
+  const edges: FlowEdge[] = [];
+  forEachIndex(op.shape, (out) => {
+    for (const arg of args) {
+      edges.push(edge(op, arg, out.join(','), { node: op.inputs[arg], index: inputIndex(arg, out) }, { node: op, index: out }));
+    }
+  });
+  return edges;
+}
+
+function manyToOne(op: Node, args: number[], groupOf: (shape: readonly number[]) => Int32Array, outIndexOf: (group: number) => number[]): FlowEdge[] {
+  const edges: FlowEdge[] = [];
+  for (const arg of args) {
+    const input = op.inputs[arg];
+    const map = groupOf(input.shape);
+    for (let offset = 0; offset < map.length; offset++) {
+      const inIndex = indexOf(input.shape, offset);
+      const out = outIndexOf(map[offset]);
+      edges.push(edge(op, arg, `${inIndex.join(',')}->${out.join(',')}`, { node: input, index: inIndex }, { node: op, index: out }));
+    }
+  }
+  return edges;
+}
+
+function reduceEdges(op: Node, args: number[]): FlowEdge[] {
+  const attrs = op.attrs as { dim: number | number[] | null; keepdim: boolean };
+  return manyToOne(
+    op,
+    args,
+    (shape) => reduceMap(shape, normDims(attrs.dim, shape.length), attrs.keepdim).map,
+    (group) => indexOf(op.shape, group),
+  );
+}
+
+function denseEdges(op: Node, args: number[]): FlowEdge[] {
+  const dim = normDim((op.attrs as { dim: number }).dim, op.shape.length);
+  const edges: FlowEdge[] = [];
+  for (const arg of args) {
+    const input = op.inputs[arg];
+    const { map } = reduceMap(input.shape, [dim], false);
+    forEachIndex(op.shape, (out, outOffset) => {
+      const group = map[outOffset];
+      for (let offset = 0; offset < map.length; offset++) {
+        if (map[offset] !== group) continue;
+        const inIndex = indexOf(input.shape, offset);
+        edges.push(edge(op, arg, `${inIndex.join(',')}->${out.join(',')}`, { node: input, index: inIndex }, { node: op, index: out }));
+      }
+    });
+  }
+  return edges;
+}
+
+function contractEdges(op: Node): FlowEdge[] {
+  const [A, B] = op.inputs;
+  const rows = A.shape.length === 1 ? 1 : A.shape[0];
+  const inner = A.shape[A.shape.length - 1];
+  const cols = B.shape.length === 1 ? 1 : B.shape[1];
+  const edges: FlowEdge[] = [];
+  for (let r = 0; r < rows; r++) {
+    for (let k = 0; k < inner; k++) {
+      for (let i = 0; i < cols; i++) {
+        const index: [number, number, number] = [r, k, i];
+        const cell: CellRef = { cell: { op, index } };
+        const { a, b, out } = matmulOperands(op, index);
+        const suffix = index.join(',');
+        edges.push(edge(op, 0, suffix, { node: A, index: a }, cell));
+        edges.push(edge(op, 1, suffix, { node: B, index: b }, cell));
+        edges.push(edge(op, -1, suffix, cell, { node: op, index: out }));
+      }
+    }
+  }
+  return edges;
+}
+
+function selectEdges(op: Node, args: number[], def: OpExplain, ctx: OpCtx): FlowEdge[] {
+  if (def.selected === undefined) throw new Error(`explain: op '${op.op}' uses the select pattern but has no 'selected'`);
+  const edges: FlowEdge[] = [];
+  forEachIndex(op.shape, (out) => {
+    def.selected!(ctx, out).forEach((pick, ordinal) => {
+      if (!args.includes(pick.arg)) return;
+      const suffix = `${out.join(',')}#${ordinal}`;
+      edges.push(edge(op, pick.arg, suffix, { node: op.inputs[pick.arg], index: pick.index }, { node: op, index: out }));
+    });
+  });
+  return edges;
+}
+
+export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
+  const args = differentiableArgs(op);
+  const ctx = contextOf(op);
+  switch (def.pattern) {
+    case 'elementwise':
+      if (def.selected !== undefined) return selectEdges(op, args, def, ctx);
+      return oneToOne(op, args, (arg, out) => broadcastIndex(out, op.inputs[arg].shape));
+    case 'reduce':
+      return reduceEdges(op, args);
+    case 'dense':
+      return denseEdges(op, args);
+    case 'contract':
+      return contractEdges(op);
+    case 'select':
+      return selectEdges(op, args, def, ctx);
+  }
+}
+
+export function cellValue(cell: CellRef['cell']): number {
+  const { a, b } = matmulOperands(cell.op, cell.index);
+  const [A, B] = cell.op.inputs;
+  return A.value.get(a) * B.value.get(b);
+}
