@@ -203,6 +203,7 @@ body:
       title: $\cdots$ 第 1 到 $N-2$ 层
       subtitle: Qwen3_5DecoderLayer $\times$ ($N-2$)
       fixed: true
+      repeat: [{ like: linear_layer, count: 47 }, { like: full_layer, count: 15 }]
       fold:
         label: '$\of{x0}$'
         title: $\cdots$ 第 1 到 $N-2$ 层（占位）

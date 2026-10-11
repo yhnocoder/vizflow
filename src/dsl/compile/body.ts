@@ -9,7 +9,7 @@ import { registerFormula } from './formula';
 import { FOR_KEYS, GROUP_KEYS, ITEM_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
 import type { Compiler } from './text';
-import type { Env, Make, Scope, Slot } from './types';
+import type { Env, Make, Num, Scope, Slot } from './types';
 import { checkKeys, isRecord, join } from './util';
 
 interface Lanes {
@@ -25,8 +25,8 @@ function countInstances(c: Compiler, items: unknown, env: Env, counts: Map<Modul
   for (const item of items) {
     if (!isRecord(item)) continue;
     if ('for' in item) {
-      const iterations = rangeOf(c, item.in, env);
-      for (const v of iterations) countInstances(c, item.body, { ...env, loops: new Map(env.loops).set(String(item.for), v) }, counts);
+      const { values } = rangeOf(c, item.in, env);
+      for (const v of values) countInstances(c, item.body, { ...env, loops: new Map(env.loops).set(String(item.for), v) }, counts);
       continue;
     }
     for (const value of Object.values(item)) {
@@ -41,7 +41,7 @@ function countInstances(c: Compiler, items: unknown, env: Env, counts: Map<Modul
   }
 }
 
-function rangeOf(c: Compiler, text: unknown, env: Env): number[] {
+function rangeOf(c: Compiler, text: unknown, env: Env): { values: number[]; real: Num } {
   if (typeof text !== 'string') c.fail(env, "'in' must be a range like '1..H'");
   let from: Ast;
   let to: Ast;
@@ -53,7 +53,11 @@ function rangeOf(c: Compiler, text: unknown, env: Env): number[] {
   }
   const a = c.int(from, env, 0);
   const b = c.int(to, env, 0);
-  return Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+  const start = c.evaluate(from, env, undefined, 0) as Num;
+  const end = c.evaluate(to, env, undefined, 0) as Num;
+  const values = Array.from({ length: Math.max(0, b - a + 1) }, (_, i) => a + i);
+  const count = { toy: values.length, real: Math.max(0, end.real - start.real + 1) };
+  return { values, real: start.toy === 1 && start.real === 1 ? end : count };
 }
 
 export function compileBody(c: Compiler, scope: Scope, decl: Record<string, unknown>, env: Env, entries: LayoutEntry[]): { slots: Slot[] } {
@@ -157,13 +161,16 @@ function compileItem(
     }
     const branches: LayoutTree[] = [];
     const iterations: Slot[][] = [];
-    for (const v of rangeOf(c, item.in, { ...env, where: child(at, item, 'in') })) {
+    const range = rangeOf(c, item.in, { ...env, where: child(at, item, 'in') });
+    for (const v of range.values) {
       const loopEnv: Env = { ...env, loops: new Map(env.loops).set(item.for, v), where: child(at, item, 'body') };
       const branch: LayoutTree = { kind: 'module', children: [] };
       const start = c.g.nodes.length;
       if (typeof item.brace === 'string') branch.title = c.ofText(item.brace, { ...loopEnv, where: child(at, item, 'brace') });
       const rec = branch.title === undefined ? undefined : openModule(c, join(scope.path, `${forName ?? item.for}[${v}]`), branch.title, undefined, {}, loopEnv);
-      iterations.push(compileItems(c, scope, item.body, loopEnv, branch.children, counts, ordinals));
+      const body = () => compileItems(c, scope, item.body as unknown[], loopEnv, branch.children, counts, ordinals);
+      const real = c.dimSpec(range.real);
+      iterations.push(real === range.values.length ? body() : c.g.realCopies(range.values.length, real, body));
       branches.push(branch);
       if (rec !== undefined) closeModule(c, rec, c.g.nodes.slice(start));
     }

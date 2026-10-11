@@ -9,6 +9,7 @@ export {
   type ForwardStep,
   type BackwardOverride,
   type BackwardSpec,
+  type ModuleRepeat,
   type PageModule,
   type StepModule,
   type StepKind,
@@ -17,4 +18,4 @@ export {
   isLeafLike,
 } from './steps';
 export { compileTemplate } from './template';
-export { costTimeline, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';
+export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type Scale, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';

@@ -72,7 +72,37 @@ describe('op costs', () => {
   });
 });
 
+describe('costTimeline at real sizes', () => {
+  const g = graph({ dims: { T: 2, d: 3, H: 2 }, real: { T: 8, d: 3, H: 6 } });
+  const x = g.input('x', ['T', 'd'], [[1, 2, 3], [4, 5, 6]]);
+  const W = g.param('W', ['d', 'd'], [[1, 0, 0], [0, 1, 0], [0, 0, 1]]);
+  const heads = [1, 2].map((h) => g.realCopies(2, 'H', () => g.matmul(x, W, { name: `y${h}` })));
+  const steps = createSteps(g, { forward: [{ show: heads, title: 'y' }] });
+
+  it('scales loop copies by real over drawn, batched tensors by B, and follows a new T', () => {
+    expect(heads[0].copies).toEqual({ drawn: 2, real: ['H'] });
+    expect(g.realShapes({ T: 4 })[heads[0].id]).toEqual([4, 3]);
+    const t = costTimeline(g, steps.list, { real: true, batch: 2, dims: { T: 4 } });
+    const y = t.steps[1].memory.find((m) => m.node === heads[0])!;
+    expect(y.shape).toEqual([2, 4, 3]);
+    expect(y.scale).toEqual({ batch: 2, copies: { drawn: 2, real: 6 } });
+    expect(y.bytes).toBe(2 * 4 * 3 * 4 * 3);
+    expect(t.steps[1].memory.find((m) => m.node === W)!.bytes).toBe(9 * 4);
+    expect(t.steps[1].flops).toBe(2 * (2 * 4 * 3 * 3) * 2 * 3);
+  });
+});
+
 describe('costTimeline on the Qwen3 page', () => {
+  it('counts every parameter of Qwen3-8B once the placeholder layers are repeated', async () => {
+    const page = await loadExample('qwen3-dsl.yaml');
+    const steps = createSteps(page.graph, page.steps);
+    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const QWEN3_8B_PARAMS = 8_190_735_360;
+    expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_8B_PARAMS * 2);
+    const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;
+    expect(bytesOf(last, 'param_grad')).toBe(bytesOf(last, 'param'));
+  });
+
   it('ends backward with one gradient per parameter and nothing else alive', async () => {
     const page = await loadExample('qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);

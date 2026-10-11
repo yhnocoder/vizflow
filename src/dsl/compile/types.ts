@@ -47,6 +47,7 @@ export interface ModuleRec {
   fixed: boolean;
   folded: boolean;
   split: boolean;
+  repeat: { like: string; count: number; where: Where }[];
   nodes: Node[];
   fold: { forward: BackwardOverride; backward: BackwardOverride };
   decl: Record<string, unknown>;

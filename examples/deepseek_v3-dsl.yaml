@@ -204,6 +204,7 @@ body:
       title: $\cdots$ 第 1、2 层
       subtitle: DeepseekV3DecoderLayer $\times$ 2，dense
       fixed: true
+      repeat: [{ like: dense_layer, count: 2 }]
       fold:
         label: '$\of{x0}$'
         title: $\cdots$ 第 1、2 层（占位）
@@ -239,6 +240,7 @@ body:
       title: $\cdots$ 第 5 到 $N$ 层
       subtitle: DeepseekV3DecoderLayer $\times$ ($N-4$)，MoE
       fixed: true
+      repeat: [{ like: moe_layer, count: 57 }]
       fold:
         label: '$\of{x}$'
         title: $\cdots$ 第 5 到 $N$ 层（占位）

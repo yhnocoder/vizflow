@@ -49,6 +49,12 @@ export interface PageModule {
   params: Node[];
   fixed: boolean;
   folded: boolean;
+  repeat?: ModuleRepeat[];
+}
+
+export interface ModuleRepeat {
+  like: string;
+  count: number;
 }
 
 export interface StepModule extends PageModule {

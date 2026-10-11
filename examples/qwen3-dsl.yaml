@@ -178,6 +178,7 @@ body:
       title: $\cdots$ 第 1 到 $N-1$ 层
       subtitle: Qwen3DecoderLayer $\times$ ($N-1$)
       fixed: true
+      repeat: [{ like: layer, count: 35 }]
       fold:
         label: '$\of{x0}$'
         title: $\cdots$ 第 1 到 $N-1$ 层（占位）
