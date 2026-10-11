@@ -4,7 +4,6 @@ import type { LinearRgb } from '../theme';
 export interface Polyline {
   points: ArrayLike<number>;
   opacity: number;
-  dashed: boolean;
 }
 
 const vertexShader = `
@@ -73,8 +72,7 @@ export class LineBatch {
     let v = 0;
     for (const line of lines) {
       const p = line.points;
-      for (let i = 0, segment = 0; i + 5 < p.length; i += 3, segment++) {
-        if (line.dashed && segment % 2 === 1) continue;
+      for (let i = 0; i + 5 < p.length; i += 3) {
         for (let k = 0; k < 6; k++) positions[v * 3 + k] = p[i + k];
         opacity.setX(v, line.opacity);
         opacity.setX(v + 1, line.opacity);

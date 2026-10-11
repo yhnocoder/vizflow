@@ -830,7 +830,7 @@ class SceneController implements EditHost {
       const offset = braceOffset(brace, direction);
       this.moduleLabels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
       const points = bracePoints(brace, offset);
-      const line = { points, opacity: BRACE_OPACITY, dashed: false };
+      const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];
       return [line, { ...line, points: points.map((v, i) => (i % 3 === 0 ? v + BRACE_THICK_OFFSET : v)) }];
     });
@@ -1339,7 +1339,7 @@ class SceneController implements EditHost {
           flat: false,
           link: true,
           points: [],
-          style: { opacity, dashed: true },
+          style: { opacity },
           screen: [],
         });
       });
@@ -1375,7 +1375,7 @@ class SceneController implements EditHost {
       const [a, b] = d.endpoints();
       d.points = sampleCurve(a, b, d.flat, d.bow);
     }
-    this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity, dashed: d.style.dashed })));
+    this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity })));
     this.updateHighlight();
   }
 

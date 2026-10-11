@@ -229,23 +229,23 @@ describe('edge style', () => {
   };
 
   it('follows the forward rules', () => {
-    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.06, dashed: true });
-    expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.35, dashed: false });
-    expect(edgeStyle({ ...base, overview: true, contract: true })).toEqual({ opacity: 0.2, dashed: false });
-    expect(edgeStyle({ ...base, current: true })).toEqual({ opacity: 0.85, dashed: false });
-    expect(edgeStyle({ ...base, current: true, contract: true })).toEqual({ opacity: 0.6, dashed: false });
-    expect(edgeStyle(base)).toEqual({ opacity: 0.13, dashed: false });
+    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.35 });
+    expect(edgeStyle({ ...base, overview: true, contract: true })).toEqual({ opacity: 0.2 });
+    expect(edgeStyle({ ...base, current: true })).toEqual({ opacity: 0.85 });
+    expect(edgeStyle({ ...base, current: true, contract: true })).toEqual({ opacity: 0.6 });
+    expect(edgeStyle(base)).toEqual({ opacity: 0.13 });
     expect(edgeStyle({ ...base, far: true })).toBeNull();
   });
 
   it('follows the backward rules', () => {
     const backward = { ...base, dir: 'backward' as const };
-    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.06, dashed: false });
-    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.06, dashed: true });
-    expect(edgeStyle({ ...backward, zeroGrad: true, current: true })).toEqual({ opacity: 0.35, dashed: true });
-    expect(edgeStyle({ ...backward, current: true })).toEqual({ opacity: 0.9, dashed: false });
-    expect(edgeStyle({ ...backward, current: true, contract: true })).toEqual({ opacity: 0.65, dashed: false });
-    expect(edgeStyle(backward)).toEqual({ opacity: 0.13, dashed: false });
+    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...backward, zeroGrad: true, current: true })).toEqual({ opacity: 0.35 });
+    expect(edgeStyle({ ...backward, current: true })).toEqual({ opacity: 0.9 });
+    expect(edgeStyle({ ...backward, current: true, contract: true })).toEqual({ opacity: 0.65 });
+    expect(edgeStyle(backward)).toEqual({ opacity: 0.13 });
   });
 
   it('dims rows that are not in focus', () => {

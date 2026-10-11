@@ -99,7 +99,7 @@ export class BarMesh {
       if (shown && data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
       else matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       this.breaks.setMatrixAt(i, matrix);
-      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i], dashed: false });
+      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i] });
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
