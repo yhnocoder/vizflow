@@ -109,30 +109,29 @@ const cases: Case[] = [
   { op: 'identity', build: (g, r) => unary(g, r, 'identity', [2, 3]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
+  { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
+  { op: 'mul', build: (g, r) => binary(g, r, 'mul', [3, 2, 4], [3, 1, 4]) },
+  { op: 'mean', build: (g, r) => reduce(g, r, 'mean', [3, 2, 4], -1, true) },
   {
-    op: 'rotate_half',
+    op: 'view',
     build: (g, r) => {
       const x = g.input('x', [3, 8], randomValues(r, [3, 8]));
-      return { out: g.rotate_half(x, { size: 4 }), inputs: [x] };
+      return { out: g.view(x, 3, 2, 4), inputs: [x] };
     },
   },
   {
-    op: 'group_mean',
+    op: 'select',
     build: (g, r) => {
-      const x = g.input('x', [3, 8], randomValues(r, [3, 8]));
-      return { out: g.group_mean(x, 4), inputs: [x] };
+      const x = g.input('x', [3, 2, 4], randomValues(r, [3, 2, 4]));
+      return { out: g.select(x, 1, 1), inputs: [x] };
     },
   },
-  { op: 'group_mul', build: (g, r) => binary(g, r, 'group_mul', [3, 8], [3, 2]) },
-  { op: 'group_mul', build: (g, r) => binary(g, r, 'group_mul', [2, 4], [2, 1]) },
-  { op: 'tile_mul', build: (g, r) => binary(g, r, 'tile_mul', [3, 8], [4]) },
-  { op: 'tile_mul', build: (g, r) => binary(g, r, 'tile_mul', [3, 8], [3, 4]) },
   {
-    op: 'narrow_matmul',
+    op: 'select_matmul',
     build: (g, r) => {
-      const A = g.input('A', [3, 8], randomValues(r, [3, 8]));
+      const A = g.input('A', [3, 2, 4], randomValues(r, [3, 2, 4]));
       const B = g.input('B', [4, 3], randomValues(r, [4, 3]));
-      return { out: g.narrow_matmul(A, B, 4), inputs: [A, B] };
+      return { out: g.select_matmul(A, B, 1), inputs: [A, B] };
     },
   },
   {

@@ -7,7 +7,7 @@ params:
   out_note: { type: text, default: '' }
   in_note:  { type: text, default: '' }
 inputs:
-  x: { shape: [T, n] }
+  x: { shape: [..., n] }
 outputs: [out]
 weights:
   weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }

@@ -61,7 +61,9 @@ describe('figures in step text', () => {
   it('checks the arguments and the table shape', () => {
     expect(checkFigure('rope_wave', [3, 4], ['tan'])).toBe("rope_wave needs cos or sin as its first argument, got 'tan'");
     expect(checkFigure('rope_wave', [3, 4], ['cos', '0'])).toBe("rope_wave positions must be a positive integer, got '0'");
-    expect(checkFigure('rope_wave', [1, 4], ['cos'])).toBe('rope_wave needs a (T, d_h) table with at least 2 rows and an even d_h');
+    expect(checkFigure('rope_wave', [1, 4], ['cos'])).toBe('rope_wave needs a (T, d_h) table with at least 2 rows and an even d_h; dimensions of size 1 may sit between them');
+    expect(checkFigure('rope_wave', [3, 1, 4], ['cos'])).toBeUndefined();
+    expect(checkFigure('rope_wave', [3, 2, 4], ['cos'])).toMatch(/^rope_wave needs a \(T, d_h\) table/);
     expect(checkFigure('chart', [3, 4], [])).toBe("unknown figure 'chart'");
     const { g } = ropeGraph();
     const el = document.createElement('div');

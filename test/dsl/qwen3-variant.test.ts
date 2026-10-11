@@ -57,15 +57,20 @@ describe('qwen3-dsl.yaml with 4 query heads, 2 kv heads and d_h = 8', () => {
 
   it('builds the attention for the new sizes', () => {
     const shape = (name: string) => page.nodes.get(name)!.shape;
-    expect(shape('layer.self_attn.q')).toEqual([3, 32]);
-    expect(shape('layer.self_attn.k')).toEqual([3, 16]);
-    expect(shape('layer.self_attn.qrr')).toEqual([3, 4]);
-    expect(shape('layer.self_attn.krr')).toEqual([3, 2]);
-    expect(shape('layer.self_attn.kT[4]')).toEqual([8, 3]);
+    expect(shape('layer.self_attn.q/1')).toEqual([3, 32]);
+    expect(shape('layer.self_attn.q')).toEqual([3, 4, 8]);
+    expect(shape('layer.self_attn.k')).toEqual([3, 2, 8]);
+    expect(shape('layer.self_attn.v')).toEqual([3, 2, 8]);
+    expect(shape('layer.self_attn.q_norm.r')).toEqual([3, 4, 1]);
+    expect(shape('layer.self_attn.k_norm.r')).toEqual([3, 2, 1]);
+    expect(shape('layer.self_attn.qn')).toEqual([3, 4, 8]);
+    expect(shape('layer.self_attn.kr')).toEqual([3, 2, 8]);
+    expect(shape('layer.self_attn.eager_attention_forward.kT[4]')).toEqual([8, 3]);
+    expect(shape('layer.self_attn.eager_attention_forward.S[4]')).toEqual([3, 3]);
     expect(shape('layer.self_attn.o')).toEqual([3, 32]);
-    expect(page.nodes.get('layer.self_attn.S[5]')).toBeUndefined();
+    expect(page.nodes.get('layer.self_attn.eager_attention_forward.S[5]')).toBeUndefined();
     const k = page.nodes.get('layer.self_attn.apply_rotary_pos_emb.k_embed')!.value;
-    const kp = (h: number) => Array.from(page.nodes.get(`layer.self_attn.kp[${h}]`)!.value.data);
+    const kp = (h: number) => Array.from(page.nodes.get(`layer.self_attn.eager_attention_forward.kp[${h}]`)!.value.data);
     const column = (c: number) => [0, 1, 2].map((t) => k.data[t * 16 + c]);
     expect(kp(1).filter((_, i) => i % 8 === 0)).toEqual(column(0));
     expect(kp(2)).toEqual(kp(1));
@@ -75,7 +80,7 @@ describe('qwen3-dsl.yaml with 4 query heads, 2 kv heads and d_h = 8', () => {
 
   it('uses theta from the YAML for the RoPE tables', () => {
     const cos = page.nodes.get('layer.self_attn.apply_rotary_pos_emb.cos')!.value;
-    expect(cos.shape).toEqual([3, 8]);
+    expect(cos.shape).toEqual([3, 1, 8]);
     expect(cos.data[8 + 1]).toBeCloseTo(Math.cos(10000 ** (-2 / 8)), 12);
     expect(cos.data[8 + 5]).toBeCloseTo(Math.cos(10000 ** (-2 / 8)), 12);
   });
@@ -84,10 +89,10 @@ describe('qwen3-dsl.yaml with 4 query heads, 2 kv heads and d_h = 8', () => {
     const steps = createSteps(page.graph, page.steps);
     expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(48);
     expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(47);
-    const scores = steps.list.find((s) => s.dir === 'forward' && s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.S[1]'))!;
-    expect(scores.nodes.map((n) => n.name)).toEqual([1, 2, 3, 4].map((h) => `layer.self_attn.S[${h}]`));
+    const scores = steps.list.find((s) => s.dir === 'forward' && s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.eager_attention_forward.S[1]'))!;
+    expect(scores.nodes.map((n) => n.name)).toEqual([1, 2, 3, 4].map((h) => `layer.self_attn.eager_attention_forward.S[${h}]`));
     expect(scores.segment).toBe('self_attn');
-    expect(steps.list.find((s) => s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.qsq'))!.sub).toBe('q_norm $\\cdot$ k_norm');
+    expect(steps.list.find((s) => s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.k_norm.sq'))!.sub).toBe('q_norm $\\cdot$ k_norm');
     for (let i = 0; i < steps.list.length; i++) expect(() => steps.text(i)).not.toThrow();
   });
 

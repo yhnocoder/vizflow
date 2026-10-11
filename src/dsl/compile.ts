@@ -86,13 +86,13 @@ interface StepRec {
 
 type Slot =
   | { kind: 'node'; name: string; node: Node; created: Node[] }
-  | { kind: 'child'; steps: StepRec[]; created: Node[] }
+  | { kind: 'child'; def: ModuleDef; steps: StepRec[]; created: Node[]; merge?: Slot }
   | { kind: 'loop'; iterations: Slot[][] }
   | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
 
 interface Lanes {
   start: number;
-  members: { name: string | undefined; created: Node[] }[];
+  members: { name: string | undefined; created: Node[]; slot: Slot | undefined }[];
   parallel?: { kind: 'parallel'; branches: LayoutTree[] };
 }
 
@@ -103,7 +103,7 @@ interface ResolvedStep {
 
 const ITEM_KEYS = new Set(['op', 'tex']);
 const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
-const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
+const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', ...MODULE_ITEM_KEYS]);
 const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
@@ -214,12 +214,38 @@ function ropeTable(T: number, dh: number, theta: number, fn: (x: number) => numb
   return [...Array(T).keys()].map((t) => [...Array(dh).keys()].map((c) => fn(t * inv[c % (dh / 2)])));
 }
 
+function combineLabels(a: string | undefined, b: string | undefined): string | undefined {
+  if (a === undefined || b === undefined || a === b) return a ?? b;
+  const math = /^\$([^$]*)\$$/;
+  const ma = math.exec(a);
+  const mb = math.exec(b);
+  return ma !== null && mb !== null ? `$${ma[1]},\\ ${mb[1]}$` : `${a}, ${b}`;
+}
+
+function reshapeNested(values: Nested, shape: number[]): Nested {
+  const flat: number[] = [];
+  const collect = (v: Nested): void => {
+    if (Array.isArray(v)) v.forEach(collect);
+    else flat.push(v as number);
+  };
+  collect(values);
+  const nest = (offset: number, dims: number[]): Nested => {
+    if (dims.length === 0) return flat[offset];
+    const stride = dims.slice(1).reduce((a, b) => a * b, 1);
+    return Array.from({ length: dims[0] }, (_, i) => nest(offset + i * stride, dims.slice(1)));
+  };
+  return nest(0, shape);
+}
+
 function matrixTemplate(name: string, shape: readonly number[], format: string): string {
   if (shape.length === 0) return `{{${name}${format}}}`;
   const rows = shape.length === 1 ? 1 : shape[0];
-  const cols = shape.length === 1 ? shape[0] : shape[1];
+  const inner = shape.slice(1);
+  const cols = shape.length === 1 ? shape[0] : inner.reduce((a, b) => a * b, 1);
+  const unravel = (c: number) => inner.map((_, d) => Math.floor(c / inner.slice(d + 1).reduce((a, b) => a * b, 1)) % inner[d]);
   const cell = (r: number, c: number) => {
     if (shape.length === 1) return `{{${name}[${c}]${format}}}`;
+    if (shape.length > 2) return `{{${name}[${[r, ...unravel(c)].join(', ')}]${format}}}`;
     if (cols === 1) return `{{${name}[${r}]${format}}}`;
     if (rows === 1) return `{{${name}[${c}]${format}}}`;
     return `{{${name}[${r}, ${c}]${format}}}`;
@@ -504,13 +530,15 @@ class Compiler {
       if (isOp(value) || (isRecord(value) && 'buffer' in value)) this.fail(env, `argument '${argName}' of ${op} has the wrong type`, at);
       return value;
     };
-    const positional = args.map((value, i) => convert(def.args[i] ?? `#${i}`, value));
+    const restAt = def.rest === undefined ? -1 : def.args.indexOf(def.rest);
+    const positional = args.map((value, i) => convert(restAt >= 0 && i >= restAt ? def.args[restAt] : (def.args[i] ?? `#${i}`), value));
     const options: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(kwargs)) options[key] = convert(key, value);
     const attrs: Record<string, unknown> = { ...(def.defaults ?? {}), ...options };
     def.args.forEach((argName, i) => {
       if (positional[i] !== undefined && (!def.tensors.includes(argName) || typeof positional[i] === 'number')) attrs[argName] = positional[i];
     });
+    if (restAt >= 0 && positional.length > restAt) attrs[def.args[restAt]] = positional.slice(restAt);
     const name = top ? make.path : `${make.path}/${++make.counter}`;
     const operandTex = def.args.flatMap((argName, i) => {
       const value = positional[i];
@@ -780,6 +808,7 @@ class Compiler {
 class PageCompiler {
   readonly c: Compiler;
   private readonly root: Scope;
+  private readonly pendingPatches: (() => void)[][] = [];
 
   constructor(
     private readonly page: Record<string, unknown>,
@@ -1116,11 +1145,20 @@ class PageCompiler {
     for (const [name, bufferDecl] of Object.entries(buffers)) {
       const at = child(buffersWhere, buffers, name);
       if (!isRecord(bufferDecl)) fail(at, `buffer '${name}' must be a mapping`);
-      checkKeys(bufferDecl, new Set(['value', 'tex']), at);
+      checkKeys(bufferDecl, new Set(['value', 'shape', 'tex']), at);
       const valueWhere = child(at, bufferDecl, 'value');
       const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
       if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
-      const buffer = value as BufferValue;
+      let buffer = value as BufferValue;
+      if (bufferDecl.shape !== undefined) {
+        const shapeWhere = child(at, bufferDecl, 'shape');
+        const shape = c.shapeOf(bufferDecl.shape, { ...env, where: shapeWhere }, shapeWhere);
+        const size = (dims: Num[]) => dims.reduce((a, d) => a * d.toy, 1);
+        if (size(shape) !== size(buffer.shape)) {
+          fail(shapeWhere, `buffer '${name}' has ${size(buffer.shape)} values, which do not fit the shape (${shape.map((d) => d.toy).join(', ')})`);
+        }
+        buffer = { buffer: true, shape, values: reshapeNested(buffer.values, shape.map((d) => d.toy)) };
+      }
       const key = `${scope.def.file}#${scope.def.name}.${name}=${String(bufferDecl.value)}(${buffer.shape.map((d) => `${d.toy}:${d.real}`).join(',')};${JSON.stringify(buffer.values)})`;
       const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
       const node = c.bufferNode(key, () => {
@@ -1192,15 +1230,19 @@ class PageCompiler {
     const slots: Slot[] = [];
     const named = new Set<string>();
     let lanes: Lanes | undefined;
+    const patches: (() => void)[] = [];
+    this.pendingPatches.push(patches);
     items.forEach((item, index) => {
       const at = child(env.where, items, index);
       if (!isRecord(item)) fail(at, 'a body item must be a mapping');
       const start = entries.length;
       const before = c.g.nodes.length;
+      const slotCount = slots.length;
       const { name, beside } = this.item(scope, item, { ...env, where: at }, entries, counts, ordinals, slots);
       const created = c.g.nodes.slice(before);
+      const slot = slots.length > slotCount ? slots[slots.length - 1] : undefined;
       if (beside === undefined) {
-        lanes = name === undefined ? undefined : { start, members: [{ name, created }] };
+        lanes = name === undefined ? undefined : { start, members: [{ name, created, slot }] };
       } else {
         const { target, group } = this.besideGroup(beside, lanes, named);
         this.checkLaneUse(group, created, name, target, beside.where);
@@ -1211,10 +1253,14 @@ class PageCompiler {
           entries.push(group.parallel);
         }
         group.parallel.branches.push(mine);
-        group.members.push({ name, created });
+        const first = group.members[0].slot;
+        if (slot?.kind === 'child' && first?.kind === 'child' && first.def === slot.def) slot.merge = first;
+        group.members.push({ name, created, slot });
       }
       if (name !== undefined) named.add(name);
     });
+    this.pendingPatches.pop();
+    for (const patch of patches) patch();
     return slots;
   }
 
@@ -1420,12 +1466,17 @@ class PageCompiler {
       bindings.push([output, concrete.name, at]);
       if (!scope.texOverride.has(output)) scope.outputTex.set(output, this.marked(c.loopTex(concrete.base, concrete.indices), parent, false));
     }
-    const tree: LayoutTree = { kind: 'module', title: this.titleOf(use, braceTitle, env), children: [] };
-    if (typeof use.subtitle === 'string') tree.subtitle = use.subtitle;
-    else if (typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
+    if (use.inline !== undefined && typeof use.inline !== 'boolean') fail(child(env.where, use, 'inline'), 'inline must be true or false');
+    const inline = use.inline === true;
+    for (const key of MODULE_ITEM_KEYS) {
+      if (inline && use[key] !== undefined) fail(child(env.where, use, key), `an inline instance has no box of its own, so it cannot have '${key}'`);
+    }
+    const tree: LayoutTree = inline ? { kind: 'module', children: [] } : { kind: 'module', title: this.titleOf(use, braceTitle, env), children: [] };
+    if (!inline && typeof use.subtitle === 'string') tree.subtitle = use.subtitle;
+    else if (!inline && typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
     entries.push(tree);
-    const rec = this.openModule(scope.path, tree.title as string, tree.subtitle, use, env);
-    rec.defaults = { decl, env: childEnv };
+    const rec = inline ? undefined : this.openModule(scope.path, tree.title as string, tree.subtitle, use, env);
+    if (rec !== undefined) rec.defaults = { decl, env: childEnv };
     this.weights(scope, decl, childEnv, use.weights === undefined ? undefined : { map: record(use.weights, child(env.where, use, 'weights'), 'weights'), env: { ...env, where: child(env.where, use, 'weights') } }, tree.children);
     this.buffers(scope, decl, childEnv, tree.children);
     const { slots } = this.body(scope, decl, childEnv, tree.children);
@@ -1435,24 +1486,28 @@ class PageCompiler {
     const steps = this.moduleSteps(scope, decl, childEnv, slots);
     this.moduleBackward(decl, childEnv);
     for (const [output, target, at] of bindings) this.define(parent, target, scope.entries.get(output) as Node, { ...env, where: at });
-    this.patch(scope, steps, use, env);
+    this.pendingPatches[this.pendingPatches.length - 1].push(() => this.patch(scope, steps, use, env));
     const created = c.g.nodes.slice(before);
-    this.closeModule(rec, created);
-    return { kind: 'child', steps, created };
+    if (rec !== undefined) this.closeModule(rec, created);
+    return { kind: 'child', def, steps, created };
   }
 
   match(scope: Scope, pattern: unknown, node: Node, env: Env, where: Where, givenAt: Where): void {
     if (!Array.isArray(pattern)) fail(where, 'shape must be a list');
-    if (pattern.length !== node.shape.length) {
+    const rest = pattern.indexOf('...');
+    const extra = node.shape.length - (pattern.length - 1);
+    if (rest >= 0 ? extra < 0 || pattern.lastIndexOf('...') !== rest : pattern.length !== node.shape.length) {
       fail(givenAt, `input has shape (${node.shape.join(', ')}), but ${scope.def.name} expects (${pattern.join(', ')})`);
     }
-    pattern.forEach((entry, i) => {
+    pattern.forEach((entry, at) => {
+      if (at === rest) return;
+      const i = rest >= 0 && at > rest ? at - 1 + extra : at;
       const actual: Num = { toy: node.shape[i], real: node.realShape[i] };
       if (typeof entry === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry) && !scope.dims.has(entry) && !scope.params.has(entry)) {
         scope.dims.set(entry, actual);
         return;
       }
-      const expected = this.c.expression(entry, { ...env, where: child(where, pattern, i) }, undefined);
+      const expected = this.c.expression(entry, { ...env, where: child(where, pattern, at) }, undefined);
       if (!isNum(expected) || expected.toy !== actual.toy) {
         fail(givenAt, `input has shape (${node.shape.join(', ')}), but dimension ${i} of ${scope.def.name}'s pattern (${pattern.join(', ')}) is ${isNum(expected) ? expected.toy : '?'}`);
       }
@@ -1502,9 +1557,11 @@ class PageCompiler {
   moduleSteps(scope: Scope, decl: Record<string, unknown>, env: Env, slots: Slot[]): StepRec[] {
     const containers: { key: string; steps: ResolvedStep[] }[] = [{ key: '', steps: this.resolveSteps(scope, decl, env, 'steps') }];
     const events: { slot: Extract<Slot, { kind: 'node' | 'child' }>; key: string }[] = [];
+    const keys = new Map<Slot, string>();
     const flatten = (level: Slot[], prefix: string) => {
       level.forEach((slot, i) => {
-        const key = `${prefix}/${i}`;
+        const key = slot.kind === 'child' && slot.merge !== undefined ? (keys.get(slot.merge) ?? `${prefix}/${i}`) : `${prefix}/${i}`;
+        keys.set(slot, key);
         if (slot.kind === 'group') {
           containers.push({ key, steps: this.resolveSteps(scope, slot.decl, { ...env, where: slot.where, loops: slot.loops }, 'steps') });
           flatten(slot.slots, key);
@@ -1526,15 +1583,15 @@ class PageCompiler {
         anchored.set(floor, [...(anchored.get(floor) ?? []), { key: `own${container.key}:${step.rec.refs[0].id}`, rec: step.rec }]);
       }
     }
-    const out = [...(anchored.get(-1) ?? [])];
+    const out: { key: string; rec: StepRec; combine?: boolean }[] = [...(anchored.get(-1) ?? [])];
     events.forEach(({ slot, key }, i) => {
-      if (slot.kind === 'child') slot.steps.forEach((rec, j) => out.push({ key: `${key}#${j}`, rec }));
+      if (slot.kind === 'child') slot.steps.forEach((rec, j) => out.push({ key: `${key}#${j}`, rec, combine: slot.merge !== undefined }));
       else if (!covered.has(slot.node)) out.push({ key, rec: this.autoStep(scope, slot.name, slot.node, covered) });
       out.push(...(anchored.get(i) ?? []));
     });
     const firsts = new Map<string, StepRec>();
     const merged: StepRec[] = [];
-    for (const { key, rec } of out) {
+    for (const { key, rec, combine } of out) {
       const first = firsts.get(key);
       if (first === undefined) {
         firsts.set(key, rec);
@@ -1542,6 +1599,11 @@ class PageCompiler {
         continue;
       }
       first.refs.push(...rec.refs);
+      if (combine) {
+        first.step.label = combineLabels(first.step.label, rec.step.label);
+        const backward = combineLabels(first.step.backward?.label, rec.step.backward?.label);
+        if (backward !== undefined) first.step.backward = { ...first.step.backward, label: backward };
+      }
       const union = (a: Node | Node[], b: Node | Node[]) => [...new Set([...list(a), ...list(b)])];
       if (first.step.active !== undefined || rec.step.active !== undefined) {
         first.step.active = union(first.step.active ?? first.step.show, rec.step.active ?? rec.step.show);

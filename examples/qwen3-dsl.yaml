@@ -308,7 +308,7 @@ panels:
     sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
     random: true
     reset: true
-  - attention: 'layer.self_attn.P[1..H]'
+  - attention: 'layer.self_attn.eager_attention_forward.P[1..H]'
     ids: ids
     title: 注意力权重 P
     note: 行是 query 的位置，列是 key 的位置。右上角被 causal mask 挡住，是 0。
@@ -372,8 +372,8 @@ values:
     - [0.26, 0.16, -0.31, -0.86]
     - [-0.01, -0.11, -0.3, -0.71]
     - [0.18, -0.34, 0.78, -0.73]
-  layer.self_attn.gq: [1, 0.96, 1.04, 1]
-  layer.self_attn.gk: [0.98, 1.02, 1, 1.01]
+  layer.self_attn.q_norm.weight: [1, 0.96, 1.04, 1]
+  layer.self_attn.k_norm.weight: [0.98, 1.02, 1, 1.01]
   layer.self_attn.Wo:
     - [0.44, 0, 0.23, -0.21, -0.46, -0.2, -0.07, 0.37]
     - [0.03, -0.31, -0.39, -0.41, -0.31, 0.33, 0.34, 0.19]
