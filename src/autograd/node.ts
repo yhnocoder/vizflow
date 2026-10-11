@@ -108,5 +108,5 @@ export function normalizeName(name: string): string {
 }
 
 export function transposedTex(tex: string): string {
-  return /[\^']/.test(tex) ? `{${tex}}^{\\top}` : `${tex}^{\\top}`;
+  return /[\^'_]/.test(tex) ? `{${tex}}^{\\top}` : `${tex}^{\\top}`;
 }

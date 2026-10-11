@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import katex from 'katex';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { type Graph, Tensor, defineOp, graph } from '../../src/core';
 import type { CompiledPage } from '../../src/dsl';
+import { elemTexOf } from '../../src/explain/elem';
 import { createSteps } from '../../src/steps';
 import { loadExample } from './load';
 
@@ -55,6 +57,21 @@ describe('qwen3-dsl.yaml against qwen3-structure.html', () => {
     expect(jsParams).toEqual(Object.keys(WEIGHTS).sort());
     const dslParams = dsl.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name).sort();
     expect(dslParams).toEqual(Object.values(WEIGHTS).sort());
+  });
+
+  it('builds steps whose text, labels and node TeX render', () => {
+    const steps = createSteps(dsl.graph, dsl.steps);
+    const renders = (tex: string, what: string) => expect(() => katex.renderToString(tex, { throwOnError: true }), `${what}: ${tex}`).not.toThrow();
+    const math = (text: string) => [...text.matchAll(/\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g)].map((m) => m[1] ?? m[2]);
+    steps.list.forEach((_, i) => {
+      const { title, body } = steps.text(i);
+      for (const tex of [...math(title), ...math(body), ...math(steps.list[i].label)]) renders(tex, `step ${i}`);
+    });
+    for (const node of dsl.graph.nodes) {
+      renders(node.tex, node.name);
+      renders(elemTexOf(node, node.shape.map(() => 0)), `${node.name} elem`);
+    }
+    expect(steps.list.filter((s) => s.dir === 'backward').find((s) => s.nodes.includes(dsl.nodes.get('E')!))?.title).toBe('传到 embedding 表');
   });
 
   it('computes the same gradient for every weight', () => {

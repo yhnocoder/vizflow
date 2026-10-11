@@ -56,7 +56,7 @@ function hasTopLevelSubscript(tex: string): boolean {
 }
 
 export function elemOf(tex: string): string {
-  const plain = tex.replace(/\\(?:mathbf|boldsymbol)\{([^{}]*)\}/g, (_m, inner: string) => (inner.length === 1 || inner.startsWith('\\') ? inner : `\\mathrm{${inner}}`));
+  const plain = tex.replace(/\\(?:mathbf|boldsymbol)\{([^{}]*)\}/g, (_m, inner: string) => (inner.length === 1 || inner.startsWith('\\') ? `{${inner}}` : `\\mathrm{${inner}}`));
   if (trailingSubscript(plain) !== undefined || !hasTopLevelSubscript(plain)) return plain;
   return `{${plain}}`;
 }
