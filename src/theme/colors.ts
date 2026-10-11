@@ -46,7 +46,7 @@ export function onThemeChange(fn: () => void): () => void {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
   scheme.addEventListener('change', fn);
   const observer = new MutationObserver(fn);
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-vf-theme', 'data-vf-backdrop'] });
   return () => {
     scheme.removeEventListener('change', fn);
     observer.disconnect();

@@ -1,0 +1,148 @@
+module: LightningIndexer
+subtitle: DeepseekV32Indexer
+import:
+  LayerNorm: vizflow/nn/layernorm
+  RoPE: vizflow/nn/rope
+params:
+  HI:    { type: dim }
+  dI:    { type: dim }
+  dr:    { type: dim }
+  kI:    { type: dim }
+  theta: { type: float, default: 1e4 }
+inputs:
+  x:    { shape: [T, d] }
+  qr:   { shape: [T, rq] }
+  mask: { shape: [T, T] }
+outputs: [out]
+weights:
+  Wqb: { shape: [HI*dI, rq], tex: 'W^{I}_{qb}' }
+  Wk:  { shape: [dI, d], tex: 'W^{I}_{k}' }
+  Ww:  { shape: [HI, d], tex: 'W^{I}_{w}', dtype: fp32 }
+fold:
+  label: '$\of{out}=\mathrm{indexer}(\of{x},\ \of{qr})$'
+  title: indexer（已折叠）
+  text: |
+    indexer 给每个位置 $t$ 和它之前的每个位置 $s$ 打一个分 $I_{t,s}$，每一行只留下分数最高的 $k_I=\of{kI}$ 个 key，其余的 key 在 mask 里记成 $-\infty$。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: indexer
+    title: indexer 没有梯度
+    text: indexer 的输出只经过 top-k 选择，选择不可导，所以损失的梯度不会进入 indexer。
+body:
+  - q: { op: 'view(qr @ Wqb.T, T, HI, dI)', tex: '\mathbf{q}^{I}' }
+  - q_rot: { op: 'narrow(q, -1, 0, dr)', tex: '\mathbf{q}^{I}_{\mathrm{rot}}' }
+  - q_pass: { op: 'narrow(q, -1, dr, dI - dr)', tex: '\mathbf{q}^{I}_{\mathrm{pass}}' }
+  - kx: { op: x @ Wk.T, tex: '\mathbf{k}^{I}' }
+  - k_norm:
+      use: LayerNorm
+      subtitle: nn.LayerNorm
+      suffix: I
+      params: { eps: 1e-6, intro: 'indexer 的 key 经过一个带偏置的 LayerNorm。' }
+      inputs: { x: kx }
+      outputs: { out: k }
+      tex: { out: '\bar{\of{kx}}' }
+  - k_rot: { op: 'view(narrow(k, -1, 0, dr), T, 1, dr)', tex: '\mathbf{k}^{I}_{\mathrm{rot}}' }
+  - k_pass: { op: 'narrow(k, -1, dr, dI - dr)', tex: '\mathbf{k}^{I}_{\mathrm{pass}}' }
+  - apply_rotary_pos_emb:
+      use: RoPE
+      title: apply_rotary_pos_emb
+      subtitle: 只转前 $d_r$ 维
+      params: { theta: theta }
+      inputs: { q: q_rot, k: k_rot }
+      outputs: { q_embed: q_emb, k_embed: k_emb }
+      tex: { q_embed: "{\\of{q_rot}}'", k_embed: "{\\of{k_rot}}'" }
+      folded: true
+  - qs: { op: 'cat([q_emb, q_pass], dim=2)', tex: "{\\mathbf{q}^{I}}'" }
+  - ks: { op: 'cat([view(k_emb, T, dr), k_pass], dim=1)', tex: "{\\mathbf{k}^{I}}'" }
+  - qf: { op: 'view(qs, T*HI, dI)', tex: 'Q^{I}' }
+  - kT: { op: ks.T, tex: "(\\of{ks})^{\\top}" }
+  - Sf: { op: qf @ kT, tex: "Q^{I}(\\of{ks})^{\\top}", dtype: fp32 }
+  - S: { op: 'view(Sf, T, HI, T)', tex: 'S^{I}' }
+  - Ss: { op: S * dI ** -0.5, tex: '\tilde{S}^{I}' }
+  - R: { op: relu(Ss), tex: 'R' }
+  - wx: { op: x @ Ww.T, tex: '\of{x}{W^{I}_{w}}^{\top}', dtype: fp32 }
+  - w: { op: wx * HI ** -0.5, tex: '\mathbf{w}^{I}' }
+  - Rw: { op: 'R * view(w, T, HI, 1)', tex: '\mathbf{w}^{I}\odot R' }
+  - I: { op: 'sum(Rw, 1)', tex: 'I' }
+  - Im: { op: I + mask, tex: '\bar{I}' }
+  - sel: { op: 'topk_mask(Im, min(kI, T), -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
+  - out: { op: 'where(sel, mask, -inf)', tex: '\tilde{M}' }
+formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index}{\textstyle\sum_{h}}\step{weights}{w_{h}}\step{scores}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{k}^{\top}}\step{scores}{/\sqrt{d_I}\big)}\step{topk}{+\of{mask}\big)}'
+steps:
+  - id: q_up
+    show: [Wqb.T, q]
+    label: '$\of{q}$'
+    title: wq_b：indexer 的 query
+    text: |
+      indexer 的 query 不从 $\of{x}$ 重新算，直接用 MLA 里归一化后的 q latent $\of{qr}$，再经过 indexer 自己的投影 wq_b，分成 $H_I=\of{HI}$ 个 head，每个 head 宽 $d_I=\of{dI}$。真实模型里 $H_I=64$、$d_I=128$，比 MLA 的 128 个 head 少，也更窄。
+      $$\of{q}={{ q | matrix:2 }}$$
+  - id: q_split
+    show: [q_rot, q_pass]
+    label: '$\of{q_rot},\ \of{q_pass}$'
+    title: 切出带位置的一段
+    text: |
+      每个 head 的前 $d_r=\of{dr}$ 维做 RoPE，后面的维度不带位置。顺序和 MLA 相反：MLA 里不带位置的一段在前。
+      $$\of{q_rot}={{ q_rot | matrix:2 }}$$
+  - id: k_proj
+    show: [Wk.T, kx]
+    label: '$\of{kx}$'
+    title: wk：indexer 的 key
+    text: |
+      key 直接从 $\of{x}$ 投影到 $d_I$ 维，只有一个 head，所有 query head 共用。接下来是一个带权重和偏置的 LayerNorm（k_norm）。
+      $$\of{kx}={{ kx | matrix:2 }}$$
+  - id: k_split
+    show: [k_rot, k_pass]
+    label: '$\of{k_rot},\ \of{k_pass}$'
+    title: key 也切成两段
+    text: |
+      和 query 一样，前 $d_r$ 维做 RoPE。$\of{k_rot}$ 写成 $(T, 1, d_r)$，只有 1 个 head。
+      $$\of{k_rot}={{ k_rot | matrix:2 }}$$
+  - id: cat
+    show: [qs, ks]
+    label: "$\\of{qs},\\ \\of{ks}$"
+    title: 拼回 query 和 key
+    text: |
+      转过的一段放回前面。indexer 的 RoPE 直接把前 $d_r$ 维的前后两半配对（HF 的 <code>apply_rotary_pos_emb</code>，non-interleaved），不做 MLA 里把相邻分量拆开的那一步重排；MLA 的 RoPE 是相邻两维配对（interleaved）。两种写法用同一张 cos、sin 表。
+      $$\of{ks}={{ ks | matrix:2 }}$$
+  - id: dot
+    show: [qf, kT, Sf, S]
+    label: '$\of{S}$'
+    title: 每个 head 的 query 和共用的 key 做点积
+    text: |
+      所有 head 共用同一个 key，所以把 \of{HI} 个 head 的 query 排成 $T H_I$ 行，一次乘上 $(\of{ks})^{\top}$，再排回 $(T, H_I, T)$。HF 用一次广播的 matmul 算出同样的结果，乘之前把 query 和 key 转成 float32。点积对所有位置都算，因果的限制在后面用 mask 加上。
+      $$\of{S}={{ S | matrix:3 }}$$
+  - id: scores
+    show: [Ss, R]
+    label: '$\of{R}$'
+    title: 缩放后过 ReLU
+    text: |
+      点积乘 $1/\sqrt{d_I}$，再过 ReLU，负的分数变成 0：一个 head 对某个 key 的点积是负数时，这个 head 对这个 key 的 index score 没有贡献。
+      $$R_{t,h,s}=\mathrm{ReLU}\Big(\frac{\mathbf{q}_{t,h}\cdot\mathbf{k}_{s}}{\sqrt{d_I}}\Big),\qquad \of{R}={{ R | matrix:3 }}$$
+  - id: weights
+    show: [Ww.T, wx, w]
+    label: '$\of{w}$'
+    title: weights_proj：每个位置给每个 head 一个权重
+    text: |
+      每个位置从 $\of{x}$ 算出 $H_I$ 个权重，再乘 $1/\sqrt{H_I}$。权重可以是负数，它决定这个位置更相信哪几个 head 的打分。weights_proj 在 HF 里一直用 float32。
+      $$\of{w}={{ w | matrix:3 }}$$
+  - id: index
+    show: [Rw, I]
+    label: '$\of{I}$'
+    title: 'index score：$I_{t,s}$'
+    text: |
+      每个 head 的 ReLU 分数乘上这个位置给它的权重，再按 head 加起来，得到 $T\times T$ 的 index score。$I_{t,s}$ 表示位置 $t$ 的 query 有多需要位置 $s$ 的 key。
+      $$I_{t,s}=\sum_{h}w_{t,h}\,R_{t,h,s},\qquad \of{I}={{ I | matrix:3 }}$$
+  - id: topk
+    show: [Im, sel]
+    label: '$\of{sel}$'
+    title: 'top-$k_I$：每个位置选出 $k_I$ 个 key'
+    text: |
+      先加上 causal mask，位置 $t$ 只能选自己和之前的位置，再在每一行选出分数最高的 $k_I=\of{kI}$ 个。一行里能选的 key 不到 $k_I$ 个时（例如第 1 行），top-k 会再选上被 causal mask 挡住的位置，这些位置在下一步仍是 $-\infty$，所以能选的 key 全部保留。真实模型里 $k_I=2048$，上下文短于 2048 时注意力仍然是稠密的。挑选只决定 0 和 1，没有梯度。
+      $$\of{sel}={{ sel | matrix:2 }}$$
+  - id: mask
+    show: out
+    label: '$\of{out}$'
+    title: 稀疏的 attention mask
+    text: |
+      选中的 key 保留 causal mask 原来的值，没选中的记成 $-\infty$。HF 的 eager 路径填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，取 exp 之后同样是 0。这张 mask 交给后面的注意力，代替原来的 causal mask，每个位置最多看 $k_I$ 个 key。
+      $$\of{out}={{ out | matrix:2 }}$$

@@ -144,7 +144,7 @@ function sequenceInputs(c: Compiler, env: Env, tree: LayoutTree): PageSequence |
   const make = (key: 'input' | 'label', values: number[]) => {
     const name = spec[key] as string;
     const tex = defaultTex(name);
-    const node = c.g.label(name, values, { tokens, tex, elem: elemOf(tex) });
+    const node = c.g.label(name, values, { tokens, tex, elem: elemOf(tex), ...(rows === undefined ? {} : { shape: ['T'] }) });
     define(c, c.root, name, node, { ...env, where: child(where, spec, key) });
     tree.children.push({ kind: 'node', node });
     c.setOwner(node, tree.children);

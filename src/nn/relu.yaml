@@ -1,0 +1,24 @@
+module: ReLU
+subtitle: ReLU
+formula: '\step{relu}{\of{out}=\max(\of{x},0)}'
+params:
+  name: { type: text, default_key: true }
+inputs:
+  x: { shape: [...] }
+outputs: [out]
+body:
+  - out: { op: relu(x), tex: '\operatorname{ReLU}(\of{x})' }
+steps:
+  - id: relu
+    show: out
+    label: '$\of{out}$'
+    title: \of{name}：ReLU
+    text: |
+      负数变成 0，正数原样通过。
+      $$\of{out}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: \of{name}：穿过 ReLU
+      text: |
+        局部导数在 $x>0$ 处是 1，其余是 0（PyTorch 在 0 处取 0）。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$

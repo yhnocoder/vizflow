@@ -1,5 +1,18 @@
 import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, formatShape, offsetOf } from '../../tensor';
-import type { OpDef } from '../op';
+import type { OpCost, OpDef } from '../op';
+import { numel } from './cost';
+
+const MULTIPLY_ADD = 2;
+
+function contraction(dims: (inputs: number[][], out: number[]) => number[]): OpCost {
+  return {
+    saves: [[1], [0]],
+    flops: (inputs, out) => {
+      const count = [MULTIPLY_ADD, ...dims(inputs, out)];
+      return { forward: count, backward: inputs.map(() => count) };
+    },
+  };
+}
 
 type NoAttrs = Record<string, never>;
 
@@ -148,6 +161,7 @@ export const matmulOp: OpDef<NoAttrs> = {
     const gB = multiply(transposed2d(a, 'left'), G, [as2d(a, 'left').cols, G.shape[1]]);
     return [new Tensor(a.shape, gA.data), new Tensor(b.shape, gB.data)];
   },
+  cost: contraction(([a], out) => [numel(out), a[a.length - 1]]),
 };
 
 export interface SelectMatmulAttrs {
@@ -188,6 +202,7 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
     const gB = multiply(transposed2d(slice(a, index), 'left'), gradOut, [width, b.shape[1]]);
     return [gA, gB];
   },
+  cost: contraction(([a, b]) => [a[0], b[0], b[1]]),
 };
 
 function groupedLinearShape(input: readonly number[], weight: readonly number[], group: readonly number[]): number[] {
@@ -240,6 +255,7 @@ export const groupedLinearOp: OpDef<NoAttrs> = {
     }
     return [gi, gw, null];
   },
+  cost: { ...contraction(([input, weight]) => [input[0], input[1], weight[1]]), saves: [[1, 2], [0, 2]] },
 };
 
 export interface SolveTriangularAttrs {
@@ -322,5 +338,12 @@ export const solveTriangularOp: OpDef<SolveTriangularAttrs> = {
       }
     }
     return [gA, gB];
+  },
+  cost: {
+    saves: [[0, 'out'], [0]],
+    flops: ([a], out) => {
+      const count = [numel(out), a[a.length - 1]];
+      return { forward: count, backward: [count, count] };
+    },
   },
 };

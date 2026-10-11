@@ -47,7 +47,7 @@ describe('qwen3_5-dsl.yaml against transformers Qwen3_5TextModel in float64', ()
     const rule = 'linear_layer.linear_attn.chunk_gated_delta_rule';
     expect(page.nodes.get(`${rule}.S[2][2]`)!.shape).toEqual([2, 2]);
     expect(page.nodes.get(`${rule}.qp`)!.shape).toEqual([2, 4, 2]);
-    expect(page.nodes.get(`${rule}.qp`)!.realShape).toEqual([48, 64, 128]);
+    expect(page.nodes.get(`${rule}.qp`)!.realShape).toEqual([48, 4096, 128]);
     expect(page.nodes.get(`${rule}.pde[1]`)!.shape).toEqual([2, 2, 2]);
   });
 });

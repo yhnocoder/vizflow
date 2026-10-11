@@ -23,6 +23,7 @@ main { --vf-stage-height: clamp(560px, calc(100vh - 150px), 1400px); }
 </style>
 </head>
 <body>
+<a class="vf-settings-link" href="settings.html">设置</a>
 <main class="vf-page">
   <header>
     <h1>Qwen3 一层：从 token 到损失</h1>
@@ -129,7 +130,7 @@ function rmsNorm(spec, inputs, values, place) {
       const sq = g.pow(input, 2, { name: sqName, tex: `{${t.x}}^{2}`, elem: `{${t.xe}}^{2}` });
       const ms = g.mean(sq, -1, { keepdim: true, name: msName, tex: `\\mathrm{ms}${t.s}`, elem: `\\mathrm{ms}${t.s}` });
       const shifted = g.add(ms, EPS, {
-        name: `${msName}+ε`, tex: `\\mathrm{ms}${t.s}+\\epsilon`, elem: `(\\mathrm{ms}${t.s}+\\epsilon)`,
+        name: `${msName}ε`, tex: `(\\mathrm{ms}${t.s}+\\epsilon)`, elem: `(\\mathrm{ms}${t.s}+\\epsilon)`,
         card: { forward: { tex: [`\\mathrm{ms}${t.s}+\\epsilon,\\quad \\epsilon=10^{-6}`] } },
       });
       const r = g.rsqrt(shifted, { name: rName, tex: `r${t.s}`, elem: `r${t.s}` });
@@ -139,10 +140,27 @@ function rmsNorm(spec, inputs, values, place) {
       return { sq, ms, shifted, r, hat, out };
     });
     page.layout.push(stack(gamma, lane(place.gammaX, place.level + 2)));
-    const texts = spec.text ?? {};
+    const [, msName, rName] = spec.names[0];
+    const texts = {
+      ms: String.raw`
+        每一行对平方取平均，得到 ms，对应 <code>pow(2).mean(-1, keepdim=True)</code>。每个位置各算各的，所以 ms 是每行一个。
+
+        $$\mathrm{ms}${spec.tex[0].s}=${mx(msName, T, 1, ':3')}$$`,
+      eps: String.raw`
+        加上 $\epsilon=10^{-6}$，对应 <code>variance + self.variance_epsilon</code>，保证下一步不会除以 0。加常数的局部导数是 1。
+
+        $$\mathrm{ms}${spec.tex[0].s}+\epsilon=${mx(`${msName}ε`, T, 1, ':6')}$$`,
+      r: String.raw`
+        取平方根的倒数，得到这一行的 $r=1/\sqrt{\mathrm{ms}+\epsilon}$，对应一次 <code>torch.rsqrt</code>。局部导数是 $-r^{3}/2$。
+
+        $$r${spec.tex[0].s}=${mx(rName, T, 1, ':3')}$$`,
+      ...spec.text,
+    };
     const steps = [
       { show: parts.map((p) => p.sq), label: `$${spec.tex.map((t) => `{${t.x}}^{2}`).join(',\\ ')}$`, title: `${spec.heading ?? spec.title}：逐元素平方`, text: texts.sq },
-      { show: parts.flatMap((p) => [p.ms, p.shifted, p.r]), label: '$\\mathrm{ms},\\ r$', title: '均方根的倒数', text: texts.ms },
+      { show: parts.map((p) => p.ms), label: '$\\mathrm{ms}$', title: '平方的平均', text: texts.ms },
+      { show: parts.map((p) => p.shifted), label: '$+\\epsilon$', title: '加上 $\\epsilon$', text: texts.eps },
+      { show: parts.map((p) => p.r), label: '$r$', title: '平方根的倒数', text: texts.r },
       { show: parts.map((p) => p.hat), label: `$${spec.tex.map((t) => `\\hat{${t.x}}`).join(',\\ ')}$`, title: '归一化', text: texts.hat },
       { show: [gamma, ...parts.map((p) => p.out)], label: `$${spec.tex.map((t) => t.out).join(',\\ ')}$`, title: `乘上权重 ${spec.gamma.name}`, text: texts.out },
     ];
@@ -154,20 +172,28 @@ function rope(inputs, cos, sin) {
   return module('apply_rotary_pos_emb', 'q·cos + rotate_half(q)·sin', 'right', () => {
     const parts = inputs.map(({ node, label, tex, outTex, outElem }) => {
       const c = g.mul(node, cos, { name: `${label}·cos`, tex: `${tex}\\odot\\cos`, elem: `(${tex}\\cos)` });
-      const rh = g.rotate_half(node, { name: `rh(${label})`, tex: `\\mathrm{rh}(${tex})`, elem: `\\mathrm{rh}(${tex})` });
+      const half = node.shape[node.shape.length - 1] / 2;
+      const x1 = g.narrow(node, -1, 0, half, { name: `${label}₁`, tex: `${tex}_{1}`, elem: `${tex}_{1}` });
+      const x2 = g.narrow(node, -1, half, half, { name: `${label}₂`, tex: `${tex}_{2}`, elem: `${tex}_{2}` });
+      const n2 = g.neg(x2, { name: `−${label}₂`, tex: `(-${tex}_{2})`, elem: `(-${tex}_{2})` });
+      const rh = g.cat([n2, x1], -1, { name: `rh(${label})`, tex: `\\mathrm{rh}(${tex})`, elem: `\\mathrm{rh}(${tex})` });
       const s = g.mul(rh, sin, { name: `rh(${label})·sin`, tex: `\\mathrm{rh}(${tex})\\odot\\sin`, elem: `(\\mathrm{rh}\\sin)` });
       const out = g.add(c, s, { name: `${label}′`, tex: outTex, elem: outElem });
-      page.layout.push(stack(node, c, rh, s, out, flow));
-      return { c, rh, s, out };
+      page.layout.push(stack(node, c, x1, x2, n2, rh, s, out, flow));
+      return { c, x1, x2, n2, rh, s, out };
     });
     const steps = [
       { show: [cos, ...parts.map((p) => p.c)], label: '$\\odot\\cos$', title: 'RoPE：乘 cos', text: String.raw`
-        RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。
-        cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以没有连线。
+        RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。
+        cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以连线只在前向画出。
 
         $$\cos=${mx('cos', T, HD, ':3')}$$` },
-      { show: parts.map((p) => p.rh), label: 'rotate_half', title: 'rotate_half', text: String.raw`
-        把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
+      { show: parts.flatMap((p) => [p.x1, p.x2]), label: 'rotate_half：切两半', title: 'rotate_half：切成前后两半', text: String.raw`
+        HF 的 <code>rotate_half</code> 先用切片把每个 head 的最后一维切成前后两半，<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>。切片只是取出一部分，局部导数是 1。` },
+      { show: parts.map((p) => p.n2), label: '$-x_2$', title: 'rotate_half：后半取负', text: String.raw`
+        后半段取负号，局部导数是 $-1$。` },
+      { show: parts.map((p) => p.rh), label: 'rotate_half：拼回', title: 'rotate_half：拼回', text: String.raw`
+        <code>torch.cat((-x2, x1), dim=-1)</code> 把取负的后半段放到前面，前半段放到后面。拼接只是重新排列，每个元素只连一条线。
 
         $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$` },
       { show: [sin, ...parts.map((p) => p.s)], label: '$\\odot\\sin$', title: '乘 sin', text: String.raw`
@@ -243,8 +269,8 @@ function attention(x0, n1, rotary, level) {
       text: {
         sq: String.raw`
           Qwen3 比 Qwen2 多了这一步：在 RoPE 之前，对 q 和 k 的每个 head 各做一次 RMSNorm，范围是 $d_h$，而不是整个 hidden size。它让点积的尺度更稳定。`,
-        ms: String.raw`
-          q 的每个位置、每个 head 各有一个 $r^{q}$，k 只有一个 kv head，每个位置一个 $r^{k}$。
+        r: String.raw`
+          取平方根的倒数，对应一次 <code>torch.rsqrt</code>，局部导数是 $-r^{3}/2$。q 的每个位置、每个 head 各有一个 $r^{q}$，k 只有一个 kv head，每个位置一个 $r^{k}$。
 
           $$r^{q1}=${mx('r_q1', T, 1, ':3')},\qquad r^{q2}=${mx('r_q2', T, 1, ':3')},\qquad r^{k}=${mx('r_k', T, 1, ':3')}$$`,
         hat: '每个分量乘上自己那一组的 $r$。连线只在同一个 head 的同一行之内。',
@@ -321,7 +347,7 @@ function attention(x0, n1, rotary, level) {
       { show: scored.map((s) => s.scaled), label: '$\\div\\sqrt{d_h}$', title: '缩放', text: String.raw`
         乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。` },
       { show: [M, ...scored.map((s) => s.masked)], label: '$+M$', title: 'causal mask', text: String.raw`
-        加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度，所以没有连线。HF 实现里填的是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
+        加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度，所以连线只在前向画出。HF 实现里填的是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
 
         $$M=\begin{pmatrix}0&-\infty&-\infty\\0&0&-\infty\\0&0&0\end{pmatrix}$$` },
       ...soft.steps,
@@ -347,20 +373,42 @@ function mlp(n, level) {
     const Wd = g.param('Wd', ['d', 'f'], P0.Wd, { tex: 'W_d', elem: 'W_d' });
     const gate = g.matmul(n, Wg.T, { name: 'gate', tex: '\\mathbf{gate}', elem: '\\mathrm{gate}' });
     const up = g.matmul(n, Wu.T, { name: 'up', tex: '\\mathbf{up}', elem: '\\mathrm{up}' });
-    const s = g.silu(gate, { name: 's' });
+    const ng = g.neg(gate, { name: 'ng', tex: '(-\\mathbf{gate})', elem: '(-\\mathrm{gate})' });
+    const eg = g.exp(ng, { name: 'eg', tex: 'e^{-\\mathbf{gate}}', elem: 'e^{-\\mathrm{gate}}' });
+    const dg = g.add(eg, 1, { name: 'dg', tex: '(1+e^{-\\mathbf{gate}})', elem: '(1+e^{-\\mathrm{gate}})' });
+    const sg = g.reciprocal(dg, { name: 'σg', tex: '\\sigma(\\mathbf{gate})', elem: '\\sigma' });
+    const s = g.mul(gate, sg, { name: 's' });
     const m = g.mul(s, up, { name: 'm' });
     const down = g.matmul(m, Wd.T, { name: 'down', tex: '\\mathbf{down}', elem: '\\mathrm{down}' });
     page.layout.push(
       board(n, Wg.T, gate, boardAt(-6, level + 1)),
       board(n, Wu.T, up, boardAt(6, level + 1)),
-      stack(gate, s, m, { ...flow, offsets: { m: [6, 0, 0] } }),
-      board(m, Wd.T, down, boardAt(0, level + 4)),
+      stack(gate, ng, eg, dg, sg, s, m, { ...flow, offsets: { m: [6, 0, 0] } }),
+      board(m, Wd.T, down, boardAt(0, level + 8)),
     );
     const steps = [
       { show: [Wg.T, Wu.T, gate, up], label: '$\\mathbf{gate},\\ \\mathbf{up}$', title: 'gate_proj 和 up_proj', text: String.raw`
         两个投影的输入都是 $\mathbf{n}$。维度从 $d$ 扩大到 $f$，Qwen3-8B 里是 4096 到 12288。` },
-      { show: s, label: 'SiLU', title: 'SiLU', text: String.raw`
-        gate 逐元素经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。正数基本原样通过，负数被压到接近 0。` },
+      { show: ng, label: '$-\\mathbf{gate}$', title: 'SiLU：取负', text: String.raw`
+        Qwen3 的激活是 SiLU，定义是 $\mathrm{SiLU}(v)=v\,\sigma(v)$，其中 $\sigma(v)=\dfrac{1}{1+e^{-v}}$。<code>F.silu</code> 是一个逐元素 kernel，这里按定义拆开画：先用取负、取 exp、加 1、取倒数四步算出 $\sigma(\mathbf{gate})$，再和 $\mathbf{gate}$ 逐元素相乘。第一步给每个元素取负号，局部导数是 $-1$。
+
+        $$-\mathbf{gate}=${mx('ng', T, F, ':2')}$$` },
+      { show: eg, label: '$e^{-\\mathbf{gate}}$', title: 'SiLU：取 exp', text: String.raw`
+        exp 的导数是它自己，局部导数就是这一格的 $e^{-\mathrm{gate}}$。
+
+        $$e^{-\mathbf{gate}}=${mx('eg', T, F, ':2')}$$` },
+      { show: dg, label: '$1+e^{-\\mathbf{gate}}$', title: 'SiLU：加 1', text: String.raw`
+        加常数的局部导数是 1。
+
+        $$1+e^{-\mathbf{gate}}=${mx('dg', T, F, ':2')}$$` },
+      { show: sg, label: '$\\sigma(\\mathbf{gate})$', title: 'SiLU：取倒数', text: String.raw`
+        取倒数得到 $\sigma(\mathbf{gate})$，每个值都在 0 和 1 之间。$\frac{d}{dv}\frac{1}{v}=-\frac{1}{v^{2}}$，所以局部导数是 $-\sigma^{2}$。
+
+        $$\sigma(\mathbf{gate})=${mx('σg', T, F, ':2')}$$` },
+      { show: s, label: '$\\mathbf{s}$', title: 'SiLU：乘回 gate', text: String.raw`
+        $\sigma(\mathbf{gate})$ 和 $\mathbf{gate}$ 逐元素相乘，得到 $\mathbf{s}=\mathrm{SiLU}(\mathbf{gate})$。$\mathbf{gate}$ 因此有两条出边，一条进 sigmoid，一条直接进这个乘法，反向时两条的梯度在 $\mathbf{gate}$ 上相加。正数基本原样通过，负数被压到接近 0。
+
+        $$\mathbf{s}=${mx('s', T, F, ':2')}$$` },
       { show: m, label: '$\\mathbf{s}\\odot\\mathbf{up}$', title: '门控相乘', text: String.raw`
         $\mathbf{s}$ 和 $\mathbf{up}$ 逐元素相乘，$\mathbf{s}$ 决定 $\mathbf{up}$ 的每个分量放行多少。` },
       { show: [Wd.T, down], label: 'down', title: 'down_proj', text: String.raw`
@@ -368,7 +416,7 @@ function mlp(n, level) {
 
         $$\mathbf{down}=\mathbf{m}W_d^{\top}=${mx('down', T, D)}$$` },
     ];
-    return { out: down, level: level + 4, steps };
+    return { out: down, level: level + 8, steps };
   });
 }
 
@@ -385,9 +433,9 @@ function decoderLayer(x0, rotary, level) {
 
           $$\mathbf{x}_0^{2}=${mx('x0²', T, D)}$$`,
         ms: String.raw`
-          每一行对平方取平均得到 ms，加上 $\epsilon=10^{-6}$ 再取平方根的倒数，得到这一行的 $r$。$T$ 个位置各算各的，所以 ms 和 $r$ 都是每行一个。
+          每一行对平方取平均得到 ms，对应 <code>hidden_states.pow(2).mean(-1, keepdim=True)</code>。$T$ 个位置各算各的，所以 ms 是每行一个。
 
-          $$\mathrm{ms}_1=${mx('ms1', T, 1, ':3')},\qquad r_1=${mx('r1', T, 1, ':3')}$$`,
+          $$\mathrm{ms}_1=${mx('ms1', T, 1, ':3')}$$`,
         hat: String.raw`
           每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。
 
@@ -409,7 +457,7 @@ function decoderLayer(x0, rotary, level) {
       tex: [{ x: '\\mathbf{a}', xe: 'a', s: '_{2}', out: '\\mathbf{n}', oute: 'n' }],
       text: {
         sq: 'MLP 之前再做一次 RMSNorm，计算和 input_layernorm 相同。',
-        ms: String.raw`$$r_2=${mx('r2', T, 1, ':3')}$$`,
+        r: String.raw`取平方根的倒数，局部导数是 $-r^{3}/2$。$$r_2=${mx('r2', T, 1, ':3')}$$`,
         out: String.raw`
           $\mathbf{n}$ 是 MLP 的输入。
 
@@ -492,32 +540,55 @@ function lmHead(h, labels, level) {
       $$\mathbf{z}=\mathbf{h}W^{\top}=${mx('z', T, V)}$$` }] };
   });
   const z = lm.z;
-  const tail = module('loss', 'log_softmax + nll_loss', 'left', () => {
-    const L = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+  const lsm = module('log_softmax', 'F.log_softmax(z.float(), -1)', 'left', () => {
+    const ex = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+    const S = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+    const L = g.log(S, { name: 'LSE' });
     const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-    const lt = g.nll_loss(logp, labels, { reduction: 'none', name: 'ℓt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
-    const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
-    page.layout.push(stack(z, L, logp, lt, loss, flow));
-    page.backward.set(loss, { title: '从损失出发', text: String.raw`平均值把梯度 $1/T$ 分给每个位置；每一行只有标签那一格收到 $-1/T$。` });
-    page.backward.set(L, { title: '传到 LSE', text: String.raw`每行的 LSE 收到 $1/T$。$$\frac{\partial\ell}{\partial\,\mathrm{LSE}}=${mg('LSE', T, 1)}$$` });
-    page.backward.set(z, { title: '传到 logits', text: String.raw`两条路加起来，每一行都是 $(\mathbf{p}_t-\mathbf{e}_{y_t})/T$。$$\frac{\partial\ell}{\partial\mathbf{z}}=${mg('z', T, V)}$$` });
-    return { loss, logp, steps: [
-      { show: L, label: 'LSE', title: 'log-sum-exp', text: String.raw`
-        每个位置各算一个 LSE。实现里先减去这一行的最大值再取指数，不会溢出。
+    page.backward.set(L, { title: '传到 LSE', text: String.raw`每行的 LSE 连到这一行的每个 $\log p$，局部导数是 $-1$，所以收到这一行梯度之和的相反数，也就是 $1/T$。$$\frac{\partial\ell}{\partial\,\mathrm{LSE}}=${mg('LSE', T, 1)}$$` });
+    page.backward.set(z, { title: '传到 logits', text: String.raw`$z$ 有两条出边：直连 $\log\mathbf{p}$ 的那条局部导数是 1；经过 exp 的那条局部导数是 $e^{z}$，乘上游的 $\partial\ell/\partial S$ 得到 $p/T$。两条加起来，每一行都是 $(\mathbf{p}_t-\mathbf{e}_{y_t})/T$。$$\frac{\partial\ell}{\partial\mathbf{z}}=${mg('z', T, V)}$$` });
+    return { ex, S, L, logp, steps: [
+      { show: ex, label: '$e^{\\mathbf{z}}$', title: 'log_softmax：取 exp', text: String.raw`
+        log_softmax 的定义是 $\log p_{i}=z_{i}-\log\sum_{j}e^{z_{j}}$，这里按定义拆成四步：取 exp、按行求和、取 log、相减。PyTorch 的 kernel 会先减去每一行的最大值 $m$ 再取 exp，算的是 $z_{i}-m-\log\sum_{j}e^{z_{j}-m}$，防止溢出；$m$ 在式子里正好抵消，结果和梯度都不变，这一页的数值也远不会溢出，所以按定义画。exp 的局部导数是它自己。
+
+        $$e^{\mathbf{z}}=${mx('ex', T, V, ':2')}$$` },
+      { show: S, label: '$S$', title: 'log_softmax：按行求和', text: String.raw`
+        每个位置各有一个 $S$，是这一行所有 exp 的和。求和的局部导数是 1。
+
+        $$S=${mx('S', T, 1, ':3')}$$` },
+      { show: L, label: 'LSE', title: 'log_softmax：取 log', text: String.raw`
+        $\log S$ 就是 log-sum-exp，每个位置一个。log 的局部导数是 $1/S$。
 
         $$\mathrm{LSE}=${mx('LSE', T, 1, ':3')}$$` },
-      { show: logp, label: '$\\log\\mathbf{p}$', title: 'log_softmax', text: '每个 logit 减去自己那一行的 LSE。' },
-      { show: lt, label: '$\\ell_t$', title: 'nll_loss（逐位置）', text: String.raw`
-        每个位置按标签取出目标 token 的 log p，取负号。标签是输入右移一位：位置 1 的标签是 ${tok(SEQ[1])}，位置 2 是 ${tok(SEQ[2])}，位置 3 是 ${tok(SEQ[3])}。
+      { show: logp, label: '$\\log\\mathbf{p}$', title: 'log_softmax：减去 LSE', text: '每个 logit 减去自己那一行的 LSE。$e^{\\log p}$ 每一行加起来是 1。' },
+    ] };
+  });
+  const nll = module('nll_loss', "F.nll_loss(…, reduction='mean')", 'left', () => {
+    const logp = lsm.logp;
+    const yv = g.view(labels, [-1, 1], { name: 'yv', tex: '\\mathbf{y}', elem: 'y' });
+    const pick = g.gather(logp, -1, yv, { name: 'pick', tex: '\\log p_{y}', elem: '\\log p_{y}' });
+    const lt = g.neg(pick, { name: 'ℓt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+    const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+    page.backward.set(loss, { title: '从损失出发', text: String.raw`平均值把梯度 $1/T$ 分给每个位置。$$\frac{\partial\ell}{\partial\boldsymbol{\ell}}=${mg('ℓt', T, 1)}$$` });
+    page.backward.set(pick, { title: '穿过取负', text: String.raw`取负的局部导数是 $-1$，每个位置收到 $-1/T$。$$\frac{\partial\ell}{\partial\log p_{y}}=${mg('pick', T, 1)}$$` });
+    page.backward.set(logp, { title: '穿过取格', text: String.raw`取格的反向把梯度放回被取到的那一格，每一行只有标签那一格是 $-1/T$，其他格是 0。$$\frac{\partial\ell}{\partial\log\mathbf{p}}=${mg('log p', T, V)}$$` });
+    return { pick, lt, loss, steps: [
+      { show: pick, label: '$\\log p_{y}$', title: 'nll_loss：按标签取格', text: String.raw`
+        <code>F.nll_loss(logp, y)</code> 对每个位置 $t$ 算 $-\log p_{t,y_t}$，默认 <code>reduction='mean'</code> 再取平均。它是一个 kernel，这里拆成三步：按标签取格、取负、取平均。第一步每一行按自己的标签取出一格，写成 PyTorch 是 <code>logp.gather(-1, y.view(-1, 1))</code>，每一行只有标签那一格有连线。标签是输入右移一位：位置 1 的标签是 ${tok(SEQ[1])}，位置 2 是 ${tok(SEQ[2])}，位置 3 是 ${tok(SEQ[3])}。
 
-        $$\ell_t=-\log p_{t,y_t}:\quad ({{ℓt[0]:3}},\; {{ℓt[1]:3}},\; {{ℓt[2]:3}})$$` },
-      { show: loss, label: '$\\ell$', title: '取平均', text: String.raw`
-        <code>F.nll_loss</code> 默认 <code>reduction='mean'</code>，对 $T$ 个位置取平均。它在一个算子里同时做了取格、取负和平均，这里分成两步画。
+        $$\log p_{t,y_t}=${mx('pick', T, 1, ':3')}$$` },
+      { show: lt, label: '$\\ell_t$', title: 'nll_loss：取负', text: String.raw`
+        取负号得到每个位置的损失 $\ell_t=-\log p_{t,y_t}$。目标 token 的概率越小，这一项越大。
+
+        $$\boldsymbol{\ell}=${mx('ℓt', T, 1, ':3')}$$` },
+      { show: loss, label: '$\\ell$', title: 'nll_loss：取平均', text: String.raw`
+        对 $T$ 个位置取平均。<code>F.nll_loss</code> 的平均只算标签不等于 <code>ignore_index</code>（默认 $-100$）的位置，这一页没有被忽略的标签，所以分母就是 $T$。
 
         $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$` },
     ] };
   });
-  return { W: lm.W, z, logp: tail.logp, loss: tail.loss, steps: [...lm.steps, ...tail.steps] };
+  page.layout.push(stack(z, lsm.ex, lsm.S, lsm.L, lsm.logp, nll.pick, nll.lt, nll.loss, { ...flow, offsets: { LSE: [0, 0.9, 0], 'ℓt': [0, 0.9, 0], loss: [0, 0.9, 0] } }));
+  return { W: lm.W, z, logp: lsm.logp, loss: nll.loss, steps: [...lm.steps, ...lsm.steps, ...nll.steps] };
 }
 
 const ids = g.label('ids', SEQ.slice(0, T), { tokens: TOK });

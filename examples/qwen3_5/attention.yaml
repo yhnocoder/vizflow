@@ -4,6 +4,7 @@ import:
   ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
   RoPE: vizflow/nn/rope
   GQA: vizflow/nn/gqa
+  Sigmoid: vizflow/nn/sigmoid
 params:
   H:     { type: dim }
   Hkv:   { type: dim }
@@ -99,7 +100,7 @@ body:
           label: '$\mathrm{rot},\ \mathrm{pass}$'
           title: 每个 head 切成旋转和不旋转两段
           text: |
-            Qwen3.5 的 partial_rotary_factor 是 0.25：每个 head 只有前 $r=d_h/4$ 维参与 RoPE，真实模型里是 256 维里的前 64 维，这里是 \of{dh} 维里的前 \of{rd} 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。
+            Qwen3.5 的 partial_rotary_factor 是 0.25：每个 head 只有前 $r=d_h/4$ 维参与 RoPE，真实模型里是 256 维里的前 64 维，这里是 \of{dh} 维里的前 \of{rd} 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。Qwen3.5 的 RoPE 是多模态的 mRoPE：<code>position_ids</code> 扩成时间、高、宽三份，按 <code>mrope_section</code> 交错分配频率；只有文本时三份位置相同，结果就是这里画的一维 RoPE。
             $$\bar{\mathbf{q}}_{\mathrm{rot}}={{ q_rot | matrix:2 }}$$
           backward:
             label: '$\partial\bar{\mathbf{q}},\ \partial\bar{\mathbf{k}}$'
@@ -120,23 +121,28 @@ body:
       inputs: { q: qr, k: kr, v: v, mask: mask }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
-  - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{g}_{o})' }
+  - gate_sigmoid:
+      use: Sigmoid
+      inputs: { x: gate }
+      outputs: { out: sg }
+      tex: { out: '\sigma(\mathbf{g}_{o})' }
+      steps:
+        neg:
+          append: 这里算的是输出门 <code>torch.sigmoid(gate)</code>，它决定注意力输出的每个分量放行多少。
   - og: { op: o * sg, tex: '\tilde{\mathbf{o}}' }
   - att: { op: og @ Wo.T, tex: '\mathbf{att}' }
 steps:
-  - id: qkv
-    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: 'nn.Linear $\times$ 3' }
-    show: [Wq.T, Wk.T, Wv.T, qg, k, v]
-    label: '$\of{qg},\ \of{k},\ \of{v}$'
-    title: q_proj、k_proj、v_proj
+  - id: q_proj
+    brace: { title: q_proj, subtitle: nn.Linear }
+    show: [Wq.T, qg]
+    label: '$\of{qg}$'
+    title: q_proj
     text: |
-      和 Qwen3 相比，q_proj 的输出宽了一倍：每个 query head 得到 $2d_h$ 个数，前 $d_h$ 个是 query，后 $d_h$ 个是这个 head 的输出门。一共 \of{H} 个 query head、\of{Hkv} 个 kv head，$d_h=\of{dh}$。三个 Linear 都没有 bias。
+      和 Qwen3 相比，q_proj 的输出宽了一倍：每个 query head 得到 $2d_h$ 个数，前 $d_h$ 个是 query，后 $d_h$ 个是这个 head 的输出门。一共 \of{H} 个 query head，$d_h=\of{dh}$。q_proj、k_proj、v_proj 都没有 bias。
       $$[\mathbf{q}\,|\,\mathbf{g}_{o}]={{ qg | matrix:2 }}$$
     backward:
-      label: '$\partial W,\ \partial\of{x}$'
-      title: 传到三个投影的权重和 $\of{x}$
-      text: |
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+      label: '$\partial W_q,\ \partial\of{x}$'
+      title: 传到 q_proj 权重和 $\of{x}$
   - id: chunk
     show: [q, gate]
     label: '$\of{q},\ \of{gate}$'
@@ -147,8 +153,33 @@ steps:
     backward:
       label: '$\partial[\mathbf{q}\,|\,\mathbf{g}_{o}]$'
       title: 两半拼回去
+  - id: k_proj
+    brace: { title: k_proj, subtitle: nn.Linear }
+    show: [Wk.T, k]
+    label: '$\of{k}$'
+    title: k_proj
+    text: |
+      k_proj 的输入也是 $\of{x}$，输出 \of{Hkv} 个 kv head，每个宽 $d_h$。
+      $$\mathbf{k}={{ k | matrix:2 }}$$
+    backward:
+      label: '$\partial W_k,\ \partial\of{x}$'
+      title: 传到 k_proj 权重和 $\of{x}$
+  - id: v_proj
+    brace: { title: v_proj, subtitle: nn.Linear }
+    show: [Wv.T, v]
+    label: '$\of{v}$'
+    title: v_proj
+    text: |
+      v_proj 的输入还是 $\of{x}$，宽度和 k 相同。
+      $$\mathbf{v}={{ v | matrix:2 }}$$
+    backward:
+      label: '$\partial W_v,\ \partial\of{x}$'
+      title: 传到 v_proj 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 用在三个投影里，它的梯度是三条路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: output_gate
-    show: [sg, og]
+    show: og
     label: '$\of{og}$'
     title: 输出门
     text: |
@@ -158,8 +189,8 @@ steps:
       label: '$\partial\mathbf{o},\ \partial\mathbf{g}_{o}$'
       title: 传到注意力输出和门
       text: |
-        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{g}_{o})$，门关上的地方，注意力几乎收不到梯度；$\partial\ell/\partial\,\mathbf{g}_{o}$ 再乘上 sigmoid 的导数 $\sigma(1-\sigma)$。
-        $$\frac{\partial\ell}{\partial\,\mathbf{g}_{o}}={{ gate.grad | matrix:3 }}$$
+        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{g}_{o})$，门关上的地方，注意力几乎收不到梯度；$\sigma(\mathbf{g}_{o})$ 收到 $\partial\ell/\partial\tilde{\mathbf{o}}\odot\mathbf{o}$，再穿过 sigmoid 的四步传到 $\mathbf{g}_{o}$。
+        $$\frac{\partial\ell}{\partial\,\sigma(\mathbf{g}_{o})}={{ sg.grad | matrix:3 }}$$
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]

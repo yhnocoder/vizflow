@@ -62,7 +62,7 @@ modules:
           tex: { m: '\mathbf{m}_{a}', beta: '\boldsymbol{\beta}_{a}' }
       - linear_attn:
           use: GatedDeltaNet
-          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, chunk: chunk, norm_act: sigmoid }
+          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, chunk: chunk, norm_act: Sigmoid }
           inputs: { x: m1 }
           outputs: { out: att }
           tex: { out: '\mathbf{att}_{1}' }

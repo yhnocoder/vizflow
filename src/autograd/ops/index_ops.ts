@@ -1,5 +1,8 @@
 import { Tensor, forEachIndex, formatShape, normDim, offsetOf, reduceMap } from '../../tensor';
 import type { OpDef } from '../op';
+import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
+
+const CONV_MULTIPLY_ADD = 2;
 
 export interface GatherAttrs {
   dim: number;
@@ -50,6 +53,7 @@ export const gatherOp: OpDef<GatherAttrs> = {
     for (let i = 0; i < offsets.length; i++) grad.data[offsets[i]] += gradOut.data[i];
     return [grad, null];
   },
+  cost: movement(true, [[1], []]),
 };
 
 function embeddingRow(weight: Tensor, id: number, position: number[]): number {
@@ -89,6 +93,7 @@ export const embeddingOp: OpDef<Record<string, never>> = {
     });
     return [null, grad];
   },
+  cost: movement(true, [[], [0]]),
 };
 
 export interface NarrowAttrs {
@@ -138,6 +143,7 @@ export const narrowOp: OpDef<NarrowAttrs> = {
     });
     return [grad];
   },
+  cost: VIEW_COST,
 };
 
 export interface CatAttrs {
@@ -205,6 +211,7 @@ export const catOp: OpDef<CatAttrs> = {
     });
     return grads;
   },
+  cost: movement(false, []),
 };
 
 export interface ViewAttrs {
@@ -231,6 +238,7 @@ export const viewOp: OpDef<ViewAttrs> = {
   int64: true,
   forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+  cost: VIEW_COST,
 };
 
 export interface SelectAttrs {
@@ -277,6 +285,7 @@ export const selectOp: OpDef<SelectAttrs> = {
     });
     return [grad];
   },
+  cost: VIEW_COST,
 };
 
 export interface RepeatInterleaveAttrs {
@@ -320,6 +329,7 @@ export const repeatInterleaveOp: OpDef<RepeatInterleaveAttrs> = {
     });
     return [grad];
   },
+  cost: movement(true, [[]]),
 };
 
 function convShape(input: readonly number[], weight: readonly number[]): number[] {
@@ -386,6 +396,13 @@ export const causalConv1dOp: OpDef<ConvAttrs> = {
     }
     return [gx, gw];
   },
+  cost: {
+    saves: [[1], [0]],
+    flops: ([input, weight]) => {
+      const count = [CONV_MULTIPLY_ADD, input[0], input[1], weight[1]];
+      return { forward: count, backward: [count, count] };
+    },
+  },
 };
 
 export interface TopkMaskAttrs {
@@ -429,6 +446,7 @@ export const topkMaskOp: OpDef<TopkMaskAttrs> = {
     return out;
   },
   backward: () => [null],
+  cost: movement(false, [[]]),
 };
 
 export interface TopkIndicesAttrs {
@@ -474,6 +492,7 @@ export const topkIndicesOp: OpDef<TopkIndicesAttrs> = {
     return out;
   },
   backward: () => [null],
+  cost: movement(false, [[]]),
 };
 
 export interface OneHotAttrs {
@@ -501,6 +520,7 @@ export const oneHotOp: OpDef<OneHotAttrs> = {
     return out;
   },
   backward: () => [null],
+  cost: movement(false, [[]]),
 };
 
 export interface PermuteAttrs {
@@ -543,6 +563,7 @@ export const permuteOp: OpDef<PermuteAttrs> = {
     });
     return [grad];
   },
+  cost: VIEW_COST,
 };
 
 export interface NonzeroStaticAttrs {
@@ -574,6 +595,7 @@ export const nonzeroStaticOp: OpDef<NonzeroStaticAttrs> = {
     return out;
   },
   backward: () => [null],
+  cost: movement(false, [[]]),
 };
 
 function indexShape(input: readonly number[], indices: readonly (readonly number[])[]): number[] {
@@ -621,6 +643,7 @@ export const indexOp: OpDef<Record<string, never>> = {
     });
     return [grad, ...indices.map(() => null)];
   },
+  cost: movement(true, [[1]]),
 };
 
 export interface IndexAddAttrs {
@@ -673,6 +696,10 @@ export const indexAddOp: OpDef<IndexAddAttrs> = {
     for (const [to, from] of indexAddPairs(input, index, source, attrs)) gs.data[from] = gradOut.data[to];
     return [gradOut.clone(), null, gs];
   },
+  cost: {
+    saves: [[], [], [1]],
+    flops: (inputs) => ({ forward: [numel(inputs[2])], backward: inputs.map(() => NO_FLOPS) }),
+  },
 };
 
 export interface UnsqueezeAttrs {
@@ -691,6 +718,7 @@ export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
   shape: ([input], attrs) => unsqueezedShape(input, attrs),
   forward: ([input], attrs) => new Tensor(unsqueezedShape(input.shape, attrs), input.data.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+  cost: VIEW_COST,
 };
 
 export interface PadAttrs {
@@ -741,6 +769,7 @@ export const padOp: OpDef<PadAttrs> = {
     });
     return [grad];
   },
+  cost: movement(false, [[]]),
 };
 
 export interface RepeatAttrs {
@@ -782,6 +811,7 @@ export const repeatOp: OpDef<RepeatAttrs> = {
     });
     return [grad];
   },
+  cost: movement(true, [[]]),
 };
 
 export interface CummaxAttrs {
@@ -820,4 +850,5 @@ export const cummaxOp: OpDef<CummaxAttrs> = {
     });
     return [grad];
   },
+  cost: pointwise(1, 1, [[0]]),
 };

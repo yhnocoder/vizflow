@@ -1,12 +1,12 @@
 import { Node, opDef } from '../../autograd';
 import { explainOf } from '../../explain';
 import { type Ast, ParseError, parseExpr } from '../expr';
-import { DslError } from '../source';
+import { DslError, child } from '../source';
 import { elemOf, numberTex } from '../tex';
 import { BUFFER_ARITY, BUFFER_FUNCTIONS } from './buffer-functions';
 import { CompilerState } from './state';
 import { type Env, type Make, type Num, type OpValue, type Resolved, Scope, type Value } from './types';
-import { isNum, isRecord, num } from './util';
+import { combine, isNum, isRecord, num } from './util';
 
 function isOp(value: unknown): value is OpValue {
   return isRecord(value) && typeof value.op === 'string' && !(value instanceof Node);
@@ -46,6 +46,10 @@ export class ExpressionCompiler extends CompilerState {
   resolve(ast: Ast, env: Env, make: Make | undefined, offset: number, top = false): Resolved {
     if (ast.k === 'name') {
       const found = this.lookupFirst(ast.name, env) ?? (ast.name === 'inf' ? num(Infinity) : undefined);
+      const missing = env.loops.has(ast.name) ? undefined : env.scope.missing.get(ast.name);
+      if (found === undefined && missing !== undefined) {
+        this.fail({ ...env, where: missing }, `parameter '${ast.name}' has no value and no default, and module ${env.scope.def.name} uses it`);
+      }
       if (found === undefined) this.fail(env, `name '${ast.name}' is not defined in ${this.scopeLabel(env.scope)}`, offset + ast.pos);
       return found;
     }
@@ -73,7 +77,7 @@ export class ExpressionCompiler extends CompilerState {
           if (!(found instanceof Node)) this.fail(env, `'${target?.key ?? '?'}' is not a node`, offset + ast.pos);
           nodes.push(found);
         }
-        this.rangeCounts.set(nodes, { toy: to - from + 1, real: toNum.real - fromNum.real + 1 });
+        this.rangeCounts.set(nodes, { ...combine([toNum, fromNum], (b, a) => b - a + 1), toy: to - from + 1 });
         return nodes;
       }
       const target = this.keyOf(ast, env, offset);
@@ -98,6 +102,12 @@ export class ExpressionCompiler extends CompilerState {
     return value.toy;
   }
 
+  condition(ast: Ast, env: Env, offset: number): boolean {
+    const value = this.evaluate(ast, env, undefined, offset);
+    if (typeof value !== 'boolean') this.fail(env, 'a condition must be true or false', offset + ast.pos);
+    return value;
+  }
+
   evaluate(ast: Ast, env: Env, make: Make | undefined, offset: number, top = false): Value {
     const result = this.resolve(ast, env, make, offset, top);
     if (result instanceof Scope) this.fail(env, `'${result.path}' is a module instance, not a value`, offset + ast.pos);
@@ -114,10 +124,14 @@ export class ExpressionCompiler extends CompilerState {
         return ast.v;
       case 'neg': {
         const arg = this.evaluate(ast.arg, env, make, offset);
-        if (isNum(arg)) return { toy: -arg.toy, real: -arg.real };
+        if (isNum(arg)) return combine([arg], (x) => -x);
         if (arg instanceof Node) return this.apply('mul', [arg, num(-1)], {}, env, make, top, offset + ast.pos);
         return this.fail(env, 'cannot negate this value', offset + ast.pos);
       }
+      case 'not':
+        return !this.condition(ast.arg, env, offset);
+      case 'cond':
+        return this.evaluate(this.condition(ast.test, env, offset) ? ast.then : ast.otherwise, env, make, offset, top);
       case 'bin':
         return this.binary(ast, env, make, offset, top);
       case 'call':
@@ -144,7 +158,7 @@ export class ExpressionCompiler extends CompilerState {
     const b = this.evaluate(ast.b, env, make, offset);
     const at = offset + ast.pos;
     if (isNum(a) && isNum(b)) {
-      const both = (fn: (x: number, y: number) => number): Num => ({ toy: fn(a.toy, b.toy), real: fn(a.real, b.real) });
+      const both = (fn: (x: number, y: number) => number): Num => combine([a, b], fn);
       switch (ast.op) {
         case '+': return both((x, y) => x + y);
         case '-': return both((x, y) => x - y);
@@ -185,10 +199,9 @@ export class ExpressionCompiler extends CompilerState {
       }
       return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
     }
-    if (fnName === 'min' && param === undefined && opDef(fnName) === undefined) {
-      if (args.length < 2 || ast.kwargs.length > 0 || !args.every(isNum)) this.fail(env, 'min takes two or more numbers', at);
-      const nums = args as Num[];
-      return { toy: Math.min(...nums.map((n) => n.toy)), real: Math.min(...nums.map((n) => n.real)) };
+    if ((fnName === 'min' || fnName === 'max') && param === undefined && args.length >= 2 && args.every(isNum) && ast.kwargs.length === 0) {
+      const pick = fnName === 'min' ? Math.min : Math.max;
+      return combine(args as Num[], pick);
     }
     if (param !== undefined) {
       if (param.type !== 'op') this.fail(env, `parameter '${fnName}' is not an op`, at);
@@ -244,6 +257,13 @@ export class ExpressionCompiler extends CompilerState {
     }
     if (!top) make.anon.push(node);
     return node;
+  }
+
+  enabled(owner: Record<string, unknown>, env: Env): boolean {
+    if (owner.when === undefined) return true;
+    const value = this.expression(owner.when, { ...env, where: child(env.where, owner, 'when') }, undefined);
+    if (typeof value !== 'boolean') this.fail({ ...env, where: child(env.where, owner, 'when') }, `when must be true or false, got ${JSON.stringify(owner.when)}`);
+    return value;
   }
 
   expression(text: unknown, env: Env, make: Make | undefined): Value {

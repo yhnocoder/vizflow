@@ -9,19 +9,22 @@ export interface FlowEdge {
   arg: number;
   from: ElemRef | CellRef;
   to: ElemRef | CellRef;
+  constant?: true;
 }
 
 export function contextOf(node: Node): OpCtx {
   return { node, inputs: node.inputs.map((n) => n.value), out: node.value, attrs: node.attrs };
 }
 
-function differentiableArgs(node: Node): number[] {
+function flowArgs(node: Node): number[] {
   const def = opDef(node.op as string);
-  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (def === undefined || inputDifferentiable(def, arg)));
+  return node.inputs.map((_, arg) => arg).filter((arg) => (node.inputs[arg].grad !== null || node.inputs[arg].kind === 'buffer') && (def === undefined || inputDifferentiable(def, arg)));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
-  return { id: `${op.name}:${arg}:${suffix}`, op, arg, from, to };
+  const made: FlowEdge = { id: `${op.name}:${arg}:${suffix}`, op, arg, from, to };
+  if (op.inputs[arg]?.kind === 'buffer') made.constant = true;
+  return made;
 }
 
 function oneToOne(op: Node, args: number[], inputIndex: (arg: number, out: number[]) => number[]): FlowEdge[] {
@@ -130,7 +133,7 @@ function selectEdges(op: Node, args: number[], def: OpExplain, ctx: OpCtx): Flow
 }
 
 export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
-  const args = differentiableArgs(op);
+  const args = flowArgs(op);
   const ctx = contextOf(op);
   switch (def.pattern) {
     case 'elementwise':

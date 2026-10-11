@@ -5,6 +5,7 @@ import { defineOp } from '../registry';
 import {
   addOp,
   divOp,
+  erfOp,
   expOp,
   geluOp,
   identityOp,
@@ -12,6 +13,7 @@ import {
   mulOp,
   negOp,
   powOp,
+  reciprocalOp,
   reluOp,
   rotateHalfOp,
   rsqrtOp,
@@ -113,6 +115,8 @@ export interface BuiltinOps {
   pow(input: Node, exponent: number, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
+  reciprocal(input: Node, options?: OpOptions): Node;
+  erf(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;
   softplus(input: Node, options?: OpOptions): Node;
@@ -182,6 +186,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   powOp,
   rsqrtOp,
   sqrtOp,
+  reciprocalOp,
+  erfOp,
   sigmoidOp,
   siluOp,
   softplusOp,

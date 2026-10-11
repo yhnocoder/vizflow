@@ -380,6 +380,13 @@ export class SceneController implements EditHost {
     this.edgeLines.setTheme(this.theme);
     this.moduleBraces.setTheme(this.theme);
     this.refresh();
+    this.renderNow();
+  }
+
+  private renderNow(): void {
+    if (this.frameHandle !== 0) cancelAnimationFrame(this.frameHandle);
+    this.frameHandle = 0;
+    this.frame(performance.now());
   }
 
   dispose(): void {

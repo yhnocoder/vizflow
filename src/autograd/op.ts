@@ -40,6 +40,19 @@ export interface OpExplain {
   note?(ctx: OpCtx, tex: { in: string[] }): string;
 }
 
+export type Saved = number | 'out';
+
+export interface OpFlops {
+  forward: number[];
+  backward: number[][];
+}
+
+export interface OpCost {
+  view?: boolean;
+  saves: Saved[][];
+  flops(inputs: number[][], out: number[]): OpFlops;
+}
+
 export interface OpDef<A extends object = Record<string, unknown>> {
   name: string;
   args: string[];
@@ -56,6 +69,7 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   dtype?: Dtype;
   int64?: boolean;
   explain?: OpExplain;
+  cost?: OpCost;
 }
 
 export type AnyOpDef = OpDef<any>;

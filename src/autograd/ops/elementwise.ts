@@ -1,5 +1,6 @@
 import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, formatShape, normDim, offsetOf, unbroadcast } from '../../tensor';
-import type { OpDef } from '../op';
+import type { OpCost, OpDef } from '../op';
+import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
 
 type NoAttrs = Record<string, never>;
 
@@ -26,9 +27,11 @@ function binary(
   name: string,
   forward: (x: number, y: number) => number,
   local: (x: number, y: number) => [number, number],
+  cost: OpCost,
 ): OpDef<ScalarAttrs> {
   return {
     name,
+    cost,
     args: ['input', 'other'],
     tensors: ['input', 'other'],
     scalars: ['other'],
@@ -57,16 +60,19 @@ export const whereOp: OpDef<{ other: number }> = {
   shape: ([condition, input]) => broadcastShapes(condition, input),
   forward: ([condition, input], { other }) => zipWith(condition, input, (keep, x) => (keep !== 0 ? x : other)),
   backward: (gradOut, [condition, input]) => [null, unbroadcast(zipWith(condition, gradOut, (keep, g) => (keep !== 0 ? g : 0)), input.shape)],
+  cost: movement(false, [[], [0]]),
 };
 
 function unary<A extends object = NoAttrs>(
   name: string,
   forward: (x: number, attrs: A) => number,
   local: (x: number, y: number, attrs: A) => number,
+  cost: OpCost,
   args: string[] = ['input'],
 ): OpDef<A> {
   return {
     name,
+    cost,
     args,
     tensors: ['input'],
     shape: ([a]) => [...a],
@@ -123,10 +129,35 @@ function floorModExact(x: bigint, y: bigint): bigint {
   return r !== 0n && r < 0n !== y < 0n ? r + y : r;
 }
 
-export const addOp = binary('add', (x, y) => x + y, () => [1, 1]);
-export const subOp = binary('sub', (x, y) => x - y, () => [1, -1]);
-export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x]), (x, y) => x * y);
-export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)]), floorModExact);
+function additive(negated: boolean[]): OpCost {
+  return {
+    saves: [[], []],
+    flops: (inputs, out) => ({
+      forward: [numel(out)],
+      backward: inputs.map((shape, k) => (negated[k] || numel(shape) < numel(out) ? [numel(out)] : NO_FLOPS)),
+    }),
+  };
+}
+
+const NONLINEAR_FORWARD = 1;
+const NONLINEAR_BACKWARD = 2;
+const DIV_OTHER_BACKWARD = 3;
+
+const nonlinear = (saved: 0 | 'out') => pointwise(NONLINEAR_FORWARD, NONLINEAR_BACKWARD, [[saved]]);
+
+export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([false, false]));
+export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
+export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]])), (x, y) => x * y);
+export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)], pointwise(1, 1, [[], [0, 1]])), floorModExact);
+export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
+  saves: [[1], [0, 1]],
+  flops: (inputs, out) => ({ forward: [numel(out)], backward: inputs.map((_, k) => (k === 0 ? [numel(out)] : [DIV_OTHER_BACKWARD, numel(out)])) }),
+});
+export const negOp = unary('neg', (x) => -x, () => -1, pointwise(1, 1, [[]]));
+export const expOp = unary('exp', Math.exp, (_x, y) => y, nonlinear('out'));
+export const logOp = unary('log', Math.log, (x) => 1 / x, nonlinear(0));
+
+const COMPARISON_COST: OpCost = pointwise(1, 0, [[], []]);
 
 function integerArgs(name: string, a: Tensor, b: Tensor | undefined, other: number | undefined): void {
   if (!integerOperands(a, b, other)) throw new Error(`${name}: inputs must be integers or bools`);
@@ -140,6 +171,7 @@ function bitwise(name: string, fn: (x: bigint, y: bigint) => bigint): OpDef<Scal
     scalars: ['other'],
     differentiable: [false, false],
     int64: true,
+    cost: COMPARISON_COST,
     shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
     forward: ([a, b], { other }) => {
       integerArgs(name, a, b, other);
@@ -161,6 +193,7 @@ function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<Sca
     scalars: ['other'],
     differentiable: [false, false],
     dtype: 'bool',
+    cost: COMPARISON_COST,
     shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
     forward: ([a, b], { other }) =>
       b === undefined ? mapWith(a, (x) => (fn(x, other as number) ? 1 : 0)) : zipWith(a, b, (x, y) => (fn(x, y) ? 1 : 0)),
@@ -171,29 +204,28 @@ function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<Sca
 export const eqOp = compare('eq', (x, y) => x === y);
 export const geOp = compare('ge', (x, y) => x >= y);
 export const greaterOp = compare('greater', (x, y) => x > y);
-export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)]);
-export const negOp = unary('neg', (x) => -x, () => -1);
-export const expOp = unary('exp', Math.exp, (_x, y) => y);
-export const logOp = unary('log', Math.log, (x) => 1 / x);
 export const powOp = unary<{ exponent: number }>(
   'pow',
   (x, { exponent }) => x ** exponent,
   (x, _y, { exponent }) => exponent * x ** (exponent - 1),
+  nonlinear(0),
   ['input', 'exponent'],
 );
 export const rsqrtOp: OpDef<{ eps: number }> = {
-  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3),
+  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3, nonlinear('out')),
   defaults: { eps: 0 },
 };
-export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
-export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
+export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y, nonlinear('out'));
+export const reciprocalOp = unary('reciprocal', (x) => 1 / x, (_x, y) => -y * y, nonlinear('out'));
+export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y), nonlinear('out'));
 export const SOFTPLUS_THRESHOLD = 20;
 export const softplusOp = unary(
   'softplus',
   (x) => (x > SOFTPLUS_THRESHOLD ? x : Math.log1p(Math.exp(x))),
   (x) => (x > SOFTPLUS_THRESHOLD ? 1 : sigmoid(x)),
+  nonlinear(0),
 );
-export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));
+export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))), nonlinear(0));
 
 export function erf(x: number): number {
   const a = Math.abs(x);
@@ -210,12 +242,13 @@ export function erf(x: number): number {
 export const normalCdf = (x: number) => 0.5 * (1 + erf(x / Math.SQRT2));
 export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 
-export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0));
-export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
-export const identityOp = unary('identity', (x) => x, () => 1);
-export const absOp = unary('abs', Math.abs, (x) => Math.sign(x));
-export const signOp = unary('sign', Math.sign, () => 0);
-export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), ['input', 'min']);
+export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0), nonlinear('out'));
+export const erfOp = unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x), nonlinear(0));
+export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
+export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
+export const absOp = unary('abs', Math.abs, (x) => Math.sign(x), pointwise(1, 1, [[0]]));
+export const signOp = unary('sign', Math.sign, () => 0, pointwise(1, 0, [[]]));
+export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), pointwise(1, 1, [[0]]), ['input', 'min']);
 
 function rotateHalf(input: Tensor, sign: number): Tensor {
   const width = input.shape[input.ndim - 1];
@@ -237,6 +270,7 @@ export const rotateHalfOp: OpDef<NoAttrs> = {
   },
   forward: ([a]) => rotateHalf(a, 1),
   backward: (gradOut) => [rotateHalf(gradOut, -1)],
+  cost: pointwise(1, 1, [[]]),
 };
 
 interface TransposeAttrs {
@@ -272,6 +306,7 @@ export const transposeOp: OpDef<TransposeAttrs> = {
   shape: ([a], attrs) => swapped(a, attrs).shape,
   forward: ([a], attrs) => transposeTensor(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [transposeTensor(gradOut, attrs)],
+  cost: VIEW_COST,
 };
 
 export interface TriuAttrs {
@@ -301,6 +336,7 @@ export const triuOp: OpDef<TriuAttrs> = {
   },
   forward: ([a], attrs) => triuOf(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [triuOf(gradOut, attrs)],
+  cost: movement(false, [[]]),
 };
 
 function maskedShape(input: readonly number[], mask: readonly number[]): number[] {
@@ -319,4 +355,5 @@ export const maskedFillOp: OpDef<{ value: number }> = {
   shape: ([input, mask]) => maskedShape(input, mask),
   forward: ([input, mask], { value }) => zipWith(input, mask, (x, fill) => (fill !== 0 ? value : x)),
   backward: (gradOut, [, mask]) => [zipWith(gradOut, mask, (g, fill) => (fill !== 0 ? 0 : g)), null],
+  cost: movement(false, [[1], []]),
 };

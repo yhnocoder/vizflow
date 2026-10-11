@@ -95,7 +95,7 @@ const TENSORS: Record<string, string> = {
   xh: 'norm.xh',
   h: 'norm.out',
   z: 'z',
-  L: 'LSE',
+  L: 'log_softmax.LSE',
   lp: 'logp',
   lt: 'lt',
   loss: 'loss',
@@ -113,9 +113,29 @@ const MODULES: Record<string, string> = {
   rms: 'norm',
 };
 
+const EXPANDED: Record<string, number> = { lm: 2, qkv: 3, gu: 1, r1rs: 3, qkrs: 3, rh: 3, r2rs: 3, silu: 6, frs: 3, lse: 3, lp: 1, nll: 2, mean: 1 };
+const EXPANSION_NODES = [
+  ...Object.values(RMS).map((path) => `${path}.mse`),
+  `${NORMS.q}.mse`,
+  `${NORMS.k}.mse`,
+  ...['q1', 'q2', 'k1', 'k2', 'nq2', 'nk2'].map((k) => `${ROPE}.${k}`),
+  ...['n', 'e', 'd', 'out'].map((k) => `layer.mlp.act_fn.sigmoid.${k}`),
+  'zf',
+  'log_softmax.ex',
+  'log_softmax.S',
+  'nll_loss.pick',
+];
+const EXPANSION_MODULES = ['layer.mlp.act_fn', 'layer.mlp.act_fn.sigmoid', 'log_softmax', 'nll_loss'];
 const BUFFERS = new Set(['cos', 'sin', 'M']);
 const MATH_UNICODE = /[\u0370-\u03FF\u2070-\u209F\u2190-\u22FF\u0300-\u036F\u2032\u00B7\u00D7\u00F7\u2113\u1D00-\u1DBF\u2212\u00B2\u00B3\u00B9]/;
 const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: '传到γ2和a', b_fh: '传到γ和x' };
+const BODY_CHANGES: Record<string, [string, string]> = {
+  qkc: ['这里按代码的顺序拆成四步', '这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加'],
+  F_rope: ['四步合成一个旋转', '这几步合成一个旋转'],
+  r1ah: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
+  r2ah: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
+  fxh: ['这里不减均值，也没有 bias。', '这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。'],
+};
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 const LABEL_CHANGES: Record<string, string> = {
   qkrs: '$\\mathrm{ms}^{q},\\ r^{q},\\ \\mathrm{ms}^{k},\\ r^{k}$',
@@ -130,7 +150,7 @@ const GLAB: Record<string, string> = {
 };
 const TOP_OPS: Record<string, string> = { emb: 'emb', lm: 'lm', lse: 'ls', lp: 'ls', nll: 'nll', mean: 'nll' };
 
-interface RefStep { id: string; d: 'f' | 'b'; fm?: string; mod: string | null }
+interface RefStep { id: string; d: 'f' | 'b'; fm?: string; mod: string | null; expanded?: boolean }
 
 function refSteps(ref: Reference): RefStep[] {
   const label = (m: string | null) => (m === null ? null : ref.MODS[m].t);
@@ -143,14 +163,19 @@ function refSteps(ref: Reference): RefStep[] {
       continue;
     }
     last = false;
-    steps.push({ id: o.id, d: 'f', mod: label(o.mod) });
+    steps.push(...expand({ id: o.id, d: 'f', mod: label(o.mod) }, o.id));
   }
   for (let i = ref.OPS.length - 1; i >= 0; i--) {
     const o = ref.OPS[i];
-    steps.push(o.mod === 'pre' ? { id: 'B_pre', d: 'b', fm: 'pre', mod: label('pre') } : { id: `b_${o.id}`, d: 'b', mod: label(o.mod) });
+    steps.push(...(o.mod === 'pre' ? [{ id: 'B_pre', d: 'b' as const, fm: 'pre', mod: label('pre') }] : expand({ id: `b_${o.id}`, d: 'b', mod: label(o.mod) }, o.id)));
   }
   steps.push({ id: 'ball', d: 'b', mod: null });
   return steps;
+}
+
+function expand(step: RefStep, op: string): RefStep[] {
+  const count = EXPANDED[op];
+  return count === undefined ? [step] : Array.from({ length: count }, () => ({ ...step, expanded: true }));
 }
 
 function groupOf(ref: Reference, s: RefStep): string {
@@ -198,6 +223,11 @@ function visible(text: string): string {
     .replace(/[\s{}^_ˉ‾¯~˜√\u2061-\u2063]/g, '');
 }
 
+function changed(id: string, body: string): string {
+  const change = BODY_CHANGES[id];
+  return change === undefined ? body : body.replace(change[0], change[1]);
+}
+
 function refLabel(ref: Reference, s: RefStep): string {
   if (s.id === 'f0' || s.id === 'ball') return '总览';
   if (s.id === 'in') return '输入';
@@ -231,21 +261,21 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     ref = referenceModel() as Reference;
   });
 
-  it('gives every attention node the Qwen3-8B shape, counting all 32 query heads and 8 kv heads', () => {
+  it('gives every attention node the Qwen3-8B shape, counting all 32 query heads, 8 kv heads and T = 4096', () => {
     const real = (name: string) => node(page, name).realShape;
-    expect(real(`${ATTN}.q/1`)).toEqual([3, 4096]);
-    expect(real(`${ATTN}.q`)).toEqual([3, 32, 128]);
-    expect(real(`${ATTN}.k`)).toEqual([3, 8, 128]);
-    expect(real(`${NORMS.q}.sq`)).toEqual([3, 32, 128]);
-    expect(real(`${NORMS.k}.sq`)).toEqual([3, 8, 128]);
-    expect(real(`${NORMS.q}.r`)).toEqual([3, 32, 1]);
-    expect(real(`${ROPE}.cos`)).toEqual([3, 1, 128]);
-    expect(real(`${GQA}.kT[1]`)).toEqual([128, 3]);
-    expect(real(`${GQA}.S[1]`)).toEqual([3, 3]);
-    expect(real(`${GQA}.P[2]`)).toEqual([3, 3]);
-    expect(real(`${GQA}.o[1]`)).toEqual([3, 128]);
-    expect(real(`${GQA}.o`)).toEqual([3, 4096]);
-    expect(real(`${ATTN}.att`)).toEqual([3, 4096]);
+    expect(real(`${ATTN}.q/1`)).toEqual([4096, 4096]);
+    expect(real(`${ATTN}.q`)).toEqual([4096, 32, 128]);
+    expect(real(`${ATTN}.k`)).toEqual([4096, 8, 128]);
+    expect(real(`${NORMS.q}.sq`)).toEqual([4096, 32, 128]);
+    expect(real(`${NORMS.k}.sq`)).toEqual([4096, 8, 128]);
+    expect(real(`${NORMS.q}.r`)).toEqual([4096, 32, 1]);
+    expect(real(`${ROPE}.cos`)).toEqual([4096, 1, 128]);
+    expect(real(`${GQA}.kT[1]`)).toEqual([128, 4096]);
+    expect(real(`${GQA}.S[1]`)).toEqual([4096, 4096]);
+    expect(real(`${GQA}.P[2]`)).toEqual([4096, 4096]);
+    expect(real(`${GQA}.o[1]`)).toEqual([4096, 128]);
+    expect(real(`${GQA}.o`)).toEqual([4096, 4096]);
+    expect(real(`${ATTN}.att`)).toEqual([4096, 4096]);
   });
 
   it('computes the reference loss with theta = 10', () => {
@@ -268,18 +298,19 @@ describe('qwen3-dsl.yaml against the reference page', () => {
 
   it('has one node per reference op output, op by op', () => {
     const ops = page.graph.nodes.filter((n) => n.kind === 'op' && !n.name.endsWith('.T') && !n.name.endsWith('/1'));
-    const outs = ref.OPS.flatMap((o) => o.outs).map((k) => TENSORS[k]);
-    expect(ops.map((n) => n.name).sort()).toEqual([...new Set(outs)].sort());
+    const outs = ref.OPS.flatMap((o) => o.outs).map((k) => node(page, TENSORS[k]).name);
+    expect(ops.map((n) => n.name).sort()).toEqual([...new Set([...outs, ...EXPANSION_NODES])].sort());
   });
 
-  it('lists 48 forward and 47 backward steps with the reference labels, titles and texts', () => {
+  it('lists 69 forward and 68 backward steps with the reference labels, titles and texts where no op was expanded', () => {
     const expected = refSteps(ref);
-    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(48);
-    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(47);
+    expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(69);
+    expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(68);
     expect(steps.list).toHaveLength(expected.length);
     steps.list.forEach((info, i) => {
       const want = expected[i];
       expect(info.dir[0], `step ${i}`).toBe(want.d);
+      if (want.expanded) return;
       const { title, body } = steps.text(i);
       if (REF_BROKEN.has(want.id)) {
         expect(title).toBe('传到输入');
@@ -287,14 +318,17 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       }
       const [refTitle, refBody] = (want.d === 'f' ? ref.CF : ref.CB)[want.id]();
       expect(visible(title), `step ${i} ${want.id}`).toBe(TITLE_CHANGES[want.id] ?? visible(refTitle));
-      expect(visible(flatHeads(body)), `step ${i} ${want.id}`).toBe(visible(refBody));
+      expect(visible(flatHeads(body)), `step ${i} ${want.id}`).toBe(visible(changed(want.d === 'f' ? want.id : '', refBody)));
     });
   });
 
   it('labels steps so that they read like the reference OPL, OPLB and MODF tables', () => {
     const expected = refSteps(ref);
-    steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(LABEL_CHANGES[expected[i].id] ?? refLabel(ref, expected[i]))));
-    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '$\\mathbf{x}_0^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
+    steps.list.forEach((info, i) => {
+      if (expected[i].expanded) return;
+      expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(LABEL_CHANGES[expected[i].id] ?? refLabel(ref, expected[i])));
+    });
+    expect(steps.list.map((s) => s.label).slice(2, 10)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '$\\mathbf{x}_0^{2}$', '$\\mathrm{ms}_{1}$', '$(\\mathrm{ms}+\\epsilon)_{1}$', '$r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
     expect(steps.list.map((s) => s.kind).filter((k) => k !== 'op')).toEqual(['overview', 'inputs', 'module', 'module', 'overview']);
   });
 
@@ -304,13 +338,17 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       const want = expected[i];
       const segment = GLAB[groupOf(ref, want)];
       const sub = want.mod !== null && want.mod !== segment && want.mod !== 'Qwen3DecoderLayer' ? want.mod : undefined;
+      if (want.expanded) {
+        expect(visible(info.segment), `step ${i} ${want.id}`).toBe(visible(segment));
+        return;
+      }
       expect([visible(info.segment), info.sub === undefined ? undefined : visible(info.sub)], `step ${i} ${want.id}`).toEqual([visible(segment), sub === undefined ? undefined : visible(sub)]);
     });
   });
 
   it('describes the module tree like the reference MODS', () => {
     const byId = new Map(page.modules.map((m) => [m.id, m]));
-    expect(page.modules.map((m) => m.id).sort()).toEqual(Object.values(MODULES).sort());
+    expect(page.modules.map((m) => m.id).sort()).toEqual([...Object.values(MODULES), ...EXPANSION_MODULES].sort());
     for (const [key, mod] of Object.entries(ref.MODS)) {
       const m = byId.get(MODULES[key])!;
       expect(visible(m.title), key).toBe(visible(mod.t));
@@ -385,7 +423,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
         const i = s.list.indexOf(info);
         const [title, body] = (info.dir === 'forward' ? ref.CF[`F_${key}`] : ref.CB[`B_${key}`])();
         expect(visible(s.text(i).title), `${id} ${info.dir}`).toBe(visible(title));
-        expect(visible(flatHeads(s.text(i).body)), `${id} ${info.dir}`).toBe(visible(body));
+        expect(visible(flatHeads(s.text(i).body)), `${id} ${info.dir}`).toBe(visible(changed(info.dir === 'forward' ? `F_${key}` : '', body)));
       }
       s.dispose();
     }
@@ -403,16 +441,16 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     s.subscribe(() => notified++);
     s.setFolded(ATTN, true);
     expect(notified).toBeGreaterThan(0);
-    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(48 - 21 + 1);
+    expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(69 - 27 + 1);
     expect(visible(s.list[s.current].label)).toBe(visible('att = self_attn(n₁)'));
     s.setAllFolded(true);
     expect(s.list.map((x) => visible(x.label))).toEqual([
-      '总览', '输入', 'e = E[x]', 'x₀', 'x = layer(x₀)', 'h', 'z', 'LSE', 'log p', 'ℓₜ', 'ℓ',
-      '∂ℓₜ', '∂log p', '∂z, ∂LSE', '∂z', '∂W, ∂h', '∂γ, ∂x', '∂参数, ∂x₀', '∂e', '∂E', '总览',
+      '总览', '输入', 'e = E[x]', 'x₀', 'x = layer(x₀)', 'h', 'z', 'z_{fp32}', 'log p', 'ℓ',
+      '∂log p', '∂z_{fp32}', '∂z', '∂W, ∂h', '∂γ, ∂x', '∂参数, ∂x₀', '∂e', '∂E', '总览',
     ].map(visible));
     expect(visible(s.list[s.current].label)).toBe(visible('x = layer(x₀)'));
     s.setAllFolded(false);
-    expect(s.list).toHaveLength(95);
+    expect(s.list).toHaveLength(137);
     expect(s.folded('layers')).toBe(true);
     s.dispose();
   });

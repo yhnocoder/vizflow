@@ -12,7 +12,9 @@ export type StepPath = string;
 export type ParamDecl =
   | { type: 'int' | 'float'; default?: number }
   | { type: 'dim'; default?: number }
+  | { type: 'bool'; default?: boolean }
   | { type: 'op'; values?: Name[]; default?: Name }
+  | { type: 'module'; values?: Name[]; default?: Name }
   | { type: 'tex' | 'text'; default?: string };
 
 export interface InputDecl {
@@ -34,6 +36,7 @@ export interface BufferDecl {
 export interface NodeDecl {
   op: Expr;
   tex?: Tex;
+  when?: Expr | boolean;
 }
 
 export interface Instance {
@@ -45,10 +48,12 @@ export interface Instance {
   suffix?: Tex;
   tex?: Record<Name, Tex>;
   steps?: Record<StepPath, StepPatch>;
+  when?: Expr | boolean;
 }
 
 export interface Group {
   body: Item[];
+  when?: Expr | boolean;
   steps?: Step[];
   subtitle?: Text;
 }
@@ -58,6 +63,7 @@ export interface ForItem {
   in: string;
   brace?: Text;
   sequential?: boolean;
+  when?: Expr | boolean;
   body: Item[];
 }
 
@@ -77,6 +83,7 @@ export interface Step {
   label?: Tex;
   title?: Text;
   text?: Text;
+  when?: Expr | boolean;
 }
 
 export interface StepText {
@@ -90,6 +97,7 @@ export interface StepPatch {
   text?: Text;
   append?: Text;
   notes?: NoteSpec[];
+  when?: Expr | boolean;
 }
 
 export interface ModuleFile {

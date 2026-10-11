@@ -705,7 +705,7 @@
   z-index: 1;
 }
 
-.vf-note {
+.vf-notes .vf-note {
   position: absolute;
   left: 0;
   top: 0;
@@ -723,20 +723,20 @@
   transition: opacity 0.26s;
 }
 
-.vf-note.vf-note-in {
+.vf-notes .vf-note.vf-note-in {
   opacity: 1;
 }
 
-.vf-note.vf-off {
+.vf-notes .vf-note.vf-off {
   visibility: hidden;
 }
 
-.vf-note .katex {
+.vf-notes .vf-note .katex {
   font-size: 1.02em;
   font-style: normal;
 }
 
-.vf-note p {
+.vf-notes .vf-note p {
   margin: 0;
 }
 

@@ -541,6 +541,8 @@ def transformer_op_fixtures():
     cases += routing_cases()
     cases += chunk_delta_rule_cases()
     cases += hash_and_mask_cases()
+    cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
+    cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
     return cases
 
 

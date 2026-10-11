@@ -1,8 +1,13 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
-formula: '\step{down}{\of{down}=\big(}\step{act}{\of{act}\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{act}{\big)}\step{gate}{\odot}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+formula: '\step{down}{\of{down}=\big(}\step{act_fn.*}{\of{act}\big(}\step{gate_proj}{\of{x}{\of{Wg}}^{\top}}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{up_proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+import:
+  Sigmoid: vizflow/nn/sigmoid
+  ReLU:    vizflow/nn/relu
+  GELU:    vizflow/nn/gelu
+  SiLU:    vizflow/nn/silu
 params:
-  act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+  act:  { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
   f:    { type: dim }
   name: { type: text, default_key: true }
 inputs:
@@ -24,27 +29,38 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
+  - act_fn:
+      use: act
+      inputs: { x: gate }
+      outputs: { out: a }
+      tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
-  - a:    { op: act(gate), tex: '\of{act}(\mathbf{gate})' }
   - m:    a * up
   - down: m @ Wd.T
 steps:
-  - id: proj
-    show: [Wg.T, Wu.T, gate, up]
-    label: '$\mathbf{gate},\ \mathbf{up}$'
-    title: gate_proj 和 up_proj
-    text: 两个投影的输入都是 $\of{x}$，维度从 $d$ 扩大到 $f$。两个 Linear 都没有 bias。
-    backward:
-      label: '$\partial W,\ \partial\of{x}$'
-  - id: act
-    show: a
-    label: '$\of{act}$'
-    title: 激活
+  - id: gate_proj
+    show: [Wg.T, gate]
+    label: '$\mathbf{gate}$'
+    title: gate_proj
     text: |
-      gate 逐元素经过 $\of{act}$：
-      $$\of{act.def}$$
+      gate_proj 把 $\of{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
+      $$\mathbf{gate}=\of{x}W_g^{\top}={{ gate | matrix:2 }}$$
     backward:
-      label: '$\partial\mathbf{gate}$'
+      label: '$\partial W_g,\ \partial\of{x}$'
+      title: 传到 gate_proj 权重和 $\of{x}$
+  - id: up_proj
+    show: [Wu.T, up]
+    label: '$\mathbf{up}$'
+    title: up_proj
+    text: |
+      up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 写的是 <code>self.act_fn(self.gate_proj(x)) * self.up_proj(x)</code>，先算 gate_proj 和激活，再算 up_proj。
+      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_u,\ \partial\of{x}$'
+      title: 传到 up_proj 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: gate
     show: m
     label: '$\of{a}\odot\mathbf{up}$'

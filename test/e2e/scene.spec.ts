@@ -3,7 +3,7 @@ import { type Page, expect, test } from '@playwright/test';
 import { intersects, labelRects, stageRect } from './labels';
 
 const FORWARD_2 = 2;
-const BACKWARD_3 = 8;
+const BACKWARD_Z = 16;
 const SETTLE_MS = 400;
 
 async function openScene(page: Page, query = ''): Promise<string[]> {
@@ -32,13 +32,13 @@ async function goStep(page: Page, index: number): Promise<void> {
   await page.waitForTimeout(SETTLE_MS);
 }
 
-test('renders the lm_head scene and screenshots forward step 2 and backward step 3', async ({ page }) => {
+test('renders the lm_head scene and screenshots forward step 2 and backward step 7', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   const errors = await openScene(page);
   await goStep(page, FORWARD_2);
   await shot(page, 'test-results/scene-forward-2.png', 'desktop-forward-2');
-  await goStep(page, BACKWARD_3);
-  await shot(page, 'test-results/scene-backward-3.png', 'desktop-backward-3');
+  await goStep(page, BACKWARD_Z);
+  await shot(page, 'test-results/scene-backward-7.png', 'desktop-backward-7');
   expect(errors).toEqual([]);
   expect(await page.locator('.vf-lb.vf-val:not(.vf-off)').count()).toBeGreaterThan(0);
 });
@@ -60,20 +60,20 @@ for (const gap of [0.7, 1.2]) {
   });
 }
 
-test('hovering a z → LSE edge once z has its gradient shows the edge card with explain values', async ({ page }) => {
+test('hovering an e^z → S edge once z has its gradient shows the edge card with explain values', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openScene(page);
-  await goStep(page, BACKWARD_3);
-  const lse = page.locator('.vf-lb.vf-ntl[data-node="LSE"]');
-  const box = (await lse.boundingBox())!;
+  await goStep(page, BACKWARD_Z);
+  const sum = page.locator('.vf-lb.vf-ntl[data-node="S"]');
+  const box = (await sum.boundingBox())!;
   const pop = page.locator('.vf-pop');
   let edgeId: string | null = null;
   for (let dx = -80; dx <= 0 && edgeId === null; dx += 4) {
     for (let dy = 8; dy <= 220 && edgeId === null; dy += 4) {
       await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height + dy);
       const id = await pop.evaluate((el) => ((el as HTMLElement).hidden ? null : el.querySelector('[data-edge-id]')?.getAttribute('data-edge-id') ?? null));
-      if (id !== null && id.startsWith('LSE:0:')) edgeId = id;
+      if (id !== null && id.startsWith('S:0:')) edgeId = id;
     }
   }
   expect(edgeId).not.toBeNull();
@@ -90,7 +90,7 @@ test('hovering a z → LSE edge once z has its gradient shows the edge card with
   }, edgeId);
   expect(shown).toEqual(expected);
   expect(await pop.locator('.vf-lab').allTextContents()).toEqual(['局部导数', '上游梯度', '沿这条边传回']);
-  await shot(page, 'test-results/scene-edge-card.png', 'card-edge-z-to-LSE');
+  await shot(page, 'test-results/scene-edge-card.png', 'card-edge-ez-to-S');
 });
 
 test('clicking another logits bar changes the target and the loss', async ({ page }) => {
@@ -127,7 +127,7 @@ test('hovering a block title shows the node card', async ({ page }) => {
 test('movable labels do not overlap at 375px width', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 700 });
   const errors = await openScene(page);
-  for (const step of [0, 5, BACKWARD_3]) {
+  for (const step of [0, 5, BACKWARD_Z]) {
     await goStep(page, step);
     const rects = await labelRects(page, '.vf-lb.vf-ttl, .vf-lb.vf-ntl');
     expect(rects.length).toBeGreaterThan(1);
@@ -137,7 +137,7 @@ test('movable labels do not overlap at 375px width', async ({ page }) => {
       }
     }
   }
-  await shot(page, 'test-results/scene-375.png', 'mobile-375-backward-3');
+  await shot(page, 'test-results/scene-375.png', 'mobile-375-backward-7');
   expect(errors).toEqual([]);
 });
 

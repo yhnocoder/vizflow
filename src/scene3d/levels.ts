@@ -2,7 +2,7 @@ import type { Node } from '../autograd';
 import { explainOf } from '../explain';
 import { type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Vec3, rowCol, rowsCols } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Vec3, labelBehind, rowCol, rowsCols } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -963,7 +963,7 @@ class Plan implements LevelPlan {
 
   private selectLabel(n: Node): Node | undefined {
     for (const u of this.consumers(n)) {
-      const label = u.inputs.find((i) => i.kind === 'label');
+      const label = u.inputs.map(labelBehind).find((l) => l !== undefined);
       if (label !== undefined && u.inputs[0] === n && !this.tables.has(u)) return label;
     }
     return undefined;

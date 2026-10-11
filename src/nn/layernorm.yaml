@@ -1,0 +1,149 @@
+module: LayerNorm
+subtitle: nn.LayerNorm
+formula: '\step{bias}{\of{out}=}\step{scale}{\of{weight}\odot}\step{normalize}{\step{center}{(\of{x}-\step{mean}{\mu})}\big/}\step{rms}{\sqrt{\step{var}{\operatorname{mean}\big(}\step{square}{(\of{x}-\mu)^{2}}\step{var}{\big)}\step{eps}{+\epsilon}}}\step{bias}{+\of{bias}}'
+params:
+  eps:      { type: float, default: 1e-5 }
+  name:     { type: text, default_key: true }
+  intro:    { type: text, default: '' }
+  out_note: { type: text, default: '' }
+inputs:
+  x: { shape: [..., n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+  bias:   { shape: [n], init: zeros, tex: '\boldsymbol{\beta}' }
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    每一行减去自己的均值，除以自己的标准差，再乘 $\of{weight}$、加 $\of{bias}$。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{weight},\ \partial\of{bias},\ \partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - mu:  { op: 'mean(x, -1, keepdim=true)', tex: '\mu' }
+  - xc:  { op: x - mu, tex: '\of{x}-\mu' }
+  - sq:  { op: xc ** 2, tex: '(\of{x}-\mu)^{2}' }
+  - var: { op: 'mean(sq, -1, keepdim=true)', tex: '\sigma^{2}' }
+  - ve:  { op: var + eps, tex: '(\sigma^{2}+\epsilon)' }
+  - r:   { op: rsqrt(ve), tex: r }
+  - xh:  { op: xc * r, tex: '\hat{\of{x}}' }
+  - xw:  { op: xh * weight, tex: '\of{weight}\odot\of{xh}' }
+  - out: xw + bias
+steps:
+  - id: mean
+    show: mu
+    label: '$\mu$'
+    title: \of{name}：每一行的均值
+    text: |
+      \of{intro}LayerNorm 对最后一维归一化，每一行先求均值 $\mu$，对应 <code>x.mean(-1, keepdim=True)</code>。和 RMSNorm 相比，LayerNorm 多了减均值这一步和偏置 $\of{bias}$。PyTorch 的 LayerNorm 是一个 kernel，输入是 bf16 时它在内部用 float32 求均值和方差，只把输出转回输入的 dtype；这里按定义拆开画，中间节点标的 dtype 跟随输入。
+      $$\mu={{ mu | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 穿过均值，传到输入
+      text: |
+        均值的局部导数是 $1/n$，$\mu$ 的梯度除以 $n$ 均分给这一行的每个分量，再和直连那条相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: center
+    show: xc
+    label: '$\of{xc}$'
+    title: 减去均值
+    text: |
+      从这一行的每个分量里减去 $\mu$。
+      $$\of{xc}={{ xc | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x},\ \partial\mu$'
+      title: 传到输入和均值
+      text: |
+        相减的两条边局部导数是 $1$ 和 $-1$。减均值这一步让每一行的梯度之和变成 0：整行加上同一个数，输出不变。
+        $$\frac{\partial\ell}{\partial\mu}={{ mu.grad | matrix:3 }}$$
+  - id: square
+    show: sq
+    label: '$\of{sq}$'
+    title: 逐元素平方
+    text: |
+      去掉均值以后逐元素平方。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial(\of{x}-\mu)$'
+      title: 穿过平方
+      text: |
+        平方的局部导数是 $2(x-\mu)$。
+  - id: var
+    show: var
+    label: '$\sigma^{2}$'
+    title: 方差
+    text: |
+      平方取平均，得到这一行的方差 $\sigma^{2}$。这里除以 $n$，不做无偏修正，与 <code>nn.LayerNorm</code> 相同。
+      $$\sigma^{2}={{ var | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 穿过平均
+      text: |
+        平均值的局部导数是 $1/n$。
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: ve
+    label: '$\of{ve}$'
+    title: 加上 $\epsilon$
+    text: |
+      加上 $\epsilon=\of{eps}$，保证下一步不会除以 0。
+      $$\of{ve}={{ ve | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma^{2}$'
+      title: 穿过加 $\epsilon$
+      text: |
+        加常数的局部导数是 1，梯度原样传下去。
+        $$\frac{\partial\ell}{\partial\sigma^{2}}={{ var.grad | matrix:3 }}$$
+  - id: rms
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      取平方根的倒数，得到这一行的 $r=1/\sqrt{\sigma^{2}+\epsilon}$。
+      $$r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ve}$'
+      title: 穿过 rsqrt
+      text: |
+        局部导数是 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial\of{ve}}={{ ve.grad | matrix:3 }}$$
+  - id: normalize
+    show: xh
+    label: '$\of{xh}$'
+    title: 归一化
+    text: |
+      去均值的每个分量乘上这一行的 $r$，每一行的均值变成 0、方差变成 1（不计 $\epsilon$）。不同的行之间没有连线。
+      $$\of{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial(\of{x}-\mu)$'
+      title: 传到 r 和去均值的输入
+  - id: scale
+    show: [weight, xw]
+    label: '$\of{xw}$'
+    title: 乘权重
+    text: |
+      $\of{weight}$ 是长度为 $n$ 的向量，所有位置共用。
+      $$\of{xw}={{ xw | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weight},\ \partial\of{xh}$'
+      title: 传到 $\of{weight}$ 和 $\of{xh}$
+      text: |
+        $\of{weight}$ 被所有位置共用，梯度要把各行加起来。
+        $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: bias
+    show: [bias, out]
+    label: '$\of{out}$'
+    title: 加偏置
+    text: |
+      $\of{bias}$ 也是长度为 $n$ 的向量，所有位置共用。\of{out_note}
+      $$\of{out}=\of{weight}\odot\of{xh}+\of{bias}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{bias},\ \partial\of{xw}$'
+      title: 传到 $\of{bias}$ 和 $\of{xw}$
+      text: |
+        $\partial\ell/\partial\of{bias}$ 就是 $\partial\ell/\partial\of{out}$ 按行求和。
+        $$\frac{\partial\ell}{\partial\of{bias}}={{ bias.grad | matrix:3 }}$$

@@ -22,12 +22,13 @@ export interface CardRow {
 export interface EdgeCard {
   title: string;
   local: { tex: string; value: number };
-  upstream: { tex: string; value: number };
-  product: { tex: string; value: number };
+  upstream?: { tex: string; value: number };
+  product?: { tex: string; value: number };
   note?: string;
 }
 
 const VALUE_PREVIEW = 8;
+const CONSTANT_NOTE = '常量，不需要梯度，这条边只表示前向依赖。';
 const NOTE_TERMS = 8;
 
 function valueText(t: Tensor, integer = false): string {
@@ -155,15 +156,18 @@ export function edgeCardOf(explainer: Explainer, e: FlowEdge): EdgeCard {
   const fromDen = isCell(e.from) ? `(${fromTex})` : fromTex;
   const toDen = isCell(e.to) ? `(${toTex})` : toTex;
   const localValue = explainer.local(e);
-  const upstreamValue = explainer.upstream(e);
   const localFrame = `\\frac{\\partial ${toDen}}{\\partial ${fromDen}}`;
+  const title = `${fromTex}\\to ${toTex}`;
+  const local = { tex: `${localFrame}=${localTexOf(e)}`, value: localValue };
+  if (e.constant) return { title, local, note: CONSTANT_NOTE };
+  const upstreamValue = explainer.upstream(e);
   const upstreamFrame = `\\frac{\\partial\\ell}{\\partial ${toDen}}`;
   const notes = [explainer.zeroGrad(e) ? '上游梯度恒为 0，这条边传回 0。' : undefined, sumNote(explainer, e)].filter(
     (n): n is string => n !== undefined,
   );
   return {
-    title: `${fromTex}\\to ${toTex}`,
-    local: { tex: `${localFrame}=${localTexOf(e)}`, value: localValue },
+    title,
+    local,
     upstream: { tex: upstreamFrame, value: upstreamValue },
     product: {
       tex: `${upstreamFrame}\\cdot${localFrame}=${parenthesized(upstreamValue)}\\times${parenthesized(localValue)}`,

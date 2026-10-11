@@ -3,6 +3,9 @@ subtitle: Qwen3_5GatedDeltaNet
 import:
   GatedDeltaRuleChunk: vizflow/nn/gated-delta-rule-chunk
   GatedRMSNorm:        vizflow/nn/rmsnorm-gated
+  Sigmoid:             vizflow/nn/sigmoid
+  SiLU:                vizflow/nn/silu
+  Softplus:            vizflow/nn/softplus
 params:
   Hk: { type: dim }
   Hv: { type: dim }
@@ -10,7 +13,7 @@ params:
   dv: { type: dim }
   K:  { type: dim }
   chunk: { type: dim, default: 64 }
-  norm_act: { type: op, values: [silu, sigmoid], default: silu }
+  norm_act: { type: module, values: [SiLU, Sigmoid], default: SiLU }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -40,15 +43,34 @@ body:
   - b: x @ Wb.T
   - a: { op: x @ Wa.T, tex: '\mathbf{a}_{\Delta}' }
   - conv: { op: 'causal_conv1d(mixed_qkv, Wconv)', tex: '\mathbf{c}' }
-  - cs: { op: silu(conv), tex: '\mathrm{SiLU}(\mathbf{c})' }
+  - act:
+      use: SiLU
+      inputs: { x: conv }
+      outputs: { out: cs }
+      tex: { out: '\mathrm{SiLU}(\mathbf{c})' }
+      steps:
+        sigmoid.neg:
+          append: 卷积的输出逐元素经过 SiLU，HF 把它作为卷积的 activation 参数传进去（<code>self.act</code>，<code>config.hidden_act</code> 是 <code>"silu"</code>）。
   - q: 'view(narrow(cs, -1, 0, Hk*dk), T, Hk, dk)'
   - k: 'view(narrow(cs, -1, Hk*dk, Hk*dk), T, Hk, dk)'
   - v: 'view(narrow(cs, -1, 2*Hk*dk, Hv*dv), T, Hv, dv)'
-  - beta: { op: sigmoid(b), tex: '\boldsymbol{\beta}' }
-  - adt: { op: a + dt_bias, tex: '\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta}', dtype: fp32 }
-  - dt: { op: softplus(adt), tex: '\Delta' }
-  - A: { op: exp(A_log), tex: 'A', dtype: fp32 }
-  - g: { op: neg(A) * dt, tex: '\mathbf{g}' }
+  - beta_sigmoid:
+      use: Sigmoid
+      inputs: { x: b }
+      outputs: { out: beta }
+      tex: { out: '\boldsymbol{\beta}' }
+      steps:
+        neg:
+          append: 这里算的是 <code>beta = b.sigmoid()</code>：$\beta=\sigma(\mathbf{b})$ 在 0 和 1 之间，是每个位置、每个 value head 写入状态的强度。
+  - ab: { op: a + dt_bias, tex: '\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta}', dtype: fp32 }
+  - dt_softplus:
+      use: Softplus
+      inputs: { x: ab }
+      outputs: { out: dt }
+      tex: { out: '\Delta' }
+  - eA: { op: exp(A_log), tex: 'e^{\mathbf{a}_{\log}}', dtype: fp32 }
+  - nA: { op: -eA, tex: '-e^{\mathbf{a}_{\log}}' }
+  - g: { op: nA * dt, tex: '\mathbf{g}' }
   - qr: { op: 'repeat_interleave(q, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{q})' }
   - kr: { op: 'repeat_interleave(k, Hv // Hk, 1)', tex: '\mathrm{rep}(\mathbf{k})' }
   - chunk_gated_delta_rule:
@@ -93,17 +115,28 @@ steps:
     backward:
       label: '$\partial W_{z}$'
       title: 传到 in_proj_z 的权重
-  - id: proj_ba
-    brace: { title: in_proj_b $\cdot$ in_proj_a, subtitle: 'nn.Linear $\times$ 2' }
-    show: [Wb.T, Wa.T, b, a]
-    label: '$\of{b},\ \of{a}$'
-    title: in_proj_b 和 in_proj_a
+  - id: proj_b
+    brace: { title: in_proj_b, subtitle: nn.Linear }
+    show: [Wb.T, b]
+    label: '$\of{b}$'
+    title: in_proj_b
     text: |
-      <code>b = self.in_proj_b(hidden_states)</code>，<code>a = self.in_proj_a(hidden_states)</code>：每个位置、每个 value head 各出一个数，$\mathbf{b}$ 决定写入强度，$\mathbf{a}_{\Delta}$ 决定衰减。两个 Linear 都没有 bias。
-      $$\mathbf{b}={{ b | matrix:3 }},\qquad \mathbf{a}_{\Delta}={{ a | matrix:3 }}$$
+      <code>b = self.in_proj_b(hidden_states)</code>：每个位置、每个 value head 出一个数，$\mathbf{b}$ 决定写入强度。没有 bias。
+      $$\mathbf{b}={{ b | matrix:3 }}$$
     backward:
-      label: '$\partial W_{b},\ \partial W_{a}$'
-      title: 传到 in_proj_b 和 in_proj_a 的权重
+      label: '$\partial W_{b}$'
+      title: 传到 in_proj_b 的权重
+  - id: proj_a
+    brace: { title: in_proj_a, subtitle: nn.Linear }
+    show: [Wa.T, a]
+    label: '$\of{a}$'
+    title: in_proj_a
+    text: |
+      <code>a = self.in_proj_a(hidden_states)</code>：每个位置、每个 value head 出一个数，$\mathbf{a}_{\Delta}$ 决定衰减。没有 bias。
+      $$\mathbf{a}_{\Delta}={{ a | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{a}$'
+      title: 传到 in_proj_a 的权重
   - id: conv
     brace: { title: conv1d, subtitle: '因果深度卷积，核长 $\of{K}$' }
     show: [Wconv, conv]
@@ -118,16 +151,6 @@ steps:
       text: |
         $u_{s,c}$ 的梯度来自它之后 $\of{K}$ 个位置的输出，各乘对应的系数；$W_{c,j}$ 的梯度是这一列所有位置的贡献之和。$T=\of{T}$、$K=\of{K}$ 时，每个通道的第 1 个系数 $W_{c,1}$ 只会乘到左边补的 0，从来碰不到真实输入，它的梯度是 0。
         $$\frac{\partial\ell}{\partial\mathbf{u}}={{ mixed_qkv.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial W_{\mathrm{conv}}}={{ Wconv.grad | matrix:3 }}$$
-  - id: act
-    show: cs
-    label: '$\mathrm{SiLU}$'
-    title: 卷积后的 SiLU
-    text: |
-      卷积的输出逐元素经过 SiLU，HF 把它作为卷积的 activation 参数传进去。
-      $$\mathrm{SiLU}(\mathbf{c})={{ cs | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{c}$'
-      title: 穿过 SiLU
   - id: split
     show: [q, k, v]
     label: '$\of{q},\ \of{k},\ \of{v}$'
@@ -138,65 +161,55 @@ steps:
     backward:
       label: '$\partial\,\mathrm{SiLU}(\mathbf{c})$'
       title: 拼回卷积的输出
-  - id: beta
-    show: beta
-    label: '$\of{beta}$'
-    title: 写入强度 $\beta$
+  - id: dtin
+    show: [dt_bias, ab]
+    label: '$\of{ab}$'
+    title: 衰减：加上 $\mathbf{b}_{\Delta}$
     text: |
-      <code>beta = b.sigmoid()</code>：$\beta=\sigma(\mathbf{b})$ 在 0 和 1 之间，是每个位置、每个 value head 写入状态的强度。
-      $$\boldsymbol{\beta}={{ beta | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{b}$'
-      title: 穿过 sigmoid
-  - id: adt
-    show: [dt_bias, adt]
-    label: '$\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta}$'
-    title: '$\mathbf{a}_{\Delta}$ 转成 float32，加上 $\mathbf{b}_{\Delta}$'
-    text: |
-      <code>g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)</code> 这一行有好几个运算，下面三步按计算顺序拆开。第一步是 <code>a.float() + self.dt_bias</code>：$\mathbf{a}_{\Delta}$ 先转成 float32，再加上每个 value head 一个的参数 $\mathbf{b}_{\Delta}$，$\mathbf{b}_{\Delta}$ 被所有位置共用。
-      $$\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta}={{ adt | matrix:3 }}$$
+      衰减的对数是 $g=-e^{\mathbf{a}_{\log}}\cdot\mathrm{softplus}(\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta})$，对应 <code>g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)</code>，在 float32 里计算。这和 Mamba2 的离散化相同：$\mathbf{b}_{\Delta}$ 和 $\mathbf{a}_{\log}$ 是每个 value head 一个的参数，$\mathbf{a}_{\Delta}$ 由输入决定，所以忘多少因位置而异。第一步给 $\mathbf{a}_{\Delta}$ 加上偏置 $\mathbf{b}_{\Delta}$。
+      $$\of{ab}={{ ab | matrix:3 }}$$
     backward:
       label: '$\partial\mathbf{a}_{\Delta},\ \partial\mathbf{b}_{\Delta}$'
       title: 传到 $\mathbf{a}_{\Delta}$ 和 $\mathbf{b}_{\Delta}$
       text: |
-        加法的梯度原样交给两边，$\mathbf{b}_{\Delta}$ 的梯度把各位置加起来。
+        相加的局部导数是 1。$\mathbf{b}_{\Delta}$ 被所有位置共用，梯度把各位置加起来。
         $$\frac{\partial\ell}{\partial\mathbf{b}_{\Delta}}={{ dt_bias.grad | matrix:3 }}$$
-  - id: dt
-    show: dt
-    label: '$\of{dt}$'
-    title: 'softplus 得到步长 $\Delta$'
+  - id: expA
+    show: [A_log, eA]
+    label: '$\of{eA}$'
+    title: 衰减：$e^{\mathbf{a}_{\log}}$
     text: |
-      <code>F.softplus(...)</code>：$\Delta=\log(1+e^{\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta}})$，总是正数。这和 Mamba2 的离散化步长相同，由输入决定，所以忘多少因位置而异。
-      $$\Delta={{ dt | matrix:3 }}$$
-    backward:
-      label: '$\partial(\mathbf{a}_{\Delta}+\mathbf{b}_{\Delta})$'
-      title: 穿过 softplus
-      text: softplus 的导数是 sigmoid。
-  - id: A
-    show: [A_log, A]
-    label: '$\of{A}$'
-    title: '$A=e^{\mathbf{a}_{\log}}$'
-    text: |
-      <code>self.A_log.float().exp()</code>：$\mathbf{a}_{\log}$ 转成 float32 再取 exp，$A$ 是每个 value head 一个的正数。HF 的注释说，没有 <code>.float()</code> 时 fp16 下 $A$ 可能变成无穷大。
-      $$A={{ A | matrix:3 }}$$
+      参数存的是 $\mathbf{a}_{\log}$，取 exp 以后一定是正数。
+      $$\of{eA}={{ eA | matrix:3 }}$$
     backward:
       label: '$\partial\mathbf{a}_{\log}$'
-      title: 穿过 exp
+      title: 传到 $\mathbf{a}_{\log}$
       text: |
+        exp 的导数是它自己。$\mathbf{a}_{\log}$ 被所有位置共用，梯度把各位置加起来。
         $$\frac{\partial\ell}{\partial\mathbf{a}_{\log}}={{ A_log.grad | matrix:3 }}$$
-  - id: g
+  - id: negA
+    show: nA
+    label: '$\of{nA}$'
+    title: 衰减：取负
+    text: |
+      $$\of{nA}={{ nA | matrix:3 }}$$
+    backward:
+      label: '$\partial e^{\mathbf{a}_{\log}}$'
+      title: 穿过取负
+      text: 局部导数是 $-1$。
+  - id: gate
     show: g
     label: '$\of{g}$'
-    title: 衰减的对数 $g=-A\Delta$
+    title: 衰减 $g$
     text: |
-      <code>-A * F.softplus(...)</code>：先取负，再按 value head 广播乘 $\Delta$。$A$ 和 $\Delta$ 都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间。
+      $-e^{\mathbf{a}_{\log}}$ 乘上 $\Delta$。$e^{\mathbf{a}_{\log}}$ 和 softplus 都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间。$-e^{\mathbf{a}_{\log}}$ 每个 value head 一个，广播到每个位置。
       $$\mathbf{g}={{ g | matrix:3 }}$$
     backward:
-      label: '$\partial A,\ \partial\Delta$'
-      title: 传到 $A$ 和 $\Delta$
+      label: '$\partial\Delta,\ \partial(-e^{\mathbf{a}_{\log}})$'
+      title: 穿过相乘
       text: |
-        $A$ 被所有位置共用，梯度把各位置加起来。
-        $$\frac{\partial\ell}{\partial A}={{ A.grad | matrix:3 }}$$
+        逐元素乘的两个输入互为对方的局部导数。$-e^{\mathbf{a}_{\log}}$ 广播到了每个位置，梯度把各位置加起来。
+        $$\frac{\partial\ell}{\partial\Delta}={{ dt.grad | matrix:3 }}$$
   - id: repeat
     show: [qr, kr]
     label: '$\mathrm{repeat\_interleave}$'

@@ -30,7 +30,7 @@ body:
       subtitle: Qwen3_5MoeMLP，共享专家
       suffix: s
       folded: true
-      params: { act: silu, f: sf, name: shared_expert }
+      params: { act: SiLU, f: sf, name: shared_expert }
       inputs: { x: x }
       outputs: { down: ys }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }

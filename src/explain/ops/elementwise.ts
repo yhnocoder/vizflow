@@ -76,6 +76,12 @@ export const rsqrtExplain: OpExplain = {
   },
 };
 export const sqrtExplain = unary((a) => `\\sqrt{${a}}`, (_x, y) => 0.5 / y, (_x, y) => `\\frac{1}{2${y}}`);
+export const reciprocalExplain = unary((a) => `\\frac{1}{${a}}`, (_x, y) => -y * y, (x) => `-\\frac{1}{{${x}}^{2}}`);
+export const erfExplain = unary(
+  (a) => `\\operatorname{erf}(${a})`,
+  (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x),
+  (x) => `\\frac{2}{\\sqrt{\\pi}}e^{-{${x}}^{2}}`,
+);
 export const sigmoidExplain = unary((a) => `\\sigma(${a})`, (_x, y) => y * (1 - y), (_x, y) => `${y}(1-${y})`);
 export const siluExplain = unary(
   (a) => `\\operatorname{SiLU}(${a})`,
