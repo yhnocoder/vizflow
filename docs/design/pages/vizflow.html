@@ -31,6 +31,7 @@
 <h3>为什么用 JavaScript 库描述页面</h3>
 <p>页面由作者和 Claude 共同编写，多数时候作者在 Claude 生成的代码上修改，所以可调试性比语法简洁更重要。JavaScript 有编辑器高亮、补全和报错，可以在浏览器里打断点；专门设计的文本格式需要另写解析器，报错难以看懂，遇到没有设计过的需求时也无法用一段自定义代码处理。</p>
 <p>页面只调用一套声明式 API。样式、刻度、悬停、步进的逻辑只存在于库里，页面没有地方写出差异，一致性由此保证。库用 TypeScript 编写并输出类型声明，页面作者写普通 JavaScript 时编辑器也能给出补全和提示。</p>
+<p>由标准模块（RMSNorm、注意力、MLP 等）拼成的页面，JavaScript 写法里大部分是重复的建图和布局代码。这类页面可以改写成 YAML 页面描述文件，见「页面描述文件怎么写」。描述文件编译成同一套 JavaScript 接口的数据，报错带文件名、行号和列号；描述文件写不出的需求仍然用 JavaScript 写。</p>
 
 <h2>一个页面怎么写</h2>
 <p class="hint">完整示例：lm_head 与 NLL Loss 页面。第一阶段要求用 vizflow 复现这个页面。</p>
@@ -137,6 +138,163 @@ mountPanels('#side', g, [
 <p>同样的页面也可以不写容器和挂载调用，只放一个 <code>&lt;vizflow-page&gt;</code> 元素，把计算图、步骤、面板和场景配置设为它的属性，见「页面元素」一节。</p>
 <p>页面用 ES module 加载，不能通过 <code>file://</code> 直接打开，本地预览时需要启动一个 http server。</p>
 
+<h2>页面描述文件怎么写</h2>
+<p>由标准模块组成的页面（例如一层 Transformer）可以不写 JavaScript，只写一份 YAML 页面描述文件。<code>dsl</code> 入口把它编译成计算图、步骤、面板、模块大括号和一棵布局树，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 再把这些交给已有的挂载流程。页面描述文件只是 JavaScript 接口之上的一层：编译结果就是普通的 <code>Graph</code>、<code>StepsSpec</code> 与 <code>PanelItem[]</code>，遇到描述文件写不出的需求时，页面改用 JavaScript 接口。JavaScript 调用方也可以直接把同样结构的对象传给 <code>compilePage</code>，YAML 只是这份结构的一种写法。</p>
+<p class="hint">完整示例：<code>examples/qwen3-dsl.yaml</code> 与它引用的 <code>examples/qwen3/attention.yaml</code>。它和 JavaScript 写的 <code>examples/qwen3-structure.html</code> 是同一页，测试比较两页的损失和每个权重的梯度。</p>
+
+<h3>文件里写什么</h3>
+<p>文件分两种。页面文件描述一整页，模块文件描述一个可以复用的模块，例如 RMSNorm。页面本身是根模块，body、steps、backward 的规则与模块相同。</p>
+<pre><code class="language-yaml">module: RMSNorm
+subtitle: LlamaRMSNorm / Qwen3RMSNorm
+params:
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: { shape: [T, n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+body:
+  - sq: { op: x ** 2, tex: '{\of{x}}^{2}' }
+  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - r:  { op: rsqrt(ms + eps), tex: r }
+  - xh: { op: x * r, tex: '\hat{\of{x}}' }
+  - out: xh * weight
+steps:
+  - id: rms
+    show: [ms, r]
+    label: '$\mathrm{ms},\ r$'
+    title: 均方根的倒数
+    text: |
+      每一行对平方取平均得到 $\mathrm{ms}$，加上 $\epsilon=\of{eps}$ 再取平方根的倒数。
+      $$\of{r} = {{ r | matrix:3 }}$$</code></pre>
+<table>
+  <thead>
+    <tr><th>字段</th><th>出现在</th><th>内容</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>module</code></td><td>模块</td><td>模块名</td></tr>
+    <tr><td><code>title</code>、<code>lede</code>、<code>hint</code>、<code>camera</code></td><td>页面</td><td>页面标题、导语、场景提示和相机选项。元素把标题和导语画在场景上方，<code>hint</code> 与 <code>camera</code> 原样传给 <code>mountScene</code>。</td></tr>
+    <tr><td><code>import</code></td><td>两种</td><td>本文件用到的模块，<code>{ 名字: 引用 }</code></td></tr>
+    <tr><td><code>modules</code></td><td>页面</td><td>只在本页使用的模块，<code>{ 名字: 模块内容 }</code>，内容与模块文件相同，不写 <code>module</code></td></tr>
+    <tr><td><code>subtitle</code></td><td>两种</td><td>大括号上的副标题</td></tr>
+    <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, values? } }</code></td></tr>
+    <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
+    <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
+    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组 } }</code> 建 input 节点</td></tr>
+    <tr><td><code>outputs</code></td><td>模块</td><td>输出节点的名字列表</td></tr>
+    <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex? } }</code>，建 param 节点</td></tr>
+    <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, tex? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点</td></tr>
+    <tr><td><code>body</code></td><td>两种</td><td>节点、子模块实例、group 与 for 的列表，按顺序建图</td></tr>
+    <tr><td><code>steps</code></td><td>两种</td><td>本模块的前向步骤：<code>id</code>、<code>show</code>、<code>active?</code>、<code>label?</code>、<code>title?</code>、<code>text?</code></td></tr>
+    <tr><td><code>backward</code></td><td>两种</td><td>按节点名给对应反向步骤的 <code>title</code>、<code>label</code>、<code>text</code></td></tr>
+    <tr><td><code>overview</code></td><td>页面</td><td>总览步骤的 <code>title</code> 和 <code>text</code></td></tr>
+    <tr><td><code>init</code>、<code>values</code></td><td>页面</td><td>权重初值的随机种子 <code>{ seed }</code>，以及按路径给定的固定数值</td></tr>
+    <tr><td><code>panels</code></td><td>页面</td><td>面板列表，见下文</td></tr>
+  </tbody>
+</table>
+<p>body 的每一项是只有一个键的映射，或者一个 for：</p>
+<ul>
+  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex }</code> 同时给出 tex。</li>
+  <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。</li>
+  <li><code>name: { body, steps?, subtitle? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，只用来画大括号和把步骤分组。</li>
+  <li><code>{ for: h, in: '1..H', brace?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。</li>
+</ul>
+<p>结构检查手写，不用 JSON Schema。未知的字段、缺少的字段和类型不对的值都报错，错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>bad.yaml:5:8 body[0].y: name 'nope' is not defined in the page</code>。行号和列号来自 <code>yaml</code> 包解析时保留的位置，传入的是 JavaScript 对象时信息里只有路径。YAML 里的重复键同样报错。</p>
+
+<h3>表达式</h3>
+<p>节点的 <code>op</code>、实例的 <code>inputs</code>、buffer 的 <code>value</code> 和 shape 里的维度都是 PyTorch 风格的表达式：</p>
+<table>
+  <thead>
+    <tr><th>写法</th><th>含义</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>f(a, b, k=v)</code></td><td>调用 graph 上的同名方法（内置运算与 <code>defineOp</code> 注册的运算），位置参数和关键字参数按方法签名传递。只能在编译期求值的参数（维度名、参数、数字表达式）先求值成数。</td></tr>
+    <tr><td><code>a @ b</code>、<code>a ** n</code></td><td><code>matmul</code>；<code>pow</code>，<code>n</code> 是数</td></tr>
+    <tr><td><code>a + b</code>、<code>a - b</code>、<code>a * b</code>、<code>a / b</code></td><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code>。右边可以是数；<code>数 + 节点</code> 和 <code>数 * 节点</code> 交换成节点在左；<code>数 - 节点</code> 和 <code>数 / 节点</code> 报错</td></tr>
+    <tr><td><code>-a</code>、<code>a.T</code></td><td>乘 −1；转置，图上已有同一个转置时复用</td></tr>
+    <tr><td><code>q[h]</code>、<code>o[1..H]</code></td><td>循环下标；按顺序列出全部下标，用在 <code>cat</code> 这类接受节点列表的参数里</td></tr>
+    <tr><td><code>//</code>、<code>1e-6</code>、<code>"none"</code>、<code>true</code></td><td>整除；科学计数法；字符串字面量，只用于关键字参数；布尔值</td></tr>
+    <tr><td><code>act(x)</code></td><td><code>act</code> 是 op 类型的参数时，调用它的值对应的运算</td></tr>
+  </tbody>
+</table>
+<p>YAML 的 flow 映射 <code>{ ... }</code> 里不加引号的值遇到逗号就结束，所以带逗号的表达式要加引号，例如 <code>{ op: 'embedding(ids, E)' }</code>。</p>
+
+<h3>作用域、维度与参数</h3>
+<ol>
+  <li>作用域封闭。名字依次在本模块的 body 节点、inputs、weights、buffers、子实例 outputs 绑定的名字、params 里查找，找不到就报错。模块看不到父模块和页面的名字。</li>
+  <li>名字唯一。for 里定义的名字和实例名必须带循环变量下标（<code>q[h]</code>），展开后是 <code>q[1]</code>、<code>q[2]</code>。</li>
+  <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
+  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>，没有 <code>default</code> 时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
+  <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
+  <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code> 与 <code>causal_mask(T)</code>，数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同。</li>
+  <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块有 <code>rmsnorm</code>、<code>glu</code>、<code>rope</code>、<code>sdpa</code>、<code>lm-head-nll</code>。</li>
+</ol>
+<p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参。页面没有 <code>real</code> 时不加。</p>
+<p><b>初值。</b>权重按路径在 <code>values</code> 里查固定数值，没有时按 <code>init</code> 生成。<code>values</code> 里多出的路径报错。</p>
+<table>
+  <thead>
+    <tr><th>常量</th><th>值</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>默认 <code>init</code></td><td><code>uniform</code></td></tr>
+    <tr><td><code>uniform</code></td><td>$U(-1, 1)$，四舍五入到 2 位小数</td></tr>
+    <tr><td><code>normal</code></td><td>$N(0, 1)$（Box–Muller），四舍五入到 2 位小数</td></tr>
+    <tr><td><code>ones</code>、<code>zeros</code></td><td>全 1、全 0</td></tr>
+    <tr><td>默认随机种子</td><td>1，随机数生成器是 mulberry32；权重按建图顺序依次取随机数</td></tr>
+  </tbody>
+</table>
+
+<h3>路径与 graph 上的节点名</h3>
+<p>实例内的名字在全页的路径是「实例名.名字」逐层拼接，例如 <code>layer.self_attn.attn[1].P</code>。<code>panels</code>、<code>backward</code>、步骤补丁、<code>values</code> 和正文模板都按路径或本作用域的名字引用节点。编译结果的 <code>nodes</code> 是 <code>Map&lt;路径, Node&gt;</code>。</p>
+<p>graph 上节点的 <code>name</code> 就是路径。一个表达式里间接产生的节点（例如 <code>rsqrt(ms + eps)</code> 里的 <code>ms + eps</code>）没有名字，命名为 <code>路径/k</code>，<code>k</code> 从 1 起按创建顺序编号，例如 <code>layer.input_layernorm.r/1</code>。这些节点和所属的节点在同一步出现。正文模板按最长前缀匹配节点名，所以 <code>{{layer.self_attn.P[1][i, j]}}</code> 能正确识别。</p>
+
+<h3>tex 怎么来</h3>
+<ul>
+  <li>默认值由名字推出：小写名字加粗（<code>q</code> 成为 <code>\mathbf{q}</code>，<code>gate</code> 成为 <code>\mathbf{gate}</code>）；大写字母开头的名字照写，名字末尾的数字或小写字母作下标（<code>Wq</code> 成为 <code>W_{q}</code>，<code>x0</code> 成为 <code>\mathbf{x}_{0}</code>）；多个大写字母的名字用 <code>\mathrm</code>（<code>LSE</code>）；带下划线的名字把下划线后的部分作下标。带循环下标的名字加上标 <code>^{(h)}</code>。</li>
+  <li>节点的 tex 依次取：使用处 <code>tex</code> 的覆盖、声明里的 <code>tex</code>、使用处绑定的输出名推出的默认值、模块内名字推出的默认值。</li>
+  <li><code>\of{name}</code> 换成那个名字的 tex。op 参数的 <code>\of{act}</code> 是运算的 tex，<code>\of{act.def}</code> 是运算登记的定义式，<code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code> 已登记（<code>OP_TEX</code>）。循环变量的 <code>\of{h}</code> 是它的值，float 参数的 <code>\of{eps}</code> 是它的 TeX 写法（<code>10^{-6}</code>）。</li>
+  <li>节点的 <code>elem</code> 由 tex 推出，与 <code>explain</code> 追加下标的方式兼容：<code>\mathbf{x}</code> 的 elem 是 <code>{x}</code>，多字母名字用 <code>\mathrm</code>，tex 里已有不在末尾的下标时整体加花括号，追加下标时不产生双下标。</li>
+  <li>同一作用域里同一个模块有多个实例时，按出现顺序给实例内部节点和权重的 tex 加下标，带循环下标的实例用循环变量的值。已有下标的合并（<code>W_{q}</code> 成为 <code>W_{q,1}</code>），含 <code>\of{}</code> 的 tex 不加，作用域里只有一个实例时不加，buffer 不加。使用处写了 <code>suffix</code> 时用它代替下标。</li>
+  <li>全页两个节点的 tex 相同时，编译器用 <code>console.warn</code> 给出 <code>vizflow dsl: nodes 'a', 'b' share the tex '...'</code>。</li>
+</ul>
+
+<h3>步骤怎么排</h3>
+<ol>
+  <li>每个模块的 steps 插在该实例在父模块 body 里的位置。一个 step 放在它 <code>show</code> 的节点里最早创建的那一个之后；同一个模块里后写的 step 不排在先写的 step 前面。这样「按 head 拆开」这类步骤可以写在模块末尾，仍然出现在循环之前。</li>
+  <li>body 里没有被任何 step 的 <code>show</code> 覆盖的节点自动生成一步，标题和标签取节点名。这一步同时显示该节点用到的、还没有出现过的权重、权重的转置和 buffer。权重和 buffer 不单独生成步骤。</li>
+  <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm[1].square</code>。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔。id 不存在时报错。</li>
+  <li>反向步骤用 <code>createSteps</code> 的 <code>backward: { auto: true }</code> 生成，<code>merge</code> 取每个前向步骤里多于一个可求导节点的组。<code>backward</code> 里按名字或路径写的文字，由编译器按 <code>steps</code> 入口的分组规则算出对应反向步骤的下标，填进 <code>override</code>。</li>
+  <li>正文里的 <code>{{ name | matrix }}</code>、<code>{{ name | matrix:3 }}</code>、<code>{{ name.grad | matrix:3 }}</code> 在编译期按节点形状展开成 <code>\begin{pmatrix}...\end{pmatrix}</code>，每个单元格是一个模板 <code>{{节点名[i, j]:3}}</code>。其余 <code>{{...}}</code> 里的名字按作用域换成 graph 上的节点名，再交给步骤的正文模板。</li>
+</ol>
+
+<h3>面板与大括号</h3>
+<p><code>panels</code> 是 <code>PanelItem</code> 的同构写法，凡是节点的位置都写路径或根作用域的名字：<code>tokens</code>、<code>sliders</code>、<code>columns[].node</code>、<code>matrix</code>、<code>highlight</code>、<code>loss.random.nodes</code> 与 <code>loss.sgd.params</code>。<code>sgd.params</code> 与 <code>random.nodes</code> 写 <code>all</code> 表示全部权重。<code>matrix: head.W.T</code> 这类表达式也可以写，转置在建图时已经存在时直接复用。<code>loss</code> 一项单独写 <code>- loss</code> 时用默认选项。</p>
+<p>每个实例、group 和写了 <code>brace</code> 的 for 迭代对应一个 <code>SceneModule</code>：标题是实例名或 <code>brace</code> 的文字（<code>\of{h}</code> 换成值），副标题是模块的 <code>subtitle</code>，节点是它展开出的全部节点。根模块不画。模块标题按纯文本显示，不渲染公式。</p>
+
+<h3>编译接口与布局树</h3>
+<pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
+interface CompiledPage {
+  graph: Graph;
+  steps: StepsSpec;
+  tree: LayoutTree;
+  modules: SceneModule[];
+  panels: PanelItem[];
+  nodes: Map&lt;string, Node&gt;;
+  page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
+}
+function compilePage(spec: PageFile, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
+function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
+function parseYaml(text: string, file: string): unknown;</code></pre>
+<p><code>compilePage</code> 的 <code>base</code> 是相对引用的基准地址，也是错误信息里的文件名，省略时文件名是 <code>&lt;page&gt;</code>，页面里不能有相对引用。<code>loadPage</code> 读取 <code>url</code>，以它为基准地址编译。<code>dsl</code> 入口另外导出 <code>PageFile</code>、<code>ModuleFile</code> 等类型、<code>DslError</code> 与 <code>OP_TEX</code>。</p>
+<p><code>tree</code> 是交给自动布局的布局树，类型定义在 <code>scene3d</code>：</p>
+<pre><code class="language-ts">type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
+interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; children: LayoutEntry[] }</code></pre>
+<ul>
+  <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 是它的第一批 node 条目。</li>
+  <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
+  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空。</li>
+</ul>
+
 <h2>模块怎么划分，各入口加载什么</h2>
 <p>模块按用途拆开，因为很多场合只需要其中一部分。只需要数值时，例如在笔记里放一张梯度表或者写测试，只引入 <code>core</code>，three.js、Solid、KaTeX 都不会加载。只想在文章里嵌一个带滑块的 softmax 小部件时，引入 <code>core</code> 和 <code>ui</code>，不需要 3D。完整的一页才用到全部模块。</p>
 <figure>
@@ -190,7 +348,7 @@ mountPanels('#side', g, [
 </svg>
 <figcaption>箭头从被依赖的模块指向使用它的模块。ui 与 scene3d 互不引用；formula 与 theme 不依赖其他模块；element 只组合 steps、ui 与 scene3d。模块旁的灰字是该模块引入的第三方依赖。</figcaption>
 </figure>
-<p>依赖方向是单向的：<code>tensor ← autograd ← explain ← steps</code>；<code>ui</code> 依赖 <code>autograd</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>scene3d</code> 依赖 <code>autograd</code>、<code>explain</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>element</code> 依赖 <code>steps</code>、<code>ui</code>、<code>scene3d</code>。模块之间只通过各自目录的 <code>index.ts</code> 引用。</p>
+<p>依赖方向是单向的：<code>tensor ← autograd ← explain ← steps</code>；<code>ui</code> 依赖 <code>autograd</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>scene3d</code> 依赖 <code>autograd</code>、<code>explain</code>、<code>steps</code>、<code>formula</code>、<code>theme</code>；<code>element</code> 依赖 <code>steps</code>、<code>ui</code>、<code>scene3d</code>，设置 <code>src</code> 时再动态加载 <code>dsl</code>；<code>dsl</code> 依赖 <code>autograd</code>、<code>explain</code>、<code>steps</code>，并引用 <code>scene3d</code> 与 <code>ui</code> 的类型（只有类型，不加载 three.js 和 Solid）。图里没有画 <code>dsl</code>。模块之间只通过各自目录的 <code>index.ts</code> 引用。</p>
 <table>
   <thead>
     <tr><th>入口</th><th>内容</th><th>加载的第三方依赖</th></tr>
@@ -203,7 +361,8 @@ mountPanels('#side', g, [
     <tr><td><code>@yhnocoder/vizflow/theme</code></td><td>颜色变量、字体、页面布局类</td><td>Source Serif 4、Geist、Geist Mono 字体文件</td></tr>
     <tr><td><code>@yhnocoder/vizflow/ui</code></td><td>步骤条、讲解正文、面板、悬停卡片</td><td>Solid、KaTeX</td></tr>
     <tr><td><code>@yhnocoder/vizflow/scene3d</code></td><td>3D 渲染、布局模板、相机、标签、编辑模式</td><td>three.js、KaTeX</td></tr>
-    <tr><td><code>@yhnocoder/vizflow/element</code></td><td>自定义元素 <code>&lt;vizflow-page&gt;</code>，按示例页面的布局挂载步骤条、面板和 3D 场景</td><td>Solid、three.js、KaTeX（经 ui 与 scene3d）</td></tr>
+    <tr><td><code>@yhnocoder/vizflow/element</code></td><td>自定义元素 <code>&lt;vizflow-page&gt;</code>，按示例页面的布局挂载步骤条、面板和 3D 场景</td><td>Solid、three.js、KaTeX（经 ui 与 scene3d）；设置 <code>src</code> 时加载 <code>dsl</code></td></tr>
+    <tr><td><code>@yhnocoder/vizflow/dsl</code></td><td>YAML 页面描述文件的解析与编译，以及包内的核心模块文件</td><td><code>yaml</code></td></tr>
   </tbody>
 </table>
 <p>模块之间不直接调用，都围绕同一个计算图协作。计算图是唯一的数据来源：输入变化后它重算前向和反向，然后发出更新通知；3D 场景、面板和讲解正文各自订阅通知、读取需要的数值，彼此不知道对方是否存在。<code>steps</code> 只输出一个状态对象，说明当前方向、第几步、每个节点是否出现和是否高亮。<code>scene3d</code> 读取这个状态决定颜色和透明度；页面没有创建 steps 时，<code>scene3d</code> 使用「全部显示」的默认状态。</p>
@@ -286,9 +445,9 @@ interface Graph {
   index(...idx: number[]): number;
 }</code></pre>
 <ul>
-  <li><code>tex</code> 是张量级的 LaTeX，例如 <code>\mathbf{h}</code>；<code>elem</code> 是元素级的底，元素写作 <code>elem</code> 加下标，下标从 1 开始，例如 <code>h_{2}</code>、<code>W^{\top}_{2,3}</code>。<code>elem</code> 本身以下标结尾时（<code>_{...}</code>，或 <code>_</code> 加一个字符），元素下标并进这个下标：<code>\mathrm{ms}_{1}</code> 的元素写作 <code>\mathrm{ms}_{1,2}</code>，<code>r_1</code> 写作 <code>r_{1,2}</code>。直接在后面再加一个下标会得到双下标，KaTeX 报错。卡片、连线卡片和 3D 标签都经过同一个函数拼元素名，规则只在这一处。默认值：名字是单个字母时 <code>elem</code> 为该字母，<code>tex</code> 对非标量为粗体字母、对标量为字母本身；名字更长时两者都是 <code>\mathrm{名字}</code>。</li>
+  <li><code>tex</code> 是张量级的 LaTeX，例如 <code>\mathbf{h}</code>；<code>elem</code> 是元素级的底，元素写作 <code>elem</code> 加下标，下标从 1 开始，例如 <code>h_{2}</code>、<code>W^{\top}_{2,3}</code>。<code>elem</code> 本身以下标结尾时（<code>_{...}</code>，或 <code>_</code> 加一个字符），元素下标并进这个下标：<code>\mathrm{ms}_{1}</code> 的元素写作 <code>\mathrm{ms}_{1,2}</code>，<code>r_1</code> 写作 <code>r_{1,2}</code>。直接在后面再加一个下标会得到双下标，KaTeX 报错。卡片、连线卡片和 3D 标签都经过同一个函数拼元素名，规则只在这一处；判断 <code>elem</code> 是否以下标结尾的 <code>trailingSubscript</code> 由 <code>explain</code> 入口导出，页面描述文件的编译器用它合并实例下标。默认值：名字是单个字母时 <code>elem</code> 为该字母，<code>tex</code> 对非标量为粗体字母、对标量为字母本身；名字更长时两者都是 <code>\mathrm{名字}</code>。</li>
   <li><code>grad</code> 对 label 和 buffer 为 <code>null</code>；不在损失上游的节点，以及损失之后创建的节点，梯度为全零。</li>
-  <li><code>W.T</code> 是二维节点的转置。第一次访问时创建 transpose 节点并缓存，之后返回同一个节点。<code>g.matmul(h, W.T)</code> 和 <code>board(h, W.T, z)</code> 各取一次 <code>W.T</code>，布局必须找到计算图里的同一个节点，所以缓存不能去掉。转置节点名为 <code>W.T</code>，<code>tex</code> 与 <code>elem</code> 默认在原节点的写法后加 <code>^{\top}</code>。</li>
+  <li><code>W.T</code> 是二维节点的转置。第一次访问时创建 transpose 节点并缓存，之后返回同一个节点。<code>g.matmul(h, W.T)</code> 和 <code>board(h, W.T, z)</code> 各取一次 <code>W.T</code>，布局必须找到计算图里的同一个节点，所以缓存不能去掉。转置节点名为 <code>W.T</code>，<code>tex</code> 与 <code>elem</code> 默认在原节点的写法后加 <code>^{\top}</code>；原写法含 <code>^</code>、<code>'</code> 或 <code>_</code> 时先整体加花括号，例如 <code>{W_{q}}^{\top}</code>，否则追加元素下标时会出现双下标。</li>
   <li><code>set</code> 只允许 input、param、label、buffer 调用。<code>index</code> 返回 label 的整数值，等于 <code>Math.round(value.get(idx))</code>。</li>
 </ul>
 
@@ -330,7 +489,8 @@ interface Graph {
   </thead>
   <tbody>
     <tr><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code></td><td><code>g.add(a, b)</code>、<code>g.mul(a, 0.5)</code></td><td>广播。反向把梯度按广播过的维度求和回输入的 shape。第二个参数可以是数。</td></tr>
-    <tr><td><code>neg</code>、<code>exp</code>、<code>log</code>、<code>rsqrt</code>、<code>sqrt</code>、<code>sigmoid</code>、<code>silu</code></td><td><code>g.exp(a)</code></td><td>逐元素。<code>sigmoid</code> 对负数用 $e^{x}/(1+e^{x})$ 计算，绝对值很大时不溢出。</td></tr>
+    <tr><td><code>neg</code>、<code>exp</code>、<code>log</code>、<code>rsqrt</code>、<code>sqrt</code>、<code>sigmoid</code>、<code>silu</code>、<code>relu</code>、<code>gelu</code>、<code>identity</code></td><td><code>g.exp(a)</code></td><td>逐元素。<code>sigmoid</code> 对负数用 $e^{x}/(1+e^{x})$ 计算，绝对值很大时不溢出。<code>relu</code> 在 0 处的导数取 0。<code>gelu</code> 是 $x\,\Phi(x)$ 的精确 erf 形式，与 PyTorch 的默认 <code>approximate='none'</code> 一致。<code>identity</code> 原样输出，用于在图上单独画出一个与输入相同的张量（例如 Qwen3 页的 $\mathbf{x}_0$）。</td></tr>
+    <tr><td><code>rotate_half</code></td><td><code>g.rotate_half(a)</code></td><td>最后一维分成前后两半 $(\mathbf{a}_1, \mathbf{a}_2)$，输出 $(-\mathbf{a}_2, \mathbf{a}_1)$，与 HF transformers 的 <code>rotate_half</code> 相同。最后一维必须是偶数。</td></tr>
     <tr><td><code>pow</code></td><td><code>g.pow(a, exponent)</code></td><td><code>exponent</code> 是数</td></tr>
     <tr><td><code>matmul</code></td><td><code>g.matmul(a, b)</code></td><td>2 维乘 2 维，以及 1 维与 2 维的组合，按 torch 规则</td></tr>
     <tr><td><code>transpose</code></td><td><code>g.transpose(a, dim0, dim1)</code></td><td></td></tr>
@@ -463,7 +623,7 @@ allVisible(g: Graph): StepState</code></pre>
   <li>反向第 $k$ 步：revealed 为第 1 到 $k$ 步节点的并集，active 为第 $k$ 步的节点。</li>
 </ol>
 <p>图里没有损失节点时（例如只演示 softmax 的小部件），自动反向生成 0 步；这时给了 <code>merge</code> 或 <code>override</code> 会抛错。</p>
-<p>自动步骤的默认标题为 <code>∂ℓ/∂节点名</code>（合并的步骤用其中第一个非损失节点），按钮文字默认 <code>∂节点名</code>，默认正文是该节点反向层名卡片的公式。<code>override</code> 按反向步骤的下标覆盖标题、正文或按钮文字。</p>
+<p>自动步骤的默认标题为 <code>∂ℓ/∂节点名</code>（合并的步骤用其中第一个非损失节点），按钮文字默认 <code>∂节点名</code>，默认正文是该节点反向层名卡片的公式。<code>override</code> 按反向步骤的下标覆盖标题、正文或按钮文字。<code>steps</code> 入口导出 <code>backwardGroups(g, visible, spec)</code>，按反向步骤的顺序返回每一步包含的节点（<code>visible</code> 是前向步骤里出现过的节点），<code>createSteps</code> 和页面描述文件的编译器都用它，所以编译器算出的下标与实际生成的步骤一致。</p>
 <p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边画成虚线，读者可以直接看出哪些路径上没有梯度。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
 <p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
@@ -761,12 +921,14 @@ class VizflowPage extends HTMLElement {
   panels: PanelItem[] | undefined;
   scene: VizflowPageScene | undefined;
   edit: boolean;
+  src: string | null;
+  readonly compiled: CompiledPage | undefined;
   readonly createdSteps: Steps | undefined;
 }
 
 interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
 <ul>
-  <li>这五项都是 JavaScript 属性，不是 HTML 属性。元素不读取 HTML 属性，写 <code>&lt;vizflow-page edit&gt;</code> 不起作用，要写 <code>page.edit = true</code>。</li>
+  <li><code>graph</code>、<code>steps</code>、<code>panels</code>、<code>scene</code>、<code>edit</code> 这五项都是 JavaScript 属性，不是 HTML 属性，写 <code>&lt;vizflow-page edit&gt;</code> 不起作用，要写 <code>page.edit = true</code>。元素只读取一个 HTML 属性 <code>src</code>，见下面的「从页面描述文件加载」。</li>
   <li><code>graph</code> 是计算图，<code>steps</code> 是 <code>createSteps</code> 的第二个参数，<code>panels</code> 是 <code>mountPanels</code> 的面板列表，<code>scene</code> 是 <code>mountScene</code> 的选项（不含 <code>steps</code> 与 <code>edit</code>，元素自己传入），<code>edit</code> 对应场景的编辑模式，默认 <code>false</code>。</li>
   <li>元素在文档中且 <code>graph</code> 与 <code>steps</code> 都已设置时挂载。<code>panels</code> 不设置时不画面板，<code>scene</code> 不设置时不画 3D 场景。</li>
   <li>设置属性后，元素在当前任务的微任务里重新挂载一次：先释放已有的场景、步骤条、面板和 Steps，再按全部属性重新创建。页面连续设置几个属性只挂载一次。读取 <code>createdSteps</code> 时，如果还有待处理的挂载，先同步完成挂载再返回，所以页面设置完属性后可以立即调用 <code>page.createdSteps.go(3)</code>。</li>
@@ -776,7 +938,15 @@ interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
   <li>元素用 light DOM，不用 shadow root。theme、KaTeX、ui 与 scene3d 的样式注入在 document 里，shadow root 内的节点用不到这些样式。元素只移除自己创建的布局节点。</li>
   <li><code>customElements.define</code> 只在 <code>vizflow-page</code> 尚未定义时调用，同一页面加载两次入口不会报错。属性在元素定义之前就已设置时，元素升级后照常读取。</li>
 </ul>
-<p>元素里的布局与 lm_head 示例页相同：有面板时外层是 <code>.vf-split</code>，没有面板时是 <code>.vf-stack</code>；左栏 <code>.vf-main</code> 是纵向排列、间距 14px 的 flex 容器，依次放画布 <code>.vf-stage</code> 和步骤条 <code>.vf-steps</code>；面板放在 <code>aside.vf-side</code>。<code>.vf-stage</code> 高度为 <code>var(--vf-stage-height)</code>，最小高度 400px，视口宽度 980px 以下为 360px，圆角 14px，带 <code>--line</code> 色边框和 <code>--surface</code> 底色。这些样式由 <code>element</code> 入口注入，只作用于 <code>vizflow-page</code> 内部。标题、导语等页面自己的内容写在元素外面。</p>
+<p><b>从页面描述文件加载。</b>页面写 <code>&lt;vizflow-page src="page.yaml"&gt;</code>，或设置 JavaScript 属性 <code>src</code>（它与 HTML 属性同步）。</p>
+<ul>
+  <li>设置 <code>src</code> 后，元素用动态 <code>import()</code> 加载 <code>dsl</code> 与 <code>scene3d</code>，以 <code>document.baseURI</code> 为基准把 <code>src</code> 解析成绝对地址，调用 <code>loadPage</code> 编译，再用 <code>autoLayout(compiled.tree)</code> 算出布局和模块大括号。没有设置 <code>src</code> 的页面不加载 YAML 解析器。</li>
+  <li>编译完成后，元素把 <code>graph</code>、<code>steps</code>、<code>panels</code>（列表为空时不画面板）和 <code>scene</code>（<code>layout</code>、<code>modules</code>、<code>hint</code>、<code>camera</code>）设为编译结果并立即挂载，然后派发 <code>load</code> 事件。<code>compiled</code> 是编译结果，未加载完成时为 <code>undefined</code>。</li>
+  <li>从 <code>src</code> 挂载时，元素在布局前面放一个 <code>header.vf-header</code>：<code>h1.vf-title</code> 是页面的 <code>title</code>，按纯文本显示；<code>p.vf-lede</code> 是 <code>lede</code>，用 <code>renderText</code> 渲染公式。页面之后又直接设置了 <code>graph</code> 时不画这个标题。</li>
+  <li>读取或编译出错时，元素清空自己的内容，显示一段 <code>p.vf-load-error</code>，文字是 <code>src: 错误信息</code>，并用 <code>reportError</code> 报告错误。</li>
+  <li>加载完成之前 <code>src</code> 又被改变时，只采用最后一次加载的结果。</li>
+</ul>
+<p>元素里的布局与 lm_head 示例页相同：有面板时外层是 <code>.vf-split</code>，没有面板时是 <code>.vf-stack</code>；左栏 <code>.vf-main</code> 是纵向排列、间距 14px 的 flex 容器，依次放画布 <code>.vf-stage</code> 和步骤条 <code>.vf-steps</code>；面板放在 <code>aside.vf-side</code>。<code>.vf-stage</code> 高度为 <code>var(--vf-stage-height)</code>，最小高度 400px，视口宽度 980px 以下为 360px，圆角 14px，带 <code>--line</code> 色边框和 <code>--surface</code> 底色。这些样式由 <code>element</code> 入口注入，只作用于 <code>vizflow-page</code> 内部。用 JavaScript 属性挂载时，标题、导语等页面自己的内容写在元素外面；从 <code>src</code> 加载时由元素画出，<code>.vf-header</code> 下边距 20px、最大宽度 760px，标题用衬线字体，字号 <code>clamp(28px, 3.6vw, 40px)</code>，导语用 <code>--muted</code> 色。</p>
 
 <h3>页面布局</h3>
 <p><code>theme</code> 提供几种现成的页面布局类，尺寸通过 CSS 变量调整：<code>--vf-side-width</code> 是面板宽度，默认 360px；<code>--vf-gap</code> 是间距，默认 20px；<code>--vf-stage-height</code> 是画布高度，默认 <code>min(68vh, 640px)</code>，视口宽度 980px 以下为 <code>62vh</code>。</p>
@@ -858,11 +1028,11 @@ onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
     <tr><th>产物</th><th>给谁用</th><th>第三方库</th><th>字体</th><th>有限差分检查的默认值</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>dist/module/*.js</code></td><td>用 npm 和构建工具（Vite、webpack 等）的项目，<code>exports</code> 的 <code>import</code> 指向它</td><td>three.js、Solid、KaTeX、<code>@fontsource</code> 保留为 import，由构建工具解析</td><td>import <code>@fontsource</code> 与 KaTeX 的 CSS 文件，字体由构建工具输出</td><td>开发模式打开，生产构建关闭</td></tr>
+    <tr><td><code>dist/module/*.js</code></td><td>用 npm 和构建工具（Vite、webpack 等）的项目，<code>exports</code> 的 <code>import</code> 指向它</td><td>three.js、Solid、KaTeX、<code>yaml</code>、<code>@fontsource</code> 保留为 import，由构建工具解析</td><td>import <code>@fontsource</code> 与 KaTeX 的 CSS 文件，字体由构建工具输出</td><td>开发模式打开，生产构建关闭</td></tr>
     <tr><td><code>dist/*.js</code></td><td>不用构建工具的静态站，通过 jsDelivr 引用或复制 <code>dist/</code></td><td>打包进产物</td><td>输出到 <code>dist/fonts/</code>，代码按自身地址请求</td><td>关闭</td></tr>
   </tbody>
 </table>
-<p><code>element</code> 入口在两份产物里都有：用构建工具时写 <code>import '@yhnocoder/vizflow/element'</code>，不用构建工具时引用 <code>dist/element.js</code>。</p>
+<p><code>element</code> 入口在两份产物里都有：用构建工具时写 <code>import '@yhnocoder/vizflow/element'</code>，不用构建工具时引用 <code>dist/element.js</code>。<code>element</code> 只用动态 <code>import()</code> 引用 <code>dsl</code>，<code>src/nn/</code> 下的核心模块文件用 Vite 的 <code>?raw</code> 以文本打进 <code>dsl</code> 入口，两份产物都不需要另外复制 YAML 文件。</p>
 <p>两份产物的类型声明都是 <code>dist/types/</code>，<code>exports</code> 的 <code>types</code> 指向它，公开的类型声明不引用 three.js、Solid、KaTeX。</p>
 <h3>构建工具产物</h3>
 <p>构建工具产物不打包第三方库，所以 three.js、Solid、KaTeX 和三个 <code>@fontsource</code> 字体包列在 <code>package.json</code> 的 <code>dependencies</code>，安装 vizflow 时一起安装。页面自己也引用 three.js 时，构建工具把两边的 import 解析到同一份 three.js，页面里只有一个实例，不会出现 three.js 的「Multiple instances」警告；打包进产物时页面会有两份。</p>
@@ -870,13 +1040,13 @@ onThemeChange(fn: () =&gt; void): () =&gt; void</code></pre>
 <p>检查的默认值写成 <code>process.env.NODE_ENV !== 'production'</code>，因为 Vite 和 webpack 都会替换这个表达式。库模式构建时 Vite 保留 <code>process.env.*</code>，不在库自己的构建里替换，留给页面的构建工具。</p>
 <p>源码里与产物有关的三个模块各有一个 <code>.module.ts</code> 版本：字体（<code>theme/fonts</code>）、KaTeX 样式（<code>formula/katex-style</code>）和检查默认值（<code>autograd/check-default</code>）。构建工具产物用 <code>.module.ts</code> 版本，直接引用的产物、开发服务器和测试用原版本。</p>
 <h3>直接引用的产物</h3>
-<p>静态站可以直接 <code>import</code> 这份产物，不需要 import map。three.js、Solid、KaTeX 打包进产物，three.js 只在引用 <code>scene3d</code> 时加载，KaTeX 只在引用 <code>formula</code>（包括间接引用）时加载。</p>
+<p>静态站可以直接 <code>import</code> 这份产物，不需要 import map。three.js、Solid、KaTeX 打包进产物，three.js 只在引用 <code>scene3d</code> 时加载，KaTeX 只在引用 <code>formula</code>（包括间接引用）时加载，<code>yaml</code> 打包在 <code>dsl.js</code> 里，只在引用 <code>dsl</code> 或元素设置了 <code>src</code> 时加载。</p>
 <p>字体文件输出到 <code>dist/fonts/</code>，包括 KaTeX 的字体和 <code>@fontsource</code> 的 Source Serif 4、Geist、Geist Mono，全部是 woff2。<code>theme</code> 与 <code>formula</code> 的代码以自身所在文件的地址为基准请求 <code>fonts/</code> 下的文件，所以入口文件和 chunk 都放在 <code>dist/</code> 根目录，复制产物时 <code>fonts/</code> 要和它们保持在同一目录。</p>
 <p>版本号遵循 semver，静态站固定引用某个版本。产物可以复制进静态站，也可以通过 jsDelivr 按版本号和文件路径引用。jsDelivr 按文件路径取文件，不经过 <code>exports</code>，所以 <code>exports</code> 指向构建工具产物不影响这种写法：</p>
 <pre><code class="language-js">import { graph } from 'https://cdn.jsdelivr.net/npm/@yhnocoder/vizflow@0.1.0/dist/core.js';</code></pre>
 <h3>sideEffects 与测试</h3>
 <p>注入样式或注册自定义元素的模块（<code>theme</code> 及其字体模块、<code>ui</code>、<code>formula</code> 的 KaTeX 样式模块、<code>scene3d</code>、<code>element</code>）和两份产物的 <code>.js</code> 文件在 <code>sideEffects</code> 中列出，否则构建会把只为注入样式而写的 import 删掉。</p>
-<p>读取构建产物的测试确认：直接引用的产物里，<code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js；构建工具产物里任何入口都不打包这三个库，它们只以 import 出现，CSS 引用的每个字体文件都存在；每个入口都有对应的 <code>.d.ts</code>。仓库里的 <code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，测试把它安装、构建，再用 <code>vite preview</code> 和 <code>vite</code> 开发服务器各打开一次，确认场景画出、没有控制台错误、字体请求全部返回 200、只有一个 three.js 实例，并且检查在开发服务器下打开、在生产构建里关闭。这个项目用 <code>&lt;vizflow-page&gt;</code> 元素写成；另一个浏览器测试直接引用 <code>dist/element.js</code>，确认不经过构建也能用这个元素画出页面。</p>
+<p>读取构建产物的测试确认：直接引用的产物里，<code>core</code>、<code>explain</code>、<code>steps</code> 入口及它们静态导入的 chunk 里不出现 three.js、Solid 和 KaTeX，<code>ui</code> 入口里不出现 three.js；构建工具产物里任何入口都不打包这三个库，它们只以 import 出现，<code>dsl</code> 只 import <code>yaml</code>，<code>element</code> 只以动态 <code>import()</code> 引用 <code>dsl</code>，CSS 引用的每个字体文件都存在；每个入口都有对应的 <code>.d.ts</code>。仓库里的 <code>examples/vite-project/</code> 是一个独立的 Vite + TypeScript 项目，测试把它安装、构建，再用 <code>vite preview</code> 和 <code>vite</code> 开发服务器各打开一次，确认场景画出、没有控制台错误、字体请求全部返回 200、只有一个 three.js 实例，并且检查在开发服务器下打开、在生产构建里关闭。这个项目用 <code>&lt;vizflow-page&gt;</code> 元素写成；另一个浏览器测试直接引用 <code>dist/element.js</code>，确认不经过构建也能用这个元素画出页面。</p>
 <p>仓库里的写作说明 <code>docs/guide.md</code> 写 API 用法、两个完整示例页面的代码和常见注意事项。作者和 Claude 在编写新页面之前先读它，生成的代码就基于同一套 API。</p>
 
 <h2>第一阶段做什么</h2>
