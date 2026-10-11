@@ -9,6 +9,7 @@
     "*.css",
     "./src/theme/index.ts",
     "./src/autograd/ops/index.ts",
+    "./src/explain/ops/index.ts",
     "./src/theme/fonts.ts",
     "./src/theme/fonts.module.ts",
     "./src/ui/index.ts",
