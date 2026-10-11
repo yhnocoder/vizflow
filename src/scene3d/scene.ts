@@ -45,15 +45,17 @@ import {
   tokenText,
 } from './layout';
 import { LineBatch } from './lines';
+import { type Brace, type SceneModule, blockSpan, bracePoints, braceTip, checkModules, layoutBraces } from './modules';
 import { HEIGHT_CAP, barHeight, niceTicks, scaleFor } from './scales';
 import { type EdgeStyle, edgeStyle } from './style';
-import { Transition } from './transition';
+import { Transition, easeOut } from './transition';
 
 export interface CameraOptions {
   direction?: Vec3;
   azimuth?: [number, number];
   polar?: [number, number];
   zoom?: [number, number];
+  follow?: boolean;
 }
 
 export interface SceneOptions {
@@ -63,6 +65,7 @@ export interface SceneOptions {
   camera?: CameraOptions;
   hint?: string;
   labels?: Record<string, [number, number]>;
+  modules?: SceneModule[];
 }
 
 export interface SceneHandle {
@@ -77,6 +80,9 @@ export const DEFAULT_ZOOM: [number, number] = [0.6, 3];
 export const DAMPING = 0.1;
 export const PIXEL_RATIO_CAP = 2;
 const FRAME_SEARCH_STEPS = 30;
+export const FOLLOW_MS = 450;
+export const FOLLOW_MIN_WIDTH = 14;
+export const FOLLOW_MIN_HEIGHT = 8;
 export const EDGE_HOVER_DISTANCE = 6;
 export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显示不出来。下方的分步讲解和右侧数值仍然可用。';
 
@@ -138,6 +144,28 @@ interface FrameItem {
   down: number;
 }
 
+interface View {
+  target: Vector3;
+  unit: number;
+}
+
+interface Frustum {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+}
+
+function boundsOf(points: Vec3[]): { min: number[]; max: number[] } {
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (const p of points) for (let axis = 0; axis < 3; axis++) {
+    min[axis] = Math.min(min[axis], p[axis]);
+    max[axis] = Math.max(max[axis], p[axis]);
+  }
+  return { min, max };
+}
+
 function span(items: FrameItem[], k: number, at: (i: FrameItem) => number, before: (i: FrameItem) => number, after: (i: FrameItem) => number): { lo: number; hi: number; size: number } {
   let lo = Infinity;
   let hi = -Infinity;
@@ -195,6 +223,13 @@ class SceneController implements EditHost {
   private readonly tip: HTMLDivElement;
   private readonly pop: HTMLDivElement;
   private readonly lines: LineBatch;
+  private readonly braceInk: LineBatch;
+  private readonly braceStrong: LineBatch;
+  private readonly braceTransition: Transition;
+  private readonly moduleLabels: Label[];
+  private braces: Brace[] = [];
+  private stepKey: string | undefined;
+  private cameraMove: { from: View; to: View; start: number } | undefined;
   private readonly highlightMaterial: MeshBasicMaterial;
   private readonly raycaster = new Raycaster();
   private readonly pointer = new Vector2();
@@ -234,7 +269,7 @@ class SceneController implements EditHost {
     renderer.outputColorSpace = SRGBColorSpace;
     root.appendChild(renderer.domElement);
     this.labels = new LabelLayer(root, () => {
-      this.frameAll();
+      this.reframe();
       this.labelsDirty = true;
       this.requestFrame();
     });
@@ -252,7 +287,9 @@ class SceneController implements EditHost {
     this.controls = new OrbitControls(this.camera, renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = DAMPING;
-    this.controls.enablePan = false;
+    this.controls.enablePan = true;
+    this.controls.screenSpacePanning = true;
+    this.controls.zoomToCursor = true;
     const [minZoom, maxZoom] = cameraOptions.zoom ?? DEFAULT_ZOOM;
     this.controls.minZoom = minZoom;
     this.controls.maxZoom = maxZoom;
@@ -264,6 +301,9 @@ class SceneController implements EditHost {
       this.labelsDirty = true;
       this.requestFrame();
     });
+    this.controls.addEventListener('start', () => {
+      this.cameraMove = undefined;
+    });
 
     this.scene.add(new AmbientLight(0xffffff, AMBIENT_INTENSITY * LEGACY_LIGHT_FACTOR));
     const sun = new DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY * LEGACY_LIGHT_FACTOR);
@@ -273,11 +313,18 @@ class SceneController implements EditHost {
     this.lines = new LineBatch(this.theme.ink);
     this.scene.add(this.lines.object);
     this.highlightMaterial = new MeshBasicMaterial({ color: new Color(...this.theme.ink) });
+    this.braceInk = new LineBatch(this.theme.ink);
+    this.braceStrong = new LineBatch(this.theme.lineStrong);
+    this.scene.add(this.braceInk.object, this.braceStrong.object);
 
     this.buildBlocks();
+    const modules = options.modules ?? [];
+    checkModules(modules, this.renderables.map((r) => r.block.node));
+    this.moduleLabels = modules.map((module) => this.moduleLabel(module));
+    this.braceTransition = new Transition(modules.length * 2, () => this.reduceMotion.matches);
     this.refresh();
-    this.resize();
     this.placeCamera();
+    this.resize();
     this.controls.saveState();
 
     this.unsubscribe.push(g.subscribe(() => this.refresh()));
@@ -447,6 +494,50 @@ class SceneController implements EditHost {
     return renderable;
   }
 
+  private moduleLabel(module: SceneModule): Label {
+    const side = module.side ?? 'left';
+    const label = this.labels.add('mod', `vf-mod-${side}`);
+    label.anchor = side === 'left' ? 'right-middle' : 'left-middle';
+    label.el.dataset.module = module.title;
+    label.setContent(`${module.title}\n${module.subtitle ?? ''}`, () => {
+      const fragment = document.createDocumentFragment();
+      const title = document.createElement('span');
+      title.className = 'vf-mod-title';
+      title.textContent = module.title;
+      fragment.appendChild(title);
+      if (module.subtitle !== undefined) {
+        const subtitle = document.createElement('span');
+        subtitle.className = 'vf-mod-sub';
+        subtitle.textContent = module.subtitle;
+        fragment.appendChild(subtitle);
+      }
+      return fragment;
+    });
+    return label;
+  }
+
+  private updateBraces(now: number): void {
+    const modules = this.options.modules ?? [];
+    if (modules.length === 0) return;
+    const { min, max } = boundsOf(this.framingPoints(this.renderables));
+    this.braces = layoutBraces(
+      modules,
+      this.renderables.map((r) => blockSpan(r.block)),
+      { xMin: min[0], xMax: max[0], zCenter: (min[2] + max[2]) / 2 },
+    );
+    const opacity: number[] = [];
+    this.braces.forEach((brace, i) => {
+      const shown = brace.nodes.some((n) => this.state.revealed(n));
+      const on = shown && brace.nodes.some((n) => this.state.active(n));
+      const label = this.moduleLabels[i];
+      label.pos = braceTip(brace);
+      label.visible = shown;
+      label.setFlag('vf-on', on);
+      opacity.push(on ? 1 : 0, shown && !on ? 1 : 0);
+    });
+    this.braceTransition.retarget(opacity, now);
+  }
+
   private bindCard(label: Label, node: Node): void {
     const show = () => this.showNodeCard(node, label.el);
     label.el.addEventListener('pointerenter', show);
@@ -569,9 +660,13 @@ class SceneController implements EditHost {
         renderable.plate.update({ revealed, active, backward }, frameXs, ticks, scale);
       }
     }
+    this.updateBraces(now);
     this.buildEdges();
     this.geometryDirty = true;
     this.labelsDirty = true;
+    const stepKey = `${dir}:${this.state.index}`;
+    if (this.options.camera?.follow === true && this.stepKey !== undefined && stepKey !== this.stepKey) this.followFrame(true);
+    this.stepKey = stepKey;
     if (this.pinned !== undefined) this.showNodeCard(this.pinned.node, this.pinned.el);
     if (this.hoverEdge !== undefined) {
       const still = this.edges.find((e) => e.edge.id === this.hoverEdge!.edge.id);
@@ -703,6 +798,10 @@ class SceneController implements EditHost {
       d.points = sampleCurve(a, b, d.flat);
     }
     this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity, dashed: d.style.dashed })));
+    const braceOpacity = this.braceTransition.current;
+    const bracePolylines = this.braces.map((brace) => bracePoints(brace));
+    this.braceInk.setPolylines(bracePolylines.map((points, i) => ({ points, opacity: braceOpacity[2 * i], dashed: false })));
+    this.braceStrong.setPolylines(bracePolylines.map((points, i) => ({ points, opacity: braceOpacity[2 * i + 1], dashed: false })));
     this.updateHighlight();
   }
 
@@ -737,7 +836,15 @@ class SceneController implements EditHost {
     for (const renderable of this.renderables) {
       if (renderable.transition.step(now)) stepped = true;
     }
-    const running = this.renderables.some((r) => r.transition.active);
+    if (this.braceTransition.step(now)) stepped = true;
+    const running = this.renderables.some((r) => r.transition.active) || this.braceTransition.active || this.cameraMove !== undefined;
+    if (this.cameraMove !== undefined) {
+      const { from, to, start } = this.cameraMove;
+      const t = (now - start) / FOLLOW_MS;
+      const k = easeOut(t);
+      this.applyView({ target: from.target.clone().lerp(to.target, k), unit: from.unit + (to.unit - from.unit) * k });
+      if (t >= 1) this.cameraMove = undefined;
+    }
     if (this.geometryDirty || stepped) {
       this.updateGeometry();
       this.geometryDirty = false;
@@ -757,13 +864,18 @@ class SceneController implements EditHost {
     this.width = Math.max(1, this.root.clientWidth);
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
-    this.frameAll();
+    this.reframe();
     this.labelsDirty = true;
   }
 
-  private framingPoints(): Vec3[] {
+  private reframe(): void {
+    if (this.options.camera?.follow === true) this.followFrame(false);
+    else this.frameAll();
+  }
+
+  private framingPoints(renderables: Renderable[]): Vec3[] {
     const points: Vec3[] = [];
-    for (const renderable of this.renderables) {
+    for (const renderable of renderables) {
       const { block } = renderable;
       const [w, d] = block.footprint;
       const values = block.node.value.data;
@@ -795,19 +907,24 @@ class SceneController implements EditHost {
     return points;
   }
 
-  private center(): Vector3 {
-    const points = this.framingPoints();
-    const min = [Infinity, Infinity, Infinity];
-    const max = [-Infinity, -Infinity, -Infinity];
-    for (const p of points) for (let axis = 0; axis < 3; axis++) {
-      min[axis] = Math.min(min[axis], p[axis]);
-      max[axis] = Math.max(max[axis], p[axis]);
-    }
+  private allPoints(): Vec3[] {
+    const points = this.framingPoints(this.renderables);
+    for (const brace of this.braces) points.push([brace.x, brace.y0, brace.z], [brace.x, brace.y1, brace.z], braceTip(brace));
+    return points;
+  }
+
+  private labelsOf(renderable: Renderable): Label[] {
+    const own = [...renderable.nodeLabels, ...renderable.values, ...renderable.classes, ...renderable.rows, ...renderable.tickLabels];
+    return renderable.title === undefined ? own : [renderable.title, ...own];
+  }
+
+  private center(points: Vec3[]): Vector3 {
+    const { min, max } = boundsOf(points);
     return new Vector3((min[0] + max[0]) / 2, (min[1] + max[1]) / 2, (min[2] + max[2]) / 2);
   }
 
   private placeCamera(): void {
-    const center = this.center();
+    const center = this.center(this.allPoints());
     this.camera.position.copy(center).addScaledVector(this.direction, CAMERA_DISTANCE);
     this.camera.lookAt(center);
     this.controls.target.copy(center);
@@ -816,18 +933,17 @@ class SceneController implements EditHost {
     this.controls.update();
   }
 
-  private frameAll(): void {
-    const center = this.center();
-    const eye = center.clone().addScaledVector(this.direction, CAMERA_DISTANCE);
+  private computeFrame(points: Vec3[], labels: readonly Label[], center: Vector3, direction: Vector3): Frustum {
+    const eye = center.clone().addScaledVector(direction, CAMERA_DISTANCE);
     const view = new Matrix4().lookAt(eye, center, this.camera.up).setPosition(eye).invert();
     const marginX = LABEL_SAFE_MARGIN;
     const marginY = LABEL_SAFE_MARGIN;
-    const items: FrameItem[] = this.framingPoints().map((p) => {
+    const items: FrameItem[] = points.map((p) => {
       tmpVector.set(...p).applyMatrix4(view);
       return { x: tmpVector.x, y: tmpVector.y, left: marginX, right: marginX, up: marginY, down: marginY };
     });
     const geometry = { x: span(items, 1, (i) => i.x, () => 0, () => 0), y: span(items, 1, (i) => i.y, () => 0, () => 0) };
-    for (const label of this.labels.labels) {
+    for (const label of labels) {
       if (label.pos === undefined) continue;
       const [w, h] = label.frameSize();
       if (w === 0 && h === 0) continue;
@@ -866,11 +982,90 @@ class SceneController implements EditHost {
     const sy = spanY(k);
     const cx = ((sx.lo + sx.hi) / 2) * unit;
     const cy = -((sy.lo + sy.hi) / 2) * unit;
-    this.camera.left = cx - (availableW * unit) / 2;
-    this.camera.right = this.camera.left + this.width * unit;
-    this.camera.top = cy + (reserve + availableH / 2) * unit;
-    this.camera.bottom = this.camera.top - this.height * unit;
+    const left = cx - (availableW * unit) / 2;
+    const top = cy + (reserve + availableH / 2) * unit;
+    return { left, right: left + this.width * unit, top, bottom: top - this.height * unit };
+  }
+
+  private frameAll(): void {
+    const points = this.allPoints();
+    const frame = this.computeFrame(points, this.labels.labels, this.center(points), this.direction);
+    this.camera.left = frame.left;
+    this.camera.right = frame.right;
+    this.camera.top = frame.top;
+    this.camera.bottom = frame.bottom;
     this.camera.updateProjectionMatrix();
+  }
+
+  private viewDirection(): Vector3 {
+    return this.camera.position.clone().sub(this.controls.target).normalize();
+  }
+
+  private followView(): View {
+    const overview = this.state.dir === 'forward' && this.state.index === 0;
+    const active = overview ? [] : this.renderables.filter((r) => this.state.revealed(r.block.node) && this.state.active(r.block.node));
+    let points: Vec3[];
+    let labels: Label[];
+    if (active.length === 0) {
+      points = this.allPoints();
+      labels = this.labels.labels;
+    } else {
+      points = this.framingPoints(active);
+      const { min, max } = boundsOf(points);
+      const [cx, cy, cz] = [0, 1, 2].map((axis) => (min[axis] + max[axis]) / 2);
+      if (max[0] - min[0] < FOLLOW_MIN_WIDTH) points.push([cx - FOLLOW_MIN_WIDTH / 2, cy, cz], [cx + FOLLOW_MIN_WIDTH / 2, cy, cz]);
+      if (max[1] - min[1] < FOLLOW_MIN_HEIGHT) points.push([cx, cy - FOLLOW_MIN_HEIGHT / 2, cz], [cx, cy + FOLLOW_MIN_HEIGHT / 2, cz]);
+      const nodes = new Set(active.map((r) => r.block.node));
+      labels = active.flatMap((r) => this.labelsOf(r));
+      this.braces.forEach((brace, i) => {
+        if (brace.nodes.some((n) => nodes.has(n))) labels.push(this.moduleLabels[i]);
+      });
+    }
+    const direction = this.viewDirection();
+    const center = this.center(points);
+    const frame = this.computeFrame(points, labels, center, direction);
+    const eye = center.clone().addScaledVector(direction, CAMERA_DISTANCE);
+    const basis = new Matrix4().lookAt(eye, center, this.camera.up);
+    const right = new Vector3().setFromMatrixColumn(basis, 0);
+    const up = new Vector3().setFromMatrixColumn(basis, 1);
+    const target = center.addScaledVector(right, (frame.left + frame.right) / 2).addScaledVector(up, (frame.top + frame.bottom) / 2);
+    return { target, unit: (frame.right - frame.left) / this.width };
+  }
+
+  private currentView(): View {
+    this.camera.updateMatrixWorld();
+    const right = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 0);
+    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+    const target = this.controls.target
+      .clone()
+      .addScaledVector(right, (this.camera.left + this.camera.right) / 2)
+      .addScaledVector(up, (this.camera.top + this.camera.bottom) / 2);
+    return { target, unit: (this.camera.right - this.camera.left) / this.camera.zoom / this.width };
+  }
+
+  private applyView(view: View): void {
+    const direction = this.viewDirection();
+    this.controls.target.copy(view.target);
+    this.camera.position.copy(view.target).addScaledVector(direction, CAMERA_DISTANCE);
+    this.camera.lookAt(view.target);
+    this.camera.zoom = 1;
+    this.camera.left = (-this.width * view.unit) / 2;
+    this.camera.right = (this.width * view.unit) / 2;
+    this.camera.top = (this.height * view.unit) / 2;
+    this.camera.bottom = (-this.height * view.unit) / 2;
+    this.camera.updateProjectionMatrix();
+    this.labelsDirty = true;
+  }
+
+  private followFrame(animate: boolean): void {
+    this.cameraMove = undefined;
+    this.controls.enableDamping = false;
+    this.controls.update();
+    this.controls.enableDamping = true;
+    const to = this.followView();
+    if (animate && !this.reduceMotion.matches) this.cameraMove = { from: this.currentView(), to, start: performance.now() };
+    else this.applyView(to);
+    this.requestFrame();
   }
 
   private chromeRight(): number {
@@ -892,7 +1087,7 @@ class SceneController implements EditHost {
     this.controls.enableDamping = true;
     this.controls.reset();
     this.placeCamera();
-    this.frameAll();
+    this.reframe();
     this.labelsDirty = true;
     this.requestFrame();
   }
@@ -906,6 +1101,8 @@ class SceneController implements EditHost {
       renderable.plate?.setTheme(this.theme);
     }
     this.lines.setColor(this.theme.ink);
+    this.braceInk.setColor(this.theme.ink);
+    this.braceStrong.setColor(this.theme.lineStrong);
     this.highlightMaterial.color.setRGB(...this.theme.ink);
     this.refresh();
   }
@@ -1112,6 +1309,8 @@ class SceneController implements EditHost {
       renderable.plate?.dispose();
     }
     this.lines.dispose();
+    this.braceInk.dispose();
+    this.braceStrong.dispose();
     this.highlight?.geometry.dispose();
     this.highlightMaterial.dispose();
     this.labels.dispose();

@@ -166,7 +166,7 @@ function single() {
     g,
     steps,
     nodes: { x, t, u, S, p, y, logy, loss },
-    hint: '拖动旋转 · 点柱子换目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
+    hint: '拖动旋转 · 右键拖动平移 · 点柱子换目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
     layout: [stack(x, u, S, p, y, logy, loss, {
       level: LEVEL,
       back: 1.7,
@@ -286,7 +286,7 @@ function batch() {
     g,
     steps,
     nodes: { X, t, U, S, P, y, logy, lb, loss },
-    hint: '拖动旋转 · 点柱子选样本和目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
+    hint: '拖动旋转 · 右键拖动平移 · 点柱子选样本和目标类 · 悬停层名看公式 · 反向时悬停连线看导数',
     layout: [stack(X, U, S, P, y, logy, lb, loss, {
       level: LEVEL,
       back: 2.2,
