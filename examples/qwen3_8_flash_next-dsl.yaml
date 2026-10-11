@@ -1,0 +1,382 @@
+title: Qwen3.8-Flash-Next：从 token 到损失
+lede: Qwen3.8-Flash-Next 在 HF 里是 <code>qwen4_exp</code> 结构。和 Qwen3.5 相比有三处新东西：残差流复制成几条并行的流（hyper-connection），每个子层从这些流里读一个加权平均、再按系数写回每条流；第 2 层多一个 PLE，把 token 的 n-gram 哈希成 id 查一张大表，加到残差流上；full_attention 层的注意力前面多一个 QSA indexer，每个 query 只保留分数最高的若干块 key。这一页从 token id 开始，经过占位的第 1 层、完整的第 2 层（linear_attention，带 PLE）、占位的第 3 到 47 层、完整的第 48 层（full_attention，带 indexer）、最后的 hyper_connection_mixer、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  GatedDeltaNet:    ./qwen3_5/gated-deltanet.yaml
+  Qwen3_5MoE:       ./qwen3_5_moe/moe.yaml
+  GatedResidual:    ./qwen3_8_flash_next/gated-residual.yaml
+  GatedResidualMix: ./qwen3_8_flash_next/hyper-mix.yaml
+  HyperInject:      ./qwen3_8_flash_next/hyper-inject.yaml
+  PLELayer:         ./qwen3_8_flash_next/ple.yaml
+  FlashAttention:   ./qwen3_8_flash_next/attention.yaml
+dims: { T: 3, d: 4, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4, Ne: 4, Nk: 2, mf: 2, sf: 2, hc: 2, r: 2, hpn: 2, Vng: 72, dng: 2, Kp: 4, HI: 2, DI: 4 }
+dtype: bf16
+real: { name: Qwen3.8-Flash-Next, d: 2560, V: 248320, H: 24, Hkv: 2, dh: 256, rd: 64, Hk: 16, Hv: 48, dk: 128, dv: 128, K: 4, Ne: 512, Nk: 10, mf: 640, sf: 640, hc: 4, r: 320, hpn: 8, Vng: 320001536, dng: 160, Kp: 4, HI: 4, DI: 128 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
+inputs: {}
+weights:
+  E: { shape: [V, d] }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失。Qwen3.8-Flash-Next 有 48 层，layer_types 按「linear、linear、linear、full」循环 12 次。embedding 之后，残差流复制成 hc_count $=\of{hc}$ 条，宽度变成 $\of{hc}\cdot d$。每个 decoder 层有两个子层（token mixer 和 MoE），每个子层前面有一个 GatedResidual：按流做 RMSNorm，算出读出权重，把各条流加权平均成一个宽 $d$ 的输入；子层的输出再乘每条流自己的系数 $\beta_k$，加回每条流。层里没有 input_layernorm 和 post_attention_layernorm，模型最后也没有 final norm，归一化都在 GatedResidual 里。第 2 层在 hyper-connection 之前多一个 PLE；full_attention 层在注意力之前多一个 QSA indexer。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span>。尺寸用 $d=4$、$V=5$、$\of{hc}$ 条流、低秩 $r=2$；softmax 注意力有 2 个 query head、1 个 kv head，$d_h=8$；Gated DeltaNet 有 1 个 key head、2 个 value head，$d_k=d_v=2$；MoE 有 4 个路由专家，中间维度都是 2；PLE 的 n-gram 最长 3 个 token，每个 n 有 2 个 head；indexer 有 2 个 head，宽 4，budget 2，compress_ratio 1。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。每条流的梯度有两个去处：沿残差直接往下传，以及经过 GatedResidual 的读出权重和写回系数进入子层。PLE 的梯度传到 n-gram 嵌入表里被取到的那些行。indexer 只决定 mask，选择是硬的，所以它的参数没有梯度。
+      $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id，其余都是参数和常量。所有 Qwen4ExpTextRMSNorm 的权重以 0 为中心，乘的是 $1+\boldsymbol{\gamma}$，HF 的初值是 0；门控 RMSNorm 的权重初值是 1。PLE 的乘数、质数和偏移是 int64 的常量 buffer，由配置算出，不是参数。causal mask 和 RoPE 的 cos/sin 表由形状决定，不需要梯度。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+
+modules:
+  LinearDecoderLayer:
+    subtitle: Qwen4ExpTextDecoderLayer
+    params: { hc: { type: dim }, r: { type: dim }, Hk: { type: dim }, Hv: { type: dim }, dk: { type: dim }, dv: { type: dim }, K: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim }, hpn: { type: dim }, Vng: { type: dim }, dng: { type: dim }, Kp: { type: dim } }
+    inputs: { H: { shape: [T, n] }, ids: { shape: [T] } }
+    outputs: [H_out]
+    body:
+      - ple:
+          use: PLELayer
+          params: { hc: hc, N: 3, hpn: hpn, eos: 5, Vng: Vng, dng: dng, K: Kp }
+          inputs: { H: H, ids: ids }
+          outputs: { out: P }
+          tex: { out: '\mathbf{ple}' }
+      - Hp: { op: H + P, tex: 'H^{ple}' }
+      - attn_hyper_connection:
+          use: GatedResidual
+          suffix: a
+          params: { hc: hc, r: r }
+          inputs: { H: Hp }
+          outputs: { m: m1, beta: b1 }
+          tex: { m: '\mathbf{m}_{a}', beta: '\boldsymbol{\beta}_{a}' }
+      - linear_attn:
+          use: GatedDeltaNet
+          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, norm_act: sigmoid }
+          inputs: { x: m1 }
+          outputs: { out: att }
+          tex: { out: '\mathbf{att}_{1}' }
+          steps:
+            gated_delta_rule.scale:
+              append: |
+                HF 在 prefill（没有缓存、一次处理整段序列）时调用的是 <code>torch_chunk_gated_delta_rule</code>：序列补齐到 chunk_size $=64$ 的倍数，每个 chunk 内部用矩阵运算一次算完，chunk 之间再传递状态。这一页按逐个位置的递推形式（HF 的 <code>torch_recurrent_gated_delta_rule</code>，生成时每次一个 token 用它）来画，两种写法在数学上相等，数值和梯度都相同。
+      - attn_inject:
+          use: HyperInject
+          inline: true
+          brace: { title: 写回残差流, subtitle: '$H+\operatorname{flatten}(\boldsymbol{\beta}_{a}\,\mathbf{att}_{1})$' }
+          params: { hc: hc }
+          inputs: { H: Hp, y: att, beta: b1 }
+          outputs: { out: H1 }
+          tex: { out: 'H_{a}', inj: '\boldsymbol{\beta}_{a,k}\,\mathbf{att}_{1}', injf: '\operatorname{flatten}(\boldsymbol{\beta}_{a,k}\,\mathbf{att}_{1})' }
+      - mlp_hyper_connection:
+          use: GatedResidual
+          suffix: m
+          params: { hc: hc, r: r }
+          inputs: { H: H1 }
+          outputs: { m: m2, beta: b2 }
+          tex: { m: '\mathbf{m}_{m}', beta: '\boldsymbol{\beta}_{m}' }
+      - mlp:
+          use: Qwen3_5MoE
+          params: { E: Ne, K: Nk, mf: mf, sf: sf }
+          inputs: { x: m2 }
+          outputs: { out: moe }
+          tex: { out: '\mathbf{moe}_{1}' }
+      - mlp_inject:
+          use: HyperInject
+          inline: true
+          brace: { title: 写回残差流, subtitle: '$H+\operatorname{flatten}(\boldsymbol{\beta}_{m}\,\mathbf{moe}_{1})$' }
+          params: { hc: hc }
+          inputs: { H: H1, y: moe, beta: b2 }
+          outputs: { out: H_out }
+          tex: { out: 'H_{2}', inj: '\boldsymbol{\beta}_{m,k}\,\mathbf{moe}_{1}', injf: '\operatorname{flatten}(\boldsymbol{\beta}_{m,k}\,\mathbf{moe}_{1})' }
+    steps:
+      - id: ple_add
+        show: Hp
+        brace: { title: PLE 加回残差流, subtitle: '$H+\mathbf{ple}$' }
+        label: '$\of{Hp}=\of{H}+\of{P}$'
+        title: PLE 的输出加到每条流上
+        text: |
+          <code>hidden_states = hidden_states + self.ple(hidden_states, ple_input_ids, past_key_values, conv_mask=conv_mask)</code>：PLE 的输出宽 $\of{n}$，直接加到 $\of{hc}$ 条流拼成的残差流上，然后才进入 attn_hyper_connection。<code>ple_input_ids</code> 就是 input_ids；有 padding 时 HF 先把 padding 位置换成 eos，这一页没有 padding。
+          $$\of{Hp}={{ Hp | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{H},\ \partial\of{P}$'
+          title: 穿过 PLE 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{Hp}}={{ Hp.grad | matrix:3 }}$$
+  FullDecoderLayer:
+    subtitle: Qwen4ExpTextDecoderLayer
+    params: { hc: { type: dim }, r: { type: dim }, H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, rd: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim }, HI: { type: dim }, DI: { type: dim } }
+    inputs: { X: { shape: [T, n] } }
+    outputs: [H_out]
+    buffers:
+      M: { value: causal_mask(T) }
+    body:
+      - attn_hyper_connection:
+          use: GatedResidual
+          suffix: c
+          params: { hc: hc, r: r }
+          inputs: { H: X }
+          outputs: { m: m1, beta: b1 }
+          tex: { m: '\mathbf{m}_{c}', beta: '\boldsymbol{\beta}_{c}' }
+      - self_attn:
+          use: FlashAttention
+          params: { H: H, Hkv: Hkv, dh: dh, rd: rd, HI: HI, DI: DI, B: 2, c: 1 }
+          inputs: { x: m1, M: M }
+          outputs: { att: att }
+          tex: { att: '\mathbf{att}_{2}' }
+      - attn_inject:
+          use: HyperInject
+          inline: true
+          brace: { title: 写回残差流, subtitle: '$H+\operatorname{flatten}(\boldsymbol{\beta}_{c}\,\mathbf{att}_{2})$' }
+          params: { hc: hc }
+          inputs: { H: X, y: att, beta: b1 }
+          outputs: { out: H1 }
+          tex: { out: 'H_{c}', inj: '\boldsymbol{\beta}_{c,k}\,\mathbf{att}_{2}', injf: '\operatorname{flatten}(\boldsymbol{\beta}_{c,k}\,\mathbf{att}_{2})' }
+      - mlp_hyper_connection:
+          use: GatedResidual
+          suffix: d
+          params: { hc: hc, r: r }
+          inputs: { H: H1 }
+          outputs: { m: m2, beta: b2 }
+          tex: { m: '\mathbf{m}_{d}', beta: '\boldsymbol{\beta}_{d}' }
+      - mlp:
+          use: Qwen3_5MoE
+          params: { E: Ne, K: Nk, mf: mf, sf: sf }
+          inputs: { x: m2 }
+          outputs: { out: moe }
+          tex: { out: '\mathbf{moe}_{2}' }
+      - mlp_inject:
+          use: HyperInject
+          inline: true
+          brace: { title: 写回残差流, subtitle: '$H+\operatorname{flatten}(\boldsymbol{\beta}_{d}\,\mathbf{moe}_{2})$' }
+          params: { hc: hc }
+          inputs: { H: H1, y: moe, beta: b2 }
+          outputs: { out: H_out }
+          tex: { out: 'H_{48}', inj: '\boldsymbol{\beta}_{d,k}\,\mathbf{moe}_{2}', injf: '\operatorname{flatten}(\boldsymbol{\beta}_{d,k}\,\mathbf{moe}_{2})' }
+    steps:
+      - id: causal
+        show: M
+        label: '$\of{M}$'
+        title: causal mask
+        text: |
+          <code>create_causal_mask(...)</code> 在模型的 forward 里只建一次，传给每个 full_attention 层；HF 传了 <code>allow_is_causal_skip=False</code>，所以即使没有 padding 也总是建出这张表，indexer 要用它判断哪些 key 可见。
+          $$\of{M}={{ M | matrix:0 }}$$
+        backward:
+          label: 无梯度
+          title: mask 是常量
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - H0: { op: 'repeat(e, 1, hc)', tex: 'H_{0}' }
+  - layer_1:
+      title: 第 1 层
+      subtitle: Qwen4ExpTextDecoderLayer，linear_attention
+      fixed: true
+      fold:
+        label: '$\of{Ha}$'
+        title: 第 1 层（占位）
+        text: |
+          真实模型的第 1 层是 linear_attention 层，没有 PLE，结构和第 2 层去掉 PLE 以后相同。这里收成一个盒子，只用来示意：盒子里没有真实计算，数值按恒等映射处理。这个盒子不能展开。
+          $$\of{Ha}=\mathrm{layer}_{1}(\of{H0})\;\approx\;\of{H0}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{H0}$'
+          title: 穿过占位的第 1 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{H0}}={{ H0.grad | matrix:3 }}$$
+      body:
+        - Ha: { op: identity(H0), tex: 'H_{1}' }
+  - linear_layer:
+      use: LinearDecoderLayer
+      title: Qwen4ExpTextDecoderLayer
+      subtitle: 第 2 层，linear_attention，带 PLE
+      split: true
+      params: { hc: hc, r: r, Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, Ne: Ne, Nk: Nk, mf: mf, sf: sf, hpn: hpn, Vng: Vng, dng: dng, Kp: Kp }
+      inputs: { H: Ha, ids: ids }
+      outputs: { H_out: H2 }
+      tex: { H_out: 'H_{2}' }
+  - layers:
+      title: $\cdots$ 第 3 到 47 层
+      subtitle: Qwen4ExpTextDecoderLayer $\times$ 45
+      fixed: true
+      fold:
+        label: '$\of{Hb}$'
+        title: $\cdots$ 第 3 到 47 层（占位）
+        text: |
+          真实模型在第 2 层和第 48 层之间还有 45 个 decoder 层，其中第 4、8、$\ldots$、44 层这 11 层是 full_attention，其余 34 层是 linear_attention，第 47 层是 linear_attention。它们都没有 PLE。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，数值按恒等映射处理。这个盒子不能展开。
+          $$\of{Hb}=\mathrm{layers}_{3..47}(\of{H2})\;\approx\;\of{H2}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{H2}$'
+          title: 穿过占位的第 3 到 47 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{H2}}={{ H2.grad | matrix:3 }}$$
+      body:
+        - Hb: { op: identity(H2), tex: 'H_{47}' }
+  - full_layer:
+      use: FullDecoderLayer
+      title: Qwen4ExpTextDecoderLayer
+      subtitle: 第 48 层，full_attention，带 QSA indexer
+      split: true
+      params: { hc: hc, r: r, H: H, Hkv: Hkv, dh: dh, rd: rd, Ne: Ne, Nk: Nk, mf: mf, sf: sf, HI: HI, DI: DI }
+      inputs: { X: Hb }
+      outputs: { H_out: H48 }
+      tex: { H_out: 'H_{48}' }
+  - hyper_connection_mixer:
+      use: GatedResidualMix
+      title: hyper_connection_mixer
+      subtitle: Qwen4ExpTextGatedResidual，use_combine=False
+      suffix: f
+      params: { hc: hc, r: r }
+      inputs: { H: H48 }
+      outputs: { m: h, Hn: Hf }
+      tex: { m: '\mathbf{h}', Hn: '\hat{H}_{f}' }
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      <code>inputs_embeds = self.embed_tokens(input_ids)</code>：每个位置按自己的 token id 从 $E$ 里取出一行。Qwen3.8-Flash-Next 的词表有 248320 个 token，hidden size 是 2560。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: expand
+    show: H0
+    segment: hyper-connection
+    brace: { title: '复制成 $\of{hc}$ 条流', subtitle: 'repeat(1, 1, hc\_count)' }
+    label: '$\of{H0}$'
+    title: 残差流复制成 $\of{hc}$ 条
+    text: |
+      <code>hidden_states = hidden_states.repeat(1, 1, self.config.hc_count)</code>：嵌入在最后一维重复 $\of{hc}$ 次，宽度从 $d$ 变成 $\of{hc}\cdot d$。第 $k$ 段是第 $k$ 条流，开始时每条流都是同一个 $\mathbf{e}$，之后每个子层按不同的系数写回，各条流就不同了。真实模型有 4 条流，宽 10240。
+      $$H_{0}={{ H0 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{e}$'
+      title: 各条流的梯度加回嵌入
+      text: |
+        repeat 的反向是把 $\of{hc}$ 段的梯度加起来。
+        $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      <code>logits = self.lm_head(hidden_states)</code>：hyper_connection_mixer 已经把各条流合成宽 $d$ 的 $\mathbf{h}$，这里没有 final norm，直接乘 $W^{\top}$。lm_head 不和 embedding 共享权重。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      <code>self.loss_function</code> 先把 logits 转成 float32，再算交叉熵。
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      每个位置按标签取出目标 token 的 log p，取负号。
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - sequence: true
+    title: 序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']
+    note: 前三个是输入，后三个是标签。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    random: true
+    reset: true
+  - attention: 'full_layer.self_attn.attention.eager_attention_forward.P[1..H]'
+    ids: ids
+    title: 第 48 层的注意力权重 P
+    note: 行是 query 的位置，列是 key 的位置。被 indexer 去掉的格子和 causal mask 一样是 0。
+  - title: 对应的 PyTorch
+    code: |-
+      # transformers 5.19 qwen4_exp 的文本部分（Qwen4ExpTextModel + lm_head）
+      H = model.embed_tokens(input_ids).repeat(1, 1, hc_count)
+      H = model.layers[0](H)                          # 图里是占位盒子
+      lin = model.layers[1]                           # linear_attention，ple_layer_ids = [2]
+      H = H + lin.ple(H, input_ids, None)             # Qwen4ExpTextPLELayer
+      m, H, beta = lin.attn_hyper_connection(H)       # Qwen4ExpTextGatedResidual
+      y = lin.linear_attn(m)                          # Qwen4ExpTextGatedDeltaNet
+      H = H + (y.unsqueeze(-2) * beta.unsqueeze(-1)).flatten(-2)
+      m, H, beta = lin.mlp_hyper_connection(H)
+      y = lin.mlp(m)                                  # Qwen4ExpTextSparseMoeBlock
+      H = H + (y.unsqueeze(-2) * beta.unsqueeze(-1)).flatten(-2)
+      for layer in model.layers[2:47]:                # 图里是占位盒子
+          H = layer(H, position_embeddings, attention_mask=causal_mask)
+      full = model.layers[47]                         # full_attention
+      m, H, beta = full.attn_hyper_connection(H)
+      y, _ = full.self_attn(m, position_embeddings, attention_mask=causal_mask)  # 含 QSA indexer
+      H = H + (y.unsqueeze(-2) * beta.unsqueeze(-1)).flatten(-2)
+      m, H, beta = full.mlp_hyper_connection(H)
+      y = full.mlp(m)
+      H = H + (y.unsqueeze(-2) * beta.unsqueeze(-1)).flatten(-2)
+      h = model.hyper_connection_mixer(H)             # use_combine=False，没有 final norm
+      logp = F.log_softmax(lm_head(h).float(), -1)
+      loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
+    note: Qwen3.8-Flash-Next：d = 2560，48 层，每 4 层一个 full_attention；hc_count = 4，hc_lowrank = 320；softmax 注意力 24 个 query head、2 个 kv head，head_dim = 256，只有前 64 维做 RoPE，rope_theta = $10^7$；QSA indexer 4 个 head，宽 128，budget 2048，compress_ratio 4；Gated DeltaNet 16 个 key head、48 个 value head，$d_k=d_v=128$，卷积核长 4，门控 RMSNorm 用 sigmoid；512 个路由专家，每个 token 选 10 个，moe_intermediate_size = shared_expert_intermediate_size = 640；只有第 2 层有 PLE，ple_embed_dim = 2560，ngram_size = 3，每个 n 有 8 个 head，n-gram 表有 320001536 行、每行 160 维（约 512 亿个参数），卷积核长 4；V = 248320，eos = 248044。权重文件里的 mtp 层在加载时被忽略，这一页不画。
+values:
+  linear_layer.ple.ple_embedding.m: ['1582356468320383169', '78689173079975253', '228252339180906199']
+  linear_layer.ple.ple_embedding.sizes: [13, 17, 19, 23]
+  linear_layer.ple.ple_embedding.offsets: [0, 13, 30, 49]

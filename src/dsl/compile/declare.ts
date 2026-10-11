@@ -129,7 +129,7 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
     const bufferDtype = dtypeOption(bufferDecl, at);
     const valueWhere = child(at, bufferDecl, 'value');
     const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
-    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
+    if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin, causal_mask, zeros, full or arange');
     let buffer = value as BufferValue;
     if (bufferDecl.shape !== undefined) {
       const shapeWhere = child(at, bufferDecl, 'shape');

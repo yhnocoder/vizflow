@@ -25,3 +25,7 @@ export function promoteDtypes(dtypes: readonly Dtype[], fallback: Dtype, where: 
   const floats = dtypes.filter((d) => FLOAT_RANK[d] !== undefined);
   return floats.length > 0 ? widest(floats, FLOAT_RANK, where) : widest(dtypes, INT_RANK, where);
 }
+
+export function isIntegerDtype(dtype: Dtype): boolean {
+  return INT_RANK[dtype] !== undefined;
+}

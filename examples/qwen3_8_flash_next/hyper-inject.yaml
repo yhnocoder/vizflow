@@ -1,0 +1,52 @@
+module: HyperInject
+subtitle: 子层的输出按 $\boldsymbol{\beta}$ 写回每条流
+params:
+  hc: { type: dim }
+inputs:
+  H:    { shape: [T, n] }
+  y:    { shape: [T, d] }
+  beta: { shape: [T, hc] }
+outputs: [out]
+body:
+  - y3: { op: 'view(y, T, 1, d)', tex: '\operatorname{unsqueeze}(\of{y})' }
+  - b3: { op: 'view(beta, T, hc, 1)', tex: '\operatorname{unsqueeze}(\of{beta})' }
+  - inj: { op: y3 * b3, tex: '{\of{beta}}_{k}\,\of{y}' }
+  - injf: { op: 'view(inj, T, n)', tex: '\operatorname{flatten}({\of{beta}}_{k}\,\of{y})' }
+  - out: { op: H + injf, tex: 'H' }
+steps:
+  - id: inject
+    show: [y3, b3, inj]
+    label: '$\of{inj}$'
+    title: 子层的输出乘写回系数
+    text: |
+      <code>injection = hidden_states.unsqueeze(-2) * injection_weights.unsqueeze(-1)</code>：子层的输出 $\of{y}$ 宽 $d=\of{d}$，复制给 $\of{hc}$ 条流，第 $k$ 条流乘上自己的系数 $\beta_k$，形状 $(T, \of{hc}, \of{d})$。
+      $$\of{inj}={{ inj | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{y},\ \partial\of{beta}$'
+      title: 传到子层的输出和写回系数
+      text: |
+        $\of{y}$ 被 $\of{hc}$ 条流共用，它的梯度是 $\sum_k\beta_k\,\partial\ell/\partial H^{(k)}$；$\beta_k$ 的梯度是 $\of{y}$ 和第 $k$ 条流梯度的点积。
+        $$\frac{\partial\ell}{\partial\of{y}}={{ y.grad | matrix:3 }}$$
+  - id: flatten
+    show: injf
+    label: '$\mathrm{flatten}$'
+    title: 拼成一行
+    text: |
+      <code>injection.flatten(-2)</code>：$\of{hc}$ 条流拼回宽 $\of{n}$ 的一行。
+      $$\of{injf}={{ injf | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{inj}$'
+      title: 切回各条流
+  - id: add
+    show: out
+    label: '$\of{out}=\of{H}+\of{injf}$'
+    title: 加回残差流
+    text: |
+      <code>hidden_states = hyper_input + injection.flatten(-2)</code>：加到没有归一化的 $\of{H}$ 上。$\of{hc}$ 条流各自保留自己的内容，只是按不同的系数收到同一份子层输出。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{H},\ \partial\of{injf}$'
+      title: 穿过残差
+      text: |
+        梯度复制成两份，一份沿残差直接交给 $\of{H}$，一份进入子层。
+        $$\frac{\partial\ell}{\partial\of{out}}={{ out.grad | matrix:3 }}$$

@@ -82,9 +82,94 @@ export function sigmoid(x: number): number {
   return e / (1 + e);
 }
 
+function integerOperands(a: Tensor, b: Tensor | undefined, other: number | undefined): boolean {
+  const integral = (t: Tensor) => t.int64 !== undefined || t.data.every(Number.isInteger);
+  return integral(a) && (b === undefined ? Number.isInteger(other) : integral(b));
+}
+
+function exactZip(a: Tensor, b: Tensor | undefined, other: number | undefined, fn: (x: bigint, y: bigint) => bigint): Tensor {
+  const shape = b === undefined ? [...a.shape] : broadcastShapes(a.shape, b.shape);
+  const values: bigint[] = [];
+  forEachIndex(shape, (index) => {
+    const x = a.exact(offsetOf(a.shape, broadcastIndex(index, a.shape)));
+    const y = b === undefined ? BigInt(other as number) : b.exact(offsetOf(b.shape, broadcastIndex(index, b.shape)));
+    values.push(BigInt.asIntN(64, fn(x, y)));
+  });
+  return Tensor.fromInt64(shape, values);
+}
+
+function withInt64(def: OpDef<ScalarAttrs>, exact: (x: bigint, y: bigint) => bigint): OpDef<ScalarAttrs> {
+  return {
+    ...def,
+    int64: true,
+    forward: (inputs, attrs) => {
+      const [a, b] = inputs;
+      const int64 = a.int64 !== undefined || b?.int64 !== undefined;
+      if (int64 && integerOperands(a, b, attrs.other)) return exactZip(a, b, attrs.other, exact);
+      const unsafe = inputs.find((t) => t.beyondExact());
+      if (unsafe !== undefined) throw new Error(`${def.name}: int64 values beyond 2^53 can only combine with integers`);
+      return def.forward(inputs, attrs);
+    },
+  };
+}
+
+function floorMod(x: number, y: number): number {
+  return x - Math.floor(x / y) * y;
+}
+
+function floorModExact(x: bigint, y: bigint): bigint {
+  if (y === 0n) throw new Error('remainder: integer division by zero');
+  const r = x % y;
+  return r !== 0n && r < 0n !== y < 0n ? r + y : r;
+}
+
 export const addOp = binary('add', (x, y) => x + y, () => [1, 1]);
 export const subOp = binary('sub', (x, y) => x - y, () => [1, -1]);
-export const mulOp = binary('mul', (x, y) => x * y, (x, y) => [y, x]);
+export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x]), (x, y) => x * y);
+export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)]), floorModExact);
+
+function integerArgs(name: string, a: Tensor, b: Tensor | undefined, other: number | undefined): void {
+  if (!integerOperands(a, b, other)) throw new Error(`${name}: inputs must be integers or bools`);
+}
+
+function bitwise(name: string, fn: (x: bigint, y: bigint) => bigint): OpDef<ScalarAttrs> {
+  return {
+    name,
+    args: ['input', 'other'],
+    tensors: ['input', 'other'],
+    scalars: ['other'],
+    differentiable: [false, false],
+    int64: true,
+    shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+    forward: ([a, b], { other }) => {
+      integerArgs(name, a, b, other);
+      const out = exactZip(a, b, other, fn);
+      return a.int64 !== undefined || b?.int64 !== undefined ? out : new Tensor(out.shape, out.data);
+    },
+    backward: () => [null, null],
+  };
+}
+
+export const bitwiseXorOp = bitwise('bitwise_xor', (x, y) => x ^ y);
+export const bitwiseAndOp = bitwise('bitwise_and', (x, y) => x & y);
+
+function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<ScalarAttrs> {
+  return {
+    name,
+    args: ['input', 'other'],
+    tensors: ['input', 'other'],
+    scalars: ['other'],
+    differentiable: [false, false],
+    dtype: 'bool',
+    shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+    forward: ([a, b], { other }) =>
+      b === undefined ? mapWith(a, (x) => (fn(x, other as number) ? 1 : 0)) : zipWith(a, b, (x, y) => (fn(x, y) ? 1 : 0)),
+    backward: () => [null, null],
+  };
+}
+
+export const eqOp = compare('eq', (x, y) => x === y);
+export const geOp = compare('ge', (x, y) => x >= y);
 export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)]);
 export const negOp = unary('neg', (x) => -x, () => -1);
 export const expOp = unary('exp', Math.exp, (_x, y) => y);
@@ -127,6 +212,9 @@ export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * M
 export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0));
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
 export const identityOp = unary('identity', (x) => x, () => 1);
+export const absOp = unary('abs', Math.abs, (x) => Math.sign(x));
+export const signOp = unary('sign', Math.sign, () => 0);
+export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), ['input', 'min']);
 
 function rotateHalf(input: Tensor, sign: number): Tensor {
   const width = input.shape[input.ndim - 1];

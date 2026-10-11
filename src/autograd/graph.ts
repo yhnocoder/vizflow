@@ -1,7 +1,7 @@
 import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor';
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
-import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, promoteDtypes } from './dtype';
+import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, isIntegerDtype, promoteDtypes } from './dtype';
 import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
@@ -90,6 +90,14 @@ function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Read
     resolved[key] = Array.isArray(value) ? value.map(lookup) : lookup(value);
   }
   return resolved;
+}
+
+function checkExact(def: AnyOpDef, inputs: readonly Node[], name: string): void {
+  if (def.int64) return;
+  const exact = inputs.find((n) => n.value.beyondExact());
+  if (exact !== undefined) {
+    throw new Error(`${def.name} '${name}': input '${exact.name}' holds int64 values beyond 2^53, which ${def.name} cannot keep exact`);
+  }
 }
 
 class GraphImpl {
@@ -307,9 +315,9 @@ class GraphImpl {
   ): Node {
     const shape = resolveShape(shapeSpec, this.dims, name);
     const realShape = this.realDims === undefined ? shape : resolveShape(shapeSpec, this.realDims, name);
-    const value = this.tensorFor(name, shape, values);
+    const dtype = options.dtype === undefined ? (kind === 'label' ? LABEL_DTYPE : this.dtype) : checkDtype(options.dtype, `node '${name}'`);
+    const value = this.tensorFor(name, shape, values, options.dtype === 'int64');
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: value.clone(), transposed: undefined };
-    const dtype = kind === 'label' ? LABEL_DTYPE : this.dtype;
     return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state);
   }
 
@@ -319,10 +327,12 @@ class GraphImpl {
     const realShape =
       this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
     const name = options.name ?? this.autoName(def.name);
-    if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
+    const dtype =
+      options.dtype !== undefined ? checkDtype(options.dtype, `node '${name}'`) : (def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`));
+    checkExact(def, inputs, name);
+    if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
-    const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
   }
 
@@ -386,9 +396,10 @@ class GraphImpl {
     if (node.graph !== this.self) throw new Error(`${op}: node '${node.name}' belongs to another graph`);
   }
 
-  private tensorFor(name: string, shape: number[], values: Nested): Tensor {
+  private tensorFor(name: string, shape: number[], values: Nested, int64 = false): Tensor {
     try {
-      return Tensor.from(values, shape);
+      const tensor = Tensor.from(values, shape);
+      return int64 ? tensor.asInt64() : tensor;
     } catch (error) {
       throw new Error(`node '${name}': ${(error as Error).message}`);
     }
@@ -402,7 +413,7 @@ class GraphImpl {
 
   private setLeaf(id: number, values: Nested): void {
     const node = this.nodes[id];
-    const value = this.tensorFor(node.name, [...node.shape], values);
+    const value = this.tensorFor(node.name, [...node.shape], values, this.states[id].value.int64 !== undefined);
     this.replaceLeaf(id, value);
     if (this.batchDepth === 0) this.recompute();
   }
@@ -443,12 +454,13 @@ class GraphImpl {
       this.nodes.forEach((node, i) => {
         if (node.kind !== 'op') return;
         const def = opDef(node.op as string) as AnyOpDef;
+        checkExact(def, node.inputs, node.name);
         this.states[i].value = def.forward(node.inputs.map((n) => n.value), node.attrs);
       });
       this.computeBackward();
       if (this.check) {
         this.nodes.forEach((node) => {
-          if (node.kind !== 'op') return;
+          if (node.kind !== 'op' || isIntegerDtype(node.dtype)) return;
           const def = opDef(node.op as string) as AnyOpDef;
           checkOpNamed(def, node.inputs.map((n) => n.value.clone()), node.attrs, node.name);
         });

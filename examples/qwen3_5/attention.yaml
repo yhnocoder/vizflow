@@ -11,7 +11,8 @@ params:
   rd:    { type: dim }
   theta: { type: float, default: 1e7 }
 inputs:
-  x: { shape: [T, d] }
+  x:    { shape: [T, d] }
+  mask: { shape: [T, T] }
 outputs: [att]
 fold:
   label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
@@ -29,8 +30,6 @@ weights:
   Wk: { shape: [Hkv*dh, d] }
   Wv: { shape: [Hkv*dh, d] }
   Wo: { shape: [d, H*dh] }
-buffers:
-  M: { value: causal_mask(T) }
 body:
   - qg: { op: 'view(x @ Wq.T, T, H, 2*dh)', tex: '[\mathbf{q}\,|\,\mathbf{g}_{o}]' }
   - q: 'narrow(qg, -1, 0, dh)'
@@ -118,7 +117,7 @@ body:
   - eager_attention_forward:
       use: GQA
       inline: true
-      inputs: { q: qr, k: kr, v: v, mask: M }
+      inputs: { q: qr, k: kr, v: v, mask: mask }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
   - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{g}_{o})' }

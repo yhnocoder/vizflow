@@ -539,7 +539,49 @@ def transformer_op_fixtures():
     cases += head_cases()
     cases += linear_attention_cases()
     cases += routing_cases()
+    cases += hash_and_mask_cases()
     return cases
+
+
+def hash_and_mask_cases():
+    cases = []
+    for a, b in [((3, 4), (3, 4)), ((3, 4), (4,))]:
+        cases.append(op_case("remainder", f"float {a} by {b}", torch.remainder, [("input", randn(*a) * 4), ("input", positive(*b) * (randn(*b).sign()))], [tensor_arg(0), tensor_arg(1)]))
+    ints = randint(1 << 20, (5, 1)) - (1 << 19)
+    cases.append(op_case("remainder", "int64 (5, 1) by primes (1, 3)", torch.remainder, [("label", ints), ("label", torch.tensor([[13, 17, 19]]))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("remainder", "int64 by a scalar", lambda x: torch.remainder(x, 7), [("label", ints)], [tensor_arg(0), 7]))
+    left, right = randint(1 << 30, (4, 3)), randint(1 << 30, (4, 3))
+    cases.append(op_case("bitwise_xor", "int64 (4, 3)", torch.bitwise_xor, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_xor", "int64 with a scalar", lambda x: torch.bitwise_xor(x, 5), [("label", left)], [tensor_arg(0), 5]))
+    p, q = randint(2, (3, 4)).bool(), randint(2, (4,)).bool()
+    cases.append(op_case("bitwise_and", "bool (3, 4) and (4,)", torch.bitwise_and, [("label", p), ("label", q)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_and", "int64 (4, 3)", torch.bitwise_and, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    small = randint(4, (3, 4))
+    cases.append(op_case("eq", "int64 with a scalar", lambda x: torch.eq(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("eq", "int64 (3, 4) and (4,)", torch.eq, [("label", small), ("label", randint(4, (4,)))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("ge", "int64 with a scalar", lambda x: torch.ge(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("ge", "float (3, 4) and (3, 1)", torch.ge, [("label", randn(3, 4)), ("label", randn(3, 1))], [tensor_arg(0), tensor_arg(1)]))
+    cases += pointwise_cases("abs", torch.abs, randn)
+    cases += pointwise_cases("sign", torch.sign, randn)
+    x = torch.tensor([-2.0, -1e-6, 0.0, 1e-6, 2.5, 1e-7], dtype=torch.float64)
+    cases.append(op_case("clamp_min", "around the bound 1e-6", lambda v: v.clamp_min(1e-6), [("input", x)], [tensor_arg(0), 1e-6]))
+    cases.append(op_case("clamp_min", "(3, 4) at 0", lambda v: v.clamp_min(0.0), [("input", randn(3, 4))], [tensor_arg(0), 0.0]))
+    for shape, sizes in [((3, 4), (1, 2)), ((2, 3), (2, 1, 2)), ((4,), (3,))]:
+        cases.append(op_case("repeat", f"{shape} by {sizes}", lambda v, sizes=sizes: v.repeat(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    for shape, dim in [((3, 5), 1), ((4, 2, 3), 0)]:
+        cases.append(op_case("cummax", f"{shape} dim {dim}", lambda v, dim=dim: torch.cummax(v, dim).values, [("input", distinct(*shape))], [tensor_arg(0), dim]))
+    tied = torch.tensor([[1.0, 3.0, 3.0, 2.0, 3.0]], dtype=torch.float64)
+    cases.append(op_case("cummax", "ties pass the gradient to the latest maximum", lambda v: torch.cummax(v, 1).values, [("input", tied)], [tensor_arg(0), 1]))
+    for T, C, K, d in [(7, 3, 4, 2), (5, 2, 3, 3), (3, 4, 4, 3)]:
+        cases.append(op_case("causal_conv1d", f"T {T} channels {C} kernel {K} dilation {d}", lambda x, w, d=d: dilated_conv1d(x, w, d), [("input", randn(T, C)), ("input", randn(C, K))], [tensor_arg(0), tensor_arg(1)], {"dilation": d}))
+    return cases
+
+
+def dilated_conv1d(x, w, dilation):
+    T, C = x.shape
+    K = w.shape[1]
+    pad = (K - 1) * dilation
+    return F.conv1d(F.pad(x.T.unsqueeze(0), (pad, 0)), w.unsqueeze(1), groups=C, dilation=dilation)[0].T
 
 
 def topk_mask(x, k, dim):

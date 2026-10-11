@@ -20,8 +20,16 @@ import {
   subExplain,
   transposeExplain,
   whereExplain,
+  remainderExplain,
+  bitwiseXorExplain,
+  bitwiseAndExplain,
+  eqExplain,
+  geExplain,
+  absExplain,
+  signExplain,
+  clampMinExplain,
 } from './elementwise';
-import { catExplain, causalConv1dExplain, embeddingExplain, gatherExplain, narrowExplain, repeatInterleaveExplain, selectExplain, topkMaskExplain, viewExplain } from './index_ops';
+import { catExplain, causalConv1dExplain, cummaxExplain, repeatExplain, embeddingExplain, gatherExplain, narrowExplain, repeatInterleaveExplain, selectExplain, topkMaskExplain, viewExplain } from './index_ops';
 import { nllLossExplain } from './loss';
 import { matmulExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -65,6 +73,16 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   causal_conv1d: causalConv1dExplain,
   topk_mask: topkMaskExplain,
   where: whereExplain,
+  remainder: remainderExplain,
+  bitwise_xor: bitwiseXorExplain,
+  bitwise_and: bitwiseAndExplain,
+  eq: eqExplain,
+  ge: geExplain,
+  abs: absExplain,
+  sign: signExplain,
+  clamp_min: clampMinExplain,
+  repeat: repeatExplain,
+  cummax: cummaxExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

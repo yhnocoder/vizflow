@@ -179,10 +179,15 @@ export class ExpressionCompiler extends CompilerState {
     for (const [key, arg] of ast.kwargs) kwargs[key] = this.evaluate(arg, env, make, offset);
     if (env.buffers && fnName in BUFFER_FUNCTIONS) {
       const arity = BUFFER_ARITY[fnName];
-      if ((arity === 'any' ? args.length === 0 : args.length !== arity) || ast.kwargs.length > 0 || !args.every(isNum)) {
-        this.fail(env, `${fnName} takes ${arity === 'any' ? 'one or more' : arity} numbers`, at);
+      if ((typeof arity === 'number' ? args.length !== arity : args.length < arity.min) || ast.kwargs.length > 0 || !args.every(isNum)) {
+        this.fail(env, `${fnName} takes ${typeof arity === 'number' ? arity : `${arity.min} or more`} numbers`, at);
       }
       return { buffer: true, ...BUFFER_FUNCTIONS[fnName](args as Num[]) };
+    }
+    if (fnName === 'min' && param === undefined && opDef(fnName) === undefined) {
+      if (args.length < 2 || ast.kwargs.length > 0 || !args.every(isNum)) this.fail(env, 'min takes two or more numbers', at);
+      const nums = args as Num[];
+      return { toy: Math.min(...nums.map((n) => n.toy)), real: Math.min(...nums.map((n) => n.real)) };
     }
     if (param !== undefined) {
       if (param.type !== 'op') this.fail(env, `parameter '${fnName}' is not an op`, at);

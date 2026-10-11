@@ -1,0 +1,69 @@
+module: GatedResidual
+subtitle: Qwen4ExpTextGatedResidual
+import:
+  GatedResidualMix: ./hyper-mix.yaml
+params:
+  hc: { type: dim }
+  r:  { type: dim }
+inputs:
+  H: { shape: [T, n] }
+outputs: [m, beta]
+weights:
+  Wbeta: { shape: [hc, n], tex: 'W_{\beta}' }
+body:
+  - mix:
+      use: GatedResidualMix
+      inline: true
+      params: { hc: hc, r: r }
+      inputs: { H: H }
+      outputs: { m: m, Hn: Hn }
+  - bl: { op: Hn @ Wbeta.T, tex: '\hat{\of{H}}W_{\beta}^{\top}' }
+  - bs: { op: bl / hc, tex: '\mathbf{v}' }
+  - bsig: { op: sigmoid(bs), tex: '\sigma(\mathbf{v})' }
+  - beta: { op: bsig * 2, tex: '\boldsymbol{\beta}' }
+steps:
+  - id: inject
+    show: [Wbeta.T, bl]
+    brace: { title: block_inject_weight, subtitle: 'nn.Linear，$\of{n}\to\of{hc}$' }
+    label: '$\of{bl}$'
+    title: 写回系数的分数
+    text: |
+      <code>self.block_inject_weight(hyper_input_normed)</code>：同一个 $\of{Hn}$ 再投影到 $\of{hc}$ 维，每条流一个分数，没有 bias。它决定子层的输出写回每条流时乘多少。
+      $$\of{bl}={{ bl | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{\beta},\ \partial\of{Hn}$'
+      title: 传到 $W_{\beta}$ 和 $\of{Hn}$
+      text: |
+        $$\frac{\partial\ell}{\partial W_{\beta}}={{ Wbeta.grad | matrix:3 }}$$
+  - id: inject_scale
+    show: bs
+    label: '$/\,\of{hc}$'
+    title: 除以流数
+    text: |
+      <code>... / self.hc_count</code>。
+      $$\mathbf{v}={{ bs | matrix:3 }}$$
+    backward:
+      label: '$\partial\,\of{bl}$'
+      title: 穿过除法
+  - id: inject_sigmoid
+    show: bsig
+    label: '$\sigma(\mathbf{v})$'
+    title: sigmoid
+    text: |
+      <code>torch.sigmoid(...)</code>。
+      $$\sigma(\mathbf{v})={{ bsig | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{v}$'
+      title: 穿过 sigmoid
+  - id: inject_double
+    show: beta
+    label: '$\of{beta}=2\sigma(\mathbf{v})$'
+    title: 乘 2 得到写回系数 $\boldsymbol{\beta}$
+    text: |
+      <code>2 * torch.sigmoid(...)</code>：$\boldsymbol{\beta}$ 在 0 和 2 之间，初始化附近约为 1，相当于普通残差的「直接加上」。这一步之后 GatedResidual 返回 <code>(mixed_input, hyper_input, injection_weights)</code>，其中 <code>hyper_input</code> 是没有归一化的 $H$ 本身。
+      $$\boldsymbol{\beta}={{ beta | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma(\mathbf{v})$'
+      title: 穿过乘 2
+      text: |
+        $$\frac{\partial\ell}{\partial\boldsymbol{\beta}}={{ beta.grad | matrix:3 }}$$
