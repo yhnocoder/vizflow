@@ -1,0 +1,95 @@
+title: FP8 Linear：块缩放量化的前向与反向
+lede: DeepSeek V3 用 FP8 训练时，Linear 的激活和权重都先量化成 E4M3 再做矩阵乘。激活沿 hidden 维每 $1\times b$ 个元素一块，权重每 $b\times b$ 个元素一块，每块有自己的缩放因子，矩阵乘的输出是 bf16。这一页画出缩放因子、码字、反量化值和量化误差，再接 log_softmax 与 nll_loss 得到损失，反向也逐步画出来。页面上块大小取 $b=2$，真实模型里是 $b=128$。每个节点的数值都按自己的 dtype 舍入，与真实模型里存下的值相同。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 反向时悬停连线
+import:
+  Quant: vizflow/nn/quant
+dims: { T: 3, d: 4, f: 4, b: 2 }
+dtype: bf16
+rounding: true
+real: { name: DeepSeek-V3, d: 7168, f: 18432, b: 128 }
+vocab: [A, B, C, D]
+init: { seed: 20261011 }
+inputs:
+  x: { shape: [T, d], value: [[0.5, -1.25, 6.0, 1.45], [-0.3, 0.8, 1.1, -0.45], [0.9, 0.2, -0.6, 1.3]] }
+  y: { tokens: [B, D, A] }
+weights:
+  W: { shape: [f, d], quant: { block: [b, b], folded: false } }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    输入 $\mathbf{x}$ 有 $T=3$ 行，每行 $d=4$ 维；权重 $W$ 的形状是 $(f, d)$，$f=4$。$\mathbf{x}$ 和 $W$ 各经过一个 Quant 模块：先算每块的缩放因子，再除以缩放因子舍入成 E4M3 码字，最后乘回缩放因子得到反量化值。两个反量化值做矩阵乘得到 bf16 的 $\mathbf{z}$。旁边另算一个不量化的 $\mathbf{z}_{\mathrm{ref}}=\mathbf{x}W^{\top}$，两者的差就是量化带来的输出误差。E4M3 能表示的最大值是 448，所以缩放因子取 $s=\max|x|/448$。第一行第二块有一个离群值 6.0，它只让自己所在那一块的缩放因子变大。
+    两个 Quant 模块用两种写法建出。权重在 <code>weights</code> 里写 <code>quant: { block: [b, b], folded: false }</code>，编译器自动插入名为 W_quant 的 Quant 实例，body 里写的 $W$ 指反量化值 $\hat{W}$，$W$ 本身仍是保存梯度的主权重，适合模型里每个线性层都量化的情况。激活的量化写成普通的模块实例 act_quant，用 <code>beside: W_quant</code> 和 W_quant 并排，适合需要自己给出输入、块形状或步骤文字的地方。
+    页面打开了按 dtype 舍入：每个运算先在 float64 里算完，再把结果舍入到输出节点的 dtype。真实的 kernel 在 fp32 里累加后舍入，两者在 bf16 的最后一位上可能不同。缩放因子本来就是 fp32，码字本来就是 E4M3 能表示的值，舍入不改变它们。
+    $$\ell={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      反向用直通估计器：舍入当作恒等函数，缩放因子当作常数，所以梯度穿过量化与反量化时不变，只有被截断的元素梯度为 0。梯度本身不舍入。量化误差和对照分支不在通向损失的路径上，没有梯度，也没有反向步骤。
+      $$\frac{\partial\ell}{\partial W}={{ W.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和权重
+  text: |
+    $\mathbf{x}$ 是这一层的输入激活，第一行第三个元素是离群值 6.0，存成 bf16 后是 $6$，$1.45$ 存成 bf16 后是 {{x[0, 3]}}。$W$ 按随机种子生成，是训练时保存的高精度主权重。标签是每行的类别，这里的类别数取 $f$，损失只用来演示反向。
+    $$\mathbf{x}={{ x | matrix:3 }}$$
+body:
+  - act_quant:
+      use: Quant
+      beside: W_quant
+      subtitle: 激活，$1\times b$ 块
+      suffix: x
+      params: { br: 1, bc: b }
+      inputs: { x: x }
+      outputs: { xq: xq }
+  - z:    { op: xq @ W.T, dtype: bf16 }
+  - zr:   { op: x @ W_quant.x.T, tex: '\mathbf{z}_{\mathrm{ref}}', beside: z }
+  - dz:   { op: z - zr, tex: '\Delta\mathbf{z}', beside: z }
+  - logp: { op: 'log_softmax(z, -1)', tex: '\log\mathbf{p}', dtype: fp32 }
+  - loss: { op: 'nll_loss(logp, y)', tex: '\ell' }
+steps:
+  - id: matmul
+    show: [W.T, z]
+    label: '$\of{z}$'
+    title: FP8 矩阵乘
+    text: |
+      两个反量化值相乘。真实的 FP8 GEMM 直接用码字相乘、在高精度里累加，再乘上两边的缩放因子，结果与这里先反量化再相乘相同。输出写成 bf16。
+      $$\of{z}=\hat{\mathbf{x}}\hat{W}^{\top}={{ z | matrix:3 }}$$
+    backward:
+      label: '$\partial\hat{W},\ \partial\hat{\mathbf{x}}$'
+      title: 传到两个反量化值
+      text: |
+        矩阵乘的反向和普通 Linear 相同，只是用的是反量化以后的值。
+        $$\frac{\partial\ell}{\partial\hat{\mathbf{x}}}={{ xq.grad | matrix:3 }}$$
+  - id: reference
+    show: [zr, dz]
+    label: '$\of{zr},\ \of{dz}$'
+    title: 不量化的对照
+    text: |
+      用原始的 $\mathbf{x}$ 和主权重 $W$ 再算一次矩阵乘，两者相减得到量化带来的输出误差。第一行的误差最大，因为那一行的第二块有离群值，缩放因子大，同一块里另一个元素的码字间隔也跟着变宽。对照分支只用来显示，不参与损失。
+      $$\of{zr}={{ zr | matrix:3 }},\qquad \of{dz}={{ dz | matrix:3 }}$$
+  - id: logp
+    show: logp
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      损失之前先把 logits 转成 fp32，每行减去自己的 log-sum-exp。
+      $$\log\mathbf{p}={{ logp | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 传到 logits
+      text: |
+        $$\frac{\partial\ell}{\partial\of{z}}={{ z.grad | matrix:3 }}$$
+  - id: nll
+    show: loss
+    label: '$\ell$'
+    title: nll_loss
+    text: |
+      每行按标签取出目标类别的 $\log p$，取负号再对 $T$ 行取平均。这里的类别数取 $f$，只为了让反向有一个起点。
+      $$\ell=-\frac{1}{T}\sum_t\log p_{t,y_t}={{loss:3}}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 传到 log p
+      text: |
+        $$\frac{\partial\ell}{\partial\log\mathbf{p}}={{ logp.grad | matrix:3 }}$$
