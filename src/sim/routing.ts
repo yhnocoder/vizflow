@@ -1,10 +1,9 @@
 import type { EpTopology } from './deepep';
 import { mulberry32 } from '../tensor';
 
-export const NODE_SCORE_TOP = 2;
-
-
 export function nodeLimitedRouter(topo: EpTopology, tokensPerRank: number, topk: number, maxNodes: number, seed: number): number[][][] {
+  if (topk % maxNodes !== 0) throw new Error(`nodeLimitedRouter: topk ${topk} is not divisible by maxNodes ${maxNodes}`);
+  const perNodeTop = topk / maxNodes;
   const random = mulberry32(seed);
   const expertsPerNode = topo.numExperts / topo.numScaleoutRanks;
   const ranks = topo.numScaleoutRanks * topo.numScaleupRanks;
@@ -15,7 +14,7 @@ export function nodeLimitedRouter(topo: EpTopology, tokensPerRank: number, topk:
         scores
           .slice(node * expertsPerNode, (node + 1) * expertsPerNode)
           .sort((a, b) => b - a)
-          .slice(0, NODE_SCORE_TOP)
+          .slice(0, perNodeTop)
           .reduce((sum, s) => sum + s, 0),
       );
       const nodes = nodeScore
