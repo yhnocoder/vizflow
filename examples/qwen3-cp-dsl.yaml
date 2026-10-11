@@ -1,0 +1,260 @@
+title: Qwen3 一层，两张卡的上下文并行
+lede: 和单卡的 Qwen3 页面算的是同一种 decoder 层，只是序列按上下文并行（CP）切到两张卡上：每张卡只有一部分 token，注意力需要的 K/V 在卡之间按环形传递，每一轮算出局部结果，最后用 lse 合并。柱子的颜色表示数据在哪张卡上。上方的开关在训练和推理之间切换；悬停 send_recv 的标签可以看到真实规模下每一轮的通信量。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 悬停标签看卡片 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm:     vizflow/nn/rmsnorm
+  GLU:         vizflow/nn/glu
+  CPAttention: ./qwen3-cp/attention.yaml
+mesh: { cp: 2 }
+dims: { T: 4, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 2 }
+dtype: bf16
+real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128, mesh: { cp: 8 } }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat, sat], input: ids, label: y, place: { cp: 'shard(0, head_tail)' } }
+generate: { steps: 2 }
+inputs: {}
+weights:
+  E: { shape: [V, d], init: uniform }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 两张卡上的一个 decoder 层
+  text: |
+    这一页把 Qwen3 的一个 decoder 层放到两张卡上做上下文并行。序列的 $T=4$ 个位置分到两张卡上，按 TransformerEngine 的负载均衡切法：序列切成 $2n=4$ 块，每块 1 行，rank $r$ 拿第 $r$ 块和第 $2n-1-r$ 块，所以 rank 0 是第 0、3 行，rank 1 是第 1、2 行（行号从 0 开始）。所有权重在两张卡上各有一份完整的副本。
+    除了注意力，层里的运算都是逐行的：embedding、RMSNorm、q/k/v 投影、MLP、lm_head 和 loss 的每一行只用到同一行的输入，每张卡算自己的行，不需要通信。只有注意力要让每个 query 看到前面所有位置的 key，而这些 key 分在不同的卡上。CP 的做法是让 K/V 在卡之间转一圈：每张卡先用本地的 K/V 算一轮，再用 send_recv 把 K/V 发给下一张卡，用收到的 K/V 再算一轮，最后用每一轮记下的 $\mathrm{lse}$ 把局部结果合并成完整的注意力输出。
+    所有数值和不切分时完全相同。上方的开关有训练和推理两档。推理时 CP 只用在长序列的 prefill 上：prefill 一次处理整段提示，序列越长，注意力的计算量越大，切到多张卡上收益明显；decode 每步每条序列只有 1 个新 token，没有可切的序列维，实际部署不对 decode 做 CP（需要切 KV cache 时用的是 decode 上下文并行，做法不同）。这一页的推理模式仍然画同一张图，用来对照每一行的计算。
+    $$\ell=\frac{1}{T}\sum_{t}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      反向的通信也只在注意力里：前向用到别的卡的 K/V，反向就要把 $\partial\mathbf{k}$、$\partial\mathbf{v}$ 沿环送回原来的卡，效果等于一次 reduce_scatter。另外每个权重的梯度都要对所有行求和，每张卡只有自己行的贡献，是 Partial，要做 all_reduce；Megatron 把它和数据并行的梯度 all_reduce 合并成一次。
+      $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入 token id 和标签按序列切开，标签和输入用同样的切法，每张卡算自己那几行的损失。rank 0 拿第 0 块和第 3 块，rank 1 拿第 1 块和第 2 块。所有权重都是 Replicate。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
+
+modules:
+  Qwen3CPDecoderLayer:
+    subtitle: Qwen3DecoderLayer
+    params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, f: { type: dim }, theta: { type: float, default: 1e6 } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: Qwen3DecoderLayer（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子。输入和输出都按序列切开，盒子里只有注意力的 K/V 环形传递。
+        $$\of{x_out}=\mathrm{layer}(\of{x})={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 Qwen3DecoderLayer（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          folded: true
+          inputs: { x: x }
+          outputs: { out: n1 }
+          fold:
+            text: |
+              RMSNorm 只用到一行自己的均方根，每张卡对自己的行直接计算。
+              $$\of{n1}={{ n1 | matrix:2 }}$$
+            backward:
+              text: |
+                $\partial\of{x}$ 留在本卡；$\boldsymbol{\gamma}$ 的梯度是 Partial，要做 all_reduce。
+                $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+      - self_attn:
+          use: CPAttention
+          params: { H: H, Hkv: Hkv, dh: dh, theta: theta }
+          inputs: { x: n1 }
+          outputs: { att: att }
+      - a: x + att
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          folded: true
+          inputs: { x: a }
+          outputs: { out: n }
+          fold:
+            text: |
+              和 input_layernorm 一样，每张卡算自己的行。
+              $$\of{n}={{ n | matrix:2 }}$$
+            backward:
+              text: |
+                $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - mlp:
+          use: GLU
+          subtitle: Qwen3MLP
+          folded: true
+          params: { act: silu, f: f, name: mlp }
+          inputs: { x: n }
+          outputs: { down: down }
+          fold:
+            text: |
+              MLP 是逐行的，每张卡用完整的权重算自己的行，不需要通信。
+              $$\of{down}=\mathrm{mlp}(\of{n})={{ down | matrix:2 }}$$
+            backward:
+              text: |
+                $\partial\of{n}$ 留在本卡；三块权重的梯度是 Partial，要做 all_reduce。
+                $$\frac{\partial\ell}{\partial\of{n}}={{ n.grad | matrix:3 }}$$
+      - x_out: { op: a + down, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{x}_0+\mathbf{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          $\of{x}$ 和 $\of{att}$ 的切法相同，同一行在同一张卡上，直接相加。
+          $$\of{a}=\of{x}+\of{att}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 attention 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{att}}=\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
+        label: '$\of{x_out}=\of{a}+\of{down}$'
+        title: 残差相加
+        text: |
+          $$\of{x_out}=\of{a}+\of{down}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{down}$'
+          title: 穿过 MLP 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{down}}=\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - layer:
+      use: Qwen3CPDecoderLayer
+      title: Qwen3DecoderLayer
+      subtitle: 两张卡的上下文并行
+      split: true
+      params: { H: H, Hkv: Hkv, dh: dh, f: f, theta: 10 }
+      inputs: { x: e }
+      outputs: { x_out: x }
+  - norm:
+      use: RMSNorm
+      title: model.norm
+      subtitle: Qwen3RMSNorm
+      folded: true
+      params: { name: final norm }
+      inputs: { x: x }
+      outputs: { out: h }
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss_part: { op: mean(lt), tex: '\ell^{\mathrm{part}}' }
+  - loss: { op: 'all_reduce(loss_part, cp)', tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每张卡只拿到自己那几行的 token id，按 id 从完整的 embedding 表里取行，得到的 $\mathbf{e}$ 也按序列切开。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        每张卡把自己行的梯度加回被取到的行，$\partial E$ 是 Partial，要做 all_reduce。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每张卡用完整的 lm_head 权重算自己行的 logits。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}=\frac{\partial\ell}{\partial\mathbf{z}}W={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      词表维没有切开，每一行的 log-sum-exp 在本卡完成。
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\,\mathrm{LSE}}={{ LSE.grad | matrix:3 }}$$
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      标签和输入的切法相同，每张卡算自己行的损失。
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\\{{lt[3]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+      text: |
+        $$\frac{\partial\ell}{\partial\log\mathbf{p}}={{ logp.grad | matrix:3 }}$$
+  - id: mean
+    show: loss_part
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss_part}$'
+    title: 取平均：每张卡的部分和
+    text: |
+      每张卡把自己行的损失加起来再除以全序列的长度 $T$，得到的是部分和，两张卡相加才是平均损失，所以 $\ell^{\mathrm{part}}$ 是 Partial。
+      $$\ell^{\mathrm{part}}=\frac{1}{T}\sum_{t\in\text{本卡}}\ell_t$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 传到每个位置
+      text: |
+        $$\frac{\partial\ell}{\partial\ell_t}=\frac{1}{T}=0.25$$
+  - id: loss_all_reduce
+    show: loss
+    segment: nll_loss
+    brace: { title: all_reduce, subtitle: 汇总损失 }
+    label: '$\mathrm{all\_reduce}$'
+    title: 汇总损失
+    text: |
+      all_reduce 把两张卡的部分和相加，每张卡都得到完整的损失。这一次通信只有一个数，用来汇报损失；训练的梯度不需要等它，每张卡从自己的部分和出发做反向就是正确的梯度。
+      $$\ell={{loss:3}}$$
+    backward:
+      label: '$\partial\ell^{\mathrm{part}}$'
+      title: 从损失出发
+      text: |
+        反向从这里开始。all_reduce 的反向不通信，梯度原样交给每张卡上的部分和。
