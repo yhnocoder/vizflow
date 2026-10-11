@@ -1098,9 +1098,9 @@ themeNames: readonly ThemeName[]
 getTheme(): ThemeName
 setTheme(theme: ThemeName, origin?: { x: number; y: number }): void
 getBackgroundImage(): Promise&lt;Blob | undefined&gt;
-setBackgroundImage(image: Blob | null): Promise&lt;void&gt;</code></pre>
+setBackgroundImage(image: Blob | null): Promise&lt;boolean&gt;</code></pre>
 <ul>
-  <li>保存位置：主题名和背景图片的版本号存在 <code>localStorage</code> 的 <code>vizflow.settings</code>，图片本身以 Blob 存在 IndexedDB 数据库 <code>vizflow</code> 的 <code>files</code> 表。图片不离开浏览器，库里没有任何上传代码。浏览器不允许写 IndexedDB 时（例如部分隐私窗口），图片只在当前页面显示，刷新后消失。</li>
+  <li>保存位置：主题名和背景图片的版本号存在 <code>localStorage</code> 的 <code>vizflow.settings</code>，图片本身以 Blob 存在 IndexedDB 数据库 <code>vizflow</code> 的 <code>files</code> 表。图片不离开浏览器，库里没有任何上传代码。浏览器不允许写 IndexedDB 时（例如部分隐私窗口），图片只在当前页面显示，刷新后消失；<code>setBackgroundImage</code> 返回 <code>false</code>，设置页显示一行提示。</li>
   <li>生效方式：引入 <code>theme</code> 时读取设置并应用，不播放动画。非默认主题写在 <code>&lt;html data-vf-theme="…"&gt;</code>。两个新主题只有浅色，选中时忽略系统的深色设置和 <code>data-theme</code>。</li>
   <li>同步：另一个标签页修改设置时，本页通过 <code>storage</code> 事件收到通知，用淡入切换到新设置。</li>
   <li>切换动画：<code>setTheme</code> 带 <code>origin</code>（视口坐标）且浏览器支持 View Transitions 时，新主题从 <code>origin</code> 处以圆形展开，时长 620 毫秒；其他情况颜色、背景和边框用 480 毫秒过渡。系统设置减少动态效果时立即切换。</li>

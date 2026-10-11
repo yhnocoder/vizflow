@@ -22,6 +22,7 @@ function SettingsView() {
   const [preview, setPreview] = createSignal<string | undefined>();
   const [error, setError] = createSignal<string | undefined>();
   const [dragging, setDragging] = createSignal(false);
+  const [unsaved, setUnsaved] = createSignal(false);
   let input!: HTMLInputElement;
 
   const showPreview = (blob: Blob | undefined) => {
@@ -46,7 +47,7 @@ function SettingsView() {
     setError(undefined);
     if (file === undefined) return;
     try {
-      await setBackgroundImage(file);
+      setUnsaved(!(await setBackgroundImage(file)));
       showPreview(file);
     } catch (problem) {
       setError((problem as Error).message);
@@ -55,6 +56,7 @@ function SettingsView() {
   const clearImage = async () => {
     setError(undefined);
     await setBackgroundImage(null);
+    setUnsaved(false);
     showPreview(undefined);
   };
 
@@ -116,6 +118,9 @@ function SettingsView() {
             }}
           />
         </div>
+        <Show when={unsaved()}>
+          <p class="vf-settings-error">浏览器不允许保存图片，刷新页面后背景会消失。</p>
+        </Show>
         <Show when={error()}>{(message) => <p class="vf-settings-error">{message()}</p>}</Show>
         <p class="vf-settings-note">图片只保存在这台设备的浏览器存储（IndexedDB）里，不会上传。也可以把图片拖到上面的方框里。</p>
       </section>

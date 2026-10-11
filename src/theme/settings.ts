@@ -137,7 +137,7 @@ export function getBackgroundImage(): Promise<Blob | undefined> {
   return Promise.resolve(image);
 }
 
-export async function setBackgroundImage(next: Blob | null): Promise<void> {
+export async function setBackgroundImage(next: Blob | null): Promise<boolean> {
   if (next !== null && !next.type.startsWith('image/')) throw new Error(`setBackgroundImage: expected an image file, got type "${next.type}"`);
   const saved = await saveBackgroundBlob(next ?? undefined).then(
     () => true,
@@ -148,6 +148,7 @@ export async function setBackgroundImage(next: Blob | null): Promise<void> {
   backgroundLoad++;
   applied.background = version;
   animate(() => showBackground(next ?? undefined));
+  return saved;
 }
 
 function syncFromStorage(event: StorageEvent): void {
