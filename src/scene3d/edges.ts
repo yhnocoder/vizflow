@@ -204,7 +204,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const origR = renderableFor(c, link.original);
     const copyR = renderableFor(c, link.copy);
     if (origR === undefined || copyR === undefined || !shown(link.original) || !shown(link.copy) || (origR.far && copyR.far)) continue;
-    const node = link.original.node;
+    const node = link.copy.node;
     const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
     link.copy.elements.forEach((element) => {
       if (blocked(node, element.index, false)) return;

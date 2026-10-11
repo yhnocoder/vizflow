@@ -451,12 +451,23 @@ class Plan implements LevelPlan {
   private placeSides(): void {
     for (const n of this.visible) {
       if (this.computed.has(n) || this.entryOf.has(n) || n.kind === 'label') continue;
-      const user = this.consumers(n)[0];
+      const source = (i: Node) => this.sourceOf.get(i) ?? i;
+      const user = [...this.computed].find((u) => !this.sourceOf.has(u) && u.inputs.some((i) => source(i) === n));
       if (user === undefined) continue;
-      const main = user.inputs[0] === n ? user : user.inputs[0];
+      const main = source(user.inputs[0]) === n ? user : user.inputs[0];
       const host = this.entryOf.get(main);
       if (host === undefined) continue;
+      if (n.kind === 'input' && main === user && user.inputs[0] !== n && !this.boards.has(user) && !this.tables.has(user)) {
+        const below: Level = { entries: [], module: null, copyOnly: false, y: 0 };
+        this.levels.splice(this.levels.indexOf(host.level), 0, below);
+        this.entry(n, below);
+        continue;
+      }
       this.entry(n, host.level);
+    }
+    for (const [view, source] of this.sourceOf) {
+      const e = this.entryOf.get(source);
+      if (e !== undefined && !this.entryOf.has(view)) this.entryOf.set(view, e);
     }
   }
 

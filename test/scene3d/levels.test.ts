@@ -190,6 +190,32 @@ describe('levelPlan with views and head-selecting boards', () => {
     expect(outXs[0]).toBeCloseTo(flatXs[DH]);
     expect(board.y).toBeGreaterThan(blockOf(layout.blocks, flat).elements[0].y);
   });
+
+  it('draws an input that reaches the first operand of its first consumer through a view on its own level under that consumer', () => {
+    const g = graph({ dims: { T, H: 2, dh: DH } });
+    const x = g.input('x', [T, 2 * DH], [[0.1, -0.2, 0.3, 0.4], [0.5, 0.6, -0.7, 0.8]]);
+    const W = g.param('W', [3, 2 * DH], [[1, 0, 1, 0], [0, 1, 0, 1], [1, 1, 0, 0]]);
+    const heads = g.view(x, T, 2, DH);
+    const doubled = g.mul(heads, 2, { name: 'doubled' });
+    const z = g.matmul(x, W.T, { name: 'z' });
+    const loss = g.loss(g.sum(z, null, { name: 'loss' }));
+    const spec: StepsSpec = {
+      forward: [
+        { show: [x, W], title: 'inputs', kind: 'inputs' },
+        { show: [heads, doubled], title: 'doubled' },
+        { show: [W.T, z], title: 'z' },
+        { show: [loss], title: 'loss' },
+      ],
+      backward: 'reverse',
+    };
+    const layout = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    expect(layout.sourceOf.get(heads)).toBe(x);
+    const input = blockOf(layout.blocks, x).elements;
+    const output = blockOf(layout.blocks, doubled).elements;
+    expect(input[0].y).toBeLessThan(output[0].y);
+    expect(input[0].x).toBeCloseTo(output[0].x);
+    expect(layout.boards.find((b) => b.op === z)!.a.node).toBe(x);
+  });
 });
 
 describe('levelPlan with beside nodes and side-by-side leaves', () => {
@@ -227,4 +253,3 @@ describe('levelPlan with beside nodes and side-by-side leaves', () => {
     expect(blockOf(blocks, da).title.anchor).toBe('below');
   });
 });
-
