@@ -106,3 +106,55 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
     return [gA, gB];
   },
 };
+
+function groupedLinearShape(input: readonly number[], weight: readonly number[], group: readonly number[]): number[] {
+  if (input.length !== 2 || weight.length !== 3 || group.length !== 1 || weight[2] !== input[1] || group[0] !== input[0]) {
+    throw new Error(`grouped_linear: input ${formatShape(input)} must be (N, in), weight ${formatShape(weight)} must be (G, out, in) and group ${formatShape(group)} must be (N,)`);
+  }
+  return [input[0], weight[1]];
+}
+
+export function groupOf(weight: Tensor, group: Tensor, row: number): number {
+  const g = Math.round(group.data[row]);
+  if (g < 0 || g >= weight.shape[0]) throw new Error(`grouped_linear: group ${g} of row ${row} is out of range for weight ${formatShape(weight.shape)}`);
+  return g;
+}
+
+export const groupedLinearOp: OpDef<NoAttrs> = {
+  name: 'grouped_linear',
+  args: ['input', 'weight', 'group'],
+  tensors: ['input', 'weight', 'group'],
+  differentiable: [true, true, false],
+  shape: ([input, weight, group]) => groupedLinearShape(input, weight, group),
+  forward: ([input, weight, group]) => {
+    const [rows, outs] = groupedLinearShape(input.shape, weight.shape, group.shape);
+    const width = input.shape[1];
+    const out = new Tensor([rows, outs]);
+    for (let r = 0; r < rows; r++) {
+      const base = groupOf(weight, group, r) * outs * width;
+      for (let i = 0; i < outs; i++) {
+        let s = 0;
+        for (let k = 0; k < width; k++) s += input.data[r * width + k] * weight.data[base + i * width + k];
+        out.data[r * outs + i] = s;
+      }
+    }
+    return out;
+  },
+  backward: (gradOut, [input, weight, group]) => {
+    const [rows, outs] = groupedLinearShape(input.shape, weight.shape, group.shape);
+    const width = input.shape[1];
+    const gi = new Tensor(input.shape);
+    const gw = new Tensor(weight.shape);
+    for (let r = 0; r < rows; r++) {
+      const base = groupOf(weight, group, r) * outs * width;
+      for (let i = 0; i < outs; i++) {
+        const g = gradOut.data[r * outs + i];
+        for (let k = 0; k < width; k++) {
+          gi.data[r * width + k] += g * weight.data[base + i * width + k];
+          gw.data[base + i * width + k] += g * input.data[r * width + k];
+        }
+      }
+    }
+    return [gi, gw, null];
+  },
+};

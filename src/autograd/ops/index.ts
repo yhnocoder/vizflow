@@ -22,10 +22,27 @@ import {
   subOp,
   transposeOp,
   whereOp,
+  greaterOp,
 } from './elementwise';
-import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, topkMaskOp, viewOp } from './index_ops';
+import {
+  catOp,
+  causalConv1dOp,
+  embeddingOp,
+  gatherOp,
+  indexAddOp,
+  indexOp,
+  narrowOp,
+  nonzeroStaticOp,
+  oneHotOp,
+  permuteOp,
+  repeatInterleaveOp,
+  selectOp,
+  topkIndicesOp,
+  topkMaskOp,
+  viewOp,
+} from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { matmulOp, selectMatmulOp } from './matmul';
+import { groupedLinearOp, matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -51,6 +68,11 @@ export interface RsqrtOptions extends OpOptions {
 export interface CatOptions extends OpOptions {
   dim?: number;
   pieces?: number | string | null;
+}
+
+export interface NonzeroStaticOptions extends OpOptions {
+  size?: number | string;
+  fill_value?: number;
 }
 
 export interface BuiltinOps {
@@ -92,6 +114,16 @@ export interface BuiltinOps {
   causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
+  greater(input: Node, other: Node | number, options?: OpOptions): Node;
+  topk_indices(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
+  one_hot(input: Node, num_classes: number | string, options?: OpOptions): Node;
+  permute(input: Node, dims: number[], options?: OpOptions): Node;
+  permute(input: Node, ...dims: number[]): Node;
+  nonzero_static(input: Node, size: number | string, options?: NonzeroStaticOptions): Node;
+  nonzero_static(input: Node, options: NonzeroStaticOptions): Node;
+  index(input: Node, indices: Node[], options?: OpOptions): Node;
+  index_add(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
+  grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -132,6 +164,14 @@ export const builtinOps: readonly AnyOpDef[] = [
   causalConv1dOp,
   topkMaskOp,
   whereOp,
+  greaterOp,
+  topkIndicesOp,
+  oneHotOp,
+  permuteOp,
+  nonzeroStaticOp,
+  indexOp,
+  indexAddOp,
+  groupedLinearOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

@@ -5,7 +5,7 @@ import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, promoteDtypes } fro
 import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
-import { opDef } from './registry';
+import { inputDifferentiable, opDef } from './registry';
 
 export interface GraphOptions {
   dims?: Record<string, number>;
@@ -263,6 +263,11 @@ class GraphImpl {
       throw new Error(`${def.name}: takes at most ${def.args.length} positional arguments, got ${positional.length}`);
     }
     const attrs: Record<string, unknown> = { ...(def.defaults ?? {}) };
+    const keywords = new Set(Object.keys(options).filter((key) => def.args.includes(key) && !def.tensors.includes(key) && key !== def.rest));
+    for (const key of keywords) {
+      if (positional[def.args.indexOf(key)] !== undefined) throw new Error(`${def.name}: argument '${key}' is given both by position and by keyword`);
+      attrs[key] = options[key];
+    }
     const inputs: Node[] = [];
     def.args.forEach((argName, i) => {
       const given = positional[i];
@@ -289,6 +294,7 @@ class GraphImpl {
     });
     const nodeOptions: OpOptions = {};
     for (const [key, value] of Object.entries(options)) {
+      if (keywords.has(key)) continue;
       if (NODE_OPTION_KEYS.has(key)) (nodeOptions as Record<string, unknown>)[key] = value;
       else if (def.defaults !== undefined && key in def.defaults) attrs[key] = value;
       else throw new Error(`${def.name}: unknown option '${key}'`);
@@ -322,7 +328,7 @@ class GraphImpl {
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
-    const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
+    const dtype = options.dtype !== undefined ? checkDtype(options.dtype, `node '${name}'`) : (def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`));
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
   }
 
@@ -480,8 +486,8 @@ class GraphImpl {
 
   private detachedOps(loss: Node | undefined): Set<number> {
     const differentiableInputs = (node: Node): Node[] => {
-      const flags = node.kind === 'op' ? opDef(node.op as string)?.differentiable : undefined;
-      return node.inputs.filter((_, k) => flags === undefined || flags[k]);
+      const def = node.kind === 'op' ? opDef(node.op as string) : undefined;
+      return node.inputs.filter((_, k) => def === undefined || inputDifferentiable(def, k));
     };
     const tracked = this.nodes.map((node) => node.kind === 'param' || node.kind === 'input');
     for (const node of this.nodes) {
@@ -555,7 +561,7 @@ class GraphImpl {
       const inputGrads = def.backward(grads[i], node.inputs.map((n) => n.value), this.states[i].value, node.attrs);
       node.inputs.forEach((input, k) => {
         if (CONSTANT_KINDS.has(input.kind)) return;
-        if (def.differentiable !== undefined && !def.differentiable[k]) return;
+        if (!inputDifferentiable(def, k)) return;
         const grad = inputGrads[k];
         if (grad === null || grad === undefined) return;
         if (formatShape(grad.shape) !== formatShape(input.shape)) {

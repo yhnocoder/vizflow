@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { convTaps } from '../../autograd/ops/index_ops';
+import { type PermuteAttrs, convTaps, indexAddTarget, indexSource, permuteSource } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -153,5 +153,78 @@ export const topkMaskExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{topk\\_mask}(${s.in[0]},${(s.attrs as { k: number }).k})`,
     local: () => '0',
+  },
+};
+
+export const topkIndicesExplain: OpExplain = {
+  pattern: 'dense',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{topk\\_indices}(${s.in[0]},${(s.attrs as { k: number }).k})`,
+    local: () => '0',
+  },
+};
+
+export const oneHotExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{one\\_hot}(${s.in[0]},${(s.attrs as { num_classes: number }).num_classes})`,
+    local: () => '0',
+  },
+  selected: () => [],
+};
+
+export const permuteExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{permute}(${s.in[0]},${(s.attrs as { dims: number[] }).dims.join(',')})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: permuteSource(ctx.inputs[0].shape, ctx.attrs as PermuteAttrs, out) }],
+};
+
+export const nonzeroStaticExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{nonzero\\_static}(${s.in[0]},${(s.attrs as { size: number }).size})`,
+    local: () => '0',
+  },
+  selected: () => [],
+};
+
+export const indexExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `${s.in[0]}[${s.in.slice(1).join(',')}]`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, ...indices] = ctx.inputs;
+    return [{ arg: 0, index: [...indexSource(input.shape, indices, out[0]), ...out.slice(1)] }];
+  },
+};
+
+export const indexAddExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{index\\_add}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]},${s.in[2]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, index] = ctx.inputs;
+    const dim = normDim((ctx.attrs as { dim: number }).dim, input.ndim);
+    const picks = [{ arg: 0, index: [...out] }];
+    for (let i = 0; i < index.size; i++) {
+      if (indexAddTarget(input.shape, index, dim, i) !== out[dim]) continue;
+      const source = [...out];
+      source[dim] = i;
+      picks.push({ arg: 2, index: source });
+    }
+    return picks;
   },
 };

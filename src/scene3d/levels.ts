@@ -1,4 +1,5 @@
 import type { Node } from '../autograd';
+import { explainOf } from '../explain';
 import { type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { indexOf } from '../tensor';
 import { type Anchor, type Block, type BoardGeometry, type Element, type Vec3, rowCol, rowsCols } from './layout';
@@ -189,6 +190,7 @@ export const COLUMN_NAME_PLATE_LIFT = 0.15;
 export const ROW_NAME_SIDE = 0.45;
 export const ROW_NAME_LIFT = 0.03;
 export const BRACE_FRONT = 0.6;
+export const ROW_GROUP_GAP = 0.45;
 
 const zPlate = (r: number) => LEVEL_FRONT + r * LEVEL_ROW;
 const zTile = (r: number, rows: number) => LEVEL_FRONT - TILE_BACK - (rows - 1 - r) * (rows > TILE_DENSE_ROWS ? TILE_ROW_DENSE : TILE_ROW);
@@ -224,6 +226,8 @@ class Plan implements LevelPlan {
   private readonly copyEntries = new Map<Copy, Entry>();
   private readonly boards = new Map<Node, BoardRef>();
   private readonly tables = new Map<Node, Node>();
+  private readonly rowGroups = new Map<Node, Node>();
+  private readonly labelledGroups = new Set<Node>();
   private readonly lanes: Lane[] = [];
   private readonly segments: { title: string; nodes: Node[]; params: boolean; nested: boolean }[] = [];
   private readonly stream: Lane;
@@ -236,6 +240,7 @@ class Plan implements LevelPlan {
     this.stream = this.lane(STREAM_X, STREAM_SPACING, true);
     for (const n of this.computed) if (n.kind === 'op' && n.op === 'view') this.sourceOf.set(n, this.sourceOf.get(n.inputs[0]) ?? n.inputs[0]);
     this.findBoards();
+    this.findRowGroups();
     this.findCopies();
     this.buildLevels();
     this.placeSides();
@@ -296,6 +301,51 @@ class Plan implements LevelPlan {
     }
   }
 
+  private findRowGroups(): void {
+    const source = (n: Node) => this.sourceOf.get(n) ?? n;
+    const mark = (n: Node, group: Node): boolean => {
+      const node = source(n);
+      if (!this.computed.has(node) || this.rowGroups.has(node) || node.shape[0] !== group.shape[0]) return false;
+      this.rowGroups.set(node, group);
+      return true;
+    };
+    for (const u of this.computed) {
+      if (u.kind !== 'op' || u.op !== 'grouped_linear') continue;
+      const group = u.inputs[2];
+      mark(u, group);
+      mark(u.inputs[0], group);
+      this.labelledGroups.add(source(u.inputs[0]));
+      mark(group, group);
+    }
+    for (let changed = this.rowGroups.size > 0; changed; ) {
+      changed = false;
+      for (const u of this.computed) {
+        if (u.kind !== 'op' || explainOf(u.op as string)?.pattern !== 'elementwise') continue;
+        const linked = [u, ...u.inputs].filter((n) => !isLeafLike(n) && n.shape.length > 0 && n.shape[0] === u.shape[0]);
+        const group = linked.map((n) => this.rowGroups.get(source(n))).find((g) => g !== undefined);
+        if (group === undefined) continue;
+        for (const n of linked) if (mark(n, group)) changed = true;
+      }
+    }
+  }
+
+  private rowZs(n: Node, rows: number): number[] {
+    const group = this.rowGroups.get(n);
+    let gaps = 0;
+    return Array.from({ length: rows }, (_, r) => {
+      if (group !== undefined && r > 0 && group.value.data[r] !== group.value.data[r - 1]) gaps++;
+      return zPlate(r) + gaps * ROW_GROUP_GAP;
+    });
+  }
+
+  private groupLabels(e: Entry, x: number, y: number, zs: number[]): Block['rowLabels'] {
+    const group = this.rowGroups.get(e.node);
+    if (group === undefined || e.copy !== undefined || !this.labelledGroups.has(e.node) || e.rows !== group.shape[0]) return [];
+    const name = group.name.slice(group.name.lastIndexOf('.') + 1);
+    const data = group.value.data;
+    return zs.map((z, r) => ({ text: r === 0 || data[r] !== data[r - 1] ? `${name}=${Math.round(data[r])}` : '', col: r, x, y: y + ROW_NAME_LIFT, z, anchor: 'right' as const }));
+  }
+
   private findCopies(): void {
     for (const x of this.computed) {
       const producer = this.head(x);
@@ -322,7 +372,8 @@ class Plan implements LevelPlan {
     if (n.shape.length === 0) return [1, 1];
     if (n.shape.length === 1) {
       const main = n.inputs[0];
-      return !isLeafLike(n) && main !== undefined && main.shape.length === 2 && main.shape[0] === n.shape[0] ? [n.shape[0], 1] : [1, n.shape[0]];
+      const column = (u: Node) => u.shape.length === 1 && u.shape[0] === n.shape[0] && !isLeafLike(u) && this.shapeOf(u)[1] === 1;
+      return !isLeafLike(n) && main !== undefined && ((main.shape.length === 2 && main.shape[0] === n.shape[0]) || n.inputs.some(column)) ? [n.shape[0], 1] : [1, n.shape[0]];
     }
     return rowsCols(n.shape);
   }
@@ -497,7 +548,11 @@ class Plan implements LevelPlan {
           continue;
         }
         if (isLeafLike(n)) {
-          this.setLane(e, this.stream, range(0, e.cols));
+          const partners = new Set(this.consumers(n).flatMap((u) => u.inputs).filter((i) => i !== n).map((i) => this.entryOf.get(this.sourceOf.get(i) ?? i)));
+          const taken = this.occupied(level, this.stream, e);
+          const blocked = level.entries.some((o) => partners.has(o) && o.lane === this.stream && range(0, e.cols).some((k) => o.offsets.includes(k)));
+          const start = blocked ? Math.max(...taken) + 3 : 0;
+          this.setLane(e, this.stream, range(start, e.cols));
           continue;
         }
         const inputs = n.inputs.map((i) => this.entryOf.get(i)).filter((i): i is Entry => i !== undefined);
@@ -573,6 +628,10 @@ class Plan implements LevelPlan {
   private sideXs(e: Entry, main: Entry): number[] {
     const n = e.node;
     const mainXs = main.xs ?? (main.lane === undefined ? [0] : main.offsets.map((o) => position(main.lane!, o)));
+    if (n.kind === 'op' && n.op === 'select' && main.node === n.inputs[0] && main.node.shape.length === 2 && e.cols === 1 && main.cols === mainXs.length) {
+      const attrs = n.attrs as { dim: number; index: number };
+      if (attrs.dim === 1 || attrs.dim === -1) return [mainXs[(attrs.index + main.cols) % main.cols]];
+    }
     if (main.kind === 'disc' || main.kind === 'box' || (main.cols === 1 && main !== e)) {
       if (e.kind === 'box') return [mainXs[0]];
       return mainXs.slice(0, e.cols);
@@ -631,7 +690,12 @@ class Plan implements LevelPlan {
         }
         lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
       }
-      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => { if (i === 0) e.title = 'left'; });
+      for (const group of lanes.values()) {
+        group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => {
+          if (i === 0) e.title = 'left';
+          else if (e.lane !== undefined && isLeafLike(e.node) && Math.min(...e.offsets) > Math.max(...group[i - 1].offsets) + 1) e.title = 'below';
+        });
+      }
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
     }
@@ -885,7 +949,7 @@ class Plan implements LevelPlan {
       io,
       links,
       chips,
-      braces: { z: zPlate(rows - 1) + BRACE_FRONT, cx: position(this.stream, (streamWidth - 1) / 2), cz: zPlate((rows - 1) / 2) },
+      braces: { z: Math.max(zPlate(rows - 1), ...this.entries.filter((en) => en.kind === 'plate').flatMap((en) => this.zs(en))) + BRACE_FRONT, cx: position(this.stream, (streamWidth - 1) / 2), cz: zPlate((rows - 1) / 2) },
       lo: 0,
       top,
       sourceOf: this.sourceOf,
@@ -909,7 +973,7 @@ class Plan implements LevelPlan {
     if (e.kind === 'tile') return Array.from({ length: e.rows }, (_, r) => zTile(r, e.rows));
     if (e.kind === 'vector') return [zVector];
     if (e.kind === 'box') return [zPlate((this.rowsOf() - 1) / 2)];
-    return Array.from({ length: e.rows }, (_, r) => zPlate(r));
+    return this.rowZs(e.node, e.rows);
   }
 
   private rowsOf(): number {
@@ -962,7 +1026,7 @@ class Plan implements LevelPlan {
         : { text, col, x: xs[col], y: y + COLUMN_NAME_PLATE_LIFT, z: Math.min(...zs) - COLUMN_NAME_PLATE_BACK, anchor: 'above' as const },
     );
     const rowTokens = label?.tokens;
-    const rowLabels = (rowTokens ?? []).slice(0, e.rows).map((text, r) => ({ text, col: r, x: x0 - ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: zs[r], anchor: 'left' as const }));
+    const rowLabels = rowTokens === undefined ? this.groupLabels(e, x1 + ROW_NAME_SIDE, y, zs) : rowTokens.slice(0, e.rows).map((text, r) => ({ text, col: r, x: x0 - ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: zs[r], anchor: 'left' as const }));
     const framed = e.kind === 'plate' && aligned.has(n) && e.copy === undefined;
     return {
       node: n,

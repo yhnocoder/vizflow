@@ -7,6 +7,10 @@ export const LABEL_DTYPE: Dtype = 'int64';
 const FLOAT_RANK: Partial<Record<Dtype, number>> = { fp8_e4m3: 1, fp8_e5m2: 1, fp16: 2, bf16: 2, fp32: 3, fp64: 4 };
 const INT_RANK: Partial<Record<Dtype, number>> = { bool: 0, uint8: 1, int8: 1, int16: 2, int32: 3, int64: 4 };
 
+export function isIntegerDtype(dtype: Dtype): boolean {
+  return INT_RANK[dtype] !== undefined;
+}
+
 export function checkDtype(dtype: string, where: string): Dtype {
   if (!(DTYPES as readonly string[]).includes(dtype)) throw new Error(`${where}: unknown dtype '${dtype}', expected one of ${DTYPES.join(', ')}`);
   return dtype as Dtype;

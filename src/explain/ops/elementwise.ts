@@ -153,6 +153,15 @@ export const transposeExplain: OpExplain = {
   },
 };
 
+export const greaterExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 0,
+  tex: {
+    forward: (s) => `${s.in[0]}>${s.in[1] ?? scalarTex(s.attrs)}`,
+    local: () => '0',
+  },
+};
+
 export const whereExplain: OpExplain = {
   pattern: 'elementwise',
   local: (ctx, out, arg) => (arg === 1 && operand(ctx, 0, out) !== 0 ? 1 : 0),

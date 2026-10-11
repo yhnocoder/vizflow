@@ -49,6 +49,18 @@ function binary(
   };
 }
 
+export const greaterOp: OpDef<ScalarAttrs> = {
+  name: 'greater',
+  args: ['input', 'other'],
+  tensors: ['input', 'other'],
+  scalars: ['other'],
+  differentiable: [false, false],
+  dtype: 'bool',
+  shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+  forward: ([a, b], { other }) => (b === undefined ? mapWith(a, (x) => Number(x > (other as number))) : zipWith(a, b, (x, y) => Number(x > y))),
+  backward: (_gradOut, inputs) => inputs.map(() => null),
+};
+
 export const whereOp: OpDef<{ other: number }> = {
   name: 'where',
   args: ['condition', 'input', 'other'],

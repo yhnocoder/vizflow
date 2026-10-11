@@ -1,4 +1,5 @@
 import type { Tensor } from '../tensor';
+import type { Dtype } from './dtype';
 import type { Node } from './node';
 
 export type Pattern = 'elementwise' | 'reduce' | 'dense' | 'contract' | 'select';
@@ -36,6 +37,7 @@ export interface OpExplain {
     local(s: LocalTexArgs): string;
   };
   selected?(ctx: OpCtx, out: number[]): { arg: number; index: number[] }[];
+  note?(ctx: OpCtx, tex: { in: string[] }): string;
 }
 
 export interface OpDef<A extends object = Record<string, unknown>> {
@@ -51,6 +53,7 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   forward(inputs: Tensor[], attrs: A): Tensor;
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
+  dtype?: Dtype;
   explain?: OpExplain;
 }
 

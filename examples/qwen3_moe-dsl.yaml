@@ -32,7 +32,7 @@ leaves:
   label: 输入
   title: 输入和参数
   text: |
-    输入只有 token id，其余都是参数和常量。注意力有四个投影和 q_norm、k_norm，MoE 的 gate 有一块 $W_r$，每个专家有三块权重。HF 把所有专家的 gate_proj 和 up_proj 存在一个张量 <code>experts.gate_up_proj</code> 里，形状是 $(E, 2m_f, d)$，down_proj 存在 <code>experts.down_proj</code> 里，形状是 $(E, d, m_f)$；图里把它们拆成每个专家的 $W_g$、$W_u$、$W_d$，数值相同。RoPE 的 cos/sin 表和 causal mask 由形状决定，不需要梯度。
+    输入只有 token id，其余都是参数和常量。注意力有四个投影和 q_norm、k_norm。MoE 的 gate 有一块 $W_r$，形状 $(E, d)$；所有专家的权重和 HF 一样存在两个参数里：<code>experts.gate_up_proj</code> 是 $W_{gu}$，形状 $(E, 2m_f, d)$，每个专家的 gate_proj 和 up_proj 上下拼在一块里；<code>experts.down_proj</code> 是 $W_d$，形状 $(E, d, m_f)$。RoPE 的 cos/sin 表、causal mask 和 MoE 累加用的全 0 张量由形状决定，不需要梯度。
     $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
 
 modules:
@@ -86,18 +86,15 @@ modules:
           outputs: { out: moe }
           steps:
             router:
-              title: 每个专家一个概率
               text: |
-                gate 的权重 $W_r$ 每行对应一个专家，$\of{n}W_r^{\top}$ 给每个位置、每个专家一个分数，<code>Qwen3MoeTopKRouter</code> 在 float32 里做 softmax，得到 \of{Ne} 个专家上的概率。Qwen3-30B-A3B 有 128 个专家。
-                $$\mathbf{p}=\operatorname{softmax}(\of{n}W_r^{\top})={{ mlp.p | matrix:3 }}$$
+                <code>router_logits = F.linear(hidden_states, self.weight)</code>。gate 的权重 $W_r$ 形状是 $(E, d)$，每行对应一个专家，$\of{n}W_r^{\top}$ 给每个位置、每个专家一个分数。Qwen3-30B-A3B 有 128 个专家，这里画 \of{Ne} 个。
+                $$\mathbf{r}={{ mlp.logits | matrix:3 }}$$
             topk:
-              text: |
-                每个位置按概率选最大的 $K=\of{K}$ 个专家，Qwen3-30B-A3B 里是 128 选 8。挑选只决定 0 和 1，没有梯度。
-                $$\mathbf{m}^{\mathrm{sel}}={{ mlp.sel | matrix:2 }}$$
-            weights:
-              text: |
-                <code>norm_topk_prob = True</code>：选中的那几个概率除以它们的和，重新归一化成和为 1 的权重，再转回 bf16。没选中的专家权重是 0。
-                $$\bar{\mathbf{w}}=\frac{\mathbf{p}\odot\mathbf{m}^{\mathrm{sel}}}{\sum\mathbf{p}\odot\mathbf{m}^{\mathrm{sel}}}={{ mlp.rw | matrix:3 }}$$
+              append: |
+                Qwen3-30B-A3B 里是 128 选 8。
+            normalize:
+              append: |
+                这一页的模型 dtype 是 bf16，所以路由权重转回 bf16。
       - x_out: { op: a + moe, tex: '\mathbf{x}' }
     steps:
       - id: res1

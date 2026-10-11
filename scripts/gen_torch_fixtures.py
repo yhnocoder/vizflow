@@ -555,6 +555,54 @@ def routing_cases():
         cases.append(
             op_case("where", f"condition {condition} input {shape} other {other}", lambda c, x, other=other: torch.where(c != 0, x, other), [("label", keep), ("input", randn(*shape))], [tensor_arg(0), tensor_arg(1), other])
         )
+    cases += expert_routing_cases()
+    return cases
+
+
+def grouped_linear(x, weight, group):
+    return torch.stack([F.linear(x[r], weight[group[r]]) for r in range(x.shape[0])])
+
+
+def expert_routing_cases():
+    cases = []
+    for shape, other in [((3, 4), 0.0), ((5,), 1.0)]:
+        cases.append(op_case("greater", f"{shape} > {other}", lambda x, other=other: torch.greater(x, other), [("input", randn(*shape))], [tensor_arg(0), other]))
+    cases.append(op_case("greater", "(2, 3) > (3,)", torch.greater, [("input", randn(2, 3)), ("input", randn(3))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, k, dim in [((3, 6), 2, -1), ((3, 2, 4), 3, -1), ((4, 3), 2, 0)]:
+        cases.append(op_case("topk_indices", f"{shape} k {k} dim {dim}", lambda x, k=k, dim=dim: x.topk(k, dim)[1], [("label", distinct(*shape))], [tensor_arg(0), k, dim]))
+    for shape, classes in [((3, 2), 5), ((4,), 4)]:
+        cases.append(op_case("one_hot", f"{shape} into {classes} classes", lambda t, classes=classes: F.one_hot(t, classes), [("label", randint(classes, shape))], [tensor_arg(0), classes]))
+    for shape, dims in [((3, 2, 5), (2, 1, 0)), ((2, 3), (1, 0)), ((2, 3, 4), (0, -1, 1))]:
+        cases.append(op_case("permute", f"{shape} dims {dims}", lambda x, dims=dims: x.permute(*dims), [("input", randn(*shape))], [tensor_arg(0), *dims]))
+    mask = torch.tensor([[[1, 0, 0], [0, 0, 1]], [[0, 1, 0], [1, 0, 0]], [[0, 0, 0], [0, 0, 0]], [[0, 1, 1], [0, 0, 0]]])
+    for size, fill in [(6, None), (4, None), (9, None), (8, 7)]:
+        options = {"size": size} if fill is None else {"size": size, "fill_value": fill}
+        cases.append(op_case("nonzero_static", f"(4, 2, 3) size {size}" + ("" if fill is None else f" fill {fill}"), lambda m, options=options: torch.nonzero_static(m, **options), [("label", mask.clone())], [tensor_arg(0)], options))
+    rows = torch.tensor([2, 0, 2, -3, 1])
+    cols = torch.tensor([1, 0, 1, 2, -1])
+    cases.append(op_case("index", "(4, 3)[rows]", lambda x, i: x[i], [("input", randn(4, 3)), ("label", rows.clone())], [tensor_arg(0), [tensor_arg(1)]]))
+    cases.append(op_case("index", "(3, 3)[rows, cols]", lambda x, i, j: x[i, j], [("input", randn(3, 3)), ("label", rows.clone().clamp(min=-3, max=2)), ("label", cols.clone())], [tensor_arg(0), [tensor_arg(1), tensor_arg(2)]]))
+    cases.append(op_case("index", "(3, 2, 4)[rows, cols]", lambda x, i, j: x[i, j], [("input", randn(3, 2, 4)), ("label", torch.tensor([0, 2, 2, 1])), ("label", torch.tensor([1, 0, 1, 1]))], [tensor_arg(0), [tensor_arg(1), tensor_arg(2)]]))
+    for shape, dim, index, source in [((4, 3), 0, [2, 0, 2, 3, 2], (5, 3)), ((2, 4), 1, [3, 3, 0], (2, 3)), ((3,), 0, [1, 2, 1, 0], (4,))]:
+        cases.append(
+            op_case(
+                "index_add",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, s, dim=dim: torch.index_add(x, dim, i, s),
+                [("input", randn(*shape)), ("label", torch.tensor(index)), ("input", randn(*source))],
+                [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    for rows, groups, outs, width, group in [(6, 4, 4, 3, [0, 0, 1, 3, 3, 3]), (3, 2, 2, 2, [1, 0, 1])]:
+        cases.append(
+            op_case(
+                "grouped_linear",
+                f"{rows} rows over {groups} groups of ({outs}, {width})",
+                grouped_linear,
+                [("input", randn(rows, width)), ("input", randn(groups, outs, width)), ("label", torch.tensor(group))],
+                [tensor_arg(0), tensor_arg(1), tensor_arg(2)],
+            )
+        )
     return cases
 
 

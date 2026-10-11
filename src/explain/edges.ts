@@ -1,4 +1,4 @@
-import { type Node, type OpCtx, type OpExplain, opDef } from '../autograd';
+import { type Node, type OpCtx, type OpExplain, inputDifferentiable, opDef } from '../autograd';
 import { broadcastIndex, forEachIndex, indexOf, normDim, normDims, reduceMap } from '../tensor';
 import { type CellRef, type ElemRef, matmulOperands } from './elem';
 
@@ -16,8 +16,7 @@ export function contextOf(node: Node): OpCtx {
 
 function differentiableArgs(node: Node): number[] {
   const def = opDef(node.op as string);
-  const flags = def?.differentiable;
-  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (flags === undefined || flags[arg]));
+  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (def === undefined || inputDifferentiable(def, arg)));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {

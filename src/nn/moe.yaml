@@ -1,7 +1,7 @@
 module: SparseMoE
 subtitle: 稀疏 MoE：softmax 路由，选 top-k 个专家
 import:
-  GLU: vizflow/nn/glu
+  Experts: vizflow/nn/experts
 params:
   E:  { type: dim }
   K:  { type: dim }
@@ -29,66 +29,64 @@ body:
       body:
         - logits: { op: x @ Wr.T, tex: '\mathbf{r}' }
         - p: { op: 'softmax(logits, -1)', tex: '\mathbf{p}', dtype: fp32 }
-        - sel: { op: 'topk_mask(p, K, -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
-        - w: { op: p * sel, tex: '\mathbf{w}' }
-        - den: { op: 'sum(w, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{w}' }
-        - rw: { op: w / den, tex: '\bar{\mathbf{w}}', dtype: logits }
-  - for: e
-    in: 1..E
-    body:
-      - expert[e]:
-          use: GLU
-          subtitle: 路由专家
-          folded: true
-          params: { act: silu, f: mf, name: expert }
-          inputs: { x: x }
-          outputs: { down: 'y[e]' }
-      - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
-  - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
-  - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\bar{\mathbf{w}}\odot Y' }
-  - out: { op: 'sum(Yw, 1)', tex: '\mathbf{moe}' }
+        - idx: { op: 'topk_indices(p, K, -1)', tex: '\mathbf{i}' }
+        - top: { op: 'gather(p, -1, idx)', tex: '\mathbf{p}^{\mathrm{top}}' }
+        - den: { op: 'sum(top, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{p}^{\mathrm{top}}' }
+        - rw: { op: top / den, tex: '\bar{\mathbf{p}}^{\mathrm{top}}', dtype: logits }
+  - experts:
+      use: Experts
+      params: { E: E, mf: mf }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: out }
+      tex: { out: '\mathbf{moe}' }
 steps:
   - id: router
-    show: [Wr.T, logits, p]
-    label: '$\of{p}=\operatorname{softmax}(\of{x}W_r^{\top})$'
-    title: 每个专家一个概率
+    show: [Wr.T, logits]
+    label: '$\of{logits}=\of{x}W_r^{\top}$'
+    title: router 的分数
     text: |
-      gate 的权重 $W_r$ 每行对应一个专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数，softmax 在 float32 里把一行分数变成 \of{E} 个专家上的概率。
-      $$\of{p}=\operatorname{softmax}(\of{x}W_r^{\top})={{ p | matrix:3 }}$$
+      <code>router_logits = F.linear(hidden_states, self.weight)</code>。gate 的权重 $W_r$ 形状是 $(E, d)$，每行对应一个专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
+      $$\of{logits}={{ logits | matrix:3 }}$$
     backward:
       label: '$\partial W_r,\ \partial\of{x}$'
       title: 传到 gate 的权重和 $\of{x}$
       text: |
-        softmax 让一行里的概率互相影响，没被选中的专家也通过归一化拿到梯度。
+        $$\frac{\partial\ell}{\partial\of{logits}}={{ logits.grad | matrix:3 }}$$
+  - id: softmax
+    show: p
+    label: '$\of{p}=\operatorname{softmax}(\of{logits})$'
+    title: 每个专家一个概率
+    text: |
+      <code>router_probs = softmax(router_logits, dtype=torch.float, dim=-1)</code>，在 float32 里把一行分数变成 \of{E} 个专家上的概率。
+      $$\of{p}={{ p | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{logits}$'
+      title: 穿过 softmax
+      text: |
+        softmax 让一行里的概率互相影响，没被选中的专家的分数也通过归一化拿到梯度。
         $$\frac{\partial\ell}{\partial\of{p}}={{ p.grad | matrix:3 }}$$
   - id: topk
-    show: sel
-    label: '$\of{sel}$'
+    show: [idx, top]
+    label: '$\of{idx},\ \of{top}$'
     title: 'top-$\of{K}$：选出 $K$ 个专家'
     text: |
-      每个位置按概率选最大的 $K=\of{K}$ 个专家，选中的记 1，其余记 0。挑选只决定 0 和 1，没有梯度。
-      $$\of{sel}={{ sel | matrix:2 }}$$
-  - id: weights
-    show: [w, den, rw]
-    label: '$\of{rw}$'
-    title: 专家的权重
-    text: |
-      选中的那几个概率除以它们的和，重新归一化成和为 1 的权重，再转回模型的 dtype。没选中的专家权重是 0。
-      $$\of{rw}=\frac{\of{p}\odot\of{sel}}{\sum\of{p}\odot\of{sel}}={{ rw | matrix:3 }}$$
+      <code>router_top_value, router_indices = torch.topk(router_probs, self.top_k, dim=-1)</code>。每个位置按概率从大到小选 $K=\of{K}$ 个专家，$\of{idx}$ 是它们的编号（从 0 开始），$\of{top}$ 是对应的概率。topk 一次给出两样，图上先画编号（topk_indices），再按编号从 $\of{p}$ 里取出概率（gather），取出的值和 topk 的值相同。编号没有梯度，梯度只通过取出的概率传回 $\of{p}$。
+      $$\of{idx}={{ idx | matrix }},\qquad \of{top}={{ top | matrix:3 }}$$
     backward:
       label: '$\partial\of{p}$'
-      title: 穿过归一化，传到概率
+      title: 传回选中的概率
       text: |
-        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
-  - id: combine
-    show: ['yv[1..E]', Y, Yw, out]
-    label: '$\of{out}$'
-    title: 按权重加起来
+        gather 的反向把梯度放回被选中的那 $K$ 个概率，没选中的专家在这一步拿到 0。
+        $$\frac{\partial\ell}{\partial\of{p}}={{ p.grad | matrix:3 }}$$
+  - id: normalize
+    show: [den, rw]
+    label: '$\of{rw}$'
+    title: 归一化成路由权重
     text: |
-      每个专家的输出乘上自己的权重，再按专家加起来。这里为了画图，每个专家对所有位置都算了一遍，权重是 0 的那些行不起作用；HF 的实现只把每个专家被选中的那些 token 送进去算。
-      $$\of{out}=\sum_e \bar{w}_{e}\,\mathbf{y}^{(e)}={{ out | matrix:2 }}$$
+      <code>norm_topk_prob = True</code>：<code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>，选中的 $K$ 个概率除以它们的和，变成和为 1 的权重，再 <code>.to(router_logits.dtype)</code> 转回分数的 dtype。
+      $$\of{rw}=\frac{\of{top}}{\sum\of{top}}={{ rw | matrix:3 }}$$
     backward:
-      label: '$\partial\mathbf{y}^{(e)},\ \partial\of{rw}$'
-      title: 传到各个专家的输出和权重
+      label: '$\partial\of{top}$'
+      title: 穿过归一化
       text: |
-        专家 $e$ 的输出收到的梯度是 $\bar{w}_e\,\partial\ell/\partial\of{out}$，没选中这个专家的位置梯度是 0，所以这个专家的参数只从选中它的 token 学习。
+        $$\frac{\partial\ell}{\partial\of{top}}={{ top.grad | matrix:3 }}$$

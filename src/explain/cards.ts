@@ -1,4 +1,4 @@
-import { type Graph, type Node, opDef } from '../autograd';
+import { type Graph, type Node, inputDifferentiable, isIntegerDtype, opDef } from '../autograd';
 import { type Tensor, broadcastIndex, formatNumber, formatShape } from '../tensor';
 import { elemTex, elemTexOf, isCell, matmulOperands } from './elem';
 import { type FlowEdge, contextOf } from './edges';
@@ -30,9 +30,10 @@ export interface EdgeCard {
 const VALUE_PREVIEW = 8;
 const NOTE_TERMS = 8;
 
-function valueText(t: Tensor): string {
-  if (t.shape.length === 0) return `$${formatNumber(t.data[0], { tex: true })}$`;
-  const shown = Array.from(t.data.subarray(0, VALUE_PREVIEW), (v) => formatNumber(v, { tex: true }));
+function valueText(t: Tensor, integer = false): string {
+  const format = (v: number) => formatNumber(v, { tex: true, ...(integer ? { digits: 0 } : {}) });
+  if (t.shape.length === 0) return `$${format(t.data[0])}$`;
+  const shown = Array.from(t.data.subarray(0, VALUE_PREVIEW), format);
   return `$[${shown.join(',\\ ')}${t.size > VALUE_PREVIEW ? ',\\ \\ldots' : ''}]$`;
 }
 
@@ -44,8 +45,8 @@ function consumersOf(g: Graph, node: Node, reachesLoss: (node: Node) => boolean)
   if (node.grad === null) return [];
   return g.nodes.filter((other) => {
     if (other.kind !== 'op' || !reachesLoss(other)) return false;
-    const flags = opDef(other.op as string)?.differentiable;
-    return other.inputs.some((input, arg) => input === node && (flags === undefined || flags[arg]));
+    const def = opDef(other.op as string);
+    return other.inputs.some((input, arg) => input === node && (def === undefined || inputDifferentiable(def, arg)));
   });
 }
 
@@ -79,7 +80,7 @@ export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', re
   const rows: CardRow[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node), { label: 'dtype', value: node.dtype }];
   let card: NodeCard;
   if (dir === 'forward') {
-    rows.push({ label: '当前值', kind: 'value', value: valueText(node.value) });
+    rows.push({ label: '当前值', kind: 'value', value: valueText(node.value, isIntegerDtype(node.dtype)) });
     card = { title: `$${node.tex}$`, tex: forwardTex(node), rows };
   } else {
     const consumers = consumersOf(g, node, reachesLoss);
@@ -96,6 +97,10 @@ export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', re
   }
   if (override.title !== undefined) card.title = override.title;
   if (override.tex !== undefined) card.tex = [...override.tex];
+  if (dir === 'forward' && node.kind === 'op') {
+    const note = explainOf(node.op as string)?.note?.(contextOf(node), { in: node.inputs.map((n) => n.tex) });
+    if (note !== undefined) card.note = note;
+  }
   if (override.note !== undefined) card.note = override.note;
   return card;
 }

@@ -12,7 +12,7 @@ dims: { T: 3, d: 4, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2
 dtype: bf16
 real: { name: Qwen3.5-397B-A17B, d: 4096, V: 248320, H: 32, Hkv: 2, dh: 256, rd: 64, Hk: 16, Hv: 64, dk: 128, dv: 128, K: 4, Ne: 512, Nk: 10, mf: 1024, sf: 1024 }
 vocab: [on, mat, the, sat, cat]
-init: { seed: 20261011 }
+init: { seed: 20261013 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
 inputs: {}
 weights:
@@ -34,7 +34,7 @@ leaves:
   label: 输入
   title: 输入和参数
   text: |
-    输入只有 token id，其余都是参数和常量。三处 RMSNorm 和 q_norm、k_norm 的权重以 0 为中心，乘的是 $1+\boldsymbol{\gamma}$。Gated DeltaNet 除了几个投影，还有短卷积的核 $W_{\mathrm{conv}}$、每个 value head 一个的 $\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$，以及门控 RMSNorm 的权重。每个 MoE 有 router 的 $W_r$、每个路由专家和共享专家各三块权重，以及共享专家的门 $W_{sg}$。HF 把所有路由专家的 gate_proj 和 up_proj 存在一个张量 <code>experts.gate_up_proj</code> 里，形状是 $(E, 2m_f, d)$，down_proj 存在 <code>experts.down_proj</code> 里；图里把它们拆成每个专家的 $W_g$、$W_u$、$W_d$，数值相同。RoPE 的 cos/sin 表、causal mask 和状态的初值 $S_0=0$ 由形状决定，不需要梯度。
+    输入只有 token id，其余都是参数和常量。三处 RMSNorm 和 q_norm、k_norm 的权重以 0 为中心，乘的是 $1+\boldsymbol{\gamma}$。Gated DeltaNet 除了几个投影，还有短卷积的核 $W_{\mathrm{conv}}$、每个 value head 一个的 $\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$，以及门控 RMSNorm 的权重。每个 MoE 有 router 的 $W_r$，形状 $(E, d)$；路由专家的权重和 HF 一样存在两个参数里：<code>experts.gate_up_proj</code> 是 $W_{gu}$，形状 $(E, 2m_f, d)$，每个专家的 gate_proj 和 up_proj 上下拼在一块里；<code>experts.down_proj</code> 是 $W_d$，形状 $(E, d, m_f)$。共享专家有三块权重，它的门是 $W_{sg}$。RoPE 的 cos/sin 表、causal mask、状态的初值 $S_0=0$ 和 MoE 累加用的全 0 张量由形状决定，不需要梯度。
     $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
 
 modules:
@@ -346,7 +346,7 @@ panels:
       _, top, idx = mlp.gate(n)                          # softmax、topk、归一化
       routed = mlp.experts(n, idx, top)                  # 与 Qwen3MoeExperts 相同
       shared = F.sigmoid(mlp.shared_expert_gate(n)) * shared
-      x1 = a + routed + shared
+      x1 = a + (routed + shared)
       a = x1 + full.self_attn(full.input_layernorm(x1))  # Qwen3_5MoeAttention
       x = a + full.mlp(full.post_attention_layernorm(a))   # 同上
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)

@@ -1,6 +1,7 @@
 import katex from 'katex';
 import { describe, expect, it } from 'vitest';
 import { builtinOps, graph } from '../../src/core';
+import { Tensor } from '../../src/tensor';
 import { builtinExplains, explain } from '../../src/explain';
 
 const renders = (tex: string) => {
@@ -12,11 +13,13 @@ describe('LaTeX templates render with KaTeX', () => {
     const g = graph();
     const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
     const node = g.exp(x);
-    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1 } };
+    const attrs = { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, num_classes: 3, dims: [1, 0] };
+    const grouped = { weight: Tensor.zeros([2, 3, 3]), group: Tensor.from([1, 0]) };
     for (const def of builtinOps) {
+      const ctx = { node, inputs: def.name === 'grouped_linear' ? [x.value, grouped.weight, grouped.group] : [x.value, x.value], out: node.value, attrs };
       const ex = builtinExplains[def.name];
       expect(ex, def.name).toBeDefined();
-      renders(`\\mathbf{y}=${ex.tex.forward({ out: '\\mathbf{y}', in: ['\\mathbf{a}', '\\mathbf{b}'], attrs: ctx.attrs })}`);
+      renders(`\\mathbf{y}=${ex.tex.forward({ out: '\\mathbf{y}', in: ['\\mathbf{a}', '\\mathbf{b}', '\\mathbf{c}'], attrs: ctx.attrs })}`);
       for (const arg of def.tensors.map((_, i) => i)) {
         for (const [outIndex, inIndex] of [
           [[0, 1], [0, 1]],

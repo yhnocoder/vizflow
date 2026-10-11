@@ -10,6 +10,7 @@ interface PageFixture {
   loss: number;
   nodes: Record<string, EncodedTensor>;
   grads: Record<string, EncodedTensor>;
+  routing: Record<string, { expert_idx: number[]; top_k_pos: number[]; token_idx: number[] }>;
 }
 
 const PAGES = [
@@ -42,8 +43,17 @@ describe.each(PAGES)('$page against transformers $model in float64', ({ page: fi
     for (const [path, grad] of Object.entries(fixture.grads)) expectTensor(page.nodes.get(path)!.grad, grad, `grad of ${path}`);
   });
 
-  it('builds the router steps', () => {
+  it('sends each expert its tokens in the order of the HF expert loop', () => {
+    for (const [path, order] of Object.entries(fixture.routing)) {
+      for (const [column, expected] of Object.entries(order)) {
+        expect(Array.from(page.nodes.get(`${path}.${column}`)!.value.data), `${path}.${column}`).toEqual(expected);
+      }
+    }
+  });
+
+  it('builds the router and expert steps', () => {
     const titles = createSteps(page.graph, page.steps).list.map((s) => s.title);
     expect(titles).toContain('top-$2$：选出 $K$ 个专家');
+    expect(titles).toContain('列出每个专家的 (槽位, 位置)');
   });
 });

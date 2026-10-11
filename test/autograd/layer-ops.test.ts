@@ -229,11 +229,11 @@ describe('defineOp fields for lists, scalars and sizes', () => {
 
   it('validates list, scalars and sizes', () => {
     expect(() => defineOp({ ...base, name: 'list_mix', args: ['tensors', 'other'], tensors: ['tensors', 'other'], list: 'tensors' })).toThrow(
-      "op 'list_mix': list 'tensors' must be the only tensor argument",
+      "op 'list_mix': list 'tensors' must be the last tensor argument",
     );
     expect(() =>
-      defineOp({ ...base, name: 'list_flags', args: ['tensors'], tensors: ['tensors'], list: 'tensors', differentiable: [true] }),
-    ).toThrow("op 'list_flags': differentiable cannot be combined with list");
+      defineOp({ ...base, name: 'list_flags', args: ['tensors'], tensors: ['tensors'], list: 'tensors', differentiable: [true, false] }),
+    ).toThrow("op 'list_flags': differentiable must have one entry per tensor");
     expect(() => defineOp({ ...base, name: 'scalar_bad', args: ['input', 'k'], tensors: ['input'], scalars: ['k'] })).toThrow(
       "op 'scalar_bad': scalar 'k' is not a tensor argument",
     );

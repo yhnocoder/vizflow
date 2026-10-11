@@ -1,0 +1,202 @@
+module: Experts
+subtitle: 路由专家，每个专家只算选中它的 token
+params:
+  E:   { type: dim }
+  mf:  { type: dim }
+  act_fn: { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+inputs:
+  x:   { shape: [T, d] }
+  idx: { shape: [T, K] }
+  w:   { shape: [T, K] }
+outputs: [out]
+weights:
+  Wgu: { shape: [E, 2*mf, d], tex: 'W_{gu}' }
+  Wd:  { shape: [E, d, mf], tex: 'W_{d}' }
+buffers:
+  final: { value: 'zeros(T, d)', tex: 'Z' }
+fold:
+  label: '$\of{out}=\mathrm{experts}(\of{x},\of{idx},\of{w})$'
+  title: experts（已折叠）
+  text: |
+    \of{E} 个专家都收进了盒子。每个位置的输出是它选中的 $K=\of{K}$ 个专家的输出按 $\of{w}$ 加权的和，没被选中的专家不参与计算。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial W_{gu},\ \partial W_{d},\ \partial\of{x},\ \partial\of{w}$'
+    title: 穿过 experts（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - expert_mask:   { op: 'one_hot(idx, E + 1)', tex: 'M^{e}' }
+  - expert_mask_p: { op: 'permute(expert_mask, 2, 1, 0)', tex: '\bar{M}^{e}' }
+  - count:         { op: 'sum(expert_mask_p, [-1, -2])', tex: '\mathbf{c}^{e}' }
+  - expert_hit:    { op: 'greater(count, 0)', tex: '\mathbf{h}^{\mathrm{hit}}' }
+  - nz:            { op: 'nonzero_static(expert_mask_p, size=T*K)', tex: 'N' }
+  - expert_idx:    { op: 'select(nz, 1, 0)', tex: '\mathbf{i}^{e}' }
+  - top_k_pos:     { op: 'select(nz, 1, 1)', tex: '\mathbf{i}^{k}' }
+  - token_idx:     { op: 'select(nz, 1, 2)', tex: '\mathbf{i}^{t}' }
+  - current_state: { op: 'index(x, [token_idx])', tex: 'X^{s}' }
+  - gate_up:       { op: 'grouped_linear(current_state, Wgu, expert_idx)', tex: '\mathbf{gu}' }
+  - gate:          { op: 'narrow(gate_up, -1, 0, mf)', tex: '\mathbf{gate}' }
+  - up:            { op: 'narrow(gate_up, -1, mf, mf)', tex: '\mathbf{up}' }
+  - act:           { op: act_fn(gate), tex: '\of{act_fn}(\mathbf{gate})' }
+  - hidden:        { op: act * up, tex: '\mathbf{m}' }
+  - down:          { op: 'grouped_linear(hidden, Wd, expert_idx)', tex: '\mathbf{d}' }
+  - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}' }
+  - scaled:        { op: 'down * view(weight, T*K, 1)', tex: '\mathbf{d}^{w}' }
+  - out:           { op: 'index_add(final, 0, token_idx, scaled)', tex: '\mathbf{o}' }
+steps:
+  - id: mask
+    show: expert_mask
+    label: '$\of{expert_mask}=\operatorname{one\_hot}(\of{idx})$'
+    title: 专家掩码
+    text: |
+      <code>expert_mask = one_hot(top_k_index, num_classes=num_experts + 1)</code>。$\of{idx}$ 的每个元素是一个专家编号，从 0 开始；one_hot 把它变成一个长 $E+1=\of{E}+1$ 的向量，只有那个编号的位置是 1。结果的形状是 $(T, K, E+1)$，第 $t$ 行第 $k$ 块对应第 $t$ 个位置选的第 $k$ 个专家。
+      多出来的第 $E+1$ 类（编号 $E$）是给填充用的：别的实现里没选专家的槽位可以填编号 $E$，这一类在后面的循环里直接跳过。top-k 选出的编号都在 $0$ 到 $E-1$ 之间，所以这一列在这里全是 0。整段在 <code>torch.no_grad()</code> 里，编号没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
+  - id: permute
+    show: expert_mask_p
+    label: '$\of{expert_mask_p}$'
+    title: 换成按专家排的顺序
+    text: |
+      <code>expert_mask = expert_mask.permute(2, 1, 0)</code>，形状从 $(T, K, E+1)$ 变成 $(E+1, K, T)$：第一维是专家，第二维是 top-k 的槽位，第三维是位置。数值没有变，只是换了下标的顺序。之后按专家取一块 <code>expert_mask[e]</code>，就是 $(K, T)$ 的表，标出这个专家在哪些位置、哪个槽位被选中。
+  - id: hit
+    show: [count, expert_hit]
+    label: '$\of{count},\ \of{expert_hit}$'
+    title: 哪些专家被选中
+    text: |
+      <code>expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()</code>。先对槽位和位置两维求和，得到每个专家被选中的次数 $\of{count}$，再和 0 比较，大于 0 的专家才会进入循环。所有专家的次数加起来正好是 $TK=\of{T}\times\of{K}$，因为每个位置选 $K$ 个不同的专家。
+      $$\of{count}={{ count | matrix }},\qquad \of{expert_hit}={{ expert_hit | matrix }}$$
+      次数是 0 的专家这一次没有任何 token，HF 的循环不会访问它，它的权重这一步也拿不到梯度。<code>.nonzero()</code> 把被选中的专家编号列出来，个数随数据变化，所以图上只画到比较这一步；下一步的 nonzero 一次列出全部 (专家, 槽位, 位置)，结果相同。
+  - id: nonzero
+    show: nz
+    label: '$\of{nz}$'
+    title: 列出每个专家的 (槽位, 位置)
+    text: |
+      HF 对每个被选中的专家 $e$ 调 <code>top_k_pos, token_idx = torch.where(expert_mask[e])</code>，按行优先的顺序列出 $(K, T)$ 表里为 1 的位置，先按槽位、再按位置排序。专家按编号从小到大处理。
+      图上的计算图形状是固定的，每个专家分到几个 token 却随数据变化，所以图上不能给每个专家单独画一块。这里把 HF 循环里各个专家的结果按循环的顺序首尾相接，排成一个 $TK$ 行的表：<code>torch.nonzero_static(expert_mask, size=T*K)</code> 对 $(E+1, K, T)$ 的掩码按行优先列出所有为 1 的下标 (专家, 槽位, 位置)，先按专家、再按槽位、再按位置排序，正好是 HF 循环和 <code>torch.where</code> 给出的顺序。为 1 的元素恰好有 $TK$ 个，所以不需要填充。
+      $$\of{nz}={{ nz | matrix }}$$
+      同一个专家的行连在一起，次数为 0 的专家没有行。grouped GEMM 的 MoE 内核也是这样把 token 按专家排好再算。
+  - id: split
+    show: [expert_idx, top_k_pos, token_idx]
+    label: '$\of{expert_idx},\ \of{top_k_pos},\ \of{token_idx}$'
+    title: 专家、槽位和位置三列
+    text: |
+      把 $\of{nz}$ 的三列分开：第 $r$ 行由专家 $\of{expert_idx}_r$ 计算，它是位置 $\of{token_idx}_r$ 选中的第 $\of{top_k_pos}_r$ 个专家（槽位从 0 开始）。HF 循环里 <code>expert_idx</code> 是循环变量，<code>top_k_pos</code>、<code>token_idx</code> 是 <code>torch.where</code> 的两个输出。
+      $$\of{expert_idx}={{ expert_idx | matrix }},\quad \of{top_k_pos}={{ top_k_pos | matrix }},\quad \of{token_idx}={{ token_idx | matrix }}$$
+  - id: gather
+    show: current_state
+    label: '$\of{current_state}=\of{x}[\of{token_idx}]$'
+    title: 取出送给每个专家的 token
+    text: |
+      <code>current_state = hidden_states[token_idx]</code>：按 $\of{token_idx}$ 从 $\of{x}$ 里取行。一个位置选了 $K$ 个专家，它的那一行就被取 $K$ 次，分别送给这 $K$ 个专家。每个专家只拿到选中它的那些 token，HF 的实现就是这样省下没选中的计算。
+      $$\of{current_state}={{ current_state | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 梯度加回各个位置
+      text: |
+        取行的反向是把每一行的梯度加回它来自的那个位置。一个位置被 $K$ 个专家用过，它的梯度就是这 $K$ 行梯度的和。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: gate_up
+    show: [Wgu, gate_up]
+    label: '$\of{gate_up}$'
+    title: 每个专家的 gate_up_proj
+    text: |
+      <code>F.linear(current_state, gate_up_proj[expert_idx])</code>。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $(E, 2m_f, d)$，$\of{Wgu}[e]$ 是第 $e$ 个专家的一块 $(2m_f, d)$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 $\of{Wgu}[\of{expert_idx}_r]^{\top}$，和逐个专家算的结果相同。悬停 $\of{gate_up}$ 的名字可以看到每一行用了哪一块。
+      $$\of{gate_up}={{ gate_up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{gu},\ \partial\of{current_state}$'
+      title: 传到各专家的 gate_up_proj
+      text: |
+        每一行的梯度只进入它自己那个专家的 $\of{Wgu}[e]$。没被选中的专家没有行，它那一块的梯度是 0。
+        $$\frac{\partial\ell}{\partial\of{gate_up}}={{ gate_up.grad | matrix:3 }}$$
+  - id: chunk
+    show: [gate, up]
+    label: '$\of{gate},\ \of{up}$'
+    title: 切成 gate 和 up
+    text: |
+      <code>gate, up = (...).chunk(2, dim=-1)</code>：最后一维前一半是 gate，后一半是 up，各 $m_f=\of{mf}$ 列。chunk 返回两个张量，图上写成两个 narrow，取的列相同。
+    backward:
+      label: '$\partial\of{gate_up}$'
+      title: 梯度拼回 gate_up
+      text: |
+        chunk 的反向把 $\of{gate}$ 和 $\of{up}$ 的梯度按列拼回去，前 $m_f$ 列来自 gate，后 $m_f$ 列来自 up。
+        $$\frac{\partial\ell}{\partial\of{gate_up}}={{ gate_up.grad | matrix:3 }}$$
+  - id: act
+    show: act
+    label: '$\of{act}$'
+    title: 激活
+    text: |
+      <code>self.act_fn(gate)</code>，gate 逐元素经过 $\of{act_fn}$：
+      $$\of{act_fn.def}$$
+      $$\of{act}={{ act | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gate}$'
+      title: 穿过激活
+      text: |
+        上游梯度逐元素乘激活函数在 $\of{gate}$ 处的导数。
+        $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
+  - id: mul
+    show: hidden
+    label: '$\of{hidden}=\of{act}\odot\of{up}$'
+    title: 门控相乘
+    text: |
+      <code>current_hidden_states = self.act_fn(gate) * up</code>，逐元素相乘。
+      $$\of{hidden}={{ hidden | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{act},\ \partial\of{up}$'
+      title: 梯度分给激活和 up
+      text: |
+        $\of{act}$ 的梯度是上游梯度乘 $\of{up}$，$\of{up}$ 的梯度是上游梯度乘 $\of{act}$，都是逐元素相乘。
+        $$\frac{\partial\ell}{\partial\of{act}}={{ act.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\of{up}}={{ up.grad | matrix:3 }}$$
+  - id: down
+    show: [Wd, down]
+    label: '$\of{down}$'
+    title: 每个专家的 down_proj
+    text: |
+      <code>F.linear(current_hidden_states, down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $(E, d, m_f)$。第 $r$ 行乘 $\of{Wd}[\of{expert_idx}_r]^{\top}$，回到 $d$ 维。
+      $$\of{down}={{ down | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{d},\ \partial\of{hidden}$'
+      title: 传到各专家的 down_proj
+      text: |
+        同 gate_up_proj，每一行的梯度只进入它自己那个专家的 $\of{Wd}[e]$。
+        $$\frac{\partial\ell}{\partial\of{down}}={{ down.grad | matrix:3 }}$$
+  - id: weight
+    show: weight
+    label: '$\of{weight}=\of{w}[\of{token_idx},\of{top_k_pos}]$'
+    title: 查出每一行的路由权重
+    text: |
+      <code>top_k_weights[token_idx, top_k_pos, None]</code>：第 $r$ 行取位置 $\of{token_idx}_r$、槽位 $\of{top_k_pos}_r$ 的路由权重，也就是这个位置给这个专家的权重。
+      $$\of{weight}={{ weight | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{w}$'
+      title: 传到路由权重
+      text: |
+        取元素的反向把梯度放回 $\of{w}$ 里对应的位置和槽位。$TK$ 行和 $\of{w}$ 的 $TK$ 个元素一一对应，每个元素正好收到一行的梯度。
+        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
+  - id: scale
+    show: scaled
+    label: '$\of{scaled}$'
+    title: 乘上路由权重
+    text: |
+      <code>current_hidden_states * top_k_weights[token_idx, top_k_pos, None]</code>。索引里的 <code>None</code> 在最后加一个长度为 1 的维度，图上写成 view 成 $(TK, 1)$，每一行的 $d$ 个数乘同一个权重。
+      $$\of{scaled}={{ scaled | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{down},\ \partial\of{weight}$'
+      title: 梯度分给 down 和路由权重
+      text: |
+        每一行的梯度乘这一行的路由权重，传给 $\of{down}$；这一行 $d$ 个元素的梯度与 $\of{down}$ 对应元素的乘积加起来，传给这一行的权重。
+        $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: index_add
+    show: [final, out]
+    label: '$\of{out}$'
+    title: 加回各个位置
+    text: |
+      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states)</code>：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
+      $$\of{out}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{scaled}$'
+      title: 从各个位置取回梯度
+      text: |
+        index_add 的反向是按 $\of{token_idx}$ 取行：第 $r$ 行收到的梯度就是位置 $\of{token_idx}_r$ 的输出梯度。$\of{final}$ 是常量全 0，没有梯度。
+        $$\frac{\partial\ell}{\partial\of{scaled}}={{ scaled.grad | matrix:3 }}$$

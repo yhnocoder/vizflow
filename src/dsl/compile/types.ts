@@ -20,7 +20,7 @@ export interface BufferValue {
 }
 
 export type ParamType = 'int' | 'float' | 'dim' | 'op' | 'tex' | 'text';
-export type Value = Node | Num | Node[] | string | boolean | OpValue | BufferValue;
+export type Value = Node | Num | Node[] | Num[] | string | boolean | OpValue | BufferValue;
 export type Resolved = Value | Scope;
 
 export interface Make {

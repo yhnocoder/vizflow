@@ -224,6 +224,76 @@ const cases: Case[] = [
       return { out: g.where(keep, x, -1e9), inputs: [x] };
     },
   },
+  {
+    op: 'greater',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.greater(x, 0), inputs: [x] };
+    },
+  },
+  {
+    op: 'topk_indices',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.topk_indices(x, 2, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'one_hot',
+    build: (g) => {
+      const t = g.label('t', [[0, 2], [1, 0]]);
+      return { out: g.one_hot(t, 3), inputs: [] };
+    },
+  },
+  {
+    op: 'nonzero_static',
+    build: (g) => {
+      const m = g.label('m', [[0, 1, 1], [1, 0, 0]]);
+      return { out: g.nonzero_static(m, { size: 4 }), inputs: [] };
+    },
+  },
+  {
+    op: 'permute',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 4], randomValues(r, [2, 3, 4]));
+      return { out: g.permute(x, 2, 0, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'index',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const rows = g.label('rows', [2, 0, 2, 1, 2]);
+      return { out: g.index(x, [rows]), inputs: [x] };
+    },
+  },
+  {
+    op: 'index',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2], randomValues(r, [3, 2]));
+      const rows = g.label('rows', [2, 0, 2, 1]);
+      const cols = g.label('cols', [1, 1, 1, 0]);
+      return { out: g.index(x, [rows, cols]), inputs: [x] };
+    },
+  },
+  {
+    op: 'index_add',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2], randomValues(r, [3, 2]));
+      const index = g.label('index', [2, 0, 2, 2]);
+      const source = g.input('s', [4, 2], randomValues(r, [4, 2]));
+      return { out: g.index_add(x, 0, index, source), inputs: [x, source] };
+    },
+  },
+  {
+    op: 'grouped_linear',
+    build: (g, r) => {
+      const x = g.input('x', [5, 3], randomValues(r, [5, 3]));
+      const w = g.input('w', [4, 2, 3], randomValues(r, [4, 2, 3]));
+      const group = g.label('group', [0, 0, 1, 3, 3]);
+      return { out: g.grouped_linear(x, w, group), inputs: [x, w] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

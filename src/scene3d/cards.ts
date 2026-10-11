@@ -17,6 +17,7 @@ export interface ValueGrid {
   values: ArrayLike<number>;
   cols: number;
   heads?: number;
+  digits?: number;
 }
 
 export function shade(v: number, limit: number): string {
@@ -40,7 +41,7 @@ export function valueGridElement(grid: ValueGrid): HTMLElement {
         const v = grid.values[r * grid.cols + head * width + c];
         const cell = document.createElement('div');
         if (Number.isFinite(v)) cell.style.background = shade(v, limit);
-        cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '';
+        cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: grid.digits ?? GRID_DIGITS }) : '';
         if (!blank && !Number.isFinite(v)) cell.appendChild(render(formatNumber(v, { tex: true })));
         el.appendChild(cell);
       }

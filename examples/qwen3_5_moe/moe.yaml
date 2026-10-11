@@ -25,13 +25,6 @@ fold:
     text: |
       $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 body:
-  - routed:
-      use: SparseMoE
-      inline: true
-      params: { E: E, K: K, mf: mf }
-      inputs: { x: x }
-      outputs: { out: yr }
-      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
   - shared_expert:
       use: GLU
       subtitle: Qwen3_5MoeMLP，共享专家
@@ -41,6 +34,13 @@ body:
       inputs: { x: x }
       outputs: { down: ys }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+  - routed:
+      use: SparseMoE
+      inline: true
+      params: { E: E, K: K, mf: mf }
+      inputs: { x: x }
+      outputs: { out: yr }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
   - gl: { op: x @ Wsg.T, tex: '\mathbf{g}^{\mathrm{s}}' }
   - gs: { op: sigmoid(gl), tex: '\sigma(\mathbf{g}^{\mathrm{s}})' }
   - shared: { op: gs * ys, tex: '\sigma(\mathbf{g}^{\mathrm{s}})\odot\mathbf{y}^{\mathrm{s}}' }

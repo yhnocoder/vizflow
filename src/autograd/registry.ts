@@ -65,11 +65,8 @@ export function defineOp<A extends object>(def: OpDef<A>): void {
   if (def.differentiable && def.differentiable.length !== def.tensors.length) {
     throw new Error(`op '${def.name}': differentiable must have one entry per tensor`);
   }
-  if (def.list !== undefined && (def.tensors.length !== 1 || def.tensors[0] !== def.list)) {
-    throw new Error(`op '${def.name}': list '${def.list}' must be the only tensor argument`);
-  }
-  if (def.list !== undefined && def.differentiable !== undefined) {
-    throw new Error(`op '${def.name}': differentiable cannot be combined with list`);
+  if (def.list !== undefined && def.tensors[def.tensors.length - 1] !== def.list) {
+    throw new Error(`op '${def.name}': list '${def.list}' must be the last tensor argument`);
   }
   for (const s of def.scalars ?? []) {
     if (!def.tensors.includes(s)) throw new Error(`op '${def.name}': scalar '${s}' is not a tensor argument`);
@@ -78,6 +75,17 @@ export function defineOp<A extends object>(def: OpDef<A>): void {
     if ((!def.args.includes(s) && !(def.defaults !== undefined && s in def.defaults)) || def.tensors.includes(s)) throw new Error(`op '${def.name}': size '${s}' is not a non-tensor argument`);
   }
   registry.set(def.name, def);
+}
+
+export function inputDifferentiable(def: AnyOpDef, input: number): boolean {
+  if (def.differentiable === undefined) return true;
+  return def.differentiable[Math.min(input, def.tensors.length - 1)];
+}
+
+export function inputName(def: AnyOpDef, input: number): string {
+  const last = def.tensors.length - 1;
+  if (def.list === undefined || input < last) return def.tensors[input];
+  return `${def.list}[${input - last}]`;
 }
 
 export function opDef(name: string): AnyOpDef | undefined {

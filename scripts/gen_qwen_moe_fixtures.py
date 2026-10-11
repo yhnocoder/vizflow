@@ -103,15 +103,23 @@ def qwen3_5_moe_config(dims):
     )
 
 
-def expert_paths(prefix, experts, dims, take):
-    paths = {}
-    mf = dims["mf"]
-    for e in range(dims["Ne"]):
-        gate_up = take(experts.gate_up_proj)[e]
-        paths[f"{prefix}.expert[{e + 1}].Wg"] = gate_up[:mf]
-        paths[f"{prefix}.expert[{e + 1}].Wu"] = gate_up[mf:]
-        paths[f"{prefix}.expert[{e + 1}].Wd"] = take(experts.down_proj)[e]
-    return paths
+def expert_paths(prefix, experts, take):
+    return {f"{prefix}.experts.Wgu": take(experts.gate_up_proj), f"{prefix}.experts.Wd": take(experts.down_proj)}
+
+
+def routing_order(top_k_index, num_experts):
+    expert_mask = F.one_hot(top_k_index, num_classes=num_experts + 1).permute(2, 1, 0)
+    expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()
+    order = {"expert_idx": [], "top_k_pos": [], "token_idx": []}
+    for expert_idx in expert_hit:
+        expert_idx = expert_idx[0]
+        if expert_idx == num_experts:
+            continue
+        top_k_pos, token_idx = torch.where(expert_mask[expert_idx])
+        order["expert_idx"] += [int(expert_idx)] * len(token_idx)
+        order["top_k_pos"] += [int(i) for i in top_k_pos]
+        order["token_idx"] += [int(i) for i in token_idx]
+    return order
 
 
 def qwen3_moe_paths(model, lm_head, dims, take):
@@ -132,7 +140,7 @@ def qwen3_moe_paths(model, lm_head, dims, take):
         "layer.mlp.Wr": layer.mlp.gate.weight,
     }
     paths = {path: take(p) for path, p in paths.items()}
-    paths.update(expert_paths("layer.mlp", layer.mlp.experts, dims, take))
+    paths.update(expert_paths("layer.mlp", layer.mlp.experts, take))
     return paths
 
 
@@ -167,7 +175,7 @@ def qwen3_5_moe_paths(model, lm_head, dims, take):
     })
     paths = {path: (take(p)[:, 0, :] if path.endswith("Wconv") else take(p)) for path, p in paths.items()}
     for name, layer in [("linear_layer", lin), ("full_layer", full)]:
-        paths.update(expert_paths(f"{name}.mlp.routed", layer.mlp.experts, dims, take))
+        paths.update(expert_paths(f"{name}.mlp.routed", layer.mlp.experts, take))
     return paths
 
 
@@ -190,7 +198,7 @@ def encode(t):
     return {"shape": list(t.shape), "values": [float(v) for v in t.detach().reshape(-1)]}
 
 
-def run(name, model, dims, paths_of, node_names, zero_centered):
+def run(name, model, dims, paths_of, node_names, experts_paths, zero_centered):
     generator = torch.Generator().manual_seed(SEED)
     lm_head = torch.nn.Linear(dims["d"], dims["V"], bias=False).double()
     fill(model, lm_head, generator, zero_centered)
@@ -199,6 +207,9 @@ def run(name, model, dims, paths_of, node_names, zero_centered):
     captured = {}
     for i, node in enumerate(node_names):
         model.layers[i].register_forward_hook(lambda _m, _i, out, node=node: captured.__setitem__(node, out[0] if isinstance(out, tuple) else out))
+    routing = {}
+    for i, path in enumerate(experts_paths):
+        model.layers[i].mlp.gate.register_forward_hook(lambda _m, _i, out, path=path: routing.__setitem__(path, routing_order(out[2], dims["Ne"])))
     hidden = model(input_ids=ids).last_hidden_state
     logp = F.log_softmax(lm_head(hidden).double(), -1)
     loss = F.nll_loss(logp.view(-1, dims["V"]), labels)
@@ -215,17 +226,19 @@ def run(name, model, dims, paths_of, node_names, zero_centered):
         "loss": loss.item(),
         "nodes": {**{node: encode(captured[node][0]) for node in node_names}, "h": encode(hidden[0])},
         "grads": {path: encode(t) for path, t in grads.items()},
+        "routing": routing,
     }
     out = OUT_DIR / f"{name}.json"
     out.write_text(json.dumps(payload, indent=1) + "\n")
-    print(f"{out.name}: loss {loss.item():.6f}")
+    counts = {path: [order["expert_idx"].count(e) for e in range(dims["Ne"])] for path, order in routing.items()}
+    print(f"{out.name}: loss {loss.item():.6f}, tokens per expert {counts}")
 
 
 def main():
     torch.set_default_dtype(torch.float64)
     float64_everywhere()
-    run("qwen3_moe", hf3.Qwen3MoeModel(qwen3_moe_config(QWEN3_MOE)).double().eval(), QWEN3_MOE, qwen3_moe_paths, ["x"], False)
-    run("qwen3_5_moe", hf35.Qwen3_5MoeTextModel(qwen3_5_moe_config(QWEN3_5_MOE)).double().eval(), QWEN3_5_MOE, qwen3_5_moe_paths, ["x1", "x"], True)
+    run("qwen3_moe", hf3.Qwen3MoeModel(qwen3_moe_config(QWEN3_MOE)).double().eval(), QWEN3_MOE, qwen3_moe_paths, ["x"], ["layer.mlp.experts"], False)
+    run("qwen3_5_moe", hf35.Qwen3_5MoeTextModel(qwen3_5_moe_config(QWEN3_5_MOE)).double().eval(), QWEN3_5_MOE, qwen3_5_moe_paths, ["x1", "x"], ["linear_layer.mlp.routed.experts", "full_layer.mlp.routed.experts"], True)
 
 
 if __name__ == "__main__":
