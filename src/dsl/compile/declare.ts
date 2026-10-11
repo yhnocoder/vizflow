@@ -129,7 +129,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
   }
 }
 
-function placeOf(c: Compiler, spec: unknown, node: Node, where: Where): Placement {
+export function placeOf(c: Compiler, spec: unknown, node: Node, where: Where): Placement {
   const mesh = c.mesh;
   if (mesh === undefined) fail(where, 'place needs a mesh on the page');
   if (!isRecord(spec)) fail(where, `place must map the mesh axis to a placement, for example { ${mesh.axis}: shard(0) }`);

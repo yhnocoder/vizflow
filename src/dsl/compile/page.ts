@@ -6,7 +6,7 @@ import type { PanelItem, SectionItem } from '../../ui';
 import { DslError, type Where, child, fail } from '../source';
 import { defaultTex, elemOf } from '../tex';
 import { compileBody } from './body';
-import { declareBuffers, declareParams, declareWeights, define, leafSpec, shapeOf } from './declare';
+import { declareBuffers, declareParams, declareWeights, define, leafSpec, placeOf, shapeOf } from './declare';
 import { markFormulas } from './formula';
 import { GENERATE_KEYS, OPTIMIZER_KEYS, OVERVIEW_KEYS, SEQUENCE_KEYS, TEXT_KEYS } from './keys';
 import { pageModules, placeSteps } from './modules';
@@ -71,6 +71,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
       if (error instanceof DslError) throw error;
       fail(at, (error as Error).message);
     }
+    if (spec.place !== undefined) c.leafPlacements.set(node, placeOf(c, spec.place, node, child(at, spec, 'place')));
     define(c, c.root, name, node, { ...env, where: at });
     tree.children.push({ kind: 'node', node });
     c.setOwner(node, tree.children);

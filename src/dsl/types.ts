@@ -138,7 +138,7 @@ export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'output
   mesh?: Record<Name, number>;
   vocab?: string[];
   init?: { seed: number };
-  inputs: Record<Name, { tokens: string[] } | { value: Nested }>;
+  inputs: Record<Name, ({ tokens: string[] } | { value: Nested }) & { place?: Record<Name, string> }>;
   values?: Record<Path, Nested>;
   panels?: PanelSpec[];
   sections?: SectionSpec[];
