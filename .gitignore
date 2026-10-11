@@ -13,3 +13,4 @@ dist/
 test-results/
 playwright-report/
 examples/vite-project/package-lock.json
+.claude/worktrees/
