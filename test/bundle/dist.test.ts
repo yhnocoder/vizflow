@@ -125,7 +125,7 @@ describe('build output', () => {
   });
 
   test('every package entry has its module build file, standalone file and type declarations', () => {
-    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './dsl', './element', './explain', './formula', './scene3d', './steps', './theme', './ui']);
+    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './dsl', './element', './explain', './formula', './scene3d', './serve', './steps', './theme', './ui']);
     for (const [entry, { types, import: module }] of Object.entries(exportsMap)) {
       expect(module, entry).toBe(`./dist/module/${entry.slice(2)}.js`);
       expect(existsSync(join(workspace, module)), `${entry} module`).toBe(true);
@@ -161,7 +161,7 @@ function packageImports(entry: string): string[] {
 
 describe('module build output', () => {
   test('no entry bundles three.js, Solid or KaTeX', () => {
-    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js', 'dsl.js']) {
+    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js', 'dsl.js', 'serve.js']) {
       expect(bundledLibraries(entry, moduleDirectory()), entry).toEqual([]);
     }
   });
@@ -169,6 +169,7 @@ describe('module build output', () => {
   test('third-party libraries and their CSS stay as import specifiers', () => {
     expect(packageImports('core.js')).toEqual([]);
     expect(packageImports('steps.js')).toEqual([]);
+    expect(packageImports('serve.js')).toEqual([]);
     expect(packageImports('dsl.js')).toEqual(['yaml']);
     expect(packageImports('formula.js')).toEqual(['katex', 'katex/dist/katex.min.css']);
     expect(packageImports('ui.js')).toEqual(expect.arrayContaining(['solid-js', 'solid-js/web', 'katex', 'katex/dist/katex.min.css', '@fontsource/geist/400.css']));
