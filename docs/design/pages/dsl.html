@@ -254,6 +254,7 @@ formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\s
     <tr><td>反向当前</td><td>反向，当前反向步骤对应的前向步骤是这一部分的步骤之一</td><td>用负色 <code>--neg</code>；反向时其余部分都按已出现显示</td></tr>
   </tbody>
 </table>
+<p>反向步骤对应的前向步骤由 <code>StepInfo.forwardId</code> 给出：分层步骤里，每个反向步骤和折叠模块的反向步骤都记下同一组运算的前向步骤 id。没有 <code>forwardId</code> 的反向步骤（不分层的自动反向步骤、反向总览）按当前步骤自己的公式来源显示，各部分都按已出现显示。</p>
 <p>系统设置了减少动画时，各部分直接出现，不做显出动画。</p>
 
 <h2>面板与大括号</h2>

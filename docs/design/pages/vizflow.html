@@ -482,7 +482,7 @@ interface Steps {
 interface StepInfo {
   dir: 'forward' | 'backward'; index: number; id: string; kind: StepKind;
   label: string; title: string; text: string; nodes: Node[];
-  segment: string; sub?: string; module?: string;
+  segment: string; sub?: string; module?: string; forwardId?: string;
 }
 interface StepState {
   dir: 'forward' | 'backward';
