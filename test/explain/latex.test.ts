@@ -60,8 +60,8 @@ describe('LaTeX templates render with KaTeX', () => {
       const card = ex.edgeCard(e);
       renders(card.title);
       renders(card.local.tex);
-      renders(card.upstream.tex);
-      renders(card.product.tex);
+      renders(card.upstream!.tex);
+      renders(card.product!.tex);
     }
   });
 
@@ -88,7 +88,7 @@ describe('LaTeX templates render with KaTeX', () => {
       const card = ex.edgeCard(edge);
       renders(card.title);
       renders(card.local.tex);
-      renders(card.product.tex);
+      if (card.product !== undefined) renders(card.product.tex);
     }
   });
 

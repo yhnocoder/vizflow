@@ -1,6 +1,6 @@
 module: RoPE
 subtitle: RoPE
-formula: '\step{add}{\of{q_embed}=}\step{cos}{\of{q}\odot\cos}\step{add}{+}\step{sin}{\step{rh}{\mathrm{rh}(\of{q})}\odot\sin}'
+formula: '\step{add}{\of{q_embed}=}\step{cos}{\of{q}\odot\cos}\step{add}{+}\step{sin}{\step{rh}{\operatorname{cat}\big(}\step{neg}{-}\step{half}{\of{q}_{2}}\step{rh}{,}\step{half}{\of{q}_{1}}\step{rh}{\big)}\odot\sin}'
 params:
   theta: { type: float, default: 1e4 }
 inputs:
@@ -14,7 +14,7 @@ fold:
   label: '$\of{q_embed},\ \of{k_embed}$'
   title: RoPE（已折叠）
   text: |
-    四步合成一个旋转：每个 head 里的第 $c$ 和第 $c+\of{dh//2}$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵。
+    这几步合成一个旋转：每个 head 里的第 $c$ 和第 $c+\of{dh//2}$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵。
   backward:
     label: '$\partial\of{q},\ \partial\of{k}$'
     title: 穿过 RoPE（已折叠）
@@ -24,8 +24,14 @@ fold:
 body:
   - qc:  { op: q * cos, tex: '\of{q}\odot\cos' }
   - kc:  { op: k * cos, tex: '\of{k}\odot\cos' }
-  - qrh: { op: rotate_half(q), tex: '\mathrm{rh}(\of{q})' }
-  - krh: { op: rotate_half(k), tex: '\mathrm{rh}(\of{k})' }
+  - q1:  { op: 'narrow(q, -1, 0, dh // 2)', tex: '\of{q}_{1}' }
+  - q2:  { op: 'narrow(q, -1, dh // 2, dh // 2)', tex: '\of{q}_{2}' }
+  - k1:  { op: 'narrow(k, -1, 0, dh // 2)', tex: '\of{k}_{1}' }
+  - k2:  { op: 'narrow(k, -1, dh // 2, dh // 2)', tex: '\of{k}_{2}' }
+  - nq2: { op: -q2, tex: '-\of{q}_{2}' }
+  - nk2: { op: -k2, tex: '-\of{k}_{2}' }
+  - qrh: { op: 'cat([nq2, q1], dim=-1)', tex: '\mathrm{rh}(\of{q})' }
+  - krh: { op: 'cat([nk2, k1], dim=-1)', tex: '\mathrm{rh}(\of{k})' }
   - qs:  { op: qrh * sin, tex: '\mathrm{rh}(\of{q})\odot\sin' }
   - ks:  { op: krh * sin, tex: '\mathrm{rh}(\of{k})\odot\sin' }
   - q_embed: qc + qs
@@ -36,22 +42,45 @@ steps:
     label: '$\odot\cos$'
     title: 乘 cos
     text: |
-      RoPE 的公式是 $\of{q_embed}=\of{q}\odot\cos+\mathrm{rotate\_half}(\of{q})\odot\sin$，k 也一样，这里按代码的顺序拆成四步。q 有 \of{Hq} 个 head，k 有 \of{Hk} 个 head，每个 head 宽 $d_h=\of{dh}$，所有 head 用同一张 cos/sin 表。
-      cos 和 sin 表的每一行对应一个位置，$\omega_i=\theta^{-2i/d_h}$，$\theta=\of{theta}$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以没有连线。
+      RoPE 的公式是 $\of{q_embed}=\of{q}\odot\cos+\mathrm{rotate\_half}(\of{q})\odot\sin$，k 也一样，这里按代码的顺序一行一步画出来，rotate_half 也拆成切两半、后半取负、拼回三步。q 有 \of{Hq} 个 head，k 有 \of{Hk} 个 head，每个 head 宽 $d_h=\of{dh}$，所有 head 用同一张 cos/sin 表。
+      cos 和 sin 表的每一行对应一个位置，$\omega_i=\theta^{-2i/d_h}$，$\theta=\of{theta}$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以连线只在前向画出。
       $$\cos={{ cos | matrix:3 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\of{k}$'
       title: 穿过乘 cos，传到 $\of{q}$ 和 $\of{k}$
+  - id: half
+    show: [q1, q2, k1, k2]
+    label: '$\of{q}_{1},\ \of{q}_{2}$'
+    title: rotate_half：切成两半
+    text: |
+      HF 的 <code>rotate_half(x)</code> 有三行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>、<code>return torch.cat((-x2, x1), dim=-1)</code>。这里一行画一步。第一步把每个 head 的 $d_h=\of{dh}$ 列切成前后两半，切片只是取出元素，局部导数是 1。
+      $$\of{q}_{1}={{ q1 | matrix:2 }},\qquad \of{q}_{2}={{ q2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{q},\ \partial\of{k}$（rotate_half）'
+      title: 两半拼回原来的位置
+      text: 切片的反向把梯度放回被切出的那几列。
+  - id: neg
+    show: [nq2, nk2]
+    label: '$-\of{q}_{2}$'
+    title: rotate_half：后半取负
+    text: |
+      后半段每个元素取负号。
+      $$-\of{q}_{2}={{ nq2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{q}_{2},\ \partial\of{k}_{2}$'
+      title: 穿过取负
+      text: 局部导数是 $-1$。
   - id: rh
     show: [qrh, krh]
     label: rotate_half
-    title: rotate_half
+    title: rotate_half：交换位置拼回去
     text: |
-      把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
-      $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$
+      取负的后半段放到前面，前半段放到后面，拼回 $d_h$ 列。拼接只是搬动元素，局部导数是 1，每个元素只连一条线。合起来 $\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$。
+      $$\mathrm{rh}(\of{q})={{ qrh | matrix:2 }}$$
     backward:
-      label: '$\partial\of{q},\ \partial\of{k}$'
-      title: 穿过 rotate_half
+      label: '$\partial(-\of{q}_{2}),\ \partial\of{q}_{1}$'
+      title: 穿过拼接
+      text: 拼接的反向把梯度按列切回两段。
   - id: sin
     show: [sin, qs, ks]
     label: '$\odot\sin$'

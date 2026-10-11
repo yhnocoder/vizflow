@@ -198,16 +198,22 @@ export function targetColumn(label: Node, row: number): number {
   return Math.round(data[Math.min(row, data.length - 1)]);
 }
 
+export function labelBehind(n: Node): Node | undefined {
+  if (n.kind === 'label') return n;
+  return n.op === 'view' && n.inputs[0].kind === 'label' ? n.inputs[0] : undefined;
+}
+
 export function classAlignment(nodes: readonly Node[]): Map<Node, Node> {
   const aligned = new Map<Node, Node>();
   const classesOf = (label: Node) => (label.attrs.classes as number | undefined) ?? label.tokens?.length;
   const lastDim = (n: Node) => (n.shape.length === 0 ? undefined : n.shape[n.shape.length - 1]);
   for (const n of nodes) {
     if (n.kind !== 'op' || explainOf(n.op as string)?.pattern !== 'select') continue;
-    const label = n.inputs.find((input) => input.kind === 'label' && classesOf(input) !== undefined);
-    if (label === undefined) continue;
+    const index = n.inputs.find((input) => labelBehind(input) !== undefined && classesOf(labelBehind(input) as Node) !== undefined);
+    if (index === undefined) continue;
+    const label = labelBehind(index) as Node;
     for (const input of n.inputs) {
-      if (input !== label && lastDim(input) === classesOf(label)) aligned.set(input, label);
+      if (input !== index && lastDim(input) === classesOf(label)) aligned.set(input, label);
     }
   }
   for (let id = nodes.length - 1; id >= 0; id--) {

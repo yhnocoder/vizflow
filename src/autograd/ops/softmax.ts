@@ -1,5 +1,9 @@
 import { Tensor, normDim, reduceMap } from '../../tensor';
 import type { OpDef } from '../op';
+import { overInput } from './cost';
+
+const SOFTMAX_FORWARD = 5;
+const SOFTMAX_BACKWARD = 4;
 
 export interface SoftmaxAttrs {
   dim: number;
@@ -44,6 +48,7 @@ export const softmaxOp: OpDef<SoftmaxAttrs> = {
     for (let i = 0; i < map.length; i++) grad.data[i] = out.data[i] * (gradOut.data[i] - dot[map[i]]);
     return [grad];
   },
+  cost: overInput(SOFTMAX_FORWARD, SOFTMAX_BACKWARD, [['out']]),
 };
 
 export const logSoftmaxOp: OpDef<SoftmaxAttrs> = {
@@ -60,4 +65,5 @@ export const logSoftmaxOp: OpDef<SoftmaxAttrs> = {
     for (let i = 0; i < map.length; i++) grad.data[i] = gradOut.data[i] - Math.exp(out.data[i]) * sum[map[i]];
     return [grad];
   },
+  cost: overInput(SOFTMAX_FORWARD, SOFTMAX_BACKWARD, [['out']]),
 };

@@ -74,7 +74,7 @@ body:
       suffix: q
       title: apply_rotary_pos_emb
       subtitle: query
-      params: { rd: rd, theta: theta, interleaved: true }
+      params: { rd: rd, theta: theta }
       inputs: { x: qn }
       outputs: { out: qr }
       tex: { out: "\\mathbf{q}'" }
@@ -95,7 +95,7 @@ body:
       suffix: kv
       title: apply_rotary_pos_emb
       subtitle: key 和 value
-      params: { rd: rd, theta: theta, interleaved: true }
+      params: { rd: rd, theta: theta }
       inputs: { x: kv1 }
       outputs: { out: kvr }
       tex: { out: "\\mathbf{kv}'" }
@@ -146,7 +146,7 @@ body:
       suffix: o
       title: apply_rotary_pos_emb（$-\sin$）
       subtitle: 把 value 带的旋转转回去
-      params: { rd: rd, theta: theta, interleaved: true, inverse: true }
+      params: { rd: rd, theta: theta, inverse: true }
       inputs: { x: o3 }
       outputs: { out: ou }
       tex: { out: '\mathbf{o}''' }

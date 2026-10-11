@@ -6,6 +6,7 @@ import {
   addOp,
   clampOp,
   divOp,
+  erfOp,
   expOp,
   geluOp,
   identityOp,
@@ -13,6 +14,7 @@ import {
   mulOp,
   negOp,
   powOp,
+  reciprocalOp,
   reluOp,
   rotateHalfOp,
   rsqrtOp,
@@ -49,10 +51,6 @@ export interface RsqrtOptions extends OpOptions {
   eps?: number;
 }
 
-export interface RotateHalfOptions extends OpOptions {
-  interleaved?: boolean;
-}
-
 export interface ClampOptions extends OpOptions {
   min?: number | null;
   max?: number | null;
@@ -74,13 +72,15 @@ export interface BuiltinOps {
   pow(input: Node, exponent: number, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
+  reciprocal(input: Node, options?: OpOptions): Node;
+  erf(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;
   softplus(input: Node, options?: OpOptions): Node;
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
-  rotate_half(input: Node, options?: RotateHalfOptions): Node;
+  rotate_half(input: Node, options?: OpOptions): Node;
   clamp(input: Node, options?: ClampOptions): Node;
   clamp(input: Node, min: number | null, max?: number | null, options?: ClampOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
@@ -117,6 +117,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   powOp,
   rsqrtOp,
   sqrtOp,
+  reciprocalOp,
+  erfOp,
   sigmoidOp,
   siluOp,
   softplusOp,

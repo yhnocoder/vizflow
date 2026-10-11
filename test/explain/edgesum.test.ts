@@ -109,6 +109,8 @@ const cases: Case[] = [
     },
   },
   { op: 'sqrt', build: (g, r) => unary(g, r, 'sqrt', [2, 3], true) },
+  { op: 'reciprocal', build: (g, r) => unary(g, r, 'reciprocal', [2, 3], true) },
+  { op: 'erf', build: (g, r) => unary(g, r, 'erf', [2, 3]) },
   { op: 'sigmoid', build: (g, r) => unary(g, r, 'sigmoid', [2, 3]) },
   { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },
   { op: 'relu', build: (g, r) => unary(g, r, 'relu', [2, 3]) },
@@ -117,13 +119,6 @@ const cases: Case[] = [
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
-  {
-    op: 'rotate_half',
-    build: (g, r) => {
-      const x = g.input('x', [3, 2, 4], randomValues(r, [3, 2, 4]));
-      return { out: g.rotate_half(x, { interleaved: true }), inputs: [x] };
-    },
-  },
   {
     op: 'clamp',
     build: (g, r) => {

@@ -4,10 +4,10 @@ import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { BUFFER_FUNCTIONS, reshapeNested } from './buffer-functions';
 import type { Compiler } from './text';
-import { type BufferValue, type Env, type Num, type OpValue, type ParamType, type Scope } from './types';
+import { type BufferValue, type Env, type ModuleValue, type Num, type OpValue, type ParamType, type Scope } from './types';
 import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './util';
 
-const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'bool', 'op', 'tex', 'text']);
+const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'bool', 'op', 'module', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
 
@@ -22,9 +22,9 @@ export function marked(tex: string, scope: Scope, hasOf: boolean): string {
   return scope.marks.reduce((acc, mark) => addMark(acc, mark), tex);
 }
 
-function paramValue(c: Compiler, decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where, instance?: string): { type: ParamType; value: Num | string | boolean | OpValue } | undefined {
+function paramValue(c: Compiler, decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where, instance?: string): { type: ParamType; value: Num | string | boolean | OpValue | ModuleValue } | undefined {
   const type = decl.type;
-  if (typeof type !== 'string' || !PARAM_TYPES.has(type)) fail(where, `parameter '${name}' needs a type: int, float, dim, bool, op, tex or text`);
+  if (typeof type !== 'string' || !PARAM_TYPES.has(type)) fail(where, `parameter '${name}' needs a type: int, float, dim, bool, op, module, tex or text`);
   if (decl.default_key !== undefined && (decl.default_key !== true || type !== 'text')) fail(where, `parameter '${name}': default_key must be true and needs type text`);
   const keyDefault = decl.default_key === true ? instance : undefined;
   const raw = given !== undefined ? given : (keyDefault ?? decl.default);
@@ -44,6 +44,15 @@ function paramValue(c: Compiler, decl: Record<string, unknown>, given: unknown, 
     if (allowed !== undefined && !allowed.includes(op)) fail(where, `parameter '${name}' must be one of ${allowed.join(', ')}, got '${op}'`);
     if (opDef(op) === undefined) fail(where, `parameter '${name}': op '${op}' is not defined`);
     return { type: t, value: { op } };
+  }
+  if (t === 'module') {
+    if (typeof raw !== 'string') fail(where, `parameter '${name}' must name a module`);
+    const parentParam = given !== undefined ? parentEnv?.scope.params.get(raw) : undefined;
+    const module = parentParam?.type === 'module' ? (parentParam.value as ModuleValue).module : raw;
+    const allowed = Array.isArray(decl.values) ? (decl.values as string[]) : undefined;
+    if (allowed !== undefined && !allowed.includes(module)) fail(where, `parameter '${name}' must be one of ${allowed.join(', ')}, got '${module}'`);
+    if (!env.scope.def.namespace.has(module)) fail(where, `parameter '${name}': module '${module}' is not imported by ${env.scope.def.name}`);
+    return { type: t, value: { module } };
   }
   if (t === 'tex' || t === 'text') {
     if (typeof raw !== 'string') fail(where, `parameter '${name}' must be a string`);
@@ -182,7 +191,7 @@ export function matchShape(c: Compiler, scope: Scope, pattern: unknown, node: No
   pattern.forEach((entry, at) => {
     if (at === rest) return;
     const i = rest >= 0 && at > rest ? at - 1 + extra : at;
-    const actual: Num = { toy: node.shape[i], real: node.realShape[i] };
+    const actual: Num = { toy: node.shape[i], real: node.realShape[i], derive: (_, shapes) => shapes[node.id][i] };
     if (typeof entry === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(entry) && !scope.dims.has(entry) && !scope.params.has(entry)) {
       scope.dims.set(entry, actual);
       return;

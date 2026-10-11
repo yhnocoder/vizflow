@@ -1,6 +1,10 @@
 module: GatedRMSNorm
-subtitle: RMSNorm 后乘 SiLU 门
+subtitle: RMSNorm 后乘激活过的门
+import:
+  SiLU:    vizflow/nn/silu
+  Sigmoid: vizflow/nn/sigmoid
 params:
+  act:  { type: module, values: [SiLU, Sigmoid], default: SiLU }
   eps:  { type: float, default: 1e-6 }
   name: { type: text, default_key: true }
 inputs:
@@ -13,7 +17,7 @@ fold:
   label: '$\of{out}$'
   title: \of{name}（已折叠）
   text: |
-    $$\of{out}=\big(\of{weight}\odot\mathrm{RMSNorm}(\of{x})\big)\odot\mathrm{SiLU}(\of{gate})={{ out | matrix:2 }}$$
+    $$\of{out}=\big(\of{weight}\odot\mathrm{RMSNorm}(\of{x})\big)\odot\of{act}(\of{gate})={{ out | matrix:2 }}$$
   backward:
     label: '$\partial\of{weight},\ \partial\of{x},\ \partial\of{gate}$'
     title: 穿过 \of{name}（已折叠）
@@ -22,10 +26,15 @@ fold:
 body:
   - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
+  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
+  - r:  { op: rsqrt(mse), tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
   - xw: { op: xh * weight, tex: '\of{weight}\odot\hat{\of{x}}' }
-  - s:  { op: silu(gate), tex: '\mathrm{SiLU}(\of{gate})', dtype: fp32 }
+  - act_fn:
+      use: act
+      inputs: { x: gate }
+      outputs: { out: s }
+      tex: { out: '\of{act}(\of{gate})' }
   - out: { op: xw * s, dtype: x }
 steps:
   - id: square
@@ -40,16 +49,45 @@ steps:
       title: 传到 $\of{x}$
       text: |
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: rms
-    show: [ms, r]
-    label: '$\of{ms},\ \of{r}$'
-    title: 均方根的倒数
+  - id: mean
+    show: ms
+    label: '$\of{ms}$'
+    title: 平方的平均
     text: |
-      每个位置、每个 head 各有一个 $r$。
+      每一行对平方取平均，得到 ms，对应 <code>hidden_states.pow(2).mean(-1, keepdim=True)</code>。每个位置、每个 head 各有一个 ms。
+      $$\mathrm{ms}={{ ms | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 穿过平均
+      text: |
+        平均值的局部导数是 $1/n$，ms 的梯度除以 $n$ 均分给这一行的每个平方。
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: mse
+    label: '$\of{mse}$'
+    title: 加上 $\epsilon$
+    text: |
+      加上 $\epsilon=\of{eps}$，对应 <code>variance + self.variance_epsilon</code>，保证下一步不会除以 0。
+      $$\of{mse}={{ mse | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms}$'
+      title: 穿过加 $\epsilon$
+      text: |
+        加常数的局部导数是 1，梯度原样传下去。
+        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }}$$
+  - id: rms
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      取平方根的倒数，得到这一行的 $r=1/\sqrt{\mathrm{ms}+\epsilon}$，对应一次 <code>torch.rsqrt</code>。
       $$r={{ r | matrix:3 }}$$
     backward:
-      label: '$\partial\of{ms},\ \partial\of{sq}$'
-      title: 传到 ms 和平方
+      label: '$\partial\of{mse}$'
+      title: 穿过 rsqrt
+      text: |
+        $\frac{d}{dv}v^{-1/2}=-\frac{1}{2}v^{-3/2}$，所以局部导数是 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial\of{mse}}={{ mse.grad | matrix:3 }}$$
   - id: normalize
     show: xh
     label: '$\of{xh}$'
@@ -72,24 +110,12 @@ steps:
       title: 传到 $\of{weight}$ 和 $\of{xh}$
       text: |
         $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
-  - id: act
-    show: s
-    label: '$\of{s}$'
-    title: 门：SiLU
-    text: |
-      门 $\of{gate}$ 在 float32 里经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。它和归一化的结果形状相同，逐元素对应。
-      $$\of{s}={{ s | matrix:2 }}$$
-    backward:
-      label: '$\partial\of{gate}$'
-      title: 穿过 SiLU
-      text: |
-        $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
   - id: gate
     show: out
     label: '$\of{out}$'
     title: 门控相乘
     text: |
-      归一化后的结果逐元素乘上门，再转回输入的 dtype。门接近 0 的分量被关掉。
+      门 $\of{gate}$ 先转成 float32 再经过 $\of{act}$，它和归一化的结果形状相同，逐元素对应。归一化后的结果逐元素乘上门，再转回输入的 dtype。门接近 0 的分量被关掉。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{xw},\ \partial\of{s}$'

@@ -539,6 +539,8 @@ def transformer_op_fixtures():
     cases += head_cases()
     cases += linear_attention_cases()
     cases += routing_cases()
+    cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
+    cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
     return cases
 
 
@@ -606,15 +608,8 @@ def rotate_half_cases():
     ]
 
 
-def rotate_pairs(x):
-    return torch.stack((-x[..., 1::2], x[..., 0::2]), dim=-1).flatten(-2)
-
-
 def clamp_cases():
-    cases = [
-        op_case("rotate_half", f"interleaved shape {shape}", rotate_pairs, [("input", randn(*shape))], [tensor_arg(0)], {"interleaved": True})
-        for shape in [(4,), (3, 2, 4)]
-    ]
+    cases = []
     for shape, low, high in [((3, 4), -0.5, 0.5), ((2, 2, 3), None, 0.3), ((5,), -0.2, None)]:
         options = {key: value for key, value in [("min", low), ("max", high)] if value is not None}
         cases.append(op_case("clamp", f"{shape} min {low} max {high}", lambda x, options=options: torch.clamp(x, **options), [("input", randn(*shape))], [tensor_arg(0)], options))

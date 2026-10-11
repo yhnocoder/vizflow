@@ -10,4 +10,5 @@ if (!document.getElementById(styleId)) {
   document.head.prepend(style);
 }
 
+export { getBackgroundImage, getTheme, setBackgroundImage, setTheme, themeNames, type RevealOrigin, type ThemeName } from './settings';
 export { onThemeChange, readTheme, type LinearRgb, type ThemeColors } from './colors';

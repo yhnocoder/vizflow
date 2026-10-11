@@ -37,6 +37,7 @@ export class CompilerState {
   private readonly random: () => number;
   private readonly real: boolean;
   private readonly namedDims = new Map<string, string>();
+  private readonly derivedDims = new Set<string>();
   private readonly buffers = new Map<string, Node>();
   private readonly owners = new Map<Node, LayoutEntry[]>();
 
@@ -65,17 +66,28 @@ export class CompilerState {
     const init = record(page.init, child(pageWhere, page, 'init'), 'init');
     this.random = rng(typeof init.seed === 'number' ? init.seed : DEFAULT_SEED);
     this.root = new Scope(rootDef, '', []);
-    for (const [name, value] of rootDims) this.root.dims.set(name, value);
+    for (const [name, value] of rootDims) this.root.dims.set(name, { ...value, dim: name, derive: (sizes) => sizes[name] });
   }
 
   dimSpec(value: Num): number | string {
-    if (!this.real || value.toy === value.real) return value.toy;
+    if (!this.real) return value.toy;
+    if (value.dim !== undefined) return value.dim;
+    if (value.toy === value.real && value.derive === undefined) return value.toy;
     const key = `${value.toy}:${value.real}`;
     const name = this.namedDims.get(key);
-    if (name !== undefined) return name;
-    this.g.addDim(key, value.toy, value.real);
-    this.namedDims.set(key, key);
-    return key;
+    if (name !== undefined && (value.derive === undefined || this.derivedDims.has(name))) return name;
+    const derived = value.derive === undefined ? key : this.derivedName(key);
+    this.g.addDim(derived, value.toy, value.real, value.derive);
+    if (value.derive !== undefined) this.derivedDims.add(derived);
+    if (name === undefined) this.namedDims.set(key, derived);
+    return derived;
+  }
+
+  private derivedName(key: string): string {
+    if (this.g.dims[key] === undefined) return key;
+    let n = 2;
+    while (this.g.dims[`${key}#${n}`] !== undefined) n++;
+    return `${key}#${n}`;
   }
 
   checkValuesUsed(): void {

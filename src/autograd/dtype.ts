@@ -4,6 +4,21 @@ export type Dtype = (typeof DTYPES)[number];
 export const DEFAULT_DTYPE: Dtype = 'fp32';
 export const LABEL_DTYPE: Dtype = 'int64';
 
+export const DTYPE_BYTES: Readonly<Record<Dtype, number>> = {
+  bool: 1,
+  uint8: 1,
+  int8: 1,
+  int16: 2,
+  int32: 4,
+  int64: 8,
+  fp8_e4m3: 1,
+  fp8_e5m2: 1,
+  fp16: 2,
+  bf16: 2,
+  fp32: 4,
+  fp64: 8,
+};
+
 const FLOAT_RANK: Partial<Record<Dtype, number>> = { fp8_e4m3: 1, fp8_e5m2: 1, fp16: 2, bf16: 2, fp32: 3, fp64: 4 };
 const INT_RANK: Partial<Record<Dtype, number>> = { bool: 0, uint8: 1, int8: 1, int16: 2, int32: 3, int64: 4 };
 

@@ -1020,3 +1020,465 @@ vf-figure {
 .vf-peek-steps li.vf-peek-more::before {
   display: none;
 }
+
+.vf-cost {
+  --vf-k-param: #6a9bcc;
+  --vf-k-input: #8a8475;
+  --vf-k-buffer: #c2a14d;
+  --vf-k-saved: #d97757;
+  --vf-k-temp: #ebb69c;
+  --vf-k-param_grad: #2e7a55;
+  --vf-k-grad: #8cc7a3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .vf-cost {
+    --vf-k-param: #7eaad6;
+    --vf-k-input: #a8a59b;
+    --vf-k-buffer: #d6b864;
+    --vf-k-temp: #f0c4ad;
+    --vf-k-param_grad: #5fb486;
+    --vf-k-grad: #a9dcbd;
+  }
+}
+
+:root[data-theme="dark"] .vf-cost {
+  --vf-k-param: #7eaad6;
+  --vf-k-input: #a8a59b;
+  --vf-k-buffer: #d6b864;
+  --vf-k-temp: #f0c4ad;
+  --vf-k-param_grad: #5fb486;
+  --vf-k-grad: #a9dcbd;
+}
+
+.vf-cost h2 {
+  margin-bottom: 0;
+}
+
+.vf-k-param { background: var(--vf-k-param); }
+.vf-k-input { background: var(--vf-k-input); }
+.vf-k-buffer { background: var(--vf-k-buffer); }
+.vf-k-saved { background: var(--vf-k-saved); }
+.vf-k-temp { background: var(--vf-k-temp); }
+.vf-k-param_grad { background: var(--vf-k-param_grad); }
+.vf-k-grad { background: var(--vf-k-grad); }
+
+.vf-costhead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vf-costlabel {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.vf-costtotal {
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-costpeak {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.vf-costbarwrap {
+  position: relative;
+}
+
+.vf-costmeter {
+  display: flex;
+  height: 22px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.vf-costseg {
+  position: relative;
+  border: 0;
+  padding: 0;
+  height: 100%;
+  cursor: pointer;
+  box-shadow: inset -1px 0 0 var(--surface);
+}
+
+.vf-costseg.vf-on,
+.vf-costseg:hover {
+  filter: brightness(0.9);
+}
+
+.vf-costhatch {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--surface) 55%, transparent) 3px 6px);
+}
+
+.vf-costtag {
+  margin-left: 4px;
+  padding: 0 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.vf-costtag.vf-costrepeat {
+  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 6px);
+}
+
+.vf-costdims {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px 16px;
+  font-size: 12.5px;
+}
+
+.vf-costdims label {
+  display: grid;
+  gap: 2px;
+}
+
+.vf-costdims span {
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-costdims input {
+  width: 100%;
+  accent-color: var(--fg);
+}
+
+.vf-costtip {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.12);
+  font-size: 12.5px;
+}
+
+.vf-costtip.vf-costtip-flat {
+  position: static;
+  box-shadow: none;
+}
+
+.vf-costtiphead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+.vf-costlist {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 3px 10px;
+  align-items: baseline;
+}
+
+.vf-costname {
+  white-space: nowrap;
+}
+
+.vf-costshape {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 3px 0;
+  white-space: nowrap;
+}
+
+.vf-costnum {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.vf-costwide {
+  grid-column: 1 / 3;
+}
+
+.vf-costformula {
+  grid-column: 1 / -1;
+  margin-top: -4px;
+}
+
+.vf-costop {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.vf-costmore {
+  grid-column: 1 / 3;
+  color: var(--muted);
+}
+
+.vf-costlegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.vf-costkey {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.vf-costkey.vf-on {
+  text-decoration: underline;
+}
+
+.vf-costdot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.vf-costflops {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+
+.vf-costflops b {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-costline {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+
+.vf-costhit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+.vf-coststep:hover .vf-costhit {
+  fill: var(--line);
+}
+
+.vf-costbar {
+  fill: var(--line-strong);
+}
+
+.vf-coststep.vf-on .vf-costhit {
+  fill: color-mix(in srgb, var(--pos) 22%, transparent);
+}
+
+.vf-coststep.vf-on .vf-costbar {
+  fill: var(--fg);
+}
+
+.vf-costmem {
+  fill: none;
+  stroke: var(--pos);
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+}
+
+.vf-costaxis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: -6px;
+}
+
+.vf-costrules {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.vf-costrules summary {
+  cursor: pointer;
+}
+
+.vf-costrules ul {
+  padding-left: 18px;
+  margin: 6px 0;
+}
+
+table.vf-costrule {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.vf-costrule th,
+.vf-costrule td {
+  text-align: left;
+  padding: 3px 4px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.vf-costrule td:first-child {
+  font-family: var(--mono);
+  word-break: break-word;
+}
+
+.vf-settings {
+  display: grid;
+  gap: 16px;
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--fg);
+}
+
+.vf-settings-section {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px 18px 18px;
+}
+
+.vf-settings-section h2 {
+  font-family: var(--serif);
+  font-weight: 500;
+  font-size: 20px;
+  margin: 0 0 12px;
+}
+
+.vf-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.vf-theme-choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px;
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+.vf-theme-choice:hover {
+  border-color: var(--line-strong);
+}
+
+.vf-theme-choice[aria-checked="true"] {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.vf-theme-swatches {
+  display: flex;
+  gap: 4px;
+}
+
+.vf-theme-swatches i {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 1px solid rgba(20, 20, 19, 0.12);
+}
+
+.vf-theme-label {
+  font-weight: 600;
+}
+
+.vf-theme-note,
+.vf-settings-note {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.vf-settings-note {
+  margin: 10px 0 0;
+}
+
+.vf-drop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+}
+
+.vf-drop-over {
+  border-color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.vf-drop-empty {
+  color: var(--muted);
+}
+
+.vf-drop-preview {
+  width: 160px;
+  height: 100px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+}
+
+.vf-drop-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.vf-settings-button {
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--fg);
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 4px 14px;
+  cursor: pointer;
+}
+
+.vf-settings-button:hover {
+  border-color: var(--ink);
+}
+
+.vf-settings-error {
+  margin: 8px 0 0;
+  color: var(--pos);
+}

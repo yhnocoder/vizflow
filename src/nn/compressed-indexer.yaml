@@ -50,7 +50,7 @@ body:
       suffix: I
       title: apply_rotary_pos_emb
       subtitle: query 在位置 $t$
-      params: { rd: rd, theta: theta, interleaved: true }
+      params: { rd: rd, theta: theta }
       inputs: { x: q }
       outputs: { out: qe }
       tex: { out: "{\\mathbf{q}^{I}}'" }

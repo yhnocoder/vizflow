@@ -20,7 +20,8 @@ fold:
 body:
   - sq:  { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ss:  { op: 'sum(sq, -1, keepdim=true)', tex: '\lVert\of{x}\rVert^{2}' }
-  - r:   { op: 'rsqrt(ss, eps=eps)', tex: r }
+  - sse: { op: ss + eps, tex: '(\lVert\of{x}\rVert^{2}+\epsilon)' }
+  - r:   { op: rsqrt(sse), tex: r }
   - out: { op: x * r, tex: '\hat{\of{x}}' }
 steps:
   - id: square
@@ -36,18 +37,44 @@ steps:
       text: |
         平方这一路和直连那一路相加。单位向量对整行的缩放不敏感，所以交回去的梯度和这一行的输入垂直。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: norm
-    show: [ss, r]
-    label: '$\of{ss},\ \of{r}$'
-    title: 平方和与它的平方根倒数
+  - id: sum
+    show: ss
+    label: '$\of{ss}$'
+    title: 平方和
     text: |
-      每一行的平方和加上 $\epsilon=\of{eps}$ 再取平方根的倒数，得到这一行的 $r$。
+      每一行的平方加起来，对应 <code>(x * x).sum(dim=-1, keepdim=True)</code>。
+      $$\of{ss}={{ ss | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 穿过求和
+      text: |
+        求和的局部导数是 1，梯度原样复制给这一行的每个平方。
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: sse
+    label: '$\of{sse}$'
+    title: 加上 $\epsilon$
+    text: |
+      加上 $\epsilon=\of{eps}$，保证下一步不会除以 0。
+      $$\of{sse}={{ sse | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ss}$'
+      title: 穿过加 $\epsilon$
+      text: |
+        加常数的局部导数是 1，梯度原样传下去。
+  - id: norm
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      取平方根的倒数，得到这一行的 $r$，对应一次 <code>torch.rsqrt</code>。
       $$r={{ r | matrix:3 }}$$
     backward:
-      label: '$\partial\of{ss},\ \partial\of{sq}$'
-      title: 传到平方和与平方
+      label: '$\partial\of{sse}$'
+      title: 穿过 rsqrt
       text: |
-        $\partial r/\partial\lVert\mathbf{x}\rVert^{2}=-r^{3}/2$，求和再把梯度原样复制给这一行的每个平方。
+        局部导数是 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial\of{sse}}={{ sse.grad | matrix:3 }}$$
   - id: normalize
     show: out
     label: '$\of{out}$'

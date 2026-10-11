@@ -176,6 +176,52 @@ body:
     expect(ok.nodes.get('y')).toBe(ok.nodes.get('s.out'));
   });
 
+  it('instantiates the module a module parameter names, from the namespace of the declaring module', async () => {
+    const gated = `
+module: Gated
+import:
+  SiLU: vizflow/nn/silu
+  ReLU: vizflow/nn/relu
+params:
+  act: { type: module, values: [SiLU, ReLU], default: SiLU }
+inputs:
+  x: { shape: [n] }
+outputs: [out]
+body:
+  - act_fn: { use: act, inputs: { x: x }, outputs: { out: out } }
+`;
+    const files = { 'mem:/pages/gated.yaml': gated };
+    const use = (params: string) => page(`
+title: t
+import: { Gated: ./gated.yaml }
+dims: {}
+inputs:
+  x: { value: [-1, 2] }
+body:
+  - g: { use: Gated, ${params}inputs: { x: x }, outputs: { out: y } }
+`, files);
+    const silu = await use('');
+    expect(silu.modules.map((m) => m.id)).toEqual(['g', 'g.act_fn', 'g.act_fn.sigmoid']);
+    expect(Array.from(silu.nodes.get('y')!.value.data)).toEqual([-1 / (1 + Math.E), 2 / (1 + Math.exp(-2))]);
+    const relu = await use('params: { act: ReLU }, ');
+    expect(relu.nodes.get('y')!.op).toBe('relu');
+    await expect(use('params: { act: GELU }, ')).rejects.toThrow(/parameter 'act' must be one of SiLU, ReLU, got 'GELU'/);
+    await expect(page(`
+title: t
+modules:
+  M:
+    params: { act: { type: module, default: Nope } }
+    inputs: { x: { shape: [n] } }
+    outputs: [x]
+    body: []
+dims: {}
+inputs:
+  x: { value: [1] }
+body:
+  - m: { use: M, inputs: { x: x } }
+`)).rejects.toThrow(/parameter 'act': module 'Nope' is not imported by M/);
+  });
+
   it('defaults a default_key text parameter to the instance key', async () => {
     const named = (decl: string) => `
 module: Named
@@ -778,7 +824,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });
@@ -915,11 +961,11 @@ body:
     expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
     expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
     const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
-    const rms = forward[3];
-    expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
-    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');
-    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
+    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
+    const rms = forward[5];
+    expect(rms.label).toBe('$r_{a},\\ r_{b}$');
+    expect(rms.backward?.label).toBe('$\\partial(\\mathrm{ms}+\\epsilon)_{a},\\ \\partial(\\mathrm{ms}+\\epsilon)_{b}$');
+    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.r', 'qb.r']);
     expect(rms.text).toContain('{{qb.r[0]:3}}');
     expect(rms.text).toContain('{{qb.r[1]:3}}');
     await expect(page(`

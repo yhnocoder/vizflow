@@ -69,7 +69,7 @@ body:
       suffix: c
       title: apply_rotary_pos_emb
       subtitle: '位置是 $w\cdot m$'
-      params: { rd: rd, theta: theta, stride: m, interleaved: true }
+      params: { rd: rd, theta: theta, stride: m }
       inputs: { x: pn3 }
       outputs: { out: C }
       tex: { cos: '\cos_{\of{m}w}', sin: '\sin_{\of{m}w}' }

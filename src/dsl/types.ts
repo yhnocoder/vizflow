@@ -14,6 +14,7 @@ export type ParamDecl =
   | { type: 'dim'; default?: number }
   | { type: 'bool'; default?: boolean }
   | { type: 'op'; values?: Name[]; default?: Name }
+  | { type: 'module'; values?: Name[]; default?: Name }
   | { type: 'tex' | 'text'; default?: string };
 
 export interface InputDecl {

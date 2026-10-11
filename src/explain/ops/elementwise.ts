@@ -76,6 +76,12 @@ export const rsqrtExplain: OpExplain = {
   },
 };
 export const sqrtExplain = unary((a) => `\\sqrt{${a}}`, (_x, y) => 0.5 / y, (_x, y) => `\\frac{1}{2${y}}`);
+export const reciprocalExplain = unary((a) => `\\frac{1}{${a}}`, (_x, y) => -y * y, (x) => `-\\frac{1}{{${x}}^{2}}`);
+export const erfExplain = unary(
+  (a) => `\\operatorname{erf}(${a})`,
+  (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x),
+  (x) => `\\frac{2}{\\sqrt{\\pi}}e^{-{${x}}^{2}}`,
+);
 export const sigmoidExplain = unary((a) => `\\sigma(${a})`, (_x, y) => y * (1 - y), (_x, y) => `${y}(1-${y})`);
 export const siluExplain = unary(
   (a) => `\\operatorname{SiLU}(${a})`,
@@ -104,29 +110,21 @@ export const geluExplain = unary(
 export const identityExplain = unary((a) => a, () => 1, () => '1');
 
 const lastHalf = (shape: readonly number[]) => shape[shape.length - 1] / 2;
-const interleavedOf = (attrs: object) => (attrs as { interleaved?: boolean }).interleaved === true;
-
-function rotatedFrom(out: number[], shape: readonly number[], interleaved: boolean): { index: number[]; sign: number } {
-  const last = out.length - 1;
-  const c = out[last];
-  const index = [...out];
-  if (interleaved) {
-    index[last] = c % 2 === 0 ? c + 1 : c - 1;
-    return { index, sign: c % 2 === 0 ? -1 : 1 };
-  }
-  const half = lastHalf(shape);
-  index[last] = c < half ? c + half : c - half;
-  return { index, sign: c < half ? -1 : 1 };
-}
 
 export const rotateHalfExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, out) => rotatedFrom(out, ctx.out.shape, interleavedOf(ctx.attrs)).sign,
+  local: (ctx, out) => (out[out.length - 1] < lastHalf(ctx.out.shape) ? -1 : 1),
   tex: {
     forward: (s) => `\\operatorname{rotate\\_half}(${s.in[0]})`,
-    local: (s) => String(rotatedFrom(s.outIndex, s.ctx.out.shape, interleavedOf(s.attrs)).sign),
+    local: (s) => (s.outIndex[s.outIndex.length - 1] < lastHalf(s.ctx.out.shape) ? '-1' : '1'),
   },
-  selected: (ctx, out) => [{ arg: 0, index: rotatedFrom(out, ctx.out.shape, interleavedOf(ctx.attrs)).index }],
+  selected: (ctx, out) => {
+    const last = out.length - 1;
+    const half = lastHalf(ctx.out.shape);
+    const index = [...out];
+    index[last] = out[last] < half ? out[last] + half : out[last] - half;
+    return [{ arg: 0, index }];
+  },
 };
 
 function clampTex(input: string, { min, max }: ClampAttrs): string {

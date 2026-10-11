@@ -6,6 +6,7 @@ import { allVisible, compileTemplate, type StepState, type Steps } from '../step
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
+import { CostPanel, type CostPanelOptions } from './cost';
 import { Rich, indexed, plain } from './rich';
 
 export interface SgdOptions {
@@ -54,6 +55,8 @@ export type TokenColumn = Node | { node: Node; grad?: boolean; title?: string };
 export type PanelItem =
   | 'loss'
   | { loss: LossOptions }
+  | 'cost'
+  | { cost: CostPanelOptions }
   | { sliders: Node; min?: number; max?: number; step?: number; title?: string }
   | { tokens: Node; columns?: TokenColumn[]; title?: string; sliders?: Node; min?: number; max?: number }
   | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: MatrixHighlight; note?: string; caption?: string; limit?: number; rows?: string }
@@ -81,6 +84,8 @@ interface Context {
   history: Accessor<number[]>;
   sgdStep(sgd: SgdOptions): void;
   sequence: PageSequence | undefined;
+  steps: Steps | undefined;
+  stepsVersion: Accessor<number>;
 }
 
 const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGITS[Number(d)]);
@@ -649,6 +654,8 @@ function CodePanel(props: { ctx: Context; item: Extract<PanelItem, { code: strin
 function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
+  if (item === 'cost') return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={{}} />;
+  if ('cost' in item) return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={item.cost} />;
   if ('loss' in item) return <LossPanel ctx={props.ctx} options={item.loss} />;
   if ('sequence' in item) return <SequencePanel ctx={props.ctx} item={item} />;
   if ('attention' in item) return <AttentionPanel ctx={props.ctx} item={item} />;
@@ -709,6 +716,8 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOption
     history,
     sgdStep,
     sequence,
+    steps,
+    stepsVersion,
   };
   return (
     <div class="vf-panels">

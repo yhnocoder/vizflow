@@ -1,5 +1,17 @@
 import { Tensor, formatShape } from '../../tensor';
-import type { OpDef } from '../op';
+import type { OpCost, OpDef } from '../op';
+
+const MULTIPLY_ADD = 2;
+
+function contraction(dims: (inputs: number[][]) => number[]): OpCost {
+  return {
+    saves: [[1], [0]],
+    flops: (inputs) => {
+      const count = [MULTIPLY_ADD, ...dims(inputs)];
+      return { forward: count, backward: inputs.map(() => count) };
+    },
+  };
+}
 
 type NoAttrs = Record<string, never>;
 
@@ -65,6 +77,7 @@ export const matmulOp: OpDef<NoAttrs> = {
     const gB = multiply(transposed2d(a, 'left'), G, [as2d(a, 'left').cols, G.shape[1]]);
     return [new Tensor(a.shape, gA.data), new Tensor(b.shape, gB.data)];
   },
+  cost: contraction(([a, b]) => [a.length === 2 ? a[0] : 1, b[0], b.length === 2 ? b[1] : 1]),
 };
 
 export interface SelectMatmulAttrs {
@@ -105,4 +118,5 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
     const gB = multiply(transposed2d(slice(a, index), 'left'), gradOut, [width, b.shape[1]]);
     return [gA, gB];
   },
+  cost: contraction(([a, b]) => [a[0], b[0], b[1]]),
 };

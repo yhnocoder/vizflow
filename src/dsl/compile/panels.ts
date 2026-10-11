@@ -15,8 +15,8 @@ export function compilePanels(c: Compiler, env: Env): PanelItem[] {
     Array.isArray(value) ? value.flatMap((v, k) => c.nodeList(v, { ...env, where: child(at, value, k) })) : c.nodeList(value, { ...env, where: at });
   return page.panels.map((panel, i): PanelItem => {
     const at = child(where, page.panels as unknown[], i);
-    if (panel === 'loss') return 'loss';
-    if (!isRecord(panel)) fail(at, "a panel must be 'loss' or a mapping");
+    if (panel === 'loss' || panel === 'cost') return panel;
+    if (!isRecord(panel)) fail(at, "a panel must be 'loss', 'cost' or a mapping");
     const out: Record<string, unknown> = { ...panel };
     const field = (key: string) => child(at, panel, key);
     for (const key of ['title', 'note', 'caption']) if (typeof panel[key] === 'string') out[key] = textAt(panel[key], field(key));
@@ -62,6 +62,7 @@ export function compilePanels(c: Compiler, env: Env): PanelItem[] {
       Object.assign(out, trainable(c, panel, ['sgd'], env, at));
     }
     if (isRecord(panel.loss)) out.loss = lossPanel(c, panel.loss, { ...env, where: field('loss') });
+    if (isRecord(panel.cost)) out.cost = costPanel(c, panel.cost, { ...env, where: field('cost') });
     return out as PanelItem;
   });
 }
@@ -89,5 +90,12 @@ function trainable(c: Compiler, spec: Record<string, unknown>, keys: string[], e
       : list(selected as unknown).flatMap((s) => c.nodeList(s, { ...env, where: nodesWhere }));
     out[key] = { ...value, [nodesKey]: nodes };
   }
+  return out;
+}
+
+function costPanel(c: Compiler, cost: Record<string, unknown>, env: Env): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...cost };
+  if (typeof cost.title === 'string') out.title = c.text(cost.title, { ...env, where: child(env.where, cost, 'title') });
+  if (cost.dims !== undefined && cost.dims !== 'toy' && cost.dims !== 'real') fail(child(env.where, cost, 'dims'), "dims must be 'toy' or 'real'");
   return out;
 }

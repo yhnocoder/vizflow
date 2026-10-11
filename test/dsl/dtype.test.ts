@@ -9,10 +9,10 @@ describe('dtype in page files', () => {
     const dtype = (name: string) => page.nodes.get(name)!.dtype;
     expect(page.graph.dtype).toBe('bf16');
     expect(['ids', 'y', 'E', 'x0'].map(dtype)).toEqual(['int64', 'int64', 'bf16', 'bf16']);
-    expect(['sq', 'ms', 'r', 'xh', 'out'].map((n) => dtype(`layer.input_layernorm.${n}`))).toEqual(['fp32', 'fp32', 'fp32', 'fp32', 'bf16']);
+    expect(['sq', 'ms', 'mse', 'r', 'xh', 'out'].map((n) => dtype(`layer.input_layernorm.${n}`))).toEqual(['fp32', 'fp32', 'fp32', 'fp32', 'bf16', 'bf16']);
     const gqa = 'layer.self_attn.eager_attention_forward';
     expect([`${gqa}.ex[1]`, `${gqa}.Z[1]`, `${gqa}.P[1]`, `${gqa}.o`].map(dtype)).toEqual(['fp32', 'fp32', 'bf16', 'bf16']);
-    expect(['z', 'LSE', 'logp', 'loss'].map(dtype)).toEqual(['bf16', 'fp32', 'fp32', 'fp32']);
+    expect(['z', 'log_softmax.ex', 'log_softmax.LSE', 'logp', 'nll_loss.pick', 'loss'].map(dtype)).toEqual(['bf16', 'fp32', 'fp32', 'fp32', 'fp32', 'fp32']);
   });
 
   it('rejects an unknown dtype and a dtype that names no tensor', async () => {

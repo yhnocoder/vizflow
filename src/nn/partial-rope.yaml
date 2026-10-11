@@ -1,18 +1,17 @@
 module: PartialRoPE
 subtitle: 只转最后 $d_r$ 维的 RoPE
-formula: '\step{cat}{\of{out}=\big[\,\of{x_pass},\ }\step{cos}{\of{x_rot}\odot\cos}\step{add}{+}\step{sub}{-}\step{sin}{\step{rh}{\mathrm{rh}(\of{x_rot})}\odot\sin}\step{cat}{\,\big]}'
+formula: '\step{cat}{\of{out}=\big[\,\of{x_pass},\ }\step{cos}{\of{x_rot}\odot\cos}\step{add}{+}\step{sub}{-}\step{sin}{\step{flatten}{\mathrm{rh}(\of{x_rot})}\odot\sin}\step{cat}{\,\big]}'
 params:
   rd:          { type: dim }
   theta:       { type: float, default: 1e4 }
   stride:      { type: int, default: 1 }
-  interleaved: { type: bool, default: false }
   inverse:     { type: bool, default: false }
 inputs:
   x: { shape: [N, Hx, dh] }
 outputs: [out]
 buffers:
-  cos: { value: 'rope_cos(N, rd, theta, stride=stride, interleaved=interleaved)', shape: [N, 1, rd], tex: '\cos' }
-  sin: { value: 'rope_sin(N, rd, theta, stride=stride, interleaved=interleaved)', shape: [N, 1, rd], tex: '\sin' }
+  cos: { value: 'rope_cos(N, rd, theta, stride=stride, interleaved=true)', shape: [N, 1, rd], tex: '\cos' }
+  sin: { value: 'rope_sin(N, rd, theta, stride=stride, interleaved=true)', shape: [N, 1, rd], tex: '\sin' }
 fold:
   label: '$\of{out}$'
   title: RoPE（已折叠）
@@ -29,7 +28,12 @@ body:
   - x_pass: { op: 'narrow(x, -1, 0, dh - rd)', tex: '\of{x}_{\mathrm{pass}}' }
   - x_rot:  { op: 'narrow(x, -1, dh - rd, rd)', tex: '\of{x}_{\mathrm{rot}}' }
   - xc:     { op: x_rot * cos, tex: '\of{x_rot}\odot\cos' }
-  - xrh:    { op: 'rotate_half(x_rot, interleaved=interleaved)', tex: '\mathrm{rh}(\of{x_rot})' }
+  - xp:     { op: 'view(x_rot, N, Hx, rd // 2, 2)', tex: '\of{x_rot}^{\mathrm{pair}}' }
+  - x1:     { op: 'select(xp, -1, 0)', tex: '{\of{x_rot}}_{0::2}' }
+  - x2:     { op: 'select(xp, -1, 1)', tex: '{\of{x_rot}}_{1::2}' }
+  - nx2:    { op: -x2, tex: '-{\of{x_rot}}_{1::2}' }
+  - st:     { op: 'cat([view(nx2, N, Hx, rd // 2, 1), view(x1, N, Hx, rd // 2, 1)], dim=-1)', tex: '\operatorname{stack}(-{\of{x_rot}}_{1::2},{\of{x_rot}}_{0::2})' }
+  - xrh:    { op: 'view(st, N, Hx, rd)', tex: '\mathrm{rh}(\of{x_rot})' }
   - xs:     { op: xrh * sin, tex: '\mathrm{rh}(\of{x_rot})\odot\sin' }
   - rot:    { op: 'xc - xs if inverse else xc + xs', tex: "\\of{x_rot}'" }
   - out:    { op: 'cat([x_pass, rot], dim=-1)' }
@@ -54,28 +58,45 @@ steps:
     backward:
       label: '$\partial\of{x_rot}$'
       title: 穿过乘 cos
-  - id: rh
-    when: interleaved
-    show: xrh
-    label: rotate_half
-    title: rotate_half：相邻两维成一对
+  - id: pair
+    show: [xp, x1, x2]
+    label: '${\of{x_rot}}_{0::2},\ {\of{x_rot}}_{1::2}$'
+    title: rotate_half：取出偶数位和奇数位
     text: |
-      这里的 RoPE 把相邻的两维 $(x_0,x_1),(x_2,x_3),\dots$ 配成一对，HF 的 <code>rotate_half</code> 写成 <code>stack((-x[..., 1::2], x[..., 0::2]), -1).flatten(-2)</code>，cos 和 sin 表的每个频率也连着写两遍。它只是重新排列加取负号，局部导数是 $\pm1$，每个元素只连一条线。
-      $$\mathrm{rh}(x_0,x_1,x_2,x_3)=(-x_1,x_0,-x_3,x_2)$$
+      这里的 RoPE 把相邻的两维 $(x_0,x_1),(x_2,x_3),\dots$ 配成一对。HF 的 <code>rotate_half</code> 有三行：<code>x1 = x[..., 0::2]</code>、<code>x2 = x[..., 1::2]</code>、<code>torch.stack((-x2, x1), dim=-1).flatten(-2)</code>，这里一行画一步。隔一个取一个等于先把最后一维排成 $(\of{rd//2}, 2)$，再取第 0 列和第 1 列。取元素的局部导数是 1。
+      $${\of{x_rot}}_{0::2}={{ x1 | matrix:2 }},\qquad {\of{x_rot}}_{1::2}={{ x2 | matrix:2 }}$$
     backward:
       label: '$\partial\of{x_rot}$'
-      title: 穿过 rotate_half
-  - id: rh
-    when: not interleaved
+      title: 梯度放回偶数位和奇数位
+  - id: neg
+    show: nx2
+    label: '$-{\of{x_rot}}_{1::2}$'
+    title: rotate_half：奇数位取负
+    text: |
+      奇数位的每个元素取负号，局部导数是 $-1$。
+      $$-{\of{x_rot}}_{1::2}={{ nx2 | matrix:2 }}$$
+    backward:
+      label: '$\partial{\of{x_rot}}_{1::2}$'
+      title: 穿过取负
+  - id: stack
+    show: st
+    label: stack
+    title: rotate_half：两两并排
+    text: |
+      <code>torch.stack((-x2, x1), dim=-1)</code> 在最后加一维，把取负的奇数位放在每一对的前面，偶数位放在后面，形状是 $(\of{rd//2}, 2)$。这里写成两个 view 各加一维再拼接，只是搬动元素。
+    backward:
+      label: '$\partial(-{\of{x_rot}}_{1::2}),\ \partial{\of{x_rot}}_{0::2}$'
+      title: 穿过 stack
+  - id: flatten
     show: xrh
     label: rotate_half
-    title: rotate_half：前后两半成一对
+    title: rotate_half：展平
     text: |
-      第 $c$ 维和第 $c+d_r/2$ 维配成一对：后半段取负号放到前面，前半段放到后面。局部导数是 $\pm1$，每个元素只连一条线。
-      $$\mathrm{rh}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$
+      <code>flatten(-2)</code> 把每一对依次排回 $d_r=\of{rd}$ 维。合起来 $\mathrm{rh}(x_0,x_1,x_2,x_3)=(-x_1,x_0,-x_3,x_2)$。cos 和 sin 表的每个频率也连着写两遍，与这种配对一致。
+      $$\mathrm{rh}(\of{x_rot})={{ xrh | matrix:2 }}$$
     backward:
-      label: '$\partial\of{x_rot}$'
-      title: 穿过 rotate_half
+      label: '$\partial\,\mathrm{stack}$'
+      title: 穿过 flatten
   - id: sin
     show: [sin, xs]
     label: '$\odot\sin$'

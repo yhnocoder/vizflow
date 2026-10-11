@@ -31,18 +31,27 @@ const W = g.param('W', ['V', 'd'], [
 ], { tex: 'W', elem: 'W' });
 const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'] });
 const z = g.matmul(h, W.T, { name: 'z' });
-const L = g.logsumexp(z, -1, { keepdim: true, name: 'LSE' });
+const ex = g.exp(z, { name: 'ex', tex: 'e^{\\mathbf{z}}', elem: 'e^{z}' });
+const S = g.sum(ex, -1, { keepdim: true, name: 'S', tex: 'S', elem: 'S' });
+const L = g.log(S, { name: 'LSE' });
 const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log p' });
-const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
+const ti = g.view(t, [-1, 1], { name: 'ti', tex: '\\mathbf{t}', elem: 't' });
+const pick = g.gather(logp, -1, ti, { name: 'pick', tex: '\\log p_{t}', elem: '\\log p_{t}' });
+const lt = g.neg(pick, { name: 'lt', tex: '\\boldsymbol{\\ell}', elem: '\\ell' });
+const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 
 const steps = createSteps(g, {
   overview: { title: '整张图', text: String.raw`$$\ell = {{loss:3}}$$` },
   forward: [
     { show: [h, W.T], label: 'h, Wᵀ', title: '输入', text: '' },
     { show: z, label: 'z', title: 'lm_head', text: '' },
-    { show: L, label: 'LSE', title: 'log-sum-exp', text: '' },
-    { show: logp, label: 'log p', title: 'log_softmax', text: '' },
-    { show: loss, label: 'ℓ', title: 'nll_loss', text: '' },
+    { show: ex, label: '$e^{\\mathbf{z}}$', title: 'log_softmax：取 exp', text: '' },
+    { show: S, label: '$S$', title: 'log_softmax：求和', text: '' },
+    { show: L, label: 'LSE', title: 'log_softmax：取 log', text: '' },
+    { show: logp, label: 'log p', title: 'log_softmax：减去 LSE', text: '' },
+    { show: pick, label: '$\\log p_t$', title: 'nll_loss：按标签取格', text: '' },
+    { show: lt, label: '$-\\log p_t$', title: 'nll_loss：取负', text: '' },
+    { show: loss, label: 'ℓ', title: 'nll_loss：取平均', text: '' },
   ],
   backward: 'auto',
 });
@@ -52,7 +61,7 @@ const scene = mountScene('#stage', g, {
   edit: true,
   layout: [
     board(h, W.T, z, { scales: { h: { forward: 0.45, backward: 1.2 }, 'W.T': { forward: 0.6, backward: 0.8 }, z: { forward: 0.3, backward: 1.6 } } }),
-    stack(z, L, logp, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } } }),
+    stack(z, ex, S, L, logp, pick, lt, loss, { scales: { 'log p': { forward: 0.32, backward: 1.6 } }, offsets: { LSE: [0, 0.9, 0], lt: [0, 0.9, 0], loss: [0, 0.9, 0] } }),
   ],
 });
 

@@ -1,5 +1,9 @@
-import { Tensor, normDims, reduceMap } from '../../tensor';
+import { Tensor, normDims, reduceMap, reducedShape } from '../../tensor';
 import type { OpDef } from '../op';
+import { overInput } from './cost';
+
+const LOGSUMEXP_FORWARD = 4;
+const LOGSUMEXP_BACKWARD = 3;
 
 export type Dim = number | number[];
 
@@ -22,7 +26,7 @@ function grouped(input: Tensor, attrs: ReduceAttrs): { shape: number[]; map: Int
 }
 
 function reducedShapeOf(shape: number[], attrs: ReduceAttrs): number[] {
-  return reduceMap(shape, normDims(attrs.dim, shape.length), attrs.keepdim).shape;
+  return reducedShape(shape, normDims(attrs.dim, shape.length), attrs.keepdim);
 }
 
 function spread(gradOut: Tensor, inputShape: readonly number[], map: Int32Array, scale: (group: number) => number): Tensor {
@@ -44,6 +48,7 @@ export const sumOp: OpDef<ReduceAttrs> = {
     return out;
   },
   backward: (gradOut, [a], _out, attrs) => [spread(gradOut, a.shape, grouped(a, attrs).map, () => 1)],
+  cost: overInput(1, 0, [[]]),
 };
 
 export const meanOp: OpDef<ReduceAttrs> = {
@@ -63,6 +68,7 @@ export const meanOp: OpDef<ReduceAttrs> = {
     const { map, count } = grouped(a, attrs);
     return [spread(gradOut, a.shape, map, (group) => 1 / count[group])];
   },
+  cost: overInput(1, 1, [[]]),
 };
 
 function argmaxGroups(input: Tensor, attrs: ReduceAttrs): { shape: number[]; map: Int32Array; argmax: Int32Array } {
@@ -91,6 +97,7 @@ export const maxOp: OpDef<MaxAttrs> = {
     for (let j = 0; j < argmax.length; j++) grad.data[argmax[j]] += gradOut.data[j];
     return [grad];
   },
+  cost: overInput(1, 0, [[0]]),
 };
 
 export const logsumexpOp: OpDef<ReduceAttrs> = {
@@ -114,4 +121,5 @@ export const logsumexpOp: OpDef<ReduceAttrs> = {
     }
     return [grad];
   },
+  cost: overInput(LOGSUMEXP_FORWARD, LOGSUMEXP_BACKWARD, [[0, 'out']]),
 };
