@@ -2,13 +2,14 @@ import { Vector3 } from 'three';
 import type { Node } from '../autograd';
 import { render } from '../formula';
 import { type RowState, isLeafLike } from '../steps';
-import { formatNumber } from '../tensor';
+import { formatNumber, offsetOf } from '../tensor';
 import type { LinearRgb } from '../theme';
 import type { BarMesh } from './blocks';
-import { barColor, nodeColor, outlineOpacity } from './colors';
+import { barColor, nodeColor, outlineOpacity, stateColor } from './colors';
 import type { SceneController } from './controller';
 import type { Label } from './labels';
 import type { Block, Vec3 } from './layout';
+import { elementRank, partialParts, rankColor } from './parallel';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 import { barHeight } from './scales';
 
@@ -248,11 +249,22 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   const outline: number[] = [];
   const far = renderable.far;
   const rows = rowStates(c, block);
+  const ranks = partialParts(c, node);
+  const parts: (number[] | undefined)[] = [];
+  const partColors: LinearRgb[][] = [];
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
     const on = revealed && active && rows[i] !== 'inactive';
-    colors.push(barColor(values[i], c.theme, { active: on, far, focused }));
+    const state = { active: on, far, focused };
+    const rank = elementRank(c, node, element.index);
+    colors.push(rank === undefined ? barColor(values[i], c.theme, state) : stateColor(rankColor(c.theme, rank), c.theme, state));
     outline.push(outlineOpacity({ active: on, far, tile: block.shape === 'tile' }));
+    if (ranks !== undefined) {
+      const offset = offsetOf(node.shape, element.index);
+      const shown = revealed && rows[i] !== 'hidden';
+      parts.push(ranks.map((t) => barHeight(t.data[offset], renderable.scale[c.state.dir], shown, renderable.cap).height));
+      partColors.push(ranks.map((_, k) => stateColor(rankColor(c.theme, k), c.theme, state)));
+    }
     const label = renderable.values[i];
     if (label !== undefined) {
       const h = heights[i];
@@ -260,7 +272,7 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
       label.pos = [element.x, element.y + (h >= 0 ? h + VALUE_LABEL_GAP : h - VALUE_LABEL_GAP), element.z];
     }
   });
-  bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough });
+  bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough, ...(ranks === undefined ? {} : { parts, partColors }) });
 }
 
 export function rowStates(c: SceneController, block: Block): (RowState | undefined)[] {

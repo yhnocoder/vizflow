@@ -283,6 +283,14 @@
   border-color: var(--ink);
 }
 
+.vf-key.vf-ranks {
+  left: auto;
+  top: auto;
+  right: 14px;
+  bottom: 12px;
+  margin-left: 0;
+}
+
 .vf-jump {
   position: relative;
 }

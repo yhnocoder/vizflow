@@ -16,6 +16,8 @@ const theme: ThemeColors = {
   lineStrong: [0.6, 0.6, 0.6],
   pos: [1, 0.4, 0.2],
   neg: [0.2, 0.5, 1],
+  rank0: [0.6, 0.4, 0.7],
+  rank1: [0.2, 0.6, 0.4],
 };
 
 describe('scales', () => {

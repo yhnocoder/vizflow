@@ -149,6 +149,7 @@ export class VizflowPage extends HTMLElement {
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
       this.#scene = { layout, modules, levels, sequence: this.#sequence, hint: compiled.page.hint, camera: compiled.page.camera };
+      if (compiled.placements !== undefined) this.#scene.parallel = { placements: compiled.placements, infer: this.#mode === 'infer' };
       this.#schedule();
       this.#flush();
       this.dispatchEvent(new Event('load'));
@@ -250,6 +251,8 @@ export class VizflowPage extends HTMLElement {
     if (modes === undefined || value === this.#mode) return;
     this.#mode = value;
     this.#steps = modes[value];
+    const parallel = this.#scene?.parallel;
+    if (parallel !== undefined) this.#scene = { ...this.#scene!, parallel: { ...parallel, infer: value === 'infer' } };
     this.#schedule();
   }
 
