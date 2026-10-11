@@ -119,7 +119,7 @@ const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: 
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 const LABEL_CHANGES: Record<string, string> = {
   qkrs: '$\\mathrm{ms}_{q},\\ r_{q},\\ \\mathrm{ms}_{k},\\ r_{k}$',
-  b_qkrs: '$\\partial\\mathrm{ms}_{q},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{k},\\ \\partial{\\mathbf{k}}^{2}$',
+  b_qkrs: '$\\partial\\mathrm{ms}_{q},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{k},\\ \\partial\\mathbf{k}^{2}$',
   b_qkah: '$\\partial r_{q},\\ \\partial\\mathbf{q},\\ \\partial r_{k},\\ \\partial\\mathbf{k}$',
   b_qkn: '$\\partial\\boldsymbol{\\gamma}_{q},\\ \\partial\\hat{\\mathbf{q}},\\ \\partial\\boldsymbol{\\gamma}_{k},\\ \\partial\\hat{\\mathbf{k}}$',
 };
@@ -277,7 +277,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
   it('labels steps so that they read like the reference OPL, OPLB and MODF tables', () => {
     const expected = refSteps(ref);
     steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(LABEL_CHANGES[expected[i].id] ?? refLabel(ref, expected[i]))));
-    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '${\\mathbf{x}_0}^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
+    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '$\\mathbf{x}_0^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
     expect(steps.list.map((s) => s.kind).filter((k) => k !== 'op')).toEqual(['overview', 'inputs', 'module', 'module', 'overview']);
   });
 

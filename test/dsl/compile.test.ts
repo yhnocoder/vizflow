@@ -863,7 +863,7 @@ body:
     expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
     const rms = forward[3];
     expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
-    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial{\\mathbf{f}}^{2}$');
+    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');
     expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
     expect(rms.text).toContain('{{qb.r[0]:3}}');
     expect(rms.text).toContain('{{qb.r[1]:3}}');
