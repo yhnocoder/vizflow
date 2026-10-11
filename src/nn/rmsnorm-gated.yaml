@@ -1,6 +1,7 @@
 module: GatedRMSNorm
-subtitle: RMSNorm 后乘 SiLU 门
+subtitle: RMSNorm 后乘激活过的门
 params:
+  act:  { type: op, values: [silu, sigmoid], default: silu }
   eps:  { type: float, default: 1e-6 }
   name: { type: text, default_key: true }
 inputs:
@@ -13,7 +14,7 @@ fold:
   label: '$\of{out}$'
   title: \of{name}（已折叠）
   text: |
-    $$\of{out}=\big(\of{weight}\odot\mathrm{RMSNorm}(\of{x})\big)\odot\mathrm{SiLU}(\of{gate})={{ out | matrix:2 }}$$
+    $$\of{out}=\big(\of{weight}\odot\mathrm{RMSNorm}(\of{x})\big)\odot\of{act}(\of{gate})={{ out | matrix:2 }}$$
   backward:
     label: '$\partial\of{weight},\ \partial\of{x},\ \partial\of{gate}$'
     title: 穿过 \of{name}（已折叠）
@@ -25,7 +26,7 @@ body:
   - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
   - xw: { op: xh * weight, tex: '\of{weight}\odot\hat{\of{x}}' }
-  - s:  { op: silu(gate), tex: '\mathrm{SiLU}(\of{gate})', dtype: fp32 }
+  - s:  { op: act(gate), tex: '\of{act}(\of{gate})', dtype: fp32 }
   - out: { op: xw * s, dtype: x }
 steps:
   - id: square
@@ -75,13 +76,15 @@ steps:
   - id: act
     show: s
     label: '$\of{s}$'
-    title: 门：SiLU
+    title: 门：$\of{act}$
     text: |
-      门 $\of{gate}$ 在 float32 里经过 $\mathrm{SiLU}(v)=v\,\sigma(v)$。它和归一化的结果形状相同，逐元素对应。
+      门 $\of{gate}$ 在 float32 里逐元素经过激活函数：
+      $$\of{act.def}$$
+      它和归一化的结果形状相同，逐元素对应。
       $$\of{s}={{ s | matrix:2 }}$$
     backward:
       label: '$\partial\of{gate}$'
-      title: 穿过 SiLU
+      title: 穿过 $\of{act}$
       text: |
         $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
   - id: gate

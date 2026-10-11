@@ -228,7 +228,8 @@ export const viewOp: OpDef<ViewAttrs> = {
   rest: 'shape',
   sizes: ['shape'],
   shape: ([input], attrs) => viewShape(input, attrs),
-  forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice()),
+  int64: true,
+  forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
 };
 
@@ -261,12 +262,13 @@ export const selectOp: OpDef<SelectAttrs> = {
     const dim = normDim(attrs.dim, input.length);
     return input.filter((_, d) => d !== dim);
   },
+  int64: true,
   forward: ([input], attrs) => {
-    const out = new Tensor(selected(input.shape, attrs).shape);
-    forEachIndex(out.shape, (index, offset) => {
-      out.data[offset] = input.get(selectSource(input.shape, attrs, index));
-    });
-    return out;
+    const shape = selected(input.shape, attrs).shape;
+    const offsets: number[] = [];
+    forEachIndex(shape, (index) => offsets.push(offsetOf(input.shape, selectSource(input.shape, attrs, index))));
+    if (input.int64 !== undefined) return Tensor.fromInt64(shape, offsets.map((o) => input.exact(o)));
+    return new Tensor(shape, offsets.map((o) => input.data[o]));
   },
   backward: (gradOut, [input], _out, attrs) => {
     const grad = new Tensor(input.shape);
@@ -327,34 +329,48 @@ function convShape(input: readonly number[], weight: readonly number[]): number[
   return [...input];
 }
 
-export function convTaps(T: number, K: number, t: number): { s: number; j: number }[] {
+export interface ConvAttrs {
+  dilation: number;
+}
+
+export function convTaps(T: number, K: number, t: number, dilation = 1): { s: number; j: number }[] {
   const taps: { s: number; j: number }[] = [];
   for (let j = 0; j < K; j++) {
-    const s = t - K + 1 + j;
+    const s = t - (K - 1 - j) * dilation;
     if (s >= 0 && s < T) taps.push({ s, j });
   }
   return taps;
 }
 
-export const causalConv1dOp: OpDef<Record<string, never>> = {
+function checkDilation(attrs: ConvAttrs): number {
+  if (!Number.isInteger(attrs.dilation) || attrs.dilation < 1) throw new Error(`causal_conv1d: dilation ${attrs.dilation} must be a positive integer`);
+  return attrs.dilation;
+}
+
+export const causalConv1dOp: OpDef<ConvAttrs> = {
   name: 'causal_conv1d',
   args: ['input', 'weight'],
   tensors: ['input', 'weight'],
-  shape: ([input, weight]) => convShape(input, weight),
-  forward: ([input, weight]) => {
+  sizes: ['dilation'],
+  defaults: { dilation: 1 },
+  shape: ([input, weight], attrs) => {
+    checkDilation(attrs);
+    return convShape(input, weight);
+  },
+  forward: ([input, weight], attrs) => {
     const [T, C] = convShape(input.shape, weight.shape);
     const K = weight.shape[1];
     const out = new Tensor([T, C]);
     for (let t = 0; t < T; t++) {
       for (let c = 0; c < C; c++) {
         let total = 0;
-        for (const { s, j } of convTaps(T, K, t)) total += weight.data[c * K + j] * input.data[s * C + c];
+        for (const { s, j } of convTaps(T, K, t, attrs.dilation)) total += weight.data[c * K + j] * input.data[s * C + c];
         out.data[t * C + c] = total;
       }
     }
     return out;
   },
-  backward: (gradOut, [input, weight]) => {
+  backward: (gradOut, [input, weight], _out, attrs) => {
     const [T, C] = input.shape;
     const K = weight.shape[1];
     const gx = new Tensor(input.shape);
@@ -362,7 +378,7 @@ export const causalConv1dOp: OpDef<Record<string, never>> = {
     for (let t = 0; t < T; t++) {
       for (let c = 0; c < C; c++) {
         const g = gradOut.data[t * C + c];
-        for (const { s, j } of convTaps(T, K, t)) {
+        for (const { s, j } of convTaps(T, K, t, attrs.dilation)) {
           gx.data[s * C + c] += g * weight.data[c * K + j];
           gw.data[c * K + j] += g * input.data[s * C + c];
         }
@@ -722,6 +738,85 @@ export const padOp: OpDef<PadAttrs> = {
     forEachIndex(gradOut.shape, (index, offset) => {
       const source = padSource(input.shape, attrs, index);
       if (source !== undefined) grad.set(source, gradOut.data[offset]);
+    });
+    return [grad];
+  },
+};
+
+export interface RepeatAttrs {
+  sizes: number[];
+}
+
+function repeatedShape(input: readonly number[], attrs: RepeatAttrs): number[] {
+  const { sizes } = attrs;
+  if (sizes.length < input.length || sizes.some((n) => !Number.isInteger(n) || n < 1)) {
+    throw new Error(`repeat: sizes (${sizes.join(', ')}) must be positive integers, at least one per dimension of ${formatShape(input)}`);
+  }
+  const padded = [...Array(sizes.length - input.length).fill(1), ...input];
+  return padded.map((d, i) => d * sizes[i]);
+}
+
+export function repeatSourceIndex(inputShape: readonly number[], out: readonly number[]): number[] {
+  const lead = out.length - inputShape.length;
+  return inputShape.map((d, i) => out[lead + i] % d);
+}
+
+export const repeatOp: OpDef<RepeatAttrs> = {
+  name: 'repeat',
+  args: ['input', 'sizes'],
+  tensors: ['input'],
+  rest: 'sizes',
+  sizes: ['sizes'],
+  shape: ([input], attrs) => repeatedShape(input, attrs),
+  forward: ([input], attrs) => {
+    const out = new Tensor(repeatedShape(input.shape, attrs));
+    forEachIndex(out.shape, (index, offset) => {
+      out.data[offset] = input.get(repeatSourceIndex(input.shape, index));
+    });
+    return out;
+  },
+  backward: (gradOut, [input]) => {
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (index, offset) => {
+      grad.data[offsetOf(input.shape, repeatSourceIndex(input.shape, index))] += gradOut.data[offset];
+    });
+    return [grad];
+  },
+};
+
+export interface CummaxAttrs {
+  dim: number;
+}
+
+export function cummaxSources(input: Tensor, attrs: CummaxAttrs): Int32Array {
+  const dim = normDim(attrs.dim, input.ndim);
+  const sources = new Int32Array(input.size);
+  forEachIndex(input.shape, (index, offset) => {
+    if (index[dim] === 0) {
+      sources[offset] = offset;
+      return;
+    }
+    const before = [...index];
+    before[dim] -= 1;
+    const previous = sources[offsetOf(input.shape, before)];
+    sources[offset] = input.data[offset] >= input.data[previous] ? offset : previous;
+  });
+  return sources;
+}
+
+export const cummaxOp: OpDef<CummaxAttrs> = {
+  name: 'cummax',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  shape: ([input], attrs) => {
+    normDim(attrs.dim, input.length);
+    return [...input];
+  },
+  forward: ([input], attrs) => new Tensor(input.shape, Array.from(cummaxSources(input, attrs), (o) => input.data[o])),
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    cummaxSources(input, attrs).forEach((source, offset) => {
+      grad.data[source] += gradOut.data[offset];
     });
     return [grad];
   },

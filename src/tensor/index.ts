@@ -1,4 +1,4 @@
-export { Tensor, inferShape, type Nested } from './tensor';
+export { EXACT_LIMIT, Tensor, exactInteger, inferShape, type Nested } from './tensor';
 export {
   type Shape,
   numel,

@@ -121,6 +121,8 @@ modules:
     params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, rd: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim }, theta: { type: float, default: 1e7 } }
     inputs: { x: { shape: [T, d] } }
     outputs: [x_out]
+    buffers:
+      M: { value: causal_mask(T) }
     fold:
       label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
       title: full_attention 层（已折叠）
@@ -144,7 +146,7 @@ modules:
       - self_attn:
           use: GatedAttention
           params: { H: H, Hkv: Hkv, dh: dh, rd: rd, theta: theta }
-          inputs: { x: n1 }
+          inputs: { x: n1, mask: M }
           outputs: { att: att }
           tex: { att: '\mathbf{att}_{2}' }
       - a: { op: x + att, tex: '\mathbf{a}_{2}' }

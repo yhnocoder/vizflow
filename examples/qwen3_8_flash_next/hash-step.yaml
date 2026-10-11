@@ -1,0 +1,35 @@
+module: NGramHashStep
+subtitle: 'bitwise_xor(mixed_ids, shifted_tokens[position] * layer_multipliers[position])'
+params:
+  g: { type: int }
+  i: { type: int }
+inputs:
+  acc: { shape: [L] }
+  tok: { shape: [L] }
+  m:   { shape: [N] }
+outputs: [out]
+body:
+  - mi: { op: 'select(m, 0, i)', tex: 'm_{\of{i}}' }
+  - prod: { op: tok * mi, tex: '\of{tok}\,m_{\of{i}}' }
+  - out: { op: 'bitwise_xor(acc, prod)', tex: '\of{acc}\oplus\of{tok}\,m_{\of{i}}' }
+steps:
+  - id: multiply
+    show: [mi, prod]
+    label: '$\of{tok}\,m_{\of{i}}$'
+    title: $\of{g}$-gram：往前第 $\of{i}$ 个 token 乘第 $\of{i}$ 个乘数
+    text: |
+      <code>shifted_tokens[position] * self.layer_multipliers[position]</code>，position $=\of{i}$：右移 \of{i} 位的 token 序列逐个乘上 $m_{\of{i}}$。这是 int64 乘法，溢出时按 $2^{64}$ 回绕；乘数不超过 $(2^{63}-1)/V$，token id 小于 $V$ 时不会溢出。
+      $$\of{prod}={{ prod | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度
+  - id: xor
+    show: out
+    label: '$\oplus$'
+    title: $\of{g}$-gram：按位异或进哈希值
+    text: |
+      <code>torch.bitwise_xor(mixed_ids, ...)</code>：把这一项按位异或进前面累积的哈希值。结果同样超过 $2^{53}$，按 int64 精确计算。
+      $$\of{out}={{ out | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 整数运算，没有梯度

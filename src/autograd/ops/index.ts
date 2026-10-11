@@ -25,10 +25,19 @@ import {
   greaterOp,
   maskedFillOp,
   triuOp,
+  remainderOp,
+  bitwiseXorOp,
+  bitwiseAndOp,
+  eqOp,
+  geOp,
+  absOp,
+  signOp,
+  clampMinOp,
 } from './elementwise';
 import {
   catOp,
   causalConv1dOp,
+  cummaxOp,
   embeddingOp,
   gatherOp,
   indexAddOp,
@@ -39,6 +48,7 @@ import {
   padOp,
   permuteOp,
   repeatInterleaveOp,
+  repeatOp,
   selectOp,
   topkIndicesOp,
   topkMaskOp,
@@ -67,6 +77,10 @@ export interface NllLossOptions extends OpOptions {
 
 export interface RsqrtOptions extends OpOptions {
   eps?: number;
+}
+
+export interface ConvOptions extends OpOptions {
+  dilation?: number | string;
 }
 
 export interface CatOptions extends OpOptions {
@@ -124,7 +138,18 @@ export interface BuiltinOps {
   select(input: Node, dim: number, index: number, options?: OpOptions): Node;
   select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
-  causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
+  causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
+  remainder(input: Node, other: Node | number, options?: OpOptions): Node;
+  bitwise_xor(input: Node, other: Node | number, options?: OpOptions): Node;
+  bitwise_and(input: Node, other: Node | number, options?: OpOptions): Node;
+  eq(input: Node, other: Node | number, options?: OpOptions): Node;
+  ge(input: Node, other: Node | number, options?: OpOptions): Node;
+  abs(input: Node, options?: OpOptions): Node;
+  sign(input: Node, options?: OpOptions): Node;
+  clamp_min(input: Node, min: number, options?: OpOptions): Node;
+  repeat(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
+  repeat(input: Node, ...sizes: (number | string)[]): Node;
+  cummax(input: Node, dim: number, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
   greater(input: Node, other: Node | number, options?: OpOptions): Node;
@@ -198,6 +223,16 @@ export const builtinOps: readonly AnyOpDef[] = [
   triuOp,
   maskedFillOp,
   solveTriangularOp,
+  remainderOp,
+  bitwiseXorOp,
+  bitwiseAndOp,
+  eqOp,
+  geOp,
+  absOp,
+  signOp,
+  clampMinOp,
+  repeatOp,
+  cummaxOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

@@ -354,6 +354,41 @@ const cases: Case[] = [
       const A = g.input('A', [3, 3], randomValues(r, [3, 3], true));
       const B = g.input('B', [3, 2], randomValues(r, [3, 2]));
       return { out: g.solve_triangular(A, B, { upper: true }), inputs: [A, B] };
+      },
+    },
+  { op: 'remainder', build: (g, r) => binary(g, r, 'remainder', [2, 3], [3], true) },
+  { op: 'remainder', build: (g, r) => scalar(g, r, 'remainder', 0.7) },
+  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge'] as const).map((op) => ({
+    op,
+    build: (g: Graph) => {
+      const a = g.label('a', [[3, 1, 2], [0, 5, 4]]);
+      const b = g.label('b', [2, 1, 6]);
+      return { out: (g as unknown as Record<string, (...args: unknown[]) => Node>)[op](a, b), inputs: [] };
+    },
+  })),
+  { op: 'abs', build: (g, r) => unary(g, r, 'abs', [2, 3]) },
+  { op: 'sign', build: (g, r) => unary(g, r, 'sign', [2, 3]) },
+  { op: 'clamp_min', build: (g, r) => scalar(g, r, 'clamp_min', 0.3) },
+  {
+    op: 'repeat',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.repeat(x, 2, 1, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'cummax',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.cummax(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'causal_conv1d',
+    build: (g, r) => {
+      const x = g.input('x', [7, 2], randomValues(r, [7, 2]));
+      const w = g.input('w', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.causal_conv1d(x, w, { dilation: 2 }), inputs: [x, w] };
     },
   },
 ];

@@ -153,15 +153,6 @@ export const transposeExplain: OpExplain = {
   },
 };
 
-export const greaterExplain: OpExplain = {
-  pattern: 'elementwise',
-  local: () => 0,
-  tex: {
-    forward: (s) => `${s.in[0]}>${s.in[1] ?? scalarTex(s.attrs)}`,
-    local: () => '0',
-  },
-};
-
 export const whereExplain: OpExplain = {
   pattern: 'elementwise',
   local: (ctx, out, arg) => (arg === 1 && operand(ctx, 0, out) !== 0 ? 1 : 0),
@@ -191,5 +182,27 @@ export const maskedFillExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{masked\\_fill}(${s.in[0]},${s.in[1]},${valueTex(s.attrs)})`,
     local: (s) => (s.arg === 0 && operand(s.ctx, 1, s.outIndex) === 0 ? '1' : '0'),
+  },
+};
+
+export const remainderExplain = binary(
+  (a, b) => `${a}\\bmod ${b}`,
+  (a, b, arg) => (arg === 0 ? 1 : -Math.floor(a / b)),
+  (a, b, arg) => (arg === 0 ? '1' : `-\\left\\lfloor ${a}/${b}\\right\\rfloor`),
+);
+export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
+export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
+export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
+export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
+export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');
+export const absExplain = unary((a) => `\\lvert ${a}\\rvert`, (x) => Math.sign(x), (x) => `\\operatorname{sign}(${x})`);
+export const signExplain = unary((a) => `\\operatorname{sign}(${a})`, () => 0, () => '0');
+const minOf = (attrs: object) => (attrs as { min: number }).min;
+export const clampMinExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, _out, _arg, input) => (ctx.inputs[0].get(input) > minOf(ctx.attrs) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\max(${s.in[0]},${formatNumber(minOf(s.attrs), { tex: true })})`,
+    local: (s) => `\\mathbf{1}[${s.in}>${formatNumber(minOf(s.attrs), { tex: true })}]`,
   },
 };

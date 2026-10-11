@@ -1,0 +1,227 @@
+module: PLELayer
+subtitle: Qwen4ExpTextPLELayer
+import:
+  NGramEmbedding: ./ngram-embedding.yaml
+  GroupedRMSNorm: ./grouped-rmsnorm.yaml
+params:
+  hc:  { type: dim }
+  N:   { type: int }
+  hpn: { type: dim }
+  eos: { type: int }
+  Vng: { type: dim }
+  dng: { type: dim }
+  K:   { type: dim }
+inputs:
+  H:   { shape: [T, n] }
+  ids: { shape: [T] }
+outputs: [out]
+weights:
+  Wkey:  { shape: [n, (N - 1) * hpn * dng], tex: 'W_{key}' }
+  Wval:  { shape: [n // hc, (N - 1) * hpn * dng], tex: 'W_{val}' }
+  Wconv: { shape: [n, K], tex: 'W_{\mathrm{conv}}^{p}' }
+body:
+  - ple_embedding:
+      use: NGramEmbedding
+      params: { N: N, hpn: hpn, eos: eos, Vng: Vng, dng: dng }
+      inputs: { ids: ids }
+      outputs: { out: e }
+      tex: { out: '\mathbf{e}^{ng}' }
+  - kp: { op: e @ Wkey.T, tex: 'K^{p}' }
+  - norm_key:
+      use: GroupedRMSNorm
+      params: { g: n // hc, intro: '<code>key_normed = self.norm_key(self.key_proj(embeddings))</code>。' }
+      inputs: { x: kp }
+      outputs: { out: kn }
+      tex: { out: '\hat{K}^{p}', weight: '\boldsymbol{\gamma}_{key}' }
+  - val: { op: e @ Wval.T, tex: '\mathbf{v}^{p}' }
+  - norm_query:
+      use: GroupedRMSNorm
+      params: { g: n // hc, intro: '<code>query_normed = self.norm_query(hidden_states)</code>：查询来自当前的残差流 $H$。' }
+      inputs: { x: H }
+      outputs: { out: qn }
+      tex: { out: '\hat{Q}^{p}', weight: '\boldsymbol{\gamma}_{query}' }
+  - kn3: { op: 'view(kn, T, hc, n // hc)', tex: '\hat{K}^{p,(k)}' }
+  - qn3: { op: 'view(qn, T, hc, n // hc)', tex: '\hat{Q}^{p,(k)}' }
+  - kq: { op: kn3 * qn3, tex: '\hat{K}^{p,(k)}\odot\hat{Q}^{p,(k)}' }
+  - dot: { op: 'sum(kq, -1, keepdim=true)', tex: '\mathbf{s}' }
+  - gate: { op: dot / (n // hc) ** 0.5, tex: '\mathbf{g}^{p}' }
+  - gabs: { op: abs(gate), tex: '\lvert\mathbf{g}^{p}\rvert' }
+  - gclamp: { op: 'clamp_min(gabs, 1e-6)', tex: '\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})' }
+  - groot: { op: sqrt(gclamp), tex: '\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}' }
+  - gsign: { op: sign(gate), tex: '\operatorname{sign}(\mathbf{g}^{p})' }
+  - gs: { op: groot * gsign, tex: '\tilde{\mathbf{g}}^{p}' }
+  - gsig: { op: sigmoid(gs), tex: '\sigma(\tilde{\mathbf{g}}^{p})' }
+  - val3: { op: 'view(val, T, 1, n // hc)', tex: '\operatorname{unsqueeze}(\mathbf{v}^{p})' }
+  - gv3: { op: gsig * val3, tex: '\sigma(\tilde{\mathbf{g}}^{p})\odot\mathbf{v}^{p}' }
+  - gv: { op: 'view(gv3, T, n)', tex: '\mathbf{u}^{p}' }
+  - norm_conv:
+      use: GroupedRMSNorm
+      params: { g: n // hc, intro: '<code>gated_value_normed = self.norm_conv(gated_value.flatten(-2))</code>：卷积的输入先按流归一化。' }
+      inputs: { x: gv }
+      outputs: { out: un }
+      tex: { out: '\hat{\mathbf{u}}^{p}', weight: '\boldsymbol{\gamma}_{conv}' }
+  - conv: { op: 'causal_conv1d(un, Wconv, dilation=N)', tex: '\mathbf{c}^{p}' }
+  - cs: { op: silu(conv), tex: '\operatorname{SiLU}(\mathbf{c}^{p})' }
+  - out: { op: gv + cs, tex: '\mathbf{ple}' }
+steps:
+  - id: key
+    show: [Wkey.T, kp]
+    brace: { title: key_proj, subtitle: 'nn.Linear，$\of{(N-1)*hpn*dng}\to\of{n}$' }
+    label: '$\of{kp}$'
+    title: key_proj：每条流一个 key
+    text: |
+      <code>self.key_proj(embeddings)</code>：n-gram 嵌入投影到 $\of{n}$ 维，也就是 $\of{hc}$ 条流各一个宽 $\of{n//hc}$ 的 key，没有 bias。
+      $$\of{kp}={{ kp | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{key},\ \partial\mathbf{e}^{ng}$'
+      title: 传到 $W_{key}$ 和 n-gram 嵌入
+      text: |
+        $$\frac{\partial\ell}{\partial W_{key}}={{ Wkey.grad | matrix:3 }}$$
+  - id: value
+    show: [Wval.T, val]
+    brace: { title: value_proj, subtitle: 'nn.Linear，$\of{(N-1)*hpn*dng}\to\of{n//hc}$' }
+    label: '$\of{val}$'
+    title: value_proj：所有流共用一个 value
+    text: |
+      <code>value = self.value_proj(embeddings)</code>：同一个 n-gram 嵌入再投影到 $d=\of{n//hc}$ 维，得到一个 value，后面每条流按自己的门取用它。
+      $$\of{val}={{ val | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{val},\ \partial\mathbf{e}^{ng}$'
+      title: 传到 $W_{val}$ 和 n-gram 嵌入
+      text: |
+        $$\frac{\partial\ell}{\partial W_{val}}={{ Wval.grad | matrix:3 }}$$
+  - id: unflatten
+    show: [kn3, qn3]
+    label: '$\mathrm{unflatten}$'
+    title: key 和 query 按流拆开
+    text: |
+      <code>.unflatten(-1, (self.hc_count, self.hidden_size))</code>：$\hat{K}^{p}$ 和 $\hat{Q}^{p}$ 都从 $(T, \of{n})$ 变成 $(T, \of{hc}, \of{n//hc})$。
+      $$\hat{Q}^{p,(k)}={{ qn3 | matrix:3 }}$$
+    backward:
+      label: '$\partial\hat{K}^{p},\ \partial\hat{Q}^{p}$'
+      title: 拼回一行
+  - id: product
+    show: kq
+    label: '$\of{kq}$'
+    title: key 和 query 逐元素相乘
+    text: |
+      <code>key_normed * query_normed</code>：每条流的 key 和这条流的 query 逐元素相乘。
+      $$\of{kq}={{ kq | matrix:3 }}$$
+    backward:
+      label: '$\partial\hat{K}^{p,(k)},\ \partial\hat{Q}^{p,(k)}$'
+      title: 传到 key 和 query
+  - id: dot
+    show: dot
+    label: '$\of{dot}$'
+    title: 每条流求和得到点积
+    text: |
+      <code>.sum(dim=-1, keepdim=True)</code>：每个位置、每条流得到一个点积，形状 $(T, \of{hc}, 1)$。
+      $$\mathbf{s}={{ dot | matrix:3 }}$$
+    backward:
+      label: '$\partial(\hat{K}^{p,(k)}\odot\hat{Q}^{p,(k)})$'
+      title: 求和的反向：复制到每一维
+  - id: scale
+    show: gate
+    label: '$\of{gate}=\of{dot}/\sqrt{d}$'
+    title: 除以 $\sqrt{d}$
+    text: |
+      <code>... / math.sqrt(self.hidden_size)</code>，$d=\of{n//hc}$。
+      $$\mathbf{g}^{p}={{ gate | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{s}$'
+      title: 穿过除法
+  - id: magnitude
+    show: [gabs, gclamp, groot]
+    label: '$\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}$'
+    title: 绝对值、下限、开方
+    text: |
+      <code>gate.abs().clamp_min(1e-6).sqrt()</code>：取绝对值，小于 $10^{-6}$ 的抬到 $10^{-6}$，再开平方。开方把大的点积压小，下限避免在 0 附近开方时导数变成无穷大。
+      $$\sqrt{\max(\lvert\mathbf{g}^{p}\rvert,10^{-6})}={{ groot | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{g}^{p}$'
+      title: 穿过开方、下限和绝对值
+      text: |
+        开方的局部导数是 $\frac{1}{2\sqrt{x}}$；clamp_min 在 $\lvert g\rvert\le10^{-6}$ 的地方导数是 0，其余是 1；绝对值的导数是 $\operatorname{sign}(g)$。
+        $$\frac{\partial\ell}{\partial\lvert\mathbf{g}^{p}\rvert}={{ gabs.grad | matrix:3 }}$$
+  - id: sign
+    show: [gsign, gs]
+    label: '$\of{gs}$'
+    title: 乘回符号
+    text: |
+      <code>... * gate.sign()</code>：开方后的大小乘回原来的符号，得到保号的平方根 $\tilde{g}=\operatorname{sign}(g)\sqrt{\lvert g\rvert}$。
+      $$\tilde{\mathbf{g}}^{p}={{ gs | matrix:3 }}$$
+    backward:
+      label: '$\partial\sqrt{\cdot}$'
+      title: 穿过乘符号
+      text: $\operatorname{sign}$ 的导数处处是 0，梯度只沿开方那一路传回。
+  - id: sigmoid
+    show: gsig
+    label: '$\sigma(\tilde{\mathbf{g}}^{p})$'
+    title: sigmoid
+    text: |
+      <code>torch.sigmoid(gate)</code>：每个位置、每条流一个 0 到 1 之间的门。
+      $$\sigma(\tilde{\mathbf{g}}^{p})={{ gsig | matrix:3 }}$$
+    backward:
+      label: '$\partial\tilde{\mathbf{g}}^{p}$'
+      title: 穿过 sigmoid
+  - id: gated
+    show: [val3, gv3]
+    label: '$\of{gv3}$'
+    title: 门乘 value
+    text: |
+      <code>torch.sigmoid(gate) * value.unsqueeze(-2)</code>：value 在流的维度上广播，每条流得到按自己的门缩放的一份 value，形状 $(T, \of{hc}, \of{n//hc})$。
+      $$\of{gv3}={{ gv3 | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma(\tilde{\mathbf{g}}^{p}),\ \partial\mathbf{v}^{p}$'
+      title: 传到门和 value
+      text: |
+        value 被 $\of{hc}$ 条流共用，它的梯度是各条流的梯度之和。
+        $$\frac{\partial\ell}{\partial\mathbf{v}^{p}}={{ val.grad | matrix:3 }}$$
+  - id: flatten
+    show: gv
+    label: '$\of{gv}$'
+    title: 各条流拼成一行
+    text: |
+      <code>gated_value.flatten(-2)</code>：拼回宽 $\of{n}$ 的一行。HF 在这里调用两次 flatten，一次给 norm_conv，一次留给最后的相加，两次的结果相同，图里画成一个节点。
+      $$\mathbf{u}^{p}={{ gv | matrix:2 }}$$
+    backward:
+      label: '$\partial(\sigma(\tilde{\mathbf{g}}^{p})\odot\mathbf{v}^{p})$'
+      title: 切回各条流
+      text: |
+        这个节点有两个去处，梯度是两路之和。
+        $$\frac{\partial\ell}{\partial\mathbf{u}^{p}}={{ gv.grad | matrix:3 }}$$
+  - id: conv
+    show: [Wconv, conv]
+    brace: { title: conv1d, subtitle: 'depthwise，kernel \of{K}，dilation \of{N}' }
+    label: '$\of{conv}$'
+    title: 带间隔的因果卷积
+    text: |
+      <code>F.pad(hidden_states, (self.short_conv_state_len, 0))</code>，<code>self.conv1d(...)</code>：每个通道单独卷积，核长 $\of{K}$，dilation 是 ngram_size $=\of{N}$，左边补 $(\of{K}-1)\cdot\of{N}=\of{(K-1)*N}$ 个 0。位置 $t$ 的输出是 $\sum_{j}W_{c,j}\,\hat{u}_{t-(\of{K}-1-j)\cdot\of{N},c}$，取的是 $t$、$t-\of{N}$、$t-\of{2*N}$、$\ldots$ 这些位置，往前隔开一个 n-gram 的长度。这一页的序列只有 $T$ 个位置，往前越过开头的项都是补的 0。没有 bias。
+      $$\mathbf{c}^{p}={{ conv | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{conv}},\ \partial\hat{\mathbf{u}}^{p}$'
+      title: 传到卷积核和卷积的输入
+      text: |
+        $$\frac{\partial\ell}{\partial W_{\mathrm{conv}}}={{ Wconv.grad | matrix:3 }}$$
+  - id: act
+    show: cs
+    label: '$\operatorname{SiLU}$'
+    title: SiLU
+    text: |
+      <code>F.silu(self.conv1d(hidden_states))</code>。
+      $$\operatorname{SiLU}(\mathbf{c}^{p})={{ cs | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{c}^{p}$'
+      title: 穿过 SiLU
+  - id: add
+    show: out
+    label: '$\of{out}=\mathbf{u}^{p}+\operatorname{SiLU}(\mathbf{c}^{p})$'
+    title: 门控的 value 加上卷积
+    text: |
+      <code>output = gated_value + self._short_conv(gated_value_normed, past_key_values)</code>：PLE 的输出宽 $\of{n}$，和残差流 $H$ 一样宽。
+      $$\mathbf{ple}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{u}^{p},\ \partial\operatorname{SiLU}(\mathbf{c}^{p})$'
+      title: 穿过相加
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{ple}}={{ out.grad | matrix:3 }}$$

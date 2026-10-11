@@ -4,18 +4,20 @@ import type { Num } from './types';
 export const BUFFER_FUNCTIONS: Record<string, (args: Num[]) => { shape: Num[]; values: Nested }> = {
   rope_cos: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.cos) }),
   rope_sin: ([T, dh, theta]) => ({ shape: [T, dh], values: ropeTable(T.toy, dh.toy, theta.toy, Math.sin) }),
-  zeros: (shape) => ({ shape, values: filledWith(shape.map((n) => n.toy), 0) }),
-  ones: (shape) => ({ shape, values: filledWith(shape.map((n) => n.toy), 1) }),
+  zeros: (shape) => ({ shape, values: fullOf(shape.map((n) => n.toy), 0) }),
+  ones: (shape) => ({ shape, values: fullOf(shape.map((n) => n.toy), 1) }),
+  full: (args) => ({ shape: args.slice(0, -1), values: fullOf(args.slice(0, -1).map((n) => n.toy), args[args.length - 1].toy) }),
+  arange: ([n]) => ({ shape: [n], values: [...Array(n.toy).keys()] }),
   causal_mask: ([T]) => ({
     shape: [T, T],
     values: [...Array(T.toy).keys()].map((t) => [...Array(T.toy).keys()].map((s) => (s > t ? -Infinity : 0))),
   }),
 };
 
-export const BUFFER_ARITY: Record<string, number | 'any'> = { rope_cos: 3, rope_sin: 3, zeros: 'any', ones: 'any', causal_mask: 1 };
+export const BUFFER_ARITY: Record<string, number | { min: number }> = { rope_cos: 3, rope_sin: 3, zeros: { min: 1 }, ones: { min: 1 }, full: { min: 2 }, arange: 1, causal_mask: 1 };
 
-function filledWith(shape: number[], value: number): Nested {
-  return shape.length === 0 ? value : Array.from({ length: shape[0] }, () => filledWith(shape.slice(1), value));
+function fullOf(shape: number[], value: number): Nested {
+  return shape.length === 0 ? value : Array.from({ length: shape[0] }, () => fullOf(shape.slice(1), value));
 }
 
 function ropeTable(T: number, dh: number, theta: number, fn: (x: number) => number): number[][] {

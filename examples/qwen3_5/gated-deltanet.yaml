@@ -10,6 +10,7 @@ params:
   dv: { type: dim }
   K:  { type: dim }
   chunk: { type: dim, default: 64 }
+  norm_act: { type: op, values: [silu, sigmoid], default: silu }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -61,6 +62,7 @@ body:
       use: GatedRMSNorm
       subtitle: Qwen3_5RMSNormGated
       suffix: o
+      params: { act: norm_act }
       inputs: { x: core, gate: z }
       outputs: { out: cn }
       tex: { out: '\bar{\mathbf{o}}' }
