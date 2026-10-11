@@ -631,7 +631,7 @@ class Plan implements LevelPlan {
         }
         lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
       }
-      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0])[0].title = 'left';
+      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => (e.title = i === 0 ? 'left' : 'below'));
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
     }
@@ -686,7 +686,11 @@ class Plan implements LevelPlan {
       let value: boolean;
       if (e.copy !== undefined) value = e.copy.consumers.every(hiddenNode);
       else if (this.computed.has(e.node)) value = hiddenNode(e.node);
-      else if (e.node.kind === 'buffer') value = outerFold(e.level.module) !== undefined;
+      else if (e.node.kind === 'buffer') {
+        const fold = outerFold(e.level.module);
+        const leaf = fold !== undefined && !this.stepModules.some((m) => m.parent === fold.id);
+        value = fold !== undefined && !(leaf && this.consumers(e.node).some((u) => this.innermost(u)?.id === fold.id));
+      }
       else value = false;
       hidden.set(e, value);
       return value;

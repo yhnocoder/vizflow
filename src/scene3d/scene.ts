@@ -29,7 +29,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { type Graph, type Node, moduleJacobian } from '../autograd';
 import { type Explainer, type FlowEdge, explain, matmulOperands } from '../explain';
 import { render, renderText } from '../formula';
-import { type StepInfo, type StepModule, type StepState, type Steps, allVisible } from '../steps';
+import { type StepInfo, type StepModule, type StepState, type Steps, allVisible, isLeafLike } from '../steps';
 import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
@@ -525,7 +525,7 @@ class SceneController implements EditHost {
       index: state.index,
       kind: state.kind,
       focus: state.focus,
-      revealed: (node) => state.revealed(node),
+      revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
       active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
     };
   }
@@ -871,7 +871,7 @@ class SceneController implements EditHost {
   private markFar(): void {
     const levels = [...new Set(this.renderables.map((r) => levelKey(r.block.elements[0].y)))].sort((a, b) => a - b);
     const levelOf = (r: Renderable) => levels.indexOf(levelKey(r.block.elements[0].y));
-    const stepLevels = this.renderables.filter((r) => r.block.copyOf === undefined && r.block.node.kind === 'op' && this.state.active(r.block.node)).map(levelOf);
+    const stepLevels = this.renderables.filter((r) => r.block.copyOf === undefined && !isLeafLike(r.block.node) && this.state.active(r.block.node)).map(levelOf);
     const enabled = this.follow && this.farOn && !this.lod && stepLevels.length > 0;
     for (const r of this.renderables) {
       const level = levelOf(r);
@@ -917,7 +917,7 @@ class SceneController implements EditHost {
       renderable.transition.retarget(heights, now);
       const focusedRow = (row: number) => !block.batched || row === this.state.focus;
       const front = Math.max(...block.elements.map((e) => e.z));
-      const stepped = block.copyOf === undefined ? this.stepNodes.has(node) : active && !this.stepNodes.has(node) && dir === 'forward';
+      const stepped = block.copyOf === undefined || backward ? this.stepNodes.has(node) : active && !this.stepNodes.has(node);
       const showValues = revealed && stepped && block.quiet !== true && !this.lod && (!this.follow || zoom >= VALUE_MIN_ZOOM);
       const named = revealed && !this.lod && !far;
       const title = renderable.title!;

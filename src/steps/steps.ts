@@ -224,7 +224,7 @@ class StepsImpl implements Steps {
         const show = toList(step.show);
         const computed = show.filter((n) => !isLeafLike(n));
         const prod = computed.length > 0 ? computed : show;
-        const use = usesOf(prod);
+        const use = usesOf(prod).filter((n) => !prod.includes(n));
         this.units.push({ index, step, prod, use, active: step.active === undefined ? unique([...prod, ...use]) : toList(step.active) });
       });
       this.rebuild();
