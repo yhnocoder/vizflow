@@ -243,6 +243,24 @@ panels:
 - 标签、标题和正文里的数学符号一律写成 LaTeX，例如 `label: '$\partial\of{x}$'`，不用 unicode 的数学字符。模块的步骤标签和反向标签用 `\of{...}` 引用节点，这样实例自动加的下标会出现在标签里。
 - 模块可以在顶层写 `fold: { label, title, text, backward: { label, title, text } }`，作为这个模块折叠后那一步的默认文字；实例的 `fold` 只需写不同的字段，没写的字段用模块的默认值。模块步骤的 `backward: { label, title, text }` 是对应反向步骤的默认文字，实例的步骤补丁可以只改其中几项。
 - 步骤写在模块和页面的 `steps` 里：`{ id, show, label, title, text }`，放在 `show` 里最早建出的节点之后。没被任何步骤显示的节点自动成一步。使用处的 `steps: { 'q_norm[1].square': { append: ... } }` 改写子模块的步骤。反向步骤自动生成，`backward: { 名字: { title, text } }` 改写某个节点所在的那一步。
+- 步骤、步骤补丁和 `overview` 可以写 `notes`，在场景里加作者的注释：一段文字和一条指向目标的手绘箭头，只在这一步显示。`at` 是张量名、张量的一个元素（下标从 0 开始，个数等于张量的维数）或模块实例名，`text` 是注释文字，可以有 `$...$` 公式和 `\of{...}`，`side` 是 `left`、`right`、`above`、`below` 之一，不写时库按空位选一边。目标不存在或下标越界时编译报错。
+
+  ```yaml
+  steps:
+    mask:
+      notes:
+        - at: 'M[0,2]'
+          side: left
+          text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'
+  ```
+
+- 模块、实例和 group 可以写 `formula`，给出这个模块的公式。公式按 LaTeX 写，`\step{步骤 id}{...}` 标出由哪一步算出的部分：前向走到这一步之前这一部分不显示，走到这一步时显示并用正色标出，之后保持显示；反向时整条公式都显示，当前反向步骤对应的部分用负色标出。步骤 id 写法与步骤补丁相同，子模块的步骤写 `子实例.id`，`子实例.*` 表示子实例的全部步骤，几个 id 用逗号隔开。id 不存在时编译报错并列出这个模块的步骤。公式显示在场景左下角当前步骤框的上方，取当前步骤所在的最内层有公式的模块，模块标题用小字写在公式上方；总览和输入步骤不显示。`rmsnorm`、`rope`、`glu`、`gqa` 自带公式，实例的 `formula` 覆盖模块的。inline 实例没有自己的模块，它的 `formula` 必须和 `brace` 一起写，标题取 `brace` 的标题。
+
+  ```yaml
+  module: RMSNorm
+  formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\operatorname{mean}\big(\step{square}{{\of{x}}^{2}}\big)+\epsilon}}'
+  ```
+
 - 正文里 `{{ r | matrix:3 }}`、`{{ a.grad | matrix }}` 展开成整个矩阵，其余 `{{...}}` 与第 4 节的模板相同，名字按作用域查找。
 - 3D 布局由库按 body 的结构自动排布，页面不写布局。
 

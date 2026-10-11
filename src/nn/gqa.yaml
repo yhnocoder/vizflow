@@ -1,5 +1,6 @@
 module: GQA
 subtitle: grouped-query attention
+formula: '\step{concat}{\of{o}=\operatorname{concat}_h\big(}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{S}{{\of{q}}_h\step{kT}{{\step{krep}{{\of{k}}_h}}^{\top}}}\step{Ssc}{/\sqrt{d_h}}\step{mask}{+M}\step{exp,sum,div}{\big)}\step{vrep,pv}{{\of{v}}_h}\step{concat}{\big)}'
 inputs:
   q:    { shape: [T, H, dh] }
   k:    { shape: [T, Hkv, dh] }

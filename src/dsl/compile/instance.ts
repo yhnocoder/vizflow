@@ -3,6 +3,7 @@ import type { LayoutEntry, LayoutTree } from '../../scene3d';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { compileBody } from './body';
+import { registerFormula } from './formula';
 import { declareBuffers, declareParams, declareWeights, define, marked, matchShape } from './declare';
 import { INSTANCE_KEYS, MODULE_ITEM_KEYS, MODULE_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
@@ -97,11 +98,16 @@ export function compileInstance(
     if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
   }
   const steps = moduleSteps(c, scope, decl, childEnv, slots);
+  const formulaSources = [{ decl, env: childEnv }, { decl: use, env }];
   if (use.brace !== undefined) {
     if (!inline) fail(child(env.where, use, 'brace'), 'only an inline instance takes brace; a module with a box has its own brace');
     const brace = braceOf(c, use.brace, { ...env, where: child(env.where, use, 'brace') });
+    registerFormula(c, scope.path, formulaSources, brace);
     for (const rec of steps) rec.step.brace ??= brace;
+  } else if (inline && use.formula !== undefined) {
+    fail(child(env.where, use, 'formula'), 'an inline instance has no module of its own, so its formula needs a brace to name it');
   }
+  if (rec !== undefined) registerFormula(c, scope.path, formulaSources, rec);
   moduleBackward(c, decl, childEnv);
   for (const [output, target, at] of bindings) define(c, parent, target, scope.entries.get(output) as Node, { ...env, where: at });
   c.pendingPatches[c.pendingPatches.length - 1].push(() => patchSteps(c, scope, steps, use, env));

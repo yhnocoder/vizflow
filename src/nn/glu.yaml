@@ -1,5 +1,6 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
+formula: '\step{down}{\of{down}=\big(}\step{act}{\of{act}\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{act}{\big)}\step{gate}{\odot}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
 params:
   act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
   f:    { type: dim }
