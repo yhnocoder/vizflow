@@ -1,5 +1,6 @@
 import { Tensor, formatShape } from '../../tensor';
 import type { OpDef } from '../op';
+import { exponentOf } from '../rounding';
 
 type NoAttrs = Record<string, never>;
 
@@ -156,5 +157,125 @@ export const groupedMmOp: OpDef<NoAttrs> = {
       }
     }
     return [gx, gw, null];
+  },
+};
+
+export const TC_ACC_BITS = 14;
+
+export type ScaledMmAccum = 'fp32' | 'tc' | 'no_promote';
+
+const ACCUMS: readonly ScaledMmAccum[] = ['fp32', 'tc', 'no_promote'];
+
+export interface ScaledMmAttrs {
+  block_k: number;
+  block_n: number;
+  accum: ScaledMmAccum;
+}
+
+function scaledMmShape(a: readonly number[], sfa: readonly number[], b: readonly number[], sfb: readonly number[], attrs: ScaledMmAttrs): number[] {
+  if (!ACCUMS.includes(attrs.accum)) throw new Error(`scaled_mm: accum must be one of 'fp32', 'tc', 'no_promote', got ${JSON.stringify(attrs.accum)}`);
+  for (const key of ['block_k', 'block_n'] as const) {
+    if (!Number.isInteger(attrs[key]) || attrs[key] < 1) throw new Error(`scaled_mm: ${key} ${attrs[key]} must be a positive integer`);
+  }
+  if (a.length !== 2 || b.length !== 2 || a[1] !== b[1]) throw new Error(`scaled_mm: a ${formatShape(a)} must be (M, K) and b ${formatShape(b)} must be (N, K)`);
+  const [M, K] = a;
+  const N = b[0];
+  const kBlocks = Math.ceil(K / attrs.block_k);
+  const sfaShape = [M, kBlocks];
+  const sfbShape = [Math.ceil(N / attrs.block_n), kBlocks];
+  if (formatShape(sfa) !== formatShape(sfaShape)) {
+    throw new Error(`scaled_mm: sfa ${formatShape(sfa)} must be (M, ceil(K / block_k)) = ${formatShape(sfaShape)} for a ${formatShape(a)} and block_k ${attrs.block_k}`);
+  }
+  if (formatShape(sfb) !== formatShape(sfbShape)) {
+    throw new Error(
+      `scaled_mm: sfb ${formatShape(sfb)} must be (ceil(N / block_n), ceil(K / block_k)) = ${formatShape(sfbShape)} for b ${formatShape(b)}, block_n ${attrs.block_n} and block_k ${attrs.block_k}`,
+    );
+  }
+  return [M, N];
+}
+
+export function blockRange(K: number, j: number, blockK: number): [number, number] {
+  return [j * blockK, Math.min(K, (j + 1) * blockK)];
+}
+
+export function blockDot(a: Tensor, b: Tensor, m: number, n: number, j: number, blockK: number): number {
+  const K = a.shape[1];
+  const [start, end] = blockRange(K, j, blockK);
+  let s = 0;
+  for (let k = start; k < end; k++) s += a.data[m * K + k] * b.data[n * K + k];
+  return s;
+}
+
+export function tcAccumulate(acc: number, terms: readonly number[]): number {
+  let top = acc === 0 ? -Infinity : exponentOf(Math.abs(acc));
+  for (const t of terms) if (t !== 0) top = Math.max(top, exponentOf(Math.abs(t)));
+  if (top === -Infinity) return acc;
+  const quantum = 2 ** (top - TC_ACC_BITS + 1);
+  let s = acc;
+  for (const t of terms) s += Math.trunc(t / quantum) * quantum;
+  return Math.fround(s);
+}
+
+export const scaledMmOp: OpDef<ScaledMmAttrs> = {
+  name: 'scaled_mm',
+  args: ['a', 'sfa', 'b', 'sfb', 'block_k', 'block_n', 'accum'],
+  tensors: ['a', 'sfa', 'b', 'sfb'],
+  sizes: ['block_k', 'block_n'],
+  defaults: { block_k: 128, block_n: 128, accum: 'fp32' },
+  shape: ([a, sfa, b, sfb], attrs) => scaledMmShape(a, sfa, b, sfb, attrs),
+  forward: ([a, sfa, b, sfb], attrs) => {
+    const [M, N] = scaledMmShape(a.shape, sfa.shape, b.shape, sfb.shape, attrs);
+    const K = a.shape[1];
+    const kBlocks = sfa.shape[1];
+    const out = new Tensor([M, N]);
+    for (let m = 0; m < M; m++) {
+      for (let n = 0; n < N; n++) {
+        const nb = Math.floor(n / attrs.block_n);
+        let final = 0;
+        for (let j = 0; j < kBlocks; j++) {
+          const sa = sfa.data[m * kBlocks + j];
+          const sb = sfb.data[nb * kBlocks + j];
+          if (attrs.accum === 'fp32') {
+            final += sa * sb * blockDot(a, b, m, n, j, attrs.block_k);
+            continue;
+          }
+          const scale = Math.fround(sa * sb);
+          const [start, end] = blockRange(K, j, attrs.block_k);
+          const products: number[] = [];
+          for (let k = start; k < end; k++) products.push(a.data[m * K + k] * b.data[n * K + k]);
+          final = attrs.accum === 'tc' ? Math.fround(final + scale * tcAccumulate(0, products)) : tcAccumulate(final, products.map((p) => scale * p));
+        }
+        out.data[m * N + n] = final;
+      }
+    }
+    return out;
+  },
+  backward: (gradOut, [a, sfa, b, sfb], _out, attrs) => {
+    const [M, K] = a.shape;
+    const N = b.shape[0];
+    const kBlocks = sfa.shape[1];
+    const ga = new Tensor(a.shape);
+    const gb = new Tensor(b.shape);
+    const gsfa = new Tensor(sfa.shape);
+    const gsfb = new Tensor(sfb.shape);
+    for (let m = 0; m < M; m++) {
+      for (let n = 0; n < N; n++) {
+        const g = gradOut.data[m * N + n];
+        const nb = Math.floor(n / attrs.block_n);
+        for (let j = 0; j < kBlocks; j++) {
+          const sa = sfa.data[m * kBlocks + j];
+          const sb = sfb.data[nb * kBlocks + j];
+          const [start, end] = blockRange(K, j, attrs.block_k);
+          for (let k = start; k < end; k++) {
+            ga.data[m * K + k] += g * sa * sb * b.data[n * K + k];
+            gb.data[n * K + k] += g * sa * sb * a.data[m * K + k];
+          }
+          const dot = blockDot(a, b, m, n, j, attrs.block_k);
+          gsfa.data[m * kBlocks + j] += g * sb * dot;
+          gsfb.data[nb * kBlocks + j] += g * sa * dot;
+        }
+      }
+    }
+    return [ga, gsfa, gb, gsfb];
   },
 };

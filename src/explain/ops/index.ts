@@ -36,7 +36,7 @@ import {
   viewExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
-import { groupedMmExplain, matmulExplain, selectMatmulExplain } from './matmul';
+import { groupedMmExplain, matmulExplain, scaledMmExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
@@ -81,6 +81,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   route_rows: routeRowsExplain,
   route_experts: routeExpertsExplain,
   grouped_mm: groupedMmExplain,
+  scaled_mm: scaledMmExplain,
   index_add: indexAddExplain,
 };
 

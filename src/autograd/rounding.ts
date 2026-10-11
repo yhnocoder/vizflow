@@ -28,7 +28,7 @@ export const FLOAT_FORMATS = {
 
 export type FloatFormatName = keyof typeof FLOAT_FORMATS;
 
-function exponentOf(a: number): number {
+export function exponentOf(a: number): number {
   let e = Math.floor(Math.log2(a));
   if (2 ** e > a) e--;
   else if (2 ** (e + 1) <= a) e++;

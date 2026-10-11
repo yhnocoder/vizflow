@@ -248,6 +248,16 @@ const cases: Case[] = [
     },
   },
   {
+    op: 'scaled_mm',
+    build: (g, r) => {
+      const a = g.input('a', [3, 5], randomValues(r, [3, 5]));
+      const sfa = g.input('sfa', [3, 3], randomValues(r, [3, 3]));
+      const b = g.input('b', [4, 5], randomValues(r, [4, 5]));
+      const sfb = g.input('sfb', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.scaled_mm(a, sfa, b, sfb, 2, 3), inputs: [a, sfa, b, sfb] };
+    },
+  },
+  {
     op: 'index_add',
     build: (g, r) => {
       const src = g.input('src', [5, 2], randomValues(r, [5, 2]));

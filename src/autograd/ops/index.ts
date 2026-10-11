@@ -25,11 +25,11 @@ import {
 } from './elementwise';
 import { catOp, causalConv1dOp, embeddingOp, gatherOp, indexAddOp, narrowOp, repeatInterleaveOp, routeExpertsOp, routeRowsOp, selectOp, topkMaskOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { groupedMmOp, matmulOp, selectMatmulOp } from './matmul';
+import { type ScaledMmAccum, groupedMmOp, matmulOp, scaledMmOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
-export type { Dim, Reduction };
+export type { Dim, Reduction, ScaledMmAccum };
 
 export interface ReduceOptions extends OpOptions {
   keepdim?: boolean;
@@ -51,6 +51,12 @@ export interface RsqrtOptions extends OpOptions {
 export interface CatOptions extends OpOptions {
   dim?: number;
   pieces?: number | string | null;
+}
+
+export interface ScaledMmOptions extends OpOptions {
+  block_k?: number | string;
+  block_n?: number | string;
+  accum?: ScaledMmAccum;
 }
 
 export interface BuiltinOps {
@@ -95,6 +101,8 @@ export interface BuiltinOps {
   route_rows(sel: Node, k: number | string, options?: OpOptions): Node;
   route_experts(sel: Node, k: number | string, options?: OpOptions): Node;
   grouped_mm(x: Node, w: Node, group: Node, options?: OpOptions): Node;
+  scaled_mm(a: Node, sfa: Node, b: Node, sfb: Node, options?: ScaledMmOptions): Node;
+  scaled_mm(a: Node, sfa: Node, b: Node, sfb: Node, block_k: number | string, block_n: number | string, accum?: ScaledMmAccum, options?: OpOptions): Node;
   index_add(src: Node, index: Node, size: number | string, options?: OpOptions): Node;
 }
 
@@ -139,6 +147,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   routeRowsOp,
   routeExpertsOp,
   groupedMmOp,
+  scaledMmOp,
   indexAddOp,
 ];
 

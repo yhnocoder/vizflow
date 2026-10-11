@@ -585,6 +585,32 @@ def sorted_moe_cases():
     return cases
 
 
+def scaled_mm(a, sfa, b, sfb, block_k, block_n):
+    M, K = a.shape
+    N = b.shape[0]
+    out = torch.zeros(M, N)
+    for j in range(sfa.shape[1]):
+        ks = slice(j * block_k, min(K, (j + 1) * block_k))
+        scale = sfa[:, j : j + 1] * sfb[:, j].repeat_interleave(block_n)[:N].unsqueeze(0)
+        out = out + scale * (a[:, ks] @ b[:, ks].T)
+    return out
+
+
+def scaled_mm_cases():
+    cases = []
+    for (M, N, K), (block_k, block_n) in [((2, 3, 4), (2, 2)), ((3, 5, 7), (3, 2)), ((2, 4, 6), (128, 128))]:
+        k_blocks = -(-K // block_k)
+        n_blocks = -(-N // block_n)
+        tensors = [("input", randn(M, K)), ("input", positive(M, k_blocks)), ("input", randn(N, K)), ("input", positive(n_blocks, k_blocks))]
+        fn = lambda a, sfa, b, sfb, block_k=block_k, block_n=block_n: scaled_mm(a, sfa, b, sfb, block_k, block_n)
+        refs = [tensor_arg(i) for i in range(4)]
+        if (block_k, block_n) == (128, 128):
+            cases.append(op_case("scaled_mm", f"a ({M}, {K}) b ({N}, {K}) default blocks fp32", fn, tensors, refs))
+        else:
+            cases.append(op_case("scaled_mm", f"a ({M}, {K}) b ({N}, {K}) block_k {block_k} block_n {block_n} fp32", fn, tensors, refs + [block_k, block_n, "fp32"]))
+    return cases
+
+
 def causal_conv1d(x, w):
     T, C = x.shape
     K = w.shape[1]
@@ -649,7 +675,8 @@ def main():
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
     sorted_moe_ops = sorted_moe_cases()
-    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops)
+    scaled_mm_ops = scaled_mm_cases()
+    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops)
     write("pages.json", pages + stable_pages)
 
 
