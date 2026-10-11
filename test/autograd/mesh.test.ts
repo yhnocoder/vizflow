@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type Mesh, Tensor, checkOp, commTransfers, graph, linkKind, opDef, placements, rankDevice, ringAllReduce } from '../../src/core';
+import { type Mesh, Tensor, checkOp, commTransfers, graph, linkKind, opDef, placements, rankDevice, ringAllReduce, routedPairs } from '../../src/core';
 import { dispatchTokenBytes } from '../../src/sim';
 
 const EP: Mesh = { axis: 'ep', size: 4, nodes: 2, real: { size: 4, nodes: 2 } };
@@ -81,6 +81,17 @@ describe('dispatch and combine', () => {
     expect(p.of(y)).toMatchObject({ kind: 'routed' });
     expect(p.of(out)).toEqual({ kind: 'shard', dim: 0 });
     expect([0, 1, 2, 3, 4, 5, 6, 7].map((r) => p.owner(routed, [r, 0]))).toEqual([0, 0, 1, 1, 2, 2, 3, 3]);
+  });
+
+  it('keep each row on the device of its expert through view and gather, so every row can pick its own weight', () => {
+    const { g, sel, w, routed, p } = moe();
+    const ex = g.route_experts(sel, 2);
+    const weights = g.dispatch(w, sel, 2, 'ep', false, { name: 'weights' });
+    const own = g.gather(weights, 1, g.view(ex, 8, 1), { name: 'own' });
+    expect(p.of(own)).toEqual(p.of(routed));
+    const pairs = routedPairs(sel.value, 8, 'dispatch');
+    expect(Array.from(own.value.data)).toEqual(pairs.map((pair) => w.value.get([pair.token, pair.expert])));
+    expect(() => p.of(g.gather(routed, 0, g.view(ex, 8, 1)))).toThrow(/gather 只支持/);
   });
 
   it('send a token once per destination device, in two hops across nodes', () => {

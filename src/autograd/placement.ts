@@ -185,6 +185,7 @@ class PlacementsImpl implements Placements {
     if (SUMS.has(op) || ROW_WISE.has(op)) return this.reduction(node, ins[0]);
     if (op === 'route_rows' || op === 'route_experts') return this.route(node, ins[0]);
     if (op === 'grouped_mm') return this.groupedMm(node, ins);
+    if (op === 'gather') return this.gather(node, ins);
     throw this.error(node, `运算 ${op} 没有放置规则，它的输入只能是 Replicate`);
   }
 
@@ -237,6 +238,12 @@ class PlacementsImpl implements Placements {
     return x;
   }
 
+  private gather(node: Node, [input, index]: Placement[]): Placement {
+    const dim = normDims(node.attrs.dim as number, node.shape.length)[0];
+    if (input.kind === 'routed' && same(input, index) && dim !== 0) return input;
+    throw this.error(node, `gather 只支持沿第 0 维以外取值、输入和下标按同一次路由分行，这里是 ${placementText(input)}、${placementText(index)}`);
+  }
+
   private elementwise(node: Node, ins: Placement[]): Placement {
     const op = node.op as string;
     const partial = ins.map((p) => p.kind === 'partial');
@@ -275,6 +282,11 @@ class PlacementsImpl implements Placements {
     const values = Array.from(owners.data, (v) => Math.round(Math.abs(v)));
     if (values.every((v) => v === 0)) return REPLICATE;
     if (values.some((v) => v === 0)) throw this.error(node, 'Replicate 和切分后的张量不能拼在一起');
+    const routed = ins.find((p): p is { kind: 'routed'; sel: Node } => p.kind === 'routed');
+    if (routed !== undefined && owners.shape[0] === node.inputs[ins.indexOf(routed)].shape[0]) {
+      const expected = this.ownerTensor(node, routed).data;
+      if (values.every((v, i) => v === expected[i])) return routed;
+    }
     if (values.every((v) => v === values[0])) return { kind: 'local', rank: values[0] - 1 };
     const shape = owners.shape;
     for (let dim = 0; dim < shape.length; dim++) {
