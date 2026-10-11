@@ -4,7 +4,8 @@ import { graph } from '../../src/core';
 import { renderText } from '../../src/formula';
 import { createSteps } from '../../src/steps';
 import { mountSteps, renderFigures, type Mounted } from '../../src/ui';
-import { checkFigure, figureTag } from '../../src/ui/figures';
+import { checkFigure, figureTag } from '../../src/ui/figure-spec';
+import { shown } from './shown';
 
 const THETA = 10;
 const DH = 4;
@@ -42,9 +43,9 @@ describe('figures in step text', () => {
     expect(svg.querySelectorAll('path')[1].getAttribute('stroke-dasharray')).toBe('4 3');
     expect(svg.querySelectorAll('circle')).toHaveLength(50);
     expect([...svg.querySelectorAll('circle')].filter((c) => c.getAttribute('r') === '2.8')).toHaveLength(6);
-    expect([...svg.querySelectorAll('text')].map((t) => t.textContent)).toEqual(['1', '−1', 't=0', 't=6', 't=12', 't=18']);
-    expect(el.querySelector('.vf-wave-note')!.textContent).toBe(
-      '横轴是 position_id t（从 0 开始，第 1 个 token 是 t = 0），阴影是这里用到的 t = 0, 1, 2。实线 ω = 1（第 1、3 列），虚线 ω = 0.316（第 2、4 列）。',
+    expect([...svg.querySelectorAll('foreignObject')].map(shown)).toEqual(['$1$', '$-1$', '$t=0$', '$t=6$', '$t=12$', '$t=18$']);
+    expect(shown(el.querySelector('.vf-wave-note'))).toBe(
+      '横轴是 position_id $t$（从 0 开始，第 1 个 token 是 $t = 0$），阴影是这里用到的 $t = 0, 1, 2$。实线 $\\omega = 1$（第 1、3 列），虚线 $\\omega = 0.316$（第 2、4 列）。',
     );
   });
 
@@ -54,7 +55,7 @@ describe('figures in step text', () => {
     el.innerHTML = figureTag('rope_wave', 'rope.cos', ['cos', '12']);
     renderFigures(el, g);
     expect(el.querySelectorAll('circle')).toHaveLength(26);
-    expect([...el.querySelectorAll('text')].map((t) => t.textContent).slice(2)).toEqual(['t=0', 't=6']);
+    expect([...el.querySelectorAll('foreignObject')].map(shown).slice(2)).toEqual(['$t=0$', '$t=6$']);
   });
 
   it('checks the arguments and the table shape', () => {

@@ -84,7 +84,7 @@ test('dragging an h slider changes the loss and the caption', async ({ page }) =
 test('updating W lowers the loss and reset restores it', async ({ page }) => {
   await open(page);
   const before = await readLoss(page);
-  await page.getByRole('button', { name: '更新一步 W（η = 0.5）' }).click();
+  await page.getByRole('button', { name: /^更新一步 W/ }).click();
   const after = await readLoss(page);
   expect(after).toBeLessThan(before);
   await expect(page.locator('.vf-spark path')).toHaveCount(1);

@@ -6,6 +6,7 @@ import { compileTemplate, type Steps } from '../steps';
 import { renderFigures } from './figures';
 import { resolveElement, trackGraph } from './mount';
 import type { Mounted } from './mounted';
+import { Rich } from './rich';
 import { RopeCompare, RopeCurve, RopeDial, createRopeState } from './rope';
 
 export interface RopeSpec {
@@ -108,7 +109,7 @@ function SectionView(props: { g: Graph; item: SectionItem; options: SectionsOpti
         <For each={b.buttons}>
           {(button) => (
             <button type="button" class="vf-btn" onClick={() => jump(button)}>
-              {button.label}
+              <Rich text={button.label} />
             </button>
           )}
         </For>
@@ -118,7 +119,9 @@ function SectionView(props: { g: Graph; item: SectionItem; options: SectionsOpti
   return (
     <div class="vf-card vf-section">
       <Show when={item.title}>
-        <h2>{item.title}</h2>
+        <h2>
+          <Rich text={item.title ?? ''} />
+        </h2>
       </Show>
       <For each={item.rows}>
         {(row) => (

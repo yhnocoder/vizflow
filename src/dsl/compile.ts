@@ -4,7 +4,7 @@ import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
 import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { type Nested, inferShape } from '../tensor';
 import type { PanelItem, SectionBlock, SectionItem, SectionRow } from '../ui';
-import { checkFigure, figureNames, figureTag } from '../ui/figures';
+import { checkFigure, figureNames, figureTag } from '../ui/figure-spec';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
 import { DslError, type Where, child, fail } from './source';

@@ -6,6 +6,7 @@ import { allVisible, compileTemplate, type StepState, type Steps } from '../step
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
+import { Rich, indexed, plain } from './rich';
 
 export interface SgdOptions {
   params: Node[];
@@ -133,7 +134,9 @@ function Card(props: { title?: string; children: JSX.Element }) {
   return (
     <div class="vf-card">
       <Show when={props.title}>
-        <h2>{props.title}</h2>
+        <h2>
+          <Rich text={props.title ?? ''} />
+        </h2>
       </Show>
       {props.children}
     </div>
@@ -182,9 +185,9 @@ function checkTrainable(nodes: readonly Node[], field: string, panel: string): v
   }
 }
 
-const names = (nodes: Node[]) => nodes.map((n) => n.name).join('、');
+const names = (nodes: Node[]) => nodes.map((n) => `$${n.tex}$`).join('、');
 
-const sgdLabel = (sgd: SgdOptions) => `${sgd.label ?? `更新一步 ${names(sgd.params)}`}（η = ${sgd.lr}）`;
+const sgdLabel = (sgd: SgdOptions) => `${sgd.label ?? `更新一步 ${names(sgd.params)}`}（$\\eta = ${sgd.lr}$）`;
 
 function LossPanel(props: { ctx: Context; options: LossOptions }) {
   const { g, version } = props.ctx;
@@ -212,12 +215,14 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
       <div class="vf-readout">
         <div>
           <div class="vf-big">
-            <i>ℓ =</i>
+            <i>
+              <Rich text={'$\\ell$ ='} />
+            </i>
             <span class="vf-loss-value">{display(loss(), 3)}</span>
           </div>
           <Show when={options.parts !== undefined}>
             <div class="vf-lossrows">
-              <For each={parts()}>{(v, t) => <span>{`ℓ${subscript(t() + 1)} = ${display(v, 3)}`}</span>}</For>
+              <For each={parts()}>{(v, t) => <Rich text={`${indexed('\\ell', t() + 1)} = ${display(v, 3)}`} />}</For>
             </div>
           </Show>
           <Show when={options.text}>{(text) => <TemplateText ctx={props.ctx} class="vf-sub" text={text()} />}</Show>
@@ -231,14 +236,14 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
           <Show when={options.sgd}>
             {(sgd) => (
               <button type="button" class="vf-btn vf-pri" onClick={() => props.ctx.sgdStep(sgd())}>
-                {sgdLabel(sgd())}
+                <Rich text={sgdLabel(sgd())} />
               </button>
             )}
           </Show>
           <Show when={options.random}>
             {(random) => (
               <button type="button" class="vf-btn" onClick={() => randomize(random())}>
-                {random().label ?? `随机 ${names(random().nodes)}`}
+                <Rich text={random().label ?? `随机 ${names(random().nodes)}`} />
               </button>
             )}
           </Show>
@@ -278,8 +283,8 @@ function SequencePanel(props: { ctx: Context; item: SequenceOptions }) {
             const label = item.labels?.[p] ?? String(p + 1);
             return (
               <label>
-                {label}
-                <select aria-label={label} value={ids()[p]} onChange={(e) => choose(p, Number(e.currentTarget.value))}>
+                <Rich text={label} />
+                <select aria-label={plain(label)} value={ids()[p]} onChange={(e) => choose(p, Number(e.currentTarget.value))}>
                   <For each={sequence.tokens}>
                     {(token, i) => (
                       <option value={i()} selected={ids()[p] === i()}>
@@ -298,7 +303,7 @@ function SequencePanel(props: { ctx: Context; item: SequenceOptions }) {
         <Show when={item.sgd}>
           {(sgd) => (
             <button type="button" class="vf-btn vf-pri" onClick={() => ctx.sgdStep(sgd())}>
-              {sgdLabel(sgd())}
+              <Rich text={sgdLabel(sgd())} />
             </button>
           )}
         </Show>
@@ -348,7 +353,9 @@ function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attent
             const indices = Array.from({ length: size }, (_, i) => i);
             return (
               <div class="vf-attn" style={{ 'grid-template-columns': `34px repeat(${size}, minmax(0, 1fr))` }}>
-                <div class="vf-h">{`h${h() + 1}`}</div>
+                <div class="vf-h">
+                  <Rich text={indexed('h', h() + 1)} />
+                </div>
                 <For each={indices}>{(c) => <div class="vf-h">{tokens()[c]}</div>}</For>
                 <For each={indices}>
                   {(r) => (
@@ -399,13 +406,15 @@ function SlidersPanel(props: { ctx: Context; item: Extract<PanelItem, { sliders:
   const { sliders: node, min = SLIDER_MIN, max = SLIDER_MAX, step = SLIDER_STEP } = props.item;
   const indices = Array.from({ length: rowLength(node) }, (_, i) => i);
   return (
-    <Card title={props.item.title ?? `${node.name}，${formatShape(node.shape)}`}>
+    <Card title={props.item.title ?? `$${node.tex}$，${formatShape(node.shape)}`}>
       <For each={indices}>
         {(i) => {
           const label = `${node.name}${subscript(i + 1)}`;
           return (
             <div class="vf-hrow">
-              <b>{label}</b>
+              <b>
+                <Rich text={indexed(node.tex, i + 1)} />
+              </b>
               <Slider ctx={props.ctx} node={node} i={i} label={label} min={min} max={max} step={step} />
             </div>
           );
@@ -423,7 +432,7 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
   const columns = (item.columns ?? []).map((c) => {
     const spec = c instanceof Node ? { node: c } : c;
     const grad = spec.grad ?? false;
-    return { node: spec.node, grad, title: spec.title ?? (grad ? `∂ℓ/∂${spec.node.name}` : spec.node.name) };
+    return { node: spec.node, grad, title: spec.title ?? (grad ? `$\\partial\\ell/\\partial ${spec.node.tex}$` : `$${spec.node.tex}$`) };
   });
   const target = createMemo(() => {
     ctx.version();
@@ -439,8 +448,8 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
         <thead>
           <tr>
             <th>目标</th>
-            <Show when={item.sliders}>{(node) => <th>{node().name}</th>}</Show>
-            <For each={columns}>{(c) => <th class="vf-n">{c.title}</th>}</For>
+            <Show when={item.sliders}>{(node) => <th><Rich text={`$${node().tex}$`} /></th>}</Show>
+            <For each={columns}>{(c) => <th class="vf-n"><Rich text={c.title} /></th>}</For>
           </tr>
         </thead>
         <tbody>
@@ -535,7 +544,7 @@ function MatrixGrid(props: { ctx: Context; entry: MatrixEntry; highlight?: Matri
   };
   const rowIds = Array.from({ length: rows }, (_, r) => r);
   const colIds = Array.from({ length: cols }, (_, c) => c);
-  const rowName = (r: number) => (props.rows === undefined ? String(r + 1) : `${props.rows}${subscript(r + 1)}`);
+  const rowName = (r: number) => (props.rows === undefined ? String(r + 1) : indexed(props.rows, r + 1));
 
   return (
     <div class="vf-wmat" style={{ 'grid-template-columns': `26px repeat(${cols}, minmax(0, 1fr))` }}>
@@ -551,7 +560,7 @@ function MatrixGrid(props: { ctx: Context; entry: MatrixEntry; highlight?: Matri
         {(r) => (
           <>
             <div class="vf-h vf-rh" style={{ 'grid-row': `${r + 2}`, 'grid-column': '1' }}>
-              {rowName(r)}
+              <Rich text={rowName(r)} />
             </div>
             <For each={colIds}>
               {(c) => {
@@ -580,7 +589,7 @@ function MatrixPanel(props: { ctx: Context; item: MatrixItem }) {
   const source = first?.matrix;
   const title =
     item.title ??
-    ('matrix' in item && source instanceof Node ? `${first.grad ? `∂ℓ/∂${source.name}` : source.name}，${formatShape(source.shape)}` : undefined);
+    ('matrix' in item && source instanceof Node ? `$${first.grad ? `\\partial\\ell/\\partial ${source.tex}` : source.tex}$，${formatShape(source.shape)}` : undefined);
   const grid = (entry: MatrixEntry) => <MatrixGrid ctx={ctx} entry={entry} highlight={item.highlight} rows={item.rows} />;
   const captioned = entries.some((entry) => entry.caption !== undefined) || entries.length > 1;
 
@@ -592,7 +601,9 @@ function MatrixPanel(props: { ctx: Context; item: MatrixItem }) {
             {(entry) => (
               <div>
                 <Show when={entry.caption}>
-                  <div class="vf-wcap">{entry.caption}</div>
+                  <div class="vf-wcap">
+                    <Rich text={entry.caption ?? ''} />
+                  </div>
                 </Show>
                 {grid(entry)}
               </div>

@@ -830,3 +830,9 @@ vf-figure {
   color: var(--muted);
   margin-bottom: 6px;
 }
+
+.vf-fo {
+  line-height: 1.2;
+  white-space: nowrap;
+  font-family: var(--serif);
+}
