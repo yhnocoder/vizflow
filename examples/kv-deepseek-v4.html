@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepSeek V4 的 KV cache：一步 decode</title>
+<link rel="icon" href="data:,">
+<style>
+main { --vf-stage-height: clamp(480px, calc((100vh - 220px) * 0.85), 1100px); }
+header { margin-bottom: 14px; max-width: 900px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(26px, 3.4vw, 38px); line-height: 1.15; margin: 0 0 8px; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 72ch; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 12px 0 14px; }
+.controls .group { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.controls button { font: inherit; font-size: 13.5px; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.controls button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.controls label { font-size: 13.5px; color: var(--muted); }
+.controls output { font-family: var(--mono); font-size: 13.5px; min-width: 7ch; }
+.main-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#stage { height: var(--vf-stage-height); min-height: 420px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--surface); }
+.panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.panel h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.panel p { margin: 0; color: var(--muted); }
+.rows { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 3px 8px; align-items: center; font-family: var(--mono); font-size: 11.5px; }
+.rows .tag { color: var(--muted); white-space: nowrap; }
+.cells { display: flex; gap: 2px; }
+.cells i { display: block; width: 14px; height: 14px; border-radius: 2px; }
+.row-read .tag:first-child { font-weight: 700; color: var(--ink); }
+.row-write .cells { outline: 2px dashed var(--ink); outline-offset: 2px; border-radius: 2px; }
+.row-read .cells { outline: 2px solid #2c6fd1; outline-offset: 2px; border-radius: 2px; }
+.sep { grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 3px 0; }
+table.size { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+table.size td, table.size th { border-bottom: 1px solid var(--line); padding: 3px 6px; text-align: left; }
+table.size td.n { font-family: var(--mono); text-align: right; white-space: nowrap; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>DeepSeek V4 的 KV cache：一层一步 decode</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+  <div class="controls">
+    <div class="group" role="group" aria-label="注意力层的种类" id="kinds"></div>
+    <div class="group"><label for="pos">位置 t</label><input type="range" id="pos" min="5" max="19" step="1" value="11"><output id="posOut"></output></div>
+  </div>
+  <div class="vf-split">
+    <div class="main-col">
+      <div id="stage"></div>
+      <div id="steps"></div>
+    </div>
+    <aside id="side">
+      <section class="panel" aria-label="cache 布局">
+        <h3 id="cacheTitle">这一层的 cache</h3>
+        <div class="rows" id="cacheRows"></div>
+        <p id="cacheNote"></p>
+      </section>
+      <section class="panel" aria-label="真实尺寸">
+        <h3>V4-Flash 的真实大小（每个源 token）</h3>
+        <table class="size" id="sizes"></table>
+        <p>来源：V4.1 技术报告图 1(b) 给出 V4-Flash 共 3514 字节；条目 584 字节 = 448 维 FP8 + 64 维 BF16 + 7 个 ue8m0 缩放 + 1 字节对齐（vLLM <code>fp8_ds_mla</code> 格式），indexer 条目 68 字节为 FP4。</p>
+      </section>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountScene, autoLayout } from '@yhnocoder/vizflow/scene3d';
+import { mountSteps } from '@yhnocoder/vizflow/ui';
+import { renderText } from '@yhnocoder/vizflow/formula';
+import { KINDS, buildStep, stepOf } from './kv/deepseek-v4.js';
+import { stepTexts } from './kv/deepseek-v4-text.js';
+
+const fixture = await (await fetch(new URL('./kv/deepseek-v4-fixture.json', import.meta.url))).json();
+const c = fixture.config;
+const params = new URLSearchParams(location.search);
+let kind = params.get('kind') in KINDS ? params.get('kind') : 'csa';
+const pos = document.getElementById('pos');
+if (params.get('t')) pos.value = params.get('t');
+
+renderText(String.raw`DeepSeek V4 每一层的注意力属于三种之一：只看最近 128 个 token 的滑动窗口层（SWA），每 4 个 token 压成一个条目、再由 Lightning Indexer 挑 512 个条目来读的 CSA 层，每 128 个 token 压成一个条目、全部都读的 HCA 层。三种层都把窗口与压缩条目放在同一块 cache 里。下面的计算图逐行对应官方 <code>inference/model.py</code> 里 <code>Attention.forward</code> 的 decode 分支，数值来自用同一份代码跑出来的 cache 状态（权重随机，float64），每一步都与官方代码逐值对照过。尺寸是 toy：hidden ${c.dim}，${c.n_heads} 个 head，head\_dim ${c.head_dim}（rope ${c.rope_head_dim} 维），窗口 ${c.window_size}，CSA 压缩比 4（与真实相同），HCA 压缩比 8（真实 128），indexer ${c.index_n_heads} 个 head、${c.index_head_dim} 维、top-${c.index_topk}。先用 ${fixture.prefill} 个 token 做 prefill，之后每步 decode 一个 token。`, document.getElementById('lede'));
+
+const SIZES = [
+  ['SWA 窗口 K=V（每层 128 行，长度无关）', '每层 585 B × 128'],
+  ['CSA 主 KV（21 层，每 4 token 一条 584 B）', '21 × 146 = 3066 B'],
+  ['CSA indexer key（21 层，每 4 token 一条 68 B）', '21 × 17 = 357 B'],
+  ['HCA 主 KV（20 层，每 128 token 一条 584 B）', '20 × 4.56 = 91 B'],
+  ['合计全局 KV', '3514 B / token'],
+];
+document.getElementById('sizes').innerHTML = SIZES.map(([a, b]) => `<tr><td>${a}</td><td class="n">${b}</td></tr>`).join('');
+
+const kindsEl = document.getElementById('kinds');
+for (const [k, v] of Object.entries(KINDS)) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = v.title;
+  b.dataset.kind = k;
+  b.onclick = () => { kind = k; build(); };
+  kindsEl.appendChild(b);
+}
+
+let current = null;
+function color(v) {
+  if (!Number.isFinite(v)) return 'transparent';
+  const a = Math.min(1, Math.abs(v) / 1.5);
+  return v >= 0 ? `color-mix(in srgb, #d0731a ${Math.round(a * 85)}%, var(--surface))` : `color-mix(in srgb, #2c6fd1 ${Math.round(a * 85)}%, var(--surface))`;
+}
+function rowHtml(tag, extra, values, cls) {
+  return `<span class="tag">${tag}</span><span class="tag">${extra}</span><span class="${cls}"><span class="cells">${values.map((v) => `<i style="background:${color(v)}" title="${Number.isFinite(v) ? v.toFixed(3) : v}"></i>`).join('')}</span></span>`;
+}
+
+function drawCache() {
+  const { N, info, steps, t } = current;
+  const st = steps.list[steps.current];
+  const seen = new Set();
+  for (let i = 0; i <= steps.current; i++) for (const n of steps.list[i].nodes ?? []) seen.add(n);
+  const wrote = seen.has(N.cache1);
+  const wroteEntry = N.entry && seen.has(N.cacheF);
+  const reading = seen.has(N.rows);
+  const cache = (wroteEntry ? N.cacheF : wrote ? N.cache1 : N.cache0).value;
+  const d = cache.shape[1];
+  const idx = Array.from(N.idx.value.data);
+  const win = info.win;
+  const lines = [];
+  for (let r = 0; r < cache.shape[0]; r++) {
+    if (r === win) lines.push('<div class="sep"></div>');
+    let tag, extra;
+    if (r < win) {
+      const p = t - ((t % win) - r + win) % win;
+      const has = wrote ? p : p - (r === t % win ? win : 0);
+      tag = `窗口 ${r}`;
+      extra = has >= 0 ? `位置 ${has}` : '空';
+    } else {
+      const i = r - win;
+      const ready = Math.floor((t + 1) / info.ratio) - (wroteEntry ? 0 : info.emits ? 1 : 0);
+      tag = `压缩 ${i}`;
+      extra = i < ready ? `位置 ${i * info.ratio}–${i * info.ratio + info.ratio - 1}` : '未生成';
+    }
+    const writeRow = (wrote && r === t % win) || (wroteEntry && r === win + Math.floor(t / info.ratio));
+    const cls = [reading && idx.includes(r) ? 'row-read' : '', writeRow ? 'row-write' : ''].join(' ');
+    lines.push(rowHtml(tag, extra, Array.from(cache.data.slice(r * d, r * d + d)), cls));
+  }
+  document.getElementById('cacheRows').innerHTML = lines.join('');
+  document.getElementById('cacheTitle').textContent = `主 cache \u{1D49E}，${cache.shape[0]} 行 × ${d} 维（${wroteEntry ? '已写入压缩条目' : wrote ? '已写入窗口' : '本步写入之前'}）`;
+  const notes = ['虚线框：本步写入的行。', reading ? '蓝框：sparse_attn 本步读取的行。' : '读取发生在写入之后（sparse_attn 一步）。'];
+  if (info.ratio === 4) notes.push(`indexer 另有一份 ${N.idxCache.shape[0]} 行 × ${N.idxCache.shape[1]} 维的 key cache，见 3D 场景。`);
+  if (info.ratio) notes.push(`压缩器的状态缓冲 ${info.ratio === 4 ? '2m × 2d' : 'm × d'} 不在这张表里，见 3D 场景。`);
+  document.getElementById('cacheNote').textContent = notes.join(' ');
+}
+
+function build() {
+  if (current) {
+    current.scene.dispose();
+    current.stepsUi.dispose();
+    document.getElementById('stage').innerHTML = '';
+    document.getElementById('steps').innerHTML = '';
+  }
+  const t = Number(pos.value);
+  document.getElementById('posOut').textContent = `t = ${t}`;
+  kindsEl.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.kind === kind)));
+  const built = buildStep(fixture, kind, t);
+  const S = stepTexts(kind, t, built.info, { ...c, prefill: fixture.prefill });
+  const forward = built.steps.map((s) => {
+    const text = S[s.key] ?? { label: s.key, title: s.key, text: '' };
+    return { show: s.show, ...(s.kind ? { kind: s.kind } : {}), label: text.label, title: text.title, text: text.text };
+  });
+  const steps = createSteps(built.g, {
+    overview: { label: '总览', title: `${KINDS[kind].title}，位置 t = ${t}`, text: String.raw`${KINDS[kind].layers}（V4-Flash 共 43 层）。${built.info.ratio ? (built.info.emits ? `这一步 $(t+1) \\bmod m = 0$，压缩器凑满一个窗口，cache 的压缩区新增一个条目。` : `这一步窗口还没凑满，cache 只新写入窗口的一行。拖动位置滑块到 $(t+1)$ 是 ${built.info.ratio} 的倍数的位置，可以看到压缩条目的生成。`) : '这一层只有滑动窗口，cache 固定 4 行，每步覆盖最旧的一行。'}右侧表格是这一层 cache 的每一行存着哪个位置。` },
+    forward,
+    backward: 'none',
+  });
+  const { layout, modules } = autoLayout(built.tree);
+  const scene = mountScene('#stage', built.g, {
+    steps,
+    layout,
+    modules,
+    hint: '拖动旋转 · 右键拖动平移 · 滚轮按光标缩放 · 悬停连线看取的是 cache 的哪一行',
+    camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true },
+  });
+  const stepsUi = mountSteps('#steps', steps);
+  current = { ...built, t, steps, scene, stepsUi };
+  steps.subscribe(drawCache);
+  drawCache();
+  const u = new URL(location.href);
+  u.searchParams.set('kind', kind);
+  u.searchParams.set('t', String(t));
+  history.replaceState(null, '', u);
+  window.vizflow = { g: built.g, steps, scene, nodes: built.N, step: stepOf(fixture, kind, t) };
+  document.body.dataset.ready = 'true';
+}
+pos.addEventListener('input', build);
+build();
+</script>
+</body>
+</html>

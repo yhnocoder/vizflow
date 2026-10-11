@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+// @ts-expect-error untyped example module
 import { buildStep, stateBefore, stepOf, windowIdxs } from '../../examples/kv/deepseek-v4.js';
 
 const fixture = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../examples/kv/deepseek-v4-fixture.json'), 'utf8'));

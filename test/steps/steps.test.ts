@@ -107,6 +107,15 @@ describe('automatic backward steps', () => {
     expect(() => createSteps(g, overridden)).toThrow('backward: the graph has no loss node, so merge and override cannot apply');
   });
 
+  it('generates no backward steps when backward is none, even with a loss', () => {
+    const g = graph();
+    const x = g.param('x', [3], [1, 2, 3]);
+    const l = g.sum(g.mul(x, x), null, { name: 'l' });
+    g.loss(l);
+    const steps = createSteps(g, { forward: [{ show: [x, l], title: 'l', text: '' }], backward: 'none' });
+    expect(steps.list.map((st) => st.dir)).toEqual(['forward', 'forward']);
+  });
+
   it('uses an empty body when a forward step or the overview has no text', () => {
     const g = graph();
     const x = g.input('x', [5], [1, 2, 3, 4, 5]);

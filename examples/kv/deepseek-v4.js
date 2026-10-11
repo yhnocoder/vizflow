@@ -56,7 +56,7 @@ export function buildStep(fixture, kind, t) {
   const tree = [];
   const steps = [];
   const leaf = (node) => ({ kind: 'node', node });
-  const mod = (title, subtitle, nodes) => ({ kind: 'module', title, subtitle, children: nodes.map((n) => (n.kind ? n : leaf(n))) });
+  const mod = (title, subtitle, nodes) => ({ kind: 'module', title, subtitle, children: nodes.map((n) => (n.kind === 'module' || n.kind === 'node' || n.kind === 'parallel' ? n : leaf(n))) });
   const T = (node) => node.T;
 
   function rms(x, weight, name, tex) {
@@ -98,7 +98,7 @@ export function buildStep(fixture, kind, t) {
   const qrope = rope(qhn.out, cos, sin, 'q', 'Q', d);
   const q = qrope.out;
   Object.assign(N, { qa, qr, qflat, qh, q });
-  tree.push(mod('q', 'wq_a → q_norm → wq_b → 逐 head 归一化 → RoPE', [wqa, qa, ...qn.nodes, wqb, qflat, qh, ...qhn.nodes, ...qrope.nodes]));
+  const qTree = (mod('q', 'wq_a → q_norm → wq_b → 逐 head 归一化 → RoPE', [wqa, qa, ...qn.nodes, wqb, qflat, qh, ...qhn.nodes, ...qrope.nodes]));
   steps.push({ show: [wqa, qa, ...qn.nodes], key: 'qa' });
   steps.push({ show: [wqb, qflat, qh], key: 'qb' });
   steps.push({ show: qhn.nodes, key: 'qnorm' });
@@ -110,14 +110,14 @@ export function buildStep(fixture, kind, t) {
   const kvr = rope(kvn.out, cos, sin, 'kv', '\\mathbf{kv}', d);
   const kv = kvr.out;
   N.kv = kv;
-  tree.push(mod('kv', 'wkv → kv_norm → RoPE，K 与 V 共用', [wkv, kv0, ...kvn.nodes, ...kvr.nodes]));
+  const kvTree = (mod('kv', 'wkv → kv_norm → RoPE，K 与 V 共用', [wkv, kv0, ...kvn.nodes, ...kvr.nodes]));
   steps.push({ show: [wkv, kv0, ...kvn.nodes], key: 'kv' });
   steps.push({ show: kvr.nodes, key: 'kvrope' });
 
   const widx = windowIdxs(win, t);
   const winIdx = g.label('window idxs', [widx], { classes: nCache, tex: 'I^{\\mathrm{win}}', elem: 'I^{\\mathrm{win}}' });
   N.winIdx = winIdx;
-  steps.push({ show: winIdx, key: 'widx' });
+  steps.push({ show: [winIdx, cache0], key: 'widx' });
 
   function compressor(prefix, wts, dim, stateKv, stateScore, cache, cacheRow, rotate, texName) {
     const P = (k) => wts[`${prefix}${k}`];
@@ -187,6 +187,7 @@ export function buildStep(fixture, kind, t) {
   }
 
   let compIdx = null;
+  let idxTree = null;
   let idxParts = null;
   if (ratio === 4) {
     const idxCache0 = g.input('indexer kv_cache', [c.max_seq_len / ratio, di], before.index_cache, { tex: '\\mathcal{K}^{I}', elem: '\\mathcal{K}^{I}' });
@@ -212,7 +213,7 @@ export function buildStep(fixture, kind, t) {
     compIdx = g.add(top, win, { name: 'compressed idxs', tex: 'I^{\\mathrm{cmp}}', elem: 'I^{\\mathrm{cmp}}' });
     idxParts = { idxCache0, wqbI, qI0, qIh, qIr, Hm, qI, comp, seen, wproj, hw0, hw, dots, relu, weighted, score, top };
     Object.assign(N, { idxCache: comp.cache, indexScore: score, compIdx, indexerEntry: comp.entry });
-    tree.push(mod('indexer', 'Lightning Indexer：自己的压缩 key cache 与 top-k', [idxCache0, wqbI, qI0, qIh, ...qIr.nodes, Hm, qI, ...comp.nodes, seen, wproj, hw0, hw, dots, relu, weighted, score, top, compIdx]));
+    idxTree = (mod('indexer', 'Lightning Indexer：自己的压缩 key cache 与 top-k', [idxCache0, wqbI, qI0, qIh, ...qIr.nodes, Hm, qI, ...comp.nodes, seen, wproj, hw0, hw, dots, relu, weighted, score, top, compIdx]));
     steps.push({ show: [wqbI, qI0, qIh, ...qIr.nodes, Hm, qI], key: 'iq' });
     steps.push({ show: idxCache0, key: 'icache' });
     for (const s of comp.steps) steps.push({ ...s, key: `i.${s.key}` });
@@ -222,12 +223,12 @@ export function buildStep(fixture, kind, t) {
     const n = Math.floor((t + 1) / ratio);
     compIdx = g.label('compressed idxs', [range(n).map((i) => i + win)], { classes: nCache, tex: 'I^{\\mathrm{cmp}}', elem: 'I^{\\mathrm{cmp}}' });
     N.compIdx = compIdx;
-    steps.push({ show: compIdx, key: 'hidx' });
+    steps.push({ show: [compIdx, cache0], key: 'hidx' });
   }
 
   const idx = compIdx ? g.cat([winIdx, compIdx], -1, { name: 'topk_idxs', tex: 'I', elem: 'I' }) : winIdx;
   N.idx = idx;
-  if (compIdx) steps.push({ show: idx, key: 'idx' });
+  if (compIdx) steps.push({ show: [idx, cache0], key: 'idx' });
 
   const wslot = g.label('window slot', [t % win], { classes: nCache, tex: `${t % win}`, elem: `${t % win}` });
   const cache1 = g.index_copy(cache0, 0, wslot, kv, { name: "kv_cache'", tex: "\\mathcal{C}'", elem: "\\mathcal{C}'" });
@@ -278,8 +279,11 @@ export function buildStep(fixture, kind, t) {
   steps.push({ show: [oGroups, woa, ...groupOuts.flatMap((o) => [o.og, o.wg, o.yg]), u], key: 'oa' });
   steps.push({ show: [wob, y], key: 'ob' });
 
-  tree.splice(2, 0, mod('window', 'get_window_topk_idxs', [winIdx]));
-  tree.push(mod('kv_cache', '写入窗口槽位', [...(compIdx && ratio !== 4 ? [compIdx] : []), ...(compIdx ? [idx] : []), wslot, cache1]));
+  tree.push(leaf(x), leaf(cache0), qTree, kvTree, mod('window', 'get_window_topk_idxs', [winIdx]));
+  if (idxTree) tree.push(idxTree);
+  if (compIdx && ratio !== 4) tree.push(leaf(compIdx));
+  tree.push(mod('kv_cache', '写入窗口槽位', [wslot, cache1]));
+  if (compIdx) tree.push(leaf(idx));
   if (mainComp) tree.push(mod(ratio === 4 ? 'compressor（CSA）' : 'compressor（HCA）', ratio === 4 ? '重叠窗口：上一窗口的 a 半与本窗口的 b 半' : '不重叠窗口', mainComp.nodes));
   tree.push(mod('sparse_attn', '按下标取行，带 sink 的 softmax', [idxFlat, rows, scores0, scores, sink, withSink, pAll, p, o0, ...oInv.nodes]));
   tree.push(mod('o', '分组低秩输出投影 wo_a → wo_b', [oGroups, woa, ...groupOuts.flatMap((o) => [o.og, o.wg, o.yg]), u, wob, y]));
