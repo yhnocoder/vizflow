@@ -161,7 +161,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const showValues = revealed && clear && stepped && block.quiet !== true && !c.lod && (!c.follow || zoom >= VALUE_MIN_ZOOM);
   const named = revealed && clear && !c.lod && !far;
   const title = renderable.title!;
-  title.el.dataset.node = node.name;
+  title.setData('node', node.name);
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
   const view = block.copyOf === undefined ? [...(c.levelLayout?.sourceOf ?? [])].find(([, source]) => source === node)?.[0] : undefined;
@@ -174,8 +174,8 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
       valueOf(label, values[i]);
-      label.el.dataset.node = node.name;
-      label.el.dataset.index = element.index.join(',');
+      label.setData('node', node.name);
+      label.setData('index', element.index.join(','));
       const rowShown = !c.follow || element.z === front || zoom >= VALUE_ALL_ROWS_ZOOM;
       label.visible = showValues && focusedRow(element.row) && rowShown;
     });
@@ -189,8 +189,8 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
       valueOf(label, values[i]);
-      label.el.dataset.node = node.name;
-      label.el.dataset.index = element.index.join(',');
+      label.setData('node', node.name);
+      label.setData('index', element.index.join(','));
       label.pos = [element.x + NODE_VALUE_OFFSET, element.y + mesh.height / 2, element.z];
       label.visible = showValues && focusedRow(element.row);
     });

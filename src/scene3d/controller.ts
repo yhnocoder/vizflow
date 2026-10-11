@@ -22,7 +22,7 @@ import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
-import { type Renderable, createRenderable } from './renderable';
+import { type Renderable, createRenderable, renderableFor } from './renderable';
 import type { SceneOptions } from './scene';
 
 export type PageStepInfo = StepInfo & { kind?: string; sub?: string };
@@ -212,7 +212,7 @@ export class SceneController implements EditHost {
       this.renderables = resolved.blocks.map((block) => createRenderable(this, block));
     } else {
       for (const block of resolved.blocks) {
-        const renderable = this.renderables.find((r) => (r.block.key ?? r.block.node) === (block.key ?? block.node));
+        const renderable = renderableFor(this, block);
         if (renderable === undefined) continue;
         const moved = renderable.block.plate?.y !== block.plate?.y;
         renderable.block = block;

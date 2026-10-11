@@ -1,4 +1,4 @@
-import { type Node, moduleJacobian } from '../autograd';
+import { type Graph, type Node, moduleJacobian } from '../autograd';
 import { type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
@@ -36,6 +36,22 @@ export interface DrawnEdge {
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
 
 const crossRowCache = new WeakMap<object, Set<Node>>();
+const jacobianCache = new WeakMap<Graph, { version: number; byPair: Map<string, number[][]> }>();
+
+function cachedJacobian(g: Graph, module: StepModule, input: Node, output: Node): number[][] {
+  let cache = jacobianCache.get(g);
+  if (cache === undefined || cache.version !== g.version) {
+    cache = { version: g.version, byPair: new Map() };
+    jacobianCache.set(g, cache);
+  }
+  const key = `${module.id}:${input.id}:${output.id}`;
+  let J = cache.byPair.get(key);
+  if (J === undefined) {
+    J = moduleJacobian(g, module, input, output);
+    cache.byPair.set(key, J);
+  }
+  return J;
+}
 
 function crossRowOps(c: SceneController): Set<Node> {
   const known = crossRowCache.get(c.explainer);
@@ -154,7 +170,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const inR = renderableOf(c, pair.input);
     const outR = renderableFor(c, pair.outputBlock);
     if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block)) continue;
-    const J = moduleJacobian(c.g, pair.module, pair.input, pair.output);
+    const J = cachedJacobian(c.g, pair.module, pair.input, pair.output);
     const grad = pair.output.grad;
     J.forEach((row, oi) => {
       row.forEach((value, ii) => {

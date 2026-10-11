@@ -19,7 +19,10 @@ export interface Explainer {
 }
 
 interface Snapshot {
-  key: string;
+  version: number;
+  size: number;
+  loss: Node | undefined;
+  zero: Map<FlowEdge, boolean>;
   edges: FlowEdge[];
   byOp: Map<number, FlowEdge[]>;
   outgoing: Map<string, FlowEdge[]>;
@@ -58,7 +61,13 @@ class ExplainerImpl implements Explainer {
   }
 
   zeroGrad(e: FlowEdge): boolean {
-    return !this.current().reachable.has(refKey(e.to));
+    const snapshot = this.current();
+    let zero = snapshot.zero.get(e);
+    if (zero === undefined) {
+      zero = !snapshot.reachable.has(refKey(e.to));
+      snapshot.zero.set(e, zero);
+    }
+    return zero;
   }
 
   cellValue(c: CellRef): number {
@@ -91,12 +100,13 @@ class ExplainerImpl implements Explainer {
 
   private current(): Snapshot {
     const loss = this.g.findLoss();
-    const key = `${this.g.version}:${this.g.nodes.length}:${loss?.id ?? -1}`;
-    if (this.snapshot?.key !== key) this.snapshot = this.build(key, loss);
+    const known = this.snapshot;
+    if (known !== undefined && known.version === this.g.version && known.size === this.g.nodes.length && known.loss === loss) return known;
+    this.snapshot = this.build(loss);
     return this.snapshot;
   }
 
-  private build(key: string, loss: Node | undefined): Snapshot {
+  private build(loss: Node | undefined): Snapshot {
     const edges: FlowEdge[] = [];
     const byOp = new Map<number, FlowEdge[]>();
     const outgoing = new Map<string, FlowEdge[]>();
@@ -112,7 +122,7 @@ class ExplainerImpl implements Explainer {
         else list.push(e);
       }
     }
-    return { key, edges, byOp, outgoing, reachable: this.reach(byOp, loss) };
+    return { version: this.g.version, size: this.g.nodes.length, loss, zero: new Map(), edges, byOp, outgoing, reachable: this.reach(byOp, loss) };
   }
 
   private reach(byOp: Map<number, FlowEdge[]>, loss: Node | undefined): Set<string> {
