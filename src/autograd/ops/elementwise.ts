@@ -85,7 +85,10 @@ export const powOp = unary<{ exponent: number }>(
   (x, _y, { exponent }) => exponent * x ** (exponent - 1),
   ['input', 'exponent'],
 );
-export const rsqrtOp = unary('rsqrt', (x) => 1 / Math.sqrt(x), (_x, y) => -0.5 * y ** 3);
+export const rsqrtOp: OpDef<{ eps: number }> = {
+  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3),
+  defaults: { eps: 0 },
+};
 export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
 export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
 export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));
@@ -109,15 +112,8 @@ export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
 export const identityOp = unary('identity', (x) => x, () => 1);
 
-export interface RotateHalfAttrs {
-  size: number | null;
-}
-
-export function rotateWidth(shape: readonly number[], attrs: RotateHalfAttrs): number {
-  return attrs.size ?? shape[shape.length - 1];
-}
-
-function rotateHalf(input: Tensor, width: number, sign: number): Tensor {
+function rotateHalf(input: Tensor, sign: number): Tensor {
+  const width = input.shape[input.ndim - 1];
   const half = width / 2;
   const out = new Tensor(input.shape);
   for (let i = 0; i < input.size; i++) {
@@ -126,22 +122,16 @@ function rotateHalf(input: Tensor, width: number, sign: number): Tensor {
   return out;
 }
 
-export const rotateHalfOp: OpDef<RotateHalfAttrs> = {
+export const rotateHalfOp: OpDef<NoAttrs> = {
   name: 'rotate_half',
-  args: ['input', 'size'],
+  args: ['input'],
   tensors: ['input'],
-  sizes: ['size'],
-  defaults: { size: null },
-  shape: (a, attrs) => {
-    const shape = a[0];
-    const width = shape.length === 0 ? 0 : rotateWidth(shape, attrs);
-    if (shape.length === 0 || width % 2 !== 0 || width <= 0 || shape[shape.length - 1] % width !== 0) {
-      throw new Error(`rotate_half: last dimension of (${shape.join(', ')}) must split into even groups of ${width}`);
-    }
-    return [...shape];
+  shape: ([a]) => {
+    if (a.length === 0 || a[a.length - 1] % 2 !== 0) throw new Error(`rotate_half: last dimension of (${a.join(', ')}) must be even`);
+    return [...a];
   },
-  forward: ([a], attrs) => rotateHalf(a, rotateWidth(a.shape, attrs), 1),
-  backward: (gradOut, _inputs, _out, attrs) => [rotateHalf(gradOut, rotateWidth(gradOut.shape, attrs), -1)],
+  forward: ([a]) => rotateHalf(a, 1),
+  backward: (gradOut) => [rotateHalf(gradOut, -1)],
 };
 
 interface TransposeAttrs {

@@ -215,40 +215,28 @@ panels:
 
 写法要点：
 
-- `body` 按顺序建图。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`narrow(q, 1, (h-1)*dh, dh)`、`cat(o[1..H], dim=1)`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
+- `body` 按顺序建图。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`view(x @ Wq.T, T, H, dh)`、`select(k, 1, h-1)`、`cat(o[1..H], dim=1)`。`view` 的形状逐个写在后面，可以写维度名，其中一个可以写 `-1`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`sdpa`、`lm-head-nll`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`glu`、`rope`、`gqa`、`lm-head-nll`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k` 和 `v: (T, H_kv, d_h)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_h)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
+- 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta)`、`rope_sin(T, dh, theta)` 或 `causal_mask(T)`；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
+- 实例写 `inline: true` 时不单独成为一个模块：没有自己的大括号、折叠和步骤分组，节点和步骤算作外层模块的，路径仍然带实例名。它不能写 `title`、`subtitle`、`fixed`、`folded`、`split`、`fold`。
 - `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给迭代加一层大括号，各次迭代的括号合并成一个，标题用 ` · ` 连接（例如 `head 1 · head 2`），迭代的节点已经由实例的大括号标出时不必写。
-- 实例、group 和 for 可以写 `beside: 名字`，让这一项画在前一项的旁边、从同一层开始。名字是紧挨着的前一项的名字，或者是已经 beside 前一项的某一项的名字，几项连成一组，每项一条竖道，从左到右按书写顺序；这一组之后的项从最高的竖道上方继续。for 要被引用时写 `name: 名字`。`beside` 只影响布局，步骤不变。Qwen3 的注意力里，k 的 RMSNorm 和 RoPE 与每个 head 的 q 并排：
+- 实例、group 和 for 可以写 `beside: 名字`，让这一项画在前一项的旁边、从同一层开始。名字是紧挨着的前一项的名字，或者是已经 beside 前一项的某一项的名字，几项连成一组，每项一条竖道，从左到右按书写顺序；这一组之后的项从最高的竖道上方继续。for 要被引用时写 `name: 名字`。并排的同一个模块的实例，id 相同的步骤合并成一步：显示各实例的节点，标签和反向标签把各实例不同的标签用逗号连起来，标题和正文用第一个实例的（模块默认值或这个实例的补丁）。其余情况下 `beside` 只影响布局，步骤不变。实例的步骤补丁在所在的 body 全部建完后才编译，所以第一个实例的补丁可以引用后面并排实例的节点。Qwen3 的注意力里，q_norm 和 k_norm 是并排的两个 RMSNorm，合成 `q_norm $\cdot$ k_norm` 一组：
 
   ```yaml
-  - for: h
-    in: 1..H
-    name: q_heads
-    body:
-      - q[h]: narrow(q, 1, (h-1)*dh, dh)
-      - q_norm[h]: { use: RMSNorm, inputs: { x: 'q[h]' }, outputs: { out: 'qn[h]' } }
-      - q_rope[h]: { use: RoPE, inputs: { x: 'qn[h]' }, outputs: { out: 'qr[h]' } }
-  - for: g
-    in: 1..Hkv
-    name: k_heads
-    beside: q_heads
-    body:
-      - k[g]: narrow(k, 1, (g-1)*dh, dh)
-      - k_norm[g]: { use: RMSNorm, inputs: { x: 'k[g]' }, outputs: { out: 'kn[g]' } }
-      - k_rope[g]: { use: RoPE, inputs: { x: 'kn[g]' }, outputs: { out: 'kr[g]' } }
-  - for: h
-    in: 1..H
-    body:
-      - attn[h]:
-          use: SDPA
-          inputs: { q: 'qr[h]', k: 'kr[(h-1)//(H//Hkv)+1]', v: 'v[(h-1)//(H//Hkv)+1]' }
+  - q: 'view(x @ Wq.T, T, H, dh)'
+  - k: 'view(x @ Wk.T, T, Hkv, dh)'
+  - qk_norm:
+      title: q_norm $\cdot$ k_norm
+      body:
+        - q_norm: { use: RMSNorm, inline: true, suffix: q, inputs: { x: q }, outputs: { out: qn } }
+        - k_norm: { use: RMSNorm, inline: true, suffix: k, beside: q_norm, inputs: { x: k }, outputs: { out: kn } }
   ```
 
-  并排的竖道里同一位置的大括号合并成一个，上例画出 `q_norm · k_norm` 和 `q_rope · k_rope`。并排的项不能用同一组里前面一项算出的值（例如 attention 用到 `qr[h]` 和 `kr[g]`，所以写在这一组之后），否则编译报错；名字不是前一项、写在单个节点上时也报错。
-- 全页的路径是实例名逐层拼接，例如 `layer.self_attn.attn[1].P`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
+  两个实例的平方、均方根、归一化、乘权重各合成一步，例如均方根那一步的标签是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。不是 inline 的并排实例各有一个大括号，同一位置的大括号合并成一个。并排的项不能用同一组里前面一项算出的值，否则编译报错；名字不是前一项、写在单个节点上时也报错。
+- 全页的路径是实例名逐层拼接，例如 `layer.self_attn.eager_attention_forward.P[1]`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
 - 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
 - tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。`\hat{\of{x}}` 这类重音写法在 `x` 的 tex 带下标时把下标移到重音外面，例如 $\hat{\mathbf{x}}_0$。text 类型的参数在模块里展开，参数值里的 `\of{name}` 按模块内的名字查找。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
 - 标签、标题和正文里的数学符号一律写成 LaTeX，例如 `label: '$\partial\of{x}$'`，不用 unicode 的数学字符。模块的步骤标签和反向标签用 `\of{...}` 引用节点，这样实例自动加的下标会出现在标签里。
@@ -338,7 +326,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | 运算 | 调用 | 说明 |
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
-| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合 |
@@ -350,6 +338,9 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `gather` | `g.gather(a, dim, index)` | `index` 是 label 节点，维数与 `a` 相同 |
 | `embedding` | `g.embedding(ids, E)` | `ids` 是 label 节点（token id，0 维或 1 维），`E` 是 `(num, dim)`，输出 shape 为 `[...ids.shape, dim]`；`ids` 不求梯度 |
 | `narrow` | `g.narrow(a, dim, start, length)` | `start` 可以为负数；`length` 可以是维度名 |
+| `view` | `g.view(a, [T, H, dh])`、`g.view(a, T, H, dh)` | 与 `torch.view` 相同，按行优先重排，不移动数据；形状可以写维度名，其中一个可以是 `-1` |
+| `select` | `g.select(a, dim, index)` | 取出 `dim` 上的第 `index` 个，去掉这一维；`index` 可以为负数 |
+| `select_matmul` | `g.select_matmul(a, b, index)` | `a` 是 `(T, H, K)`，`b` 是 `(K, N)`，结果是 `a[:, index, :] @ b`，即某个 head 直接参与矩阵乘，不另建切片节点 |
 | `cat` | `g.cat([a, b, c], dim)` | 节点数组，个数任意，至少一个；`dim` 默认 0 |
 | `nll_loss` | `g.nll_loss(input, target, { reduction, ignore_index })` | `reduction` 默认 `'mean'`，可选 `'sum'`、`'none'`；`ignore_index` 默认 `-100` |
 
@@ -367,7 +358,7 @@ const [q1, q2] = g.split(q, 'dh', 1, {
 });
 ```
 
-**尺寸参数写维度名**：`narrow` 的 `length` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。
+**尺寸参数写维度名**：`narrow` 的 `length`、`view` 的形状和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。
 
 `W.T` 是二维节点的转置。第一次访问时创建名为 `W.T` 的 transpose 节点，之后每次访问返回同一个节点，所以 `g.matmul(h, W.T)` 和 `board(h, W.T, z)` 里的 `W.T` 是同一个节点。
 
@@ -980,7 +971,8 @@ const y = g.square(x, { name: 'y' });
 - `defaults` 写 torch 里按关键字传的参数及默认值，它们出现在选项对象里；`differentiable` 标出每个张量参数是否求梯度（例如整数下标为 `false`）。
 - `list` 写一个接受节点数组的张量参数名，例如内置的 `cat` 写 `args: ['tensors', 'dim']`、`tensors: ['tensors']`、`list: 'tensors'`。数组里的节点按顺序展开成输入，`forward`、`backward`、`shape` 收到的输入个数等于数组长度。这个参数必须是唯一的张量参数，也不能同时写 `differentiable`。
 - `scalars` 列出可以传数的张量参数，例如内置的 `add` 写 `scalars: ['other']`。传数时它不成为输入，存进 `attrs` 的同名字段，`forward` 收到的输入少一个。
-- `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`。规则见 2.3 的「尺寸参数写维度名」。
+- `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`；参数是数组时逐个元素换算。
+- `rest` 写最后一个参数名，调用时从这个位置起的位置参数收集成一个数组，例如内置的 `view` 写 `args: ['input', 'shape']`、`rest: 'shape'`，`g.view(a, T, H, dh)` 与 `g.view(a, [T, H, dh])` 相同。规则见 2.3 的「尺寸参数写维度名」。
 - 讲解部分（`explain`）可以写在 `defineOp` 的 `explain` 字段里，也可以用 `registerExplain` 单独注册。`pattern` 从 `'elementwise'`、`'reduce'`、`'dense'`、`'contract'`、`'select'` 中选一个，决定连线怎么画。`local` 返回一条边的局部导数，`tex.forward` 与 `tex.local` 给出卡片上的公式。接口定义见设计文档「定义新运算」与「连线模式」两节。
 - 只有数值、没有讲解的运算可以用在只引入 core 的场合。用到 steps 或 scene3d 时必须有讲解，否则抛错 `explain: op '<名字>' of node '<节点>' has no explain definition`。
 - 同名运算只能注册一次。运算名不能与计算图已有的成员同名（例如 `input`、`loss`、`node`）。

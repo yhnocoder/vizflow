@@ -27,6 +27,8 @@ interface Reference {
 
 const ATTN = 'layer.self_attn';
 const ROPE = `${ATTN}.apply_rotary_pos_emb`;
+const GQA = `${ATTN}.eager_attention_forward`;
+const NORMS: Record<string, string> = { q: `${ATTN}.q_norm`, k: `${ATTN}.k_norm` };
 const RMS: Record<string, string> = { '1': 'layer.input_layernorm', '2': 'layer.post_attention_layernorm', '': 'norm' };
 
 const TENSORS: Record<string, string> = {
@@ -35,8 +37,8 @@ const TENSORS: Record<string, string> = {
   Wq: `${ATTN}.Wq.T`,
   Wk: `${ATTN}.Wk.T`,
   Wv: `${ATTN}.Wv.T`,
-  Gq: `${ATTN}.gq`,
-  Gk: `${ATTN}.gk`,
+  Gq: `${NORMS.q}.weight`,
+  Gk: `${NORMS.k}.weight`,
   Wo: `${ATTN}.Wo.T`,
   G2: `${RMS['2']}.weight`,
   Wg: 'layer.mlp.Wg.T',
@@ -56,23 +58,30 @@ const TENSORS: Record<string, string> = {
   ])),
   ah1: `${RMS['1']}.xh`,
   n1: `${RMS['1']}.out`,
-  ...Object.fromEntries(['q', 'k', 'v', 'qsq', 'ksq', 'qms', 'qrr', 'kms', 'krr', 'qah', 'kah', 'qn', 'kn'].map((k) => [k, `${ATTN}.${k}`])),
+  ...Object.fromEntries(['q', 'k', 'v'].map((k) => [k, `${ATTN}.${k}`])),
+  ...Object.fromEntries(Object.entries(NORMS).flatMap(([x, path]) => [
+    [`${x}sq`, `${path}.sq`],
+    [`${x}ms`, `${path}.ms`],
+    [`${x}rr`, `${path}.r`],
+    [`${x}ah`, `${path}.xh`],
+    [`${x}n`, `${path}.out`],
+  ])),
   ...Object.fromEntries(['qc', 'kc', 'qrh', 'krh', 'qs', 'ks'].map((k) => [k, `${ROPE}.${k}`])),
   qr: `${ROPE}.q_embed`,
   kr: `${ROPE}.k_embed`,
   ...Object.fromEntries([0, 1].flatMap((h) => [
-    [`kp${h}`, `${ATTN}.kp[${h + 1}]`],
-    [`V${h}`, `${ATTN}.V[${h + 1}]`],
-    [`kT${h}`, `${ATTN}.kT[${h + 1}]`],
-    [`S${h}`, `${ATTN}.S[${h + 1}]`],
-    [`Ss${h}`, `${ATTN}.Ss[${h + 1}]`],
-    [`Sm${h}`, `${ATTN}.Sm[${h + 1}]`],
-    [`Se${h}`, `${ATTN}.ex[${h + 1}]`],
-    [`Z${h}`, `${ATTN}.Z[${h + 1}]`],
-    [`P${h}`, `${ATTN}.P[${h + 1}]`],
-    [`O${h}`, `${ATTN}.o[${h + 1}]`],
+    [`kp${h}`, `${GQA}.kp[${h + 1}]`],
+    [`V${h}`, `${GQA}.V[${h + 1}]`],
+    [`kT${h}`, `${GQA}.kT[${h + 1}]`],
+    [`S${h}`, `${GQA}.S[${h + 1}]`],
+    [`Ss${h}`, `${GQA}.Ss[${h + 1}]`],
+    [`Sm${h}`, `${GQA}.Sm[${h + 1}]`],
+    [`Se${h}`, `${GQA}.ex[${h + 1}]`],
+    [`Z${h}`, `${GQA}.Z[${h + 1}]`],
+    [`P${h}`, `${GQA}.P[${h + 1}]`],
+    [`O${h}`, `${GQA}.o[${h + 1}]`],
   ])),
-  O: `${ATTN}.o`,
+  O: `${GQA}.o`,
   ao: `${ATTN}.att`,
   a: 'layer.a',
   ah2: `${RMS['2']}.xh`,
@@ -108,6 +117,12 @@ const BUFFERS = new Set(['cos', 'sin', 'M']);
 const MATH_UNICODE = /[\u0370-\u03FF\u2070-\u209F\u2190-\u22FF\u0300-\u036F\u2032\u00B7\u00D7\u00F7\u2113\u1D00-\u1DBF\u2212\u00B2\u00B3\u00B9]/;
 const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: '传到γ2和a', b_fh: '传到γ和x' };
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
+const LABEL_CHANGES: Record<string, string> = {
+  qkrs: '$\\mathrm{ms}_{q},\\ r_{q},\\ \\mathrm{ms}_{k},\\ r_{k}$',
+  b_qkrs: '$\\partial\\mathrm{ms}_{q},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{k},\\ \\partial{\\mathbf{k}}^{2}$',
+  b_qkah: '$\\partial r_{q},\\ \\partial\\mathbf{q},\\ \\partial r_{k},\\ \\partial\\mathbf{k}$',
+  b_qkn: '$\\partial\\boldsymbol{\\gamma}_{q},\\ \\partial\\hat{\\mathbf{q}},\\ \\partial\\boldsymbol{\\gamma}_{k},\\ \\partial\\hat{\\mathbf{k}}$',
+};
 
 const GLAB: Record<string, string> = {
   ov: '总览', in: '输入', emb: 'embed_tokens', pre: '⋯ 第 1 到 N−1 层', dec: 'Qwen3DecoderLayer', rms1: 'input_layernorm', attn: 'self_attn',
@@ -254,7 +269,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
 
   it('labels steps so that they read like the reference OPL, OPLB and MODF tables', () => {
     const expected = refSteps(ref);
-    steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(refLabel(ref, expected[i]))));
+    steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(LABEL_CHANGES[expected[i].id] ?? refLabel(ref, expected[i]))));
     expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '${\\mathbf{x}_0}^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
     expect(steps.list.map((s) => s.kind).filter((k) => k !== 'op')).toEqual(['overview', 'inputs', 'module', 'module', 'overview']);
   });

@@ -15,5 +15,4 @@ export {
   type SumOptions,
   type NllLossOptions,
   type CatOptions,
-  type RotateHalfOptions,
 } from './ops';

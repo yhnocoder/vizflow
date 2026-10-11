@@ -119,6 +119,14 @@
   display: block;
 }
 
+.vf-timeline .vf-steprow {
+  align-items: flex-start;
+}
+
+.vf-timeline .vf-tl-row {
+  min-height: 34px;
+}
+
 .vf-tl-row {
   display: flex;
   align-items: center;

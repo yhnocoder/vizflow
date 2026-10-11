@@ -198,3 +198,69 @@ export const catOp: OpDef<CatAttrs> = {
     return grads;
   },
 };
+
+export interface ViewAttrs {
+  shape: number[];
+}
+
+export function viewShape(input: readonly number[], attrs: ViewAttrs): number[] {
+  const size = input.reduce((a, b) => a * b, 1);
+  const free = attrs.shape.filter((d) => d === -1).length;
+  const known = attrs.shape.filter((d) => d !== -1).reduce((a, b) => a * b, 1);
+  const fail = () => new Error(`view: shape (${attrs.shape.join(', ')}) is invalid for input ${formatShape(input)} of size ${size}`);
+  if (free > 1 || attrs.shape.some((d) => !Number.isInteger(d) || (d < 0 && d !== -1))) throw fail();
+  if (free === 0 ? known !== size : known === 0 || size % known !== 0) throw fail();
+  return attrs.shape.map((d) => (d === -1 ? size / known : d));
+}
+
+export const viewOp: OpDef<ViewAttrs> = {
+  name: 'view',
+  args: ['input', 'shape'],
+  tensors: ['input'],
+  rest: 'shape',
+  sizes: ['shape'],
+  shape: ([input], attrs) => viewShape(input, attrs),
+  forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice()),
+  backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+};
+
+export interface SelectAttrs {
+  dim: number;
+  index: number;
+}
+
+function selected(shape: readonly number[], attrs: SelectAttrs): { dim: number; index: number; shape: number[] } {
+  if (shape.length === 0) throw new Error('select: input must have at least one dimension');
+  const dim = normDim(attrs.dim, shape.length);
+  const index = attrs.index < 0 ? attrs.index + shape[dim] : attrs.index;
+  if (!Number.isInteger(index) || index < 0 || index >= shape[dim]) {
+    throw new Error(`select: index ${attrs.index} is out of range for input ${formatShape(shape)} along dim ${dim}`);
+  }
+  return { dim, index, shape: shape.filter((_, d) => d !== dim) };
+}
+
+export function selectSource(inputShape: readonly number[], attrs: SelectAttrs, out: readonly number[]): number[] {
+  const { dim, index } = selected(inputShape, attrs);
+  return [...out.slice(0, dim), index, ...out.slice(dim)];
+}
+
+export const selectOp: OpDef<SelectAttrs> = {
+  name: 'select',
+  args: ['input', 'dim', 'index'],
+  tensors: ['input'],
+  shape: ([input], attrs) => selected(input, attrs).shape,
+  forward: ([input], attrs) => {
+    const out = new Tensor(selected(input.shape, attrs).shape);
+    forEachIndex(out.shape, (index, offset) => {
+      out.data[offset] = input.get(selectSource(input.shape, attrs, index));
+    });
+    return out;
+  },
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (index, offset) => {
+      grad.data[offsetOf(input.shape, selectSource(input.shape, attrs, index))] = gradOut.data[offset];
+    });
+    return [grad];
+  },
+};

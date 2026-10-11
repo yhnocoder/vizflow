@@ -213,21 +213,36 @@ title: t
 import: { RoPE: vizflow/nn/rope }
 dims: {}
 inputs:
-  a: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-  b: { value: [[1, 0, 1, 0], [0, 1, 0, 1]] }
-  c: { value: [[1, 2], [3, 4]] }
+  a: { value: [[[1, 2, 3, 4], [9, 9, 9, 9]], [[5, 6, 7, 8], [1, 1, 1, 1]]] }
+  b: { value: [[[1, 0, 1, 0]], [[0, 1, 0, 1]]] }
+  c: { value: [[[1, 2]], [[3, 4]]] }
 body:
-  - ra: { use: RoPE, params: { dh: 4 }, inputs: { q: a, k: b }, outputs: { q_embed: a2, k_embed: b2 } }
-  - rb: { use: RoPE, params: { dh: 4 }, inputs: { q: b, k: a }, outputs: { q_embed: b3, k_embed: a3 } }
-  - rc: { use: RoPE, params: { dh: 4, theta: 100 }, inputs: { q: b, k: b }, outputs: { q_embed: b4, k_embed: b5 } }
-  - rd: { use: RoPE, params: { dh: 2 }, inputs: { q: c, k: c }, outputs: { q_embed: c2, k_embed: c3 } }
+  - ra: { use: RoPE, inputs: { q: a, k: b }, outputs: { q_embed: a2, k_embed: b2 } }
+  - rb: { use: RoPE, inputs: { q: b, k: a }, outputs: { q_embed: b3, k_embed: a3 } }
+  - rc: { use: RoPE, params: { theta: 100 }, inputs: { q: b, k: b }, outputs: { q_embed: b4, k_embed: b5 } }
+  - rd: { use: RoPE, inputs: { q: c, k: c }, outputs: { q_embed: c2, k_embed: c3 } }
 `);
     const buffers = rope.graph.nodes.filter((n) => n.kind === 'buffer').map((n) => n.name);
     expect(buffers).toEqual(['ra.cos', 'ra.sin', 'rc.cos', 'rc.sin', 'rd.cos', 'rd.sin']);
     expect(rope.nodes.get('rb.cos')).toBe(rope.nodes.get('ra.cos'));
     const cos = rope.nodes.get('ra.cos')!;
-    expect(cos.value.get([1, 1])).toBeCloseTo(Math.cos(1 / 100), 15);
-    expect(rope.nodes.get('rc.cos')!.value.get([1, 1])).toBeCloseTo(Math.cos(1 / 10), 15);
+    expect(cos.shape).toEqual([2, 1, 4]);
+    expect(cos.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 100), 15);
+    expect(rope.nodes.get('rc.cos')!.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 10), 15);
+    const a2 = rope.nodes.get('a2')!.value;
+    const c1 = Math.cos(1);
+    const s1 = Math.sin(1);
+    expect(a2.get([1, 0, 0])).toBeCloseTo(5 * c1 - 7 * s1, 12);
+    expect(a2.get([1, 1, 2])).toBeCloseTo(c1 + s1, 12);
+    await expect(page(`
+title: t
+import: { RoPE: vizflow/nn/rope }
+dims: {}
+inputs:
+  a: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - r: { use: RoPE, inputs: { q: a, k: a } }
+`)).rejects.toThrow(/input has shape \(2, 4\), but RoPE expects \(T, Hq, dh\)/);
   });
 
   it('detects circular imports', async () => {
@@ -792,5 +807,107 @@ body:
     await expect(page(uses.replace('      body:', '      beside: na\n      body:'), files)).rejects.toThrow(
       /page\.yaml:14:48 body\[2\]\.nb\.beside: 'nb' is beside 'grp' but uses 'na\.out', which 'na' in the same beside group computes; .* Put it after the beside group/,
     );
+  });
+});
+
+describe('heads', () => {
+  const values = (shape: number[], seed: number): unknown => {
+    let i = 0;
+    const nest = (dims: number[]): unknown => (dims.length === 0 ? Math.round(Math.sin(seed + i++ * 1.3) * 100) / 100 : Array.from({ length: dims[0] }, () => nest(dims.slice(1))));
+    return nest(shape);
+  };
+
+  function attention(q: number[][][], k: number[][][], v: number[][][]): number[][] {
+    const [T, H, dh] = [q.length, q[0].length, q[0][0].length];
+    const group = H / k[0].length;
+    return Array.from({ length: T }, (_, t) => Array.from({ length: H }, (_, h) => {
+      const kv = Math.floor(h / group);
+      const scores = Array.from({ length: t + 1 }, (_, s) => q[t][h].reduce((a, x, c) => a + x * k[s][kv][c], 0) / Math.sqrt(dh));
+      const z = scores.reduce((a, x) => a + Math.exp(x), 0);
+      return Array.from({ length: dh }, (_, c) => scores.reduce((a, x, s) => a + (Math.exp(x) / z) * v[s][kv][c], 0));
+    }).flat());
+  }
+
+  it('reshapes with view, matches a leading ... pattern and merges the steps of beside instances', async () => {
+    const result = await page(`
+title: t
+import: { RMSNorm: vizflow/nn/rmsnorm }
+dims: { T: 2, H: 2, dh: 2 }
+inputs:
+  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - q: 'view(x, T, H, dh)'
+  - f: 'view(q * 2, T, -1)'
+  - norms:
+      body:
+        - qa:
+            use: RMSNorm
+            inline: true
+            suffix: a
+            inputs: { x: q }
+            outputs: { out: na }
+            steps: { rms: { text: '$$r={{ qb.r | matrix:3 }}$$' } }
+        - qb: { use: RMSNorm, inline: true, suffix: b, beside: qa, inputs: { x: f }, outputs: { out: nb } }
+`);
+    expect(result.nodes.get('q')!.shape).toEqual([2, 2, 2]);
+    expect(Array.from(result.nodes.get('q')!.value.data)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(result.nodes.get('f')!.shape).toEqual([2, 4]);
+    expect(result.nodes.get('qa.r')!.shape).toEqual([2, 2, 1]);
+    expect(result.nodes.get('qb.r')!.shape).toEqual([2, 1]);
+    expect(result.modules.map((m) => m.id)).toEqual(['norms']);
+    const lanes = names(result.tree.children).slice(-1)[0] as { title: string; children: { parallel: { title: unknown; children: string[] }[] }[] };
+    expect(lanes.title).toBe('norms');
+    expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
+    expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
+    const forward = result.steps.forward;
+    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
+    const rms = forward[3];
+    expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
+    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial{\\mathbf{f}}^{2}$');
+    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
+    expect(rms.text).toContain('{{qb.r[0]:3}}');
+    expect(rms.text).toContain('{{qb.r[1]:3}}');
+    await expect(page(`
+title: t
+import: { RMSNorm: vizflow/nn/rmsnorm }
+dims: {}
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - n: { use: RMSNorm, inline: true, title: norm, inputs: { x: x } }
+`)).rejects.toThrow(/body\[0\]\.n\.title: an inline instance has no box of its own, so it cannot have 'title'/);
+  });
+
+  it.each([
+    [2, 1],
+    [2, 2],
+    [4, 2],
+  ])('computes grouped-query attention with %i query heads and %i kv heads', async (H, Hkv) => {
+    const q = values([3, H, 2], 1);
+    const k = values([3, Hkv, 2], 2);
+    const v = values([3, Hkv, 2], 3);
+    const result = await page(`
+title: t
+import: { GQA: vizflow/nn/gqa }
+dims: { T: 3 }
+inputs:
+  q: { value: ${JSON.stringify(q)} }
+  k: { value: ${JSON.stringify(k)} }
+  v: { value: ${JSON.stringify(v)} }
+buffers:
+  M: { value: causal_mask(T) }
+body:
+  - attn: { use: GQA, inputs: { q: q, k: k, v: v, mask: M }, outputs: { o: o } }
+`);
+    const o = result.nodes.get('o')!;
+    expect(o.shape).toEqual([3, H * 2]);
+    const want = attention(q as number[][][], k as number[][][], v as number[][][]).flat();
+    want.forEach((x, i) => expect(o.value.data[i]).toBeCloseTo(x, 12));
+    expect(result.nodes.get(`attn.S[${H}]`)!.shape).toEqual([3, 3]);
+    expect(result.nodes.get(`attn.S[${H + 1}]`)).toBeUndefined();
+    expect(result.steps.forward.map((s) => s.title)).toEqual([
+      'repeat_kv：复制 k', 'repeat_kv：复制 v', '转置', '打分：$\\mathbf{q}\\mathbf{k}^{\\top}$', '缩放', 'causal mask', 'softmax：取 exp', '按行求和', '注意力权重', 'P v', `拼回 $T\\times${H * 2}$`,
+    ]);
+    expect(result.modules.map((m) => m.id)).toEqual(['attn']);
   });
 });

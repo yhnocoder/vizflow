@@ -63,11 +63,18 @@ export const divExplain = binary(
 export const negExplain = unary((a) => `-${a}`, () => -1, () => '-1');
 export const expExplain = unary((a) => `\\exp(${a})`, (_x, y) => y, (x) => `e^{${x}}`);
 export const logExplain = unary((a) => `\\log ${a}`, (x) => 1 / x, (x) => `\\frac{1}{${x}}`);
-export const rsqrtExplain = unary(
+const rsqrtBase = unary(
   (a) => `\\frac{1}{\\sqrt{${a}}}`,
   (_x, y) => -0.5 * y ** 3,
   (_x, y) => `-\\frac{1}{2}{${y}}^{3}`,
 );
+export const rsqrtExplain: OpExplain = {
+  ...rsqrtBase,
+  tex: {
+    ...rsqrtBase.tex,
+    forward: (s) => ((s.attrs as { eps?: number }).eps ? `\\frac{1}{\\sqrt{${s.in[0]}+\\epsilon}}` : rsqrtBase.tex.forward(s)),
+  },
+};
 export const sqrtExplain = unary((a) => `\\sqrt{${a}}`, (_x, y) => 0.5 / y, (_x, y) => `\\frac{1}{2${y}}`);
 export const sigmoidExplain = unary((a) => `\\sigma(${a})`, (_x, y) => y * (1 - y), (_x, y) => `${y}(1-${y})`);
 export const siluExplain = unary(
@@ -91,24 +98,20 @@ export const geluExplain = unary(
 );
 export const identityExplain = unary((a) => a, () => 1, () => '1');
 
-function rotatePosition(shape: readonly number[], attrs: object, out: readonly number[]): { first: boolean; partner: number } {
-  const column = out[out.length - 1];
-  const width = (attrs as { size?: number | null }).size ?? shape[shape.length - 1];
-  const half = width / 2;
-  const first = column % width < half;
-  return { first, partner: first ? column + half : column - half };
-}
+const lastHalf = (shape: readonly number[]) => shape[shape.length - 1] / 2;
 
 export const rotateHalfExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, out) => (rotatePosition(ctx.out.shape, ctx.attrs, out).first ? -1 : 1),
+  local: (ctx, out) => (out[out.length - 1] < lastHalf(ctx.out.shape) ? -1 : 1),
   tex: {
     forward: (s) => `\\operatorname{rotate\\_half}(${s.in[0]})`,
-    local: (s) => (rotatePosition(s.ctx.out.shape, s.attrs, s.outIndex).first ? '-1' : '1'),
+    local: (s) => (s.outIndex[s.outIndex.length - 1] < lastHalf(s.ctx.out.shape) ? '-1' : '1'),
   },
   selected: (ctx, out) => {
+    const last = out.length - 1;
+    const half = lastHalf(ctx.out.shape);
     const index = [...out];
-    index[index.length - 1] = rotatePosition(ctx.out.shape, ctx.attrs, out).partner;
+    index[last] = out[last] < half ? out[last] + half : out[last] - half;
     return [{ arg: 0, index }];
   },
 };

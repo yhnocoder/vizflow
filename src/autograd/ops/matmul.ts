@@ -67,36 +67,36 @@ export const matmulOp: OpDef<NoAttrs> = {
   },
 };
 
-export interface NarrowMatmulAttrs {
-  start: number;
+export interface SelectMatmulAttrs {
+  index: number;
 }
 
-function narrowMatmulShape(a: readonly number[], b: readonly number[], start: number): number[] {
-  if (a.length !== 2 || b.length !== 2 || !Number.isInteger(start) || start < 0 || start + b[0] > a[1]) {
-    throw new Error(`narrow_matmul: cannot multiply columns ${start}..${start + (b[0] ?? 0) - 1} of ${formatShape(a)} by ${formatShape(b)}`);
+function selectMatmulShape(a: readonly number[], b: readonly number[], index: number): number[] {
+  if (a.length !== 3 || b.length !== 2 || a[2] !== b[0] || !Number.isInteger(index) || index < 0 || index >= a[1]) {
+    throw new Error(`select_matmul: cannot multiply ${formatShape(a)}[:, ${index}, :] by ${formatShape(b)}`);
   }
   return [a[0], b[1]];
 }
 
-function columns(a: Tensor, start: number, width: number): Tensor {
-  const rows = a.shape[0];
+function slice(a: Tensor, index: number): Tensor {
+  const [rows, heads, width] = a.shape;
   const out = new Tensor([rows, width]);
-  for (let r = 0; r < rows; r++) out.data.set(a.data.subarray(r * a.shape[1] + start, r * a.shape[1] + start + width), r * width);
+  for (let r = 0; r < rows; r++) out.data.set(a.data.subarray((r * heads + index) * width, (r * heads + index + 1) * width), r * width);
   return out;
 }
 
-export const narrowMatmulOp: OpDef<NarrowMatmulAttrs> = {
-  name: 'narrow_matmul',
-  args: ['input', 'other', 'start'],
+export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
+  name: 'select_matmul',
+  args: ['input', 'other', 'index'],
   tensors: ['input', 'other'],
-  shape: ([a, b], { start }) => narrowMatmulShape(a, b, start),
-  forward: ([a, b], { start }) => multiply(columns(a, start, b.shape[0]), b, narrowMatmulShape(a.shape, b.shape, start)),
-  backward: (gradOut, [a, b], _out, { start }) => {
-    const width = b.shape[0];
-    const gSlice = multiply(gradOut, transposed2d(b, 'right'), [a.shape[0], width]);
+  shape: ([a, b], { index }) => selectMatmulShape(a, b, index),
+  forward: ([a, b], { index }) => multiply(slice(a, index), b, selectMatmulShape(a.shape, b.shape, index)),
+  backward: (gradOut, [a, b], _out, { index }) => {
+    const [rows, heads, width] = a.shape;
+    const gSlice = multiply(gradOut, transposed2d(b, 'right'), [rows, width]);
     const gA = new Tensor(a.shape);
-    for (let r = 0; r < a.shape[0]; r++) gA.data.set(gSlice.data.subarray(r * width, (r + 1) * width), r * a.shape[1] + start);
-    const gB = multiply(transposed2d(columns(a, start, width), 'left'), gradOut, [width, b.shape[1]]);
+    for (let r = 0; r < rows; r++) gA.data.set(gSlice.data.subarray(r * width, (r + 1) * width), (r * heads + index) * width);
+    const gB = multiply(transposed2d(slice(a, index), 'left'), gradOut, [width, b.shape[1]]);
     return [gA, gB];
   },
 };

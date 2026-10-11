@@ -30,9 +30,10 @@ function ropeWave(node: Node, args: string[]): string {
   const f = WAVE_FN[kind];
   const inverse = WAVE_INVERSE[kind];
   const N = args[1] === undefined ? WAVE_POSITIONS : Number(args[1]);
-  const [T, dh] = node.shape;
+  const T = node.shape[0];
+  const dh = node.shape[node.shape.length - 1];
   const half = dh / 2;
-  const omegas = range(half).map((i) => inverse(node.value.get([1, i])));
+  const omegas = range(half).map((i) => inverse(node.value.data[dh + i]));
   const x0 = 26;
   const x1 = WAVE_WIDTH - 8;
   const y0 = 12;

@@ -277,7 +277,7 @@ class Plan implements LevelPlan {
   private findBoards(): void {
     for (const u of this.computed) {
       if (u.kind !== 'op') continue;
-      if ((u.op === 'matmul' || u.op === 'narrow_matmul') && u.inputs.length === 2) {
+      if ((u.op === 'matmul' || u.op === 'select_matmul') && u.inputs.length === 2) {
         const [a, b] = u.inputs;
         if (a.shape.length === 2 && b.shape.length === 2 && u.shape.length === 2) this.boards.set(u, { op: u, a, b, linear: isLeafLike(b) });
         continue;

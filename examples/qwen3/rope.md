@@ -92,11 +92,11 @@ RoPE 没有参数。cos 和 sin 只由位置决定，不需要梯度。
 
 ::: buttons
 - { label: 在图上看 RoPE 这几步, go: layer.self_attn.apply_rotary_pos_emb.qc }
-- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layer.self_attn.S[1]' }
+- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layer.self_attn.eager_attention_forward.S[1]' }
 :::
 
 ::: rope_compare
-scores: 'layer.self_attn.Ss[1..H]'
-weights: 'layer.self_attn.P[1..H]'
+scores: 'layer.self_attn.eager_attention_forward.Ss[1..H]'
+weights: 'layer.self_attn.eager_attention_forward.P[1..H]'
 ids: ids
 :::

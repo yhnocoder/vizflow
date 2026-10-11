@@ -33,9 +33,9 @@ export function elemTexOf(node: Node, index: readonly number[]): string {
 export function matmulOperands(op: Node, index: readonly [number, number, number]): { a: number[]; b: number[]; out: number[] } {
   const [r, k, i] = index;
   const [A, B] = op.inputs;
-  const start = (op.attrs as { start?: number }).start ?? 0;
+  const head = (op.attrs as { index?: number }).index;
   return {
-    a: A.shape.length === 1 ? [k] : [r, start + k],
+    a: A.shape.length === 1 ? [k] : head === undefined ? [r, k] : [r, head, k],
     b: B.shape.length === 1 ? [k] : [k, i],
     out: A.shape.length === 1 ? [i] : B.shape.length === 1 ? [r] : [r, i],
   };

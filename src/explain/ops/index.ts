@@ -19,10 +19,9 @@ import {
   subExplain,
   transposeExplain,
 } from './elementwise';
-import { catExplain, embeddingExplain, gatherExplain, narrowExplain } from './index_ops';
+import { catExplain, embeddingExplain, gatherExplain, narrowExplain, selectExplain, viewExplain } from './index_ops';
 import { nllLossExplain } from './loss';
-import { groupMeanExplain, groupMulExplain, tileMulExplain } from './group';
-import { matmulExplain, narrowMatmulExplain } from './matmul';
+import { matmulExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
@@ -56,10 +55,9 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   narrow: narrowExplain,
   cat: catExplain,
   nll_loss: nllLossExplain,
-  group_mean: groupMeanExplain,
-  group_mul: groupMulExplain,
-  tile_mul: tileMulExplain,
-  narrow_matmul: narrowMatmulExplain,
+  view: viewExplain,
+  select: selectExplain,
+  select_matmul: selectMatmulExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
