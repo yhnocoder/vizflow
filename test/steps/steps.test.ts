@@ -77,7 +77,7 @@ describe('automatic backward steps', () => {
     const steps = createSteps(g, {
       forward: [
         { show: x, title: 'X', text: '' },
-        { show: U, title: 'U', text: '' },
+        { show: [x, U], title: 'U', text: '' },
         { show: s, title: 's', text: '' },
         { show: P, title: 'P', text: '' },
         { show: [y, lb, loss], title: 'ℓ', text: '' },
@@ -92,6 +92,28 @@ describe('automatic backward steps', () => {
       forward: [{ show: [x, U, s, P, y, lb, loss], title: '全部', text: '' }],
     });
     expect(plain.list.filter((st) => st.dir === 'backward').map((st) => st.nodes)).toEqual([[loss, lb], [y], [P], [s], [U], [x]]);
+  });
+
+  it('skips nodes without gradients in backward steps', () => {
+    const { g, x, U, s, P, y, lb, loss } = softmaxBatch();
+    const side = g.neg(x, { name: 'side' });
+    const peek = g.exp(x, { name: 'peek' });
+    const steps = createSteps(g, {
+      forward: [
+        { show: [x, U], title: 'U', text: '' },
+        { show: side, title: 'side', text: '' },
+        { show: s, title: 's', text: '' },
+        { show: [P, peek], title: 'P', text: '' },
+        { show: [y, lb, loss], title: 'ℓ', text: '' },
+      ],
+      backward: 'reverse',
+    });
+    expect(side.grad).toBeNull();
+    expect(peek.grad).toBeNull();
+    const backward = steps.list.filter((st) => st.dir === 'backward');
+    expect(backward.map((st) => st.id)).toEqual(['b:4', 'b:3', 'b:2', 'b:0']);
+    expect(backward.map((st) => st.nodes)).toEqual([[loss, P], [U, s], [U], [x]]);
+    expect(backward[1].title).toBe(`$\\partial\\ell/\\partial ${U.tex}$`);
   });
 
   it('generates no backward steps for a graph without a loss node', () => {

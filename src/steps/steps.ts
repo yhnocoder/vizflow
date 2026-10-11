@@ -262,7 +262,6 @@ interface Unit {
   index: number;
   step: ForwardStep;
   prod: Node[];
-  use: Node[];
   active: Node[];
 }
 
@@ -301,7 +300,7 @@ class StepsImpl implements Steps {
         const computed = show.filter((n) => !isLeafLike(n));
         const prod = computed.length > 0 ? computed : show;
         const use = usesOf(prod).filter((n) => !prod.includes(n));
-        this.units.push({ index, step, prod, use, active: step.active === undefined ? unique([...prod, ...use]) : toList(step.active) });
+        this.units.push({ index, step, prod, active: step.active === undefined ? unique([...prod, ...use]) : toList(step.active) });
       });
       this.rebuild();
     } else {
@@ -476,9 +475,11 @@ class StepsImpl implements Steps {
         continue;
       }
       const unit = group.unit as Unit;
-      const recv = unit.use.filter(hasGrad);
+      const live = unit.prod.filter((n) => n.grad !== null);
+      if (live.length === 0) continue;
+      const recv = usesOf(live).filter((n) => !unit.prod.includes(n) && hasGrad(n));
       if (recv.length === 0 && position > 0) continue;
-      const subject = recv[0] ?? unit.prod[0];
+      const subject = recv[0] ?? live[0];
       const override = unit.step.backward ?? {};
       const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;
       const info: Omit<StepInfo, 'index' | 'dir'> = {
