@@ -20,4 +20,4 @@ export const GENERATE_KEYS = new Set(['steps', 'temperature', 'top_k', 'top_p', 
 export const CACHE_KEYS = new Set(['nodes', 'note']);
 export const MESH_AXIS_KEYS = new Set(['size', 'nodes']);
 export const OPTIMIZER_KEYS = new Set(['type', 'lr', 'weight_decay']);
-export const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label', 'packed']);
+export const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label', 'packed', 'place']);

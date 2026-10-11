@@ -9,7 +9,7 @@ import { barColor, nodeColor, outlineOpacity, stateColor } from './colors';
 import type { SceneController } from './controller';
 import type { Label } from './labels';
 import type { Block, Vec3 } from './layout';
-import { elementRank, partialParts, rankColor } from './parallel';
+import { elementIdle, elementRank, partialParts, rankColor } from './parallel';
 import { blockValues } from './platforms';
 import { type Renderable, targetOf } from './renderable';
 import { barHeight } from './scales';
@@ -260,7 +260,8 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
     const on = revealed && active && rows[i] !== 'inactive';
     const state = { active: on, far, focused };
     const rank = block.platform === undefined ? elementRank(c, node, element.index) : undefined;
-    colors.push(rank === undefined ? barColor(values[i], c.theme, state) : stateColor(rankColor(c.theme, rank), c.theme, state));
+    const idle = block.platform === undefined && rank === undefined && elementIdle(c, node, element.index);
+    colors.push(idle ? stateColor(c.theme.lineStrong, c.theme, state) : rank === undefined ? barColor(values[i], c.theme, state) : stateColor(rankColor(c.theme, rank), c.theme, state));
     outline.push(outlineOpacity({ active: on, far, tile: block.shape === 'tile' }));
     if (ranks !== undefined) {
       const offset = offsetOf(node.shape, element.index);

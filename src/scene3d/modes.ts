@@ -47,3 +47,9 @@ export function gradReduces(placements: Placements, steps: readonly StepInfo[], 
   if (info.dir !== 'backward' || info.kind === 'overview') return [];
   return info.nodes.filter((node) => placements.grad(node).reduce && lastReceiving(steps, node) === info);
 }
+
+export function stepSends(steps: readonly StepInfo[], info: StepInfo): Node[] {
+  const source = info.dir === 'forward' ? info : steps.find((s) => s.id === info.forwardId);
+  if (source === undefined || source.kind === 'overview') return [];
+  return source.nodes.filter((node) => node.op === 'send_recv');
+}

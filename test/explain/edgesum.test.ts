@@ -258,6 +258,26 @@ const cases: Case[] = [
     },
   },
   {
+    op: 'lse_merge',
+    build: (g, r) => {
+      const oa = g.input('oa', [3, 2], randomValues(r, [3, 2]));
+      const la = g.input('la', [3, 1], randomValues(r, [3, 1]));
+      const ob = g.input('ob', [3, 2], randomValues(r, [3, 2]));
+      const lb = g.input('lb', [3, 1], randomValues(r, [3, 1]));
+      return { out: g.lse_merge(oa, la, ob, lb), inputs: [oa, la, ob, lb] };
+    },
+  },
+  {
+    op: 'lse_merge',
+    build: (g, r) => {
+      const oa = g.input('oa', [2, 3], randomValues(r, [2, 3]));
+      const la = g.input('la', [2, 1], [0.4, -0.3]);
+      const ob = g.input('ob', [2, 3], [0, 0, 0, 0.5, -1, 2]);
+      const lb = g.input('lb', [2, 1], [-Infinity, 1.2]);
+      return { out: g.lse_merge(oa, la, ob, lb), inputs: [oa, la, ob, lb] };
+    },
+  },
+  {
     op: 'index_add',
     build: (g, r) => {
       const src = g.input('src', [5, 2], randomValues(r, [5, 2]));

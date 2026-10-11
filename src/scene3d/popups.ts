@@ -10,7 +10,7 @@ import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
 import { rowsCols, tokenText } from './layout';
-import { elementRank, parallelRows, partialParts } from './parallel';
+import { IDLE_TEXT, elementIdle, elementRank, parallelRows, partialParts } from './parallel';
 import { blockValues } from './platforms';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
@@ -121,10 +121,11 @@ export class ScenePopups {
       fragment.appendChild(local);
     }
     const rank = block.platform === undefined ? elementRank(c, node, element.index) : undefined;
-    if (rank !== undefined) {
+    const idle = block.platform === undefined && rank === undefined && elementIdle(c, node, element.index);
+    if (rank !== undefined || idle) {
       const owner = document.createElement('div');
       owner.className = 'vf-s';
-      owner.textContent = `在 rank ${rank} 上`;
+      owner.textContent = rank === undefined ? IDLE_TEXT : `在 rank ${rank} 上`;
       fragment.appendChild(owner);
     }
     const name = document.createElement('div');

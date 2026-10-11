@@ -1,11 +1,22 @@
-import { Tensor, forEachIndex, normDims } from '../tensor';
+import { Tensor, broadcastIndex, forEachIndex, normDims } from '../tensor';
 import type { Graph } from './graph';
 import type { Mesh } from './mesh';
 import type { Node } from './node';
 import { routedPairs } from './ops/comm';
 import { opDef } from './registry';
 
-export type Placement = { kind: 'replicate' } | { kind: 'shard'; dim: number } | { kind: 'partial' } | { kind: 'local'; rank: number } | { kind: 'routed'; sel: Node };
+export type BlockFill = 'any' | 'neg_inf' | 'zero';
+
+export type Placement =
+  | { kind: 'replicate' }
+  | { kind: 'shard'; dim: number; chunks?: readonly number[] }
+  | { kind: 'partial' }
+  | { kind: 'local'; rank: number }
+  | { kind: 'routed'; sel: Node }
+  | { kind: 'block'; rows: readonly number[]; cols: readonly number[]; fill: BlockFill };
+
+type Shard = Extract<Placement, { kind: 'shard' }>;
+type Block = Extract<Placement, { kind: 'block' }>;
 
 export interface GradPlacement {
   placement: Placement;
@@ -34,18 +45,48 @@ const MOVEMENT = new Set(['transpose', 'view', 'select', 'narrow', 'cat', 'repea
 const SUMS = new Set(['sum', 'mean']);
 const ROW_WISE = new Set(['softmax', 'log_softmax', 'logsumexp', 'max', 'topk_mask']);
 const KEEP_DIM = new Set(['softmax', 'log_softmax', 'topk_mask']);
+const BLOCK_OPS = new Set(['add', 'sub', 'mul', 'div', 'exp', 'softmax', 'logsumexp', 'sum', 'matmul', 'select_matmul']);
+const FILL_TEXT: Readonly<Record<BlockFill, string>> = { any: '其余格子没有卡计算', neg_inf: '其余格子是负无穷', zero: '其余格子是 0' };
+
+export function headTailChunks(n: number): number[] {
+  return Array.from({ length: 2 * n }, (_, c) => (c < n ? c : 2 * n - 1 - c));
+}
+
+function range(n: number): number[] {
+  return Array.from({ length: n }, (_, i) => i);
+}
+
+function chunkOwner(chunks: readonly number[], index: number, size: number): number {
+  return chunks[Math.floor(index / (size / chunks.length))];
+}
+
+function sameList(a: readonly number[] | undefined, b: readonly number[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
+
+function compress(owners: readonly number[]): number[] {
+  for (let k = 1; k <= owners.length; k++) {
+    if (owners.length % k !== 0) continue;
+    const width = owners.length / k;
+    if (owners.every((v, i) => v === owners[Math.floor(i / width) * width])) return range(k).map((c) => owners[c * width]);
+  }
+  return [...owners];
+}
 
 export function placementText(p: Placement): string {
   if (p.kind === 'replicate') return 'Replicate';
   if (p.kind === 'partial') return 'Partial';
-  if (p.kind === 'shard') return `Shard(${p.dim})`;
+  if (p.kind === 'shard') return p.chunks === undefined ? `Shard(${p.dim})` : `Shard(${p.dim})，这一维分成 ${p.chunks.length} 块，依次在 rank ${p.chunks.join('、')}`;
+  if (p.kind === 'block') return `按行 Shard(0)，行和列在同一张卡上的格子由这张卡计算，${FILL_TEXT[p.fill]}`;
   if (p.kind === 'routed') return '每行在它的专家所在的卡上';
   return `只在 rank ${p.rank} 上`;
 }
 
 function same(a: Placement, b: Placement): boolean {
   if (a.kind !== b.kind) return false;
-  if (a.kind === 'shard') return a.dim === (b as { dim: number }).dim;
+  if (a.kind === 'shard') return a.dim === (b as Shard).dim && sameList(a.chunks, (b as Shard).chunks);
+  if (a.kind === 'block') return sameList(a.rows, (b as Block).rows) && sameList(a.cols, (b as Block).cols) && a.fill === (b as Block).fill;
   if (a.kind === 'local') return a.rank === (b as { rank: number }).rank;
   if (a.kind === 'routed') return a.sel === (b as { sel: Node }).sel;
   return true;
@@ -84,9 +125,22 @@ class PlacementsImpl implements Placements {
 
   private ownerAt(node: Node, p: Placement, index: readonly number[]): number | undefined {
     if (p.kind === 'local') return p.rank;
-    if (p.kind === 'shard') return Math.floor(index[p.dim] / (node.shape[p.dim] / this.mesh.size));
+    if (p.kind === 'shard') return chunkOwner(this.chunks(p), index[p.dim], node.shape[p.dim]);
+    if (p.kind === 'block') {
+      const row = chunkOwner(p.rows, index[0], node.shape[0]);
+      return row === chunkOwner(p.cols, index[1], node.shape[1]) ? row : undefined;
+    }
     if (p.kind === 'routed') return this.expertRank(p.sel, routedPairs(p.sel.value, node.shape[0], 'dispatch')[index[0]].expert);
     return undefined;
+  }
+
+  private chunks(p: Shard): readonly number[] {
+    return p.chunks ?? range(this.mesh.size);
+  }
+
+  private shard(dim: number, chunks: readonly number[]): Shard {
+    const list = compress(chunks);
+    return sameList(list, range(this.mesh.size)) ? { kind: 'shard', dim } : { kind: 'shard', dim, chunks: list };
   }
 
   private expertRank(sel: Node, expert: number): number {
@@ -168,7 +222,15 @@ class PlacementsImpl implements Placements {
     if (op === 'all_reduce') return this.allReduce(node, ins[0]);
     if (op === 'dispatch') return this.dispatch(node, ins);
     if (op === 'combine') return this.combine(node, ins);
+    if (op === 'send_recv') return this.sendRecv(node, ins[0]);
     if (ins.every((p) => p.kind === 'replicate')) return REPLICATE;
+    if (ins.some((p) => p.kind === 'block')) return this.block(node, ins);
+    if (op === 'embedding') return this.embedding(node, ins);
+    if (op === 'nll_loss') return this.nllLoss(node, ins);
+    if (op === 'lse_merge') {
+      if (ins.some((p) => p.kind === 'partial')) throw this.error(node, 'lse_merge 的输入不能是 Partial');
+      return this.aligned(node, ins);
+    }
     if (LINEAR_UNARY.has(op)) return ins[0];
     if (NONLINEAR_UNARY.has(op)) {
       if (ins[0].kind === 'partial') throw this.error(node, 'Partial 不能直接进入非线性运算，要先 all_reduce');
@@ -202,6 +264,57 @@ class PlacementsImpl implements Placements {
   private checkGroup(node: Node): void {
     const group = node.attrs.group;
     if (group !== this.mesh.axis) throw this.error(node, `通信组 '${String(group)}' 不是 mesh 的轴，mesh 只有 '${this.mesh.axis}'`);
+  }
+
+  private sendRecv(node: Node, input: Placement): Placement {
+    this.checkGroup(node);
+    if (input.kind !== 'shard') throw this.error(node, `send_recv 的输入要按某一维切开，这里是 ${placementText(input)}`);
+    return this.shard(input.dim, this.chunks(input).map((r) => (r + 1) % this.mesh.size));
+  }
+
+  private embedding(node: Node, [ids, table]: Placement[]): Placement {
+    if (table.kind !== 'replicate') throw this.error(node, `embedding 表要是 Replicate，这里是 ${placementText(table)}`);
+    if (ids.kind === 'partial') throw this.error(node, 'token id 不能是 Partial');
+    return ids;
+  }
+
+  private nllLoss(node: Node, [x, target]: Placement[]): Placement {
+    const placed = [x, target].filter((p) => p.kind !== 'replicate');
+    if (!placed.every((p) => p.kind === 'shard' && p.dim === 0 && same(p, placed[0]))) {
+      throw this.error(node, `nll_loss 的输入和标签要按行切开且切法相同，这里是 ${placementText(x)}、${placementText(target)}`);
+    }
+    return (node.attrs as { reduction: string }).reduction === 'none' ? placed[0] : PARTIAL;
+  }
+
+  private block(node: Node, ins: Placement[]): Placement {
+    const op = node.op as string;
+    const index = ins.findIndex((p) => p.kind === 'block');
+    const b = ins[index] as Block;
+    if (!BLOCK_OPS.has(op)) throw this.error(node, `运算 ${op} 不支持按行和列分块的输入`);
+    if (op === 'matmul' || op === 'select_matmul') return this.matmul(node, ins[0], ins[1]);
+    if (op === 'exp') return { ...b, fill: b.fill === 'neg_inf' ? 'zero' : 'any' };
+    if (op === 'softmax' || op === 'logsumexp' || op === 'sum') {
+      const dims = normDims((node.attrs as { dim?: number | number[] | null }).dim ?? null, node.inputs[0].shape.length);
+      if (dims.length !== 1 || dims[0] !== 1) throw this.error(node, `分块的张量只能沿列（第 1 维）做 ${op}`);
+      const need: BlockFill = op === 'sum' ? 'zero' : 'neg_inf';
+      if (b.fill !== need) throw this.error(node, `${op} 之前，不在本卡的格子要是${need === 'zero' ? ' 0' : '负无穷'}，要先加上本轮的 mask`);
+      return op === 'softmax' ? { ...b, fill: 'zero' } : this.shard(0, b.rows);
+    }
+    if (ins.length === 1) return op === 'mul' || op === 'div' ? b : { ...b, fill: b.fill === 'neg_inf' ? 'neg_inf' : 'any' };
+    const other = ins[1 - index];
+    if (other.kind !== 'replicate') throw this.error(node, `分块的张量只能和 Replicate 组合，这里是 ${placementText(other)}`);
+    if (op === 'add' && (b.fill === 'neg_inf' || this.masksOffBlock(node, b, node.inputs[1 - index]))) return { ...b, fill: 'neg_inf' };
+    if ((op === 'mul' || (op === 'div' && index === 0)) && b.fill === 'zero') return b;
+    return { ...b, fill: 'any' };
+  }
+
+  private masksOffBlock(node: Node, b: Block, mask: Node): boolean {
+    let covered = true;
+    forEachIndex(node.shape, (index) => {
+      if (!covered || chunkOwner(b.rows, index[0], node.shape[0]) === chunkOwner(b.cols, index[1], node.shape[1])) return;
+      if (mask.value.get(broadcastIndex(index, mask.shape)) !== -Infinity) covered = false;
+    });
+    return covered;
   }
 
   private checkExperts(node: Node, sel: Node, p: Placement): void {
@@ -258,8 +371,12 @@ class PlacementsImpl implements Placements {
       if (op === 'add' || op === 'sub') throw this.error(node, 'Partial 与非 Partial 相加不合法，要先 all_reduce');
       throw this.error(node, `Partial 不能和 ${ins.map(placementText).join('、')} 这样组合`);
     }
+    return this.aligned(node, ins);
+  }
+
+  private aligned(node: Node, ins: Placement[]): Placement {
     const out = node.shape.length;
-    const shifted = ins.map((p, i): Placement => (p.kind === 'shard' ? { kind: 'shard', dim: p.dim + out - node.inputs[i].shape.length } : p));
+    const shifted = ins.map((p, i): Placement => (p.kind === 'shard' ? { ...p, dim: p.dim + out - node.inputs[i].shape.length } : p));
     const placed = shifted.filter((p) => p.kind !== 'replicate');
     if (!placed.every((p) => same(p, placed[0]))) throw this.error(node, `输入的放置 ${ins.map(placementText).join('、')} 不一致`);
     return placed[0];
@@ -290,18 +407,25 @@ class PlacementsImpl implements Placements {
     if (values.every((v) => v === values[0])) return { kind: 'local', rank: values[0] - 1 };
     const shape = owners.shape;
     for (let dim = 0; dim < shape.length; dim++) {
-      if (shape[dim] % this.mesh.size !== 0) continue;
-      const chunk = shape[dim] / this.mesh.size;
+      const along = new Array<number>(shape[dim]).fill(-1);
       let fits = true;
       forEachIndex(shape, (index, offset) => {
-        if (fits && values[offset] !== Math.floor(index[dim] / chunk) + 1) fits = false;
+        const i = index[dim];
+        if (along[i] === -1) along[i] = values[offset] - 1;
+        else if (along[i] !== values[offset] - 1) fits = false;
       });
-      if (fits) return { kind: 'shard', dim };
+      if (fits) return this.shard(dim, along);
     }
     throw this.error(node, `切分的边界没有落在结果 (${shape.join(', ')}) 的某一维的等分点上，例如按 head 切时 head 数要能被 ${this.mesh.size} 整除`);
   }
 
   private matmul(node: Node, a: Placement, b: Placement, aDims = node.inputs[0].shape.length): Placement {
+    if (a.kind === 'block') {
+      if (a.fill !== 'zero') throw this.error(node, '分块的注意力权重和 v 相乘之前，不在本卡的格子要是 0');
+      if (b.kind !== 'shard' || b.dim !== 0 || !sameList(this.chunks(b), a.cols)) throw this.error(node, `右边要按行切开，并且和左边的列在同一张卡上，这里是 ${placementText(b)}`);
+      return this.shard(0, a.rows);
+    }
+    if (b.kind === 'block') throw this.error(node, '分块的张量只能放在矩阵乘的左边');
     if (aDims !== 2 || node.inputs[1].shape.length !== 2) {
       if (a.kind === 'replicate' && b.kind === 'replicate') return REPLICATE;
       throw this.error(node, '只有二维矩阵乘支持切分');
@@ -316,9 +440,13 @@ class PlacementsImpl implements Placements {
       if (ranks.every((r) => r === ranks[0]) && [a, b].every((p) => p.kind === 'local' || p.kind === 'replicate')) return { kind: 'local', rank: ranks[0] };
       throw this.error(node, `两个输入 ${placementText(a)}、${placementText(b)} 不在同一张卡上`);
     }
-    if (a.kind === 'replicate' && b.kind === 'shard' && b.dim === 1) return { kind: 'shard', dim: 1 };
-    if (a.kind === 'shard' && a.dim === 0 && b.kind === 'replicate') return { kind: 'shard', dim: 0 };
-    if (a.kind === 'shard' && a.dim === 1 && b.kind === 'shard' && b.dim === 0) return PARTIAL;
+    if (a.kind === 'replicate' && b.kind === 'shard' && b.dim === 1) return b;
+    if (a.kind === 'shard' && a.dim === 0 && b.kind === 'replicate') return a;
+    if (a.kind === 'shard' && a.dim === 1 && b.kind === 'shard' && b.dim === 0) {
+      if (!sameList(this.chunks(a), this.chunks(b))) throw this.error(node, `收缩维两边的切法不同：${placementText(a)}、${placementText(b)}`);
+      return PARTIAL;
+    }
+    if (a.kind === 'shard' && a.dim === 0 && b.kind === 'shard' && b.dim === 1) return { kind: 'block', rows: this.chunks(a), cols: this.chunks(b), fill: 'any' };
     throw this.error(node, `矩阵乘不支持 ${placementText(a)} × ${placementText(b)}`);
   }
 
@@ -338,7 +466,7 @@ class PlacementsImpl implements Placements {
       if (SUMS.has(op)) return PARTIAL;
       throw this.error(node, `沿被切分的第 ${input.dim} 维做 ${op} 需要先通信`);
     }
-    return { kind: 'shard', dim: keepdim ? input.dim : input.dim - dims.filter((d) => d < input.dim).length };
+    return { ...input, dim: keepdim ? input.dim : input.dim - dims.filter((d) => d < input.dim).length };
   }
 }
 

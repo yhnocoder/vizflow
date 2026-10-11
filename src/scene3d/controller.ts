@@ -102,7 +102,8 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
       this.requestFrame();
     });
-    buildChrome(root, options.hint, options.parallel === undefined ? undefined : options.platforms === undefined ? 'ranks' : 'platforms');
+    const parallel = options.parallel;
+    buildChrome(root, options.hint, parallel === undefined ? undefined : options.platforms === undefined ? 'ranks' : 'platforms', parallel !== undefined && g.nodes.some((n) => parallel.placements.of(n).kind === 'block'));
     this.popups = new ScenePopups(this);
     this.rig = new CameraRig(this);
 

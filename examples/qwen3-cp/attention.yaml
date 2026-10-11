@@ -1,0 +1,264 @@
+module: Qwen3CPAttention
+subtitle: Qwen3Attention，按序列切到各张卡，K/V 环形传递
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  RoPE: vizflow/nn/rope
+params:
+  H:     { type: dim }
+  Hkv:   { type: dim }
+  dh:    { type: dim }
+  theta: { type: float, default: 1e6 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [att]
+cache: [kr, v]
+fold:
+  label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
+  title: self_attn（已折叠）
+  text: |
+    q/k/v 投影、q_norm/k_norm、RoPE、两轮分块注意力、K/V 的环形传递、lse_merge 和 o_proj 都收进了盒子。盒子的输入和输出都按序列切开：每张卡只有自己那几行。
+    $$\of{att}=\mathrm{self\_attn}(\of{x})={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 self_attn（已折叠）
+    text: |
+      盒子里的反向把 $\partial\mathbf{k}$、$\partial\mathbf{v}$ 沿环送回它们原来所在的卡。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+weights:
+  Wq: { shape: [H*dh, d] }
+  Wk: { shape: [Hkv*dh, d] }
+  Wv: { shape: [Hkv*dh, d] }
+  Wo: { shape: [d, H*dh] }
+buffers:
+  M0: { value: 'cp_mask(T, 2, 0)', tex: 'M_0' }
+  M1: { value: 'cp_mask(T, 2, 1)', tex: 'M_1' }
+body:
+  - q: 'view(x @ Wq.T, T, H, dh)'
+  - k: 'view(x @ Wk.T, T, Hkv, dh)'
+  - v: { op: 'view(x @ Wv.T, T, Hkv, dh)', tex: '\mathbf{v}_0' }
+  - qk_norm:
+      title: q_norm $\cdot$ k_norm
+      folded: true
+      fold:
+        label: '$\of{qn},\ \of{kn}$'
+        title: q_norm 和 k_norm（已折叠）
+        text: |
+          每个位置、每个 head 各自做 RMSNorm，范围是 $d_h$。只用到这一行自己的数，所以每张卡对自己的行直接计算，不需要通信。
+          $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
+        backward:
+          label: '$\partial\boldsymbol{\gamma},\ \partial\of{q},\ \partial\of{k}$'
+          title: 穿过 q_norm 和 k_norm（已折叠）
+          text: |
+            每张卡只用自己的行算 $\boldsymbol{\gamma}$ 的梯度，得到的是 Partial，两张卡相加才完整，所以 $\partial\boldsymbol{\gamma}_q$ 和 $\partial\boldsymbol{\gamma}_k$ 各做一次 all_reduce。
+            $$\frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ q_norm.weight.grad | matrix:3 }}$$
+      body:
+        - q_norm:
+            use: RMSNorm
+            inline: true
+            suffix: q
+            inputs: { x: q }
+            outputs: { out: qn }
+            tex: { out: '\bar{\of{q}}', ms: '\mathrm{ms}^{q}', r: 'r^{q}' }
+        - k_norm:
+            use: RMSNorm
+            inline: true
+            suffix: k
+            beside: q_norm
+            inputs: { x: k }
+            outputs: { out: kn }
+            tex: { out: '\bar{\of{k}}', ms: '\mathrm{ms}^{k}', r: 'r^{k}' }
+  - apply_rotary_pos_emb:
+      use: RoPE
+      folded: true
+      params: { theta: theta }
+      inputs: { q: qn, k: kn }
+      outputs: { q_embed: qr, k_embed: kr }
+      tex: { q_embed: "\\mathbf{q}'", k_embed: "\\mathbf{k}'" }
+      fold:
+        text: |
+          RoPE 按行的位置旋转。负载均衡以后 rank 0 拿的是第 0 行和第 3 行，它从 cos、sin 表里取的也是第 0 行和第 3 行。cos、sin 表是 Replicate，每张卡都有整张表，只要知道自己的行在原序列里的位置就能算。
+          $$\mathbf{q}'={{ qr | matrix:2 }}$$
+        backward:
+          text: |
+            $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }}$$
+  - qs: { op: 'qr * dh ** -0.5', tex: '\tilde{\mathbf{q}}' }
+  - round0:
+      title: 第 0 轮
+      subtitle: 本卡的 K/V
+      body:
+        - for: h
+          in: 1..H
+          body:
+            - K0[h]:   { op: 'select(kr, 1, (h-1)//(H//Hkv))', tex: '\mathbf{k}_0^{(\of{h})}' }
+            - V0[h]:   { op: 'select(v, 1, (h-1)//(H//Hkv))', tex: '\mathbf{v}_0^{(\of{h})}' }
+            - kT0[h]:  { op: 'K0[h].T', tex: '\mathbf{k}_0^{(\of{h})\top}' }
+            - S0[h]:   { op: 'select_matmul(qs, kT0[h], h-1)', tex: 'S_0^{(\of{h})}' }
+            - Sm0[h]:  { op: 'S0[h] + M0', tex: '\bar{S}_0^{(\of{h})}' }
+            - P0[h]:   { op: 'softmax(Sm0[h], -1)', tex: 'P_0^{(\of{h})}' }
+            - lse0[h]: { op: 'logsumexp(Sm0[h], -1, keepdim=true)', tex: '\mathrm{lse}_0^{(\of{h})}' }
+            - o0[h]:   { op: 'P0[h] @ V0[h]', tex: '\mathbf{o}_0^{(\of{h})}' }
+  - ring:
+      title: 环形传递
+      subtitle: K/V 发给下一张卡
+      body:
+        - k1: { op: 'send_recv(kr, cp)', tex: '\mathbf{k}_1' }
+        - v1: { op: 'send_recv(v, cp)', tex: '\mathbf{v}_1' }
+  - round1:
+      title: 第 1 轮
+      subtitle: 从上一张卡收到的 K/V
+      body:
+        - for: h
+          in: 1..H
+          body:
+            - K1[h]:   { op: 'select(k1, 1, (h-1)//(H//Hkv))', tex: '\mathbf{k}_1^{(\of{h})}' }
+            - V1[h]:   { op: 'select(v1, 1, (h-1)//(H//Hkv))', tex: '\mathbf{v}_1^{(\of{h})}' }
+            - kT1[h]:  { op: 'K1[h].T', tex: '\mathbf{k}_1^{(\of{h})\top}' }
+            - S1[h]:   { op: 'select_matmul(qs, kT1[h], h-1)', tex: 'S_1^{(\of{h})}' }
+            - Sm1[h]:  { op: 'S1[h] + M1', tex: '\bar{S}_1^{(\of{h})}' }
+            - P1[h]:   { op: 'softmax(Sm1[h], -1)', tex: 'P_1^{(\of{h})}' }
+            - lse1[h]: { op: 'logsumexp(Sm1[h], -1, keepdim=true)', tex: '\mathrm{lse}_1^{(\of{h})}' }
+            - o1[h]:   { op: 'P1[h] @ V1[h]', tex: '\mathbf{o}_1^{(\of{h})}' }
+  - for: h
+    in: 1..H
+    body:
+      - om[h]: { op: 'lse_merge(o0[h], lse0[h], o1[h], lse1[h])', tex: '\mathbf{o}^{(\of{h})}' }
+  - o: 'cat(om[1..H], dim=1)'
+  - att: { op: o @ Wo.T, tex: '\mathbf{att}' }
+steps:
+  - id: qkv
+    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: '每张卡算自己的行' }
+    show: [Wq.T, Wk.T, Wv.T, q, k, v]
+    label: '$\of{q},\ \of{k},\ \of{v}$'
+    title: q_proj、k_proj、v_proj：按行各算各的
+    text: |
+      上下文并行（CP）切的是序列：$\of{x}$ 的每一行只在一张卡上，权重在每张卡上各有一份完整的副本（Replicate）。投影是逐行的矩阵乘，第 $t$ 行的 q、k、v 只用到 $\of{x}$ 的第 $t$ 行，所以每张卡直接算出自己那几行的 q、k、v，不需要通信。图里的颜色是行所在的卡：rank 0 是第 0 行和第 3 行，rank 1 是第 1 行和第 2 行。
+      这一页有 \of{H} 个 query head、\of{Hkv} 个 kv head，两个 query head 共用同一组 k、v。
+      $$\mathbf{v}_0=\of{x}W_v^{\top}={{ v | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: 传到投影权重和 $\of{x}$
+      text: |
+        $\partial\of{x}$ 的每一行只来自同一行的 q、k、v，留在本卡。三块权重的梯度要对所有行求和，每张卡只有自己那几行的贡献，是 Partial，所以 $\partial W_q$、$\partial W_k$、$\partial W_v$ 各做一次 all_reduce。Megatron 把这次 all_reduce 和数据并行的梯度 all_reduce 合在一起做。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: scale
+    show: qs
+    label: '$\tilde{\mathbf{q}}$'
+    title: 缩放 q
+    text: |
+      先把 $\mathbf{q}'$ 乘上 $1/\sqrt{d_h}$，后面每一轮的打分都直接用 $\tilde{\mathbf{q}}$。本卡自己的 K/V 块就是 $\mathbf{k}_0=\mathbf{k}'$ 和 $\mathbf{v}_0$，下标表示第几轮用到的块。
+      $$\tilde{\mathbf{q}}=\frac{\mathbf{q}'}{\sqrt{d_h}}={{ qs | matrix:2 }}$$
+    backward:
+      label: "$\\partial\\mathbf{q}'$"
+      title: 穿过缩放
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
+  - id: r0s
+    show: ['K0[1..H]', 'V0[1..H]', 'kT0[1..H]', 'S0[1..H]', 'M0', 'Sm0[1..H]']
+    label: '$\bar{S}_0$'
+    title: 第 0 轮打分：本卡的 K 块
+    text: |
+      第 0 轮每张卡用本地的 $\tilde{\mathbf{q}}$ 和本地的 $\mathbf{k}_0$ 打分。rank 0 手里是第 0、3 行的 q 和第 0、3 行的 k，rank 1 手里是第 1、2 行的 q 和 k。一张 $T\times T$ 的分数表里，只有行和列在同一张卡上的格子在这一轮算出来，其余格子这一轮没有卡计算。
+      $M_0$ 同时做两件事：因果 mask（列号大于行号的格子是 $-\infty$），以及把这一轮没有算的格子也设成 $-\infty$。
+      $$M_0={{ M0 | matrix:0 }}$$
+      $$\bar{S}_0^{(1)}=\tilde{\mathbf{q}}^{(1)}\mathbf{k}_0^{(1)\top}+M_0={{ Sm0[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial\tilde{\mathbf{q}},\ \partial\mathbf{k}_0$'
+      title: 第 0 轮打分的反向
+      text: |
+        $\partial\tilde{\mathbf{q}}$ 和 $\partial\mathbf{k}_0$ 的这一部分都在本卡算出，不需要通信。被 mask 的格子梯度是 0。
+        $$\frac{\partial\ell}{\partial\tilde{\mathbf{q}}}={{ qs.grad | matrix:3 }}$$
+  - id: r0o
+    show: ['P0[1..H]', 'lse0[1..H]', 'o0[1..H]']
+    label: '$P_0,\ \mathrm{lse}_0,\ \mathbf{o}_0$'
+    title: 第 0 轮的局部结果
+    text: |
+      每一行只在这一轮看得到的列上做 softmax，得到局部的注意力权重 $P_0$，再乘本卡的 $\mathbf{v}_0$ 得到局部输出 $\mathbf{o}_0$。同时记下每一行的 $\mathrm{lse}_0=\log\sum_s e^{S_{0,ts}}$，它记录了这一轮的分母有多大，合并时要用。FlashAttention 的前向本来就会输出 $\mathrm{lse}$，CP 直接拿来用。
+      $$\mathrm{lse}_0^{(1)}={{ lse0[1] | matrix:3 }},\qquad \mathbf{o}_0^{(1)}={{ o0[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial S_0,\ \partial\mathbf{v}_0$'
+      title: 第 0 轮局部结果的反向
+      text: |
+        $\partial\mathbf{o}_0$ 和 $\partial\mathrm{lse}_0$ 由合并那一步给出。$\partial\mathbf{v}_0=P_0^{\top}\partial\mathbf{o}_0$ 留在本卡。
+        $$\frac{\partial\ell}{\partial\mathbf{v}_0}\text{（两轮合计）}={{ v.grad | matrix:3 }}$$
+  - id: ring
+    show: [k1, v1]
+    label: '$\mathrm{send\_recv}$'
+    title: 环形传递：K/V 发给下一张卡
+    text: |
+      每张卡把手里的 K/V 块发给下一张卡（rank $r$ 发给 rank $r+1$，最后一张发给 rank 0），同时从上一张卡收一块。两张卡时就是交换：rank 0 收到第 1、2 行的 K/V，rank 1 收到第 0、3 行的 K/V。$n$ 张卡要传 $n-1$ 轮，每张卡才见过所有的 K/V 块；第 $j$ 轮 rank $r$ 手里是 rank $(r-j)\bmod n$ 原来的块。
+      传的是 K 和 V，不是 Q：Q 留在本卡，输出也留在本卡。数值上 $\mathbf{k}_1$ 和 $\mathbf{k}_0$ 是同一个张量，只是每一行换了一张卡，颜色互换。TransformerEngine 在算第 $j$ 轮注意力的同时发起第 $j+1$ 轮的传输，通信藏在计算后面。悬停 send_recv 的标签可以看到真实规模下每一轮发送的字节数。
+    backward:
+      label: '$\partial\mathbf{k}_0,\ \partial\mathbf{v}_0$'
+      title: 反向：梯度沿环送回
+      text: |
+        前向时 rank $r$ 用的是从 rank $r-1$ 收来的块，所以第 1 轮算出的 $\partial\mathbf{k}_1$、$\partial\mathbf{v}_1$ 要沿环反方向送回 rank $r-1$，和那张卡第 0 轮自己算的部分相加。整个环走完，每张卡都收齐了所有卡对自己那块 K/V 的梯度贡献，效果和一次 reduce_scatter 相同。这里的数值是全局的梯度，送回只改变它在哪张卡上。
+        $$\frac{\partial\ell}{\partial\mathbf{k}_1}={{ k1.grad | matrix:3 }}$$
+  - id: r1s
+    show: ['K1[1..H]', 'V1[1..H]', 'kT1[1..H]', 'S1[1..H]', 'M1', 'Sm1[1..H]']
+    label: '$\bar{S}_1$'
+    title: 第 1 轮打分：收到的 K 块
+    text: |
+      第 1 轮每张卡用本地的 $\tilde{\mathbf{q}}$ 和收到的 $\mathbf{k}_1$ 打分。rank 0 的第 0 行在因果 mask 下看不到第 1、2 列，这一行整行都是 $-\infty$；第 3 行能看到第 1、2 列。rank 1 的第 1、2 行都能看到第 0 列，看不到第 3 列。
+      这就是因果 mask 需要负载均衡的原因。如果按顺序切，rank 0 拿第 0、1 行，rank 1 拿第 2、3 行：第 1 轮 rank 0 收到的是第 2、3 列，一个格子都不用算；rank 1 收到第 0、1 列，4 个格子全要算。每一轮的时间由最慢的卡决定，rank 0 只能等着。把序列切成 $2n$ 块，rank $r$ 拿第 $r$ 块和第 $2n-1-r$ 块，前面的短行和后面的长行配成一对，两张卡在每一轮要算的格子一样多：第 0 轮各 3 个，第 1 轮各 2 个。
+      $$M_1={{ M1 | matrix:0 }}$$
+      $$\bar{S}_1^{(1)}=\tilde{\mathbf{q}}^{(1)}\mathbf{k}_1^{(1)\top}+M_1={{ Sm1[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial\tilde{\mathbf{q}},\ \partial\mathbf{k}_1$'
+      title: 第 1 轮打分的反向
+      text: |
+        $\partial\tilde{\mathbf{q}}$ 的这一部分留在本卡，$\partial\mathbf{k}_1$ 属于收来的块，下一步要沿环送回去。
+        $$\frac{\partial\ell}{\partial\mathbf{k}_1^{(1)\top}}={{ kT1[1].grad | matrix:3 }}$$
+  - id: r1o
+    show: ['P1[1..H]', 'lse1[1..H]', 'o1[1..H]']
+    label: '$P_1,\ \mathrm{lse}_1,\ \mathbf{o}_1$'
+    title: 第 1 轮的局部结果
+    text: |
+      和第 0 轮一样，在这一轮看得到的列上做 softmax，乘收到的 $\mathbf{v}_1$。第 0 行整行被 mask，这一轮对它没有贡献：约定它的 $\mathrm{lse}_1=-\infty$、$\mathbf{o}_1=0$，和 FlashAttention 对整行被 mask 的处理一致。真实实现里这一行直接跳过，不做计算。
+      $$\mathrm{lse}_1^{(1)}={{ lse1[1] | matrix:3 }},\qquad \mathbf{o}_1^{(1)}={{ o1[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial S_1,\ \partial\mathbf{v}_1$'
+      title: 第 1 轮局部结果的反向
+      text: |
+        $\partial\mathbf{v}_1=P_1^{\top}\partial\mathbf{o}_1$ 在本卡算出，但它属于收来的块，要沿环送回。
+        $$\frac{\partial\ell}{\partial\mathbf{v}_1}={{ v1.grad | matrix:3 }}$$
+  - id: merge
+    brace: { title: lse_merge, subtitle: 合并两轮的局部结果 }
+    show: 'om[1..H]'
+    label: '$\mathrm{lse\_merge}$'
+    title: 用 lse 合并
+    text: |
+      两轮的 softmax 各自只除了自己那部分列的分母。合并时先算整行的分母 $\mathrm{lse}=\log\left(e^{\mathrm{lse}_0}+e^{\mathrm{lse}_1}\right)$，再按每一轮占的比例加权：
+      $$\mathbf{o}=e^{\mathrm{lse}_0-\mathrm{lse}}\,\mathbf{o}_0+e^{\mathrm{lse}_1-\mathrm{lse}}\,\mathbf{o}_1$$
+      两个权重加起来是 1，结果和对整行做一次 softmax 再乘 $\mathbf{v}$ 完全相同。第 0 行的 $\mathrm{lse}_1=-\infty$，权重是 0，结果就是 $\mathbf{o}_0$。合并只用到本卡的数，不需要通信。$n$ 张卡时每收到一块就合并一次，TransformerEngine 在每一轮之后更新输出和 $\mathrm{lse}$。
+      $$\mathbf{o}^{(1)}={{ om[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{o}_j,\ \partial\mathrm{lse}_j$'
+      title: lse_merge 的反向
+      text: |
+        记 $w_j=e^{\mathrm{lse}_j-\mathrm{lse}}$，则 $\frac{\partial\mathbf{o}}{\partial\mathbf{o}_j}=w_j$，$\frac{\partial\mathbf{o}}{\partial\mathrm{lse}_j}=w_j(\mathbf{o}_j-\mathbf{o})$。悬停连线可以看到每个格子的局部导数。
+        $$\frac{\partial\ell}{\partial\mathrm{lse}_0^{(1)}}={{ lse0[1].grad | matrix:3 }}$$
+  - id: concat
+    show: o
+    label: 拼接
+    title: 拼回 $T\times\of{H*dh}$
+    text: |
+      把 \of{H} 个 head 并排拼回去，每一行仍然在原来的卡上。
+      $$\of{o}={{ o | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o}^{(h)}$'
+      title: 拆回各个 head
+      text: 拼接的反向把梯度按列切回去。
+  - id: o_proj
+    brace: { title: o_proj, subtitle: 每张卡算自己的行 }
+    show: [Wo.T, att]
+    label: o_proj
+    title: o_proj：按行各算各的
+    text: |
+      和 q、k、v 的投影一样，$W_o$ 在每张卡上都有一份，每张卡乘自己的行，不需要通信。CP 在整个 attention 里只传 K 和 V。
+      $$\of{att}=\of{o}W_o^{\top}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial W_o,\ \partial\of{o}$'
+      title: 传到 o_proj 权重和 o
+      text: |
+        $\partial\of{o}$ 留在本卡；$\partial W_o$ 要对所有行求和，是 Partial，做一次 all_reduce。
+        $$\frac{\partial\ell}{\partial\of{o}}={{ o.grad | matrix:3 }}$$

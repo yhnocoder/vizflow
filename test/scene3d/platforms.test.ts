@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { CommTransfer } from '../../src/autograd';
+import { type CommTransfer, commTransfers } from '../../src/autograd';
 import { type CompiledPage, loadPage } from '../../src/dsl';
 import { PLACEHOLDER_WIDTH, type PlatformBox, arrangePlatforms, commCalls, localPiece, platformEdges, platformSlots, slotOf, slotText } from '../../src/scene3d/platforms';
 import { examplesUrl, readFileUrl } from '../dsl/load';
@@ -115,5 +115,25 @@ describe('platform pieces of the EP page', () => {
     const pieces = Array.from({ length: p.mesh.size }, (_, rank) => localPiece(p, node, rank, 'forward', true));
     expect(pieces.every((piece) => piece.partial && piece.held === undefined)).toBe(true);
     for (let i = 0; i < node.value.size; i++) expect(pieces.reduce((s, piece) => s + piece.values[i], 0)).toBeCloseTo(node.value.data[i], 6);
+  });
+});
+
+describe('platform links of the CP page', () => {
+  let cp: CompiledPage;
+  beforeAll(async () => {
+    cp = await loadPage(new URL('qwen3-cp-dsl.yaml', examplesUrl).href, { read: readFileUrl });
+  });
+
+  it('draws the ring transfer of K and V as separate calls with links both ways between the two cards', () => {
+    const k1 = cp.graph.node('layer.self_attn.k1')!;
+    const v1 = cp.graph.node('layer.self_attn.v1')!;
+    const calls = commCalls(cp.graph.nodes).filter((call) => call.op === 'send_recv');
+    expect(calls.map((call) => call.node)).toEqual([k1, v1]);
+    const slots = platformSlots(cp.placements!.mesh);
+    const edges = platformEdges(commTransfers(cp.placements!, k1, { tokens: 4096 }), slots);
+    expect(edges.map((e) => [e.from, e.to, e.link, e.bytes])).toEqual([
+      [0, 1, 'nvlink', 1024 ** 2],
+      [1, 0, 'nvlink', 1024 ** 2],
+    ]);
   });
 });

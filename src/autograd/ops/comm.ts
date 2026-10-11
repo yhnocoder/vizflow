@@ -15,6 +15,19 @@ export const allReduceOp: OpDef<AllReduceAttrs> = {
   backward: (gradOut) => [gradOut.clone()],
 };
 
+export interface SendRecvAttrs {
+  group: string;
+}
+
+export const sendRecvOp: OpDef<SendRecvAttrs> = {
+  name: 'send_recv',
+  args: ['input', 'group'],
+  tensors: ['input'],
+  shape: ([a]) => [...a],
+  forward: ([a]) => a.clone(),
+  backward: (gradOut) => [gradOut.clone()],
+};
+
 export interface DispatchAttrs {
   k: number;
   group: string;
@@ -108,4 +121,4 @@ export const combineOp: OpDef<CombineAttrs> = {
   },
 };
 
-export const COMM_OPS: ReadonlySet<string> = new Set([allReduceOp, dispatchOp, combineOp].map((op) => op.name));
+export const COMM_OPS: ReadonlySet<string> = new Set([allReduceOp, dispatchOp, combineOp, sendRecvOp].map((op) => op.name));
