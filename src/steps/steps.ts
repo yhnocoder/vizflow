@@ -448,6 +448,10 @@ class StepsImpl implements Steps {
       forwardIds.set(group, info.id);
       entries.push(this.entry(info, new Set(revealed), new Set(active)));
     }
+    if (loss === undefined) {
+      this.setEntries(entries);
+      return;
+    }
     const received = new Set<Node>();
     let position = 0;
     const pushBackward = (info: Omit<StepInfo, 'index' | 'dir'>, recv: Node[]) => {
