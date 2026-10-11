@@ -52,7 +52,8 @@ body:
   - down:          { op: 'grouped_linear(hidden, Wd, expert_idx)', tex: '\mathbf{d}' }
   - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}' }
   - scaled:        { op: 'down * view(weight, T*K, 1)', tex: '\mathbf{d}^{w}' }
-  - out:           { op: 'index_add(final, 0, token_idx, scaled)', tex: '\mathbf{o}' }
+  - cast:          { op: identity(scaled), dtype: final, tex: '\mathbf{d}^{w}_{\mathrm{cast}}' }
+  - out:           { op: 'index_add(final, 0, token_idx, cast)', tex: '\mathbf{o}' }
 steps:
   - id: mask
     show: expert_mask
@@ -182,16 +183,27 @@ steps:
       text: |
         每一行的梯度乘这一行的路由权重，传给 $\of{down}$；这一行 $d$ 个元素的梯度与 $\of{down}$ 对应元素的乘积加起来，传给这一行的权重。
         $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: cast
+    show: cast
+    label: '$\of{cast}$'
+    title: 转成累加张量的 dtype
+    text: |
+      <code>current_hidden_states.to(final_hidden_states.dtype)</code>：加进 $\of{final}$ 之前，先转成 $\of{final}$ 的 dtype。<code>final_hidden_states = torch.zeros_like(hidden_states)</code>，所以 $\of{final}$ 的 dtype 和输入 $\of{x}$ 相同；$\of{scaled}$ 的 dtype 由 $\of{down}$ 和路由权重 $\of{w}$ 按类型提升得到。两者相同时这一步不改变数值。
+      $$\of{cast}={{ cast | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{scaled}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度原样传回 $\of{scaled}$。
   - id: index_add
     show: [final, out]
     label: '$\of{out}$'
     title: 加回各个位置
     text: |
-      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))</code>：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
+      $\of{final}$ 是 <code>final_hidden_states = torch.zeros_like(hidden_states)</code> 建的全 0 张量。每个专家执行 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))</code>，括号里的类型转换是上一步：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同。
       $$\of{out}={{ out | matrix:3 }}$$
     backward:
-      label: '$\partial\of{scaled}$'
+      label: '$\partial\of{cast}$'
       title: 从各个位置取回梯度
       text: |
         index_add 的反向是按 $\of{token_idx}$ 取行：第 $r$ 行收到的梯度就是位置 $\of{token_idx}_r$ 的输出梯度。$\of{final}$ 是常量全 0，没有梯度。
-        $$\frac{\partial\ell}{\partial\of{scaled}}={{ scaled.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial\of{cast}}={{ cast.grad | matrix:3 }}$$

@@ -201,6 +201,17 @@ function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<Sca
   };
 }
 
+export const logicalNotOp: OpDef<NoAttrs> = {
+  name: 'logical_not',
+  args: ['input'],
+  tensors: ['input'],
+  differentiable: [false],
+  dtype: 'bool',
+  cost: COMPARISON_COST,
+  shape: ([a]) => [...a],
+  forward: ([a]) => mapWith(a, (x) => (x === 0 ? 1 : 0)),
+  backward: () => [null],
+};
 export const eqOp = compare('eq', (x, y) => x === y);
 export const geOp = compare('ge', (x, y) => x >= y);
 export const greaterOp = compare('greater', (x, y) => x > y);
