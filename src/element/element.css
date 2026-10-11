@@ -45,6 +45,36 @@ vizflow-page > .vf-header .vf-lede {
   max-width: 64ch;
 }
 
+vizflow-page > .vf-header .vf-modes {
+  display: inline-flex;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+
+vizflow-page > .vf-header .vf-mode {
+  font: inherit;
+  font-size: 14px;
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 16px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+vizflow-page > .vf-header .vf-mode[aria-pressed='true'] {
+  background: var(--fg);
+  color: var(--surface);
+}
+
+vizflow-page > .vf-header .vf-mode:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
 vizflow-page > .vf-load-error {
   color: var(--fg);
   font-family: var(--mono);

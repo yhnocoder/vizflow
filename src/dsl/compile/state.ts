@@ -29,6 +29,7 @@ export class CompilerState {
   readonly backward: { node: Node; text: BackwardOverride; where: Where }[] = [];
   readonly pendingPatches: (() => void)[][] = [];
   readonly formulas: FormulaRec[] = [];
+  readonly caches: { nodes: Node[]; members: Node[] }[] = [];
   readonly root: Scope;
   protected readonly rangeCounts = new WeakMap<Node[], Num>();
   private readonly values: Record<string, unknown>;

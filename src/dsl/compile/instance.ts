@@ -97,6 +97,7 @@ export function compileInstance(
   for (const output of outputs) {
     if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
   }
+  if (decl.cache !== undefined) declareCache(c, scope, decl, where, c.g.nodes.slice(before));
   const steps = moduleSteps(c, scope, decl, childEnv, slots);
   const formulaSources = [{ decl, env: childEnv }, { decl: use, env }];
   if (use.brace !== undefined) {
@@ -114,4 +115,15 @@ export function compileInstance(
   const created = c.g.nodes.slice(before);
   if (rec !== undefined) closeModule(c, rec, created);
   return { kind: 'child', def, steps, created };
+}
+
+function declareCache(c: Compiler, scope: Scope, decl: Record<string, unknown>, where: Where, created: Node[]): void {
+  const at = child(where, decl, 'cache');
+  if (!Array.isArray(decl.cache)) fail(at, 'cache must be a list of names');
+  const nodes = (decl.cache as unknown[]).map((name, i) => {
+    const node = typeof name === 'string' ? scope.entries.get(name) : undefined;
+    if (node === undefined) fail(child(at, decl.cache as unknown[], i), `cache: '${String(name)}' is not an input or node of this module`);
+    return node;
+  });
+  c.caches.push({ nodes, members: created });
 }

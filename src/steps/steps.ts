@@ -1,4 +1,5 @@
 import type { Graph, Node } from '../autograd';
+import type { Nested } from '../tensor';
 import { explain } from '../explain';
 import { compileTemplate } from './template';
 
@@ -58,8 +59,34 @@ export interface StepModule extends PageModule {
   backward: BackwardOverride;
 }
 
+export interface InferSpec {
+  prompt: number;
+  input: Node;
+  label: Node;
+  logits: Node;
+  caches: { nodes: Node[]; members: Node[] }[];
+}
+
+export interface UpdateSpec {
+  lr: number;
+  weightDecay: number;
+  title: string;
+  label: string;
+}
+
+export interface RowSpec {
+  shown: number;
+  active: [number, number];
+  labels: number;
+  cache?: ReadonlySet<Node>;
+}
+
+export type RowState = 'hidden' | 'inactive';
+
 export interface StepsSpec {
   forward: ForwardStep[];
+  infer?: InferSpec;
+  update?: UpdateSpec;
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
   backward?: BackwardSpec;
   modules?: StepModule[];
@@ -90,6 +117,7 @@ export interface StepState {
   focus: number;
   revealed(node: Node): boolean;
   active(node: Node): boolean;
+  row?(node: Node, position: number): RowState | undefined;
 }
 
 export interface Steps {
@@ -137,6 +165,8 @@ function withNotes(info: StepInfo, notes: StepNote[] | undefined): StepInfo {
 
 interface Entry {
   info: StepInfo;
+  rows?: RowSpec;
+  enter?: () => () => void;
   revealed: Set<Node>;
   active: Set<Node>;
 }
@@ -212,6 +242,8 @@ function usesOf(prod: readonly Node[]): Node[] {
   return unique(prod.flatMap((n) => n.inputs).flatMap((n) => (n.kind === 'op' && n.op === 'transpose' && n.inputs[0].kind === 'param' ? [n, n.inputs[0]] : [n])));
 }
 
+type Group = { unit?: Unit; module?: StepModule };
+
 interface Unit {
   index: number;
   step: ForwardStep;
@@ -233,6 +265,7 @@ class StepsImpl implements Steps {
   private readonly foldState = new Map<string, boolean>();
   private readonly units: Unit[] = [];
   private readonly reverse: boolean;
+  private leave: (() => void) | undefined;
 
   constructor(
     readonly graph: Graph,
@@ -316,6 +349,53 @@ class StepsImpl implements Steps {
     return found;
   }
 
+  private forwardGroup(group: Group, index: number): { info: StepInfo; prod: Node[]; active: Node[] } {
+    const moduleUse = (m: StepModule) => unique([...m.inputs, ...m.params]);
+    let info: StepInfo;
+    let prod: Node[];
+    let active: Node[];
+    if (group.module !== undefined) {
+      const m = group.module;
+      prod = m.outputs;
+      active = unique([...prod, ...moduleUse(m)]);
+      info = {
+        dir: 'forward',
+        index,
+        id: `F:${m.id}`,
+        kind: 'module',
+        title: m.forward.title ?? `${m.title}（已折叠）`,
+        label: m.forward.label ?? m.title,
+        text: m.forward.text ?? '',
+        nodes: prod,
+        segment: m.segment,
+        module: m.id,
+      };
+      if (m.sub !== undefined) info.sub = m.sub;
+      const marks = this.units.filter((u) => this.outerFolded(u.step.module) === m).flatMap((u) => u.step.marks ?? []);
+      if (marks.length > 0) info.marks = marks;
+    } else {
+      const unit = group.unit as Unit;
+      const step = unit.step;
+      prod = unit.prod;
+      active = unit.active;
+      info = {
+        dir: 'forward',
+        index,
+        id: `f:${unit.index}`,
+        kind: 'op',
+        title: step.title,
+        label: step.label ?? step.title,
+        text: step.text ?? '',
+        nodes: prod,
+        segment: step.segment ?? step.label ?? step.title,
+      };
+      if (step.sub !== undefined) info.sub = step.sub;
+      if (step.module !== undefined) info.module = step.module;
+      withNotes(withMarks(info, step), step.notes);
+    }
+    return { info, prod, active };
+  }
+
   private rebuild(): void {
     const spec = this.spec;
     const g = this.graph;
@@ -333,58 +413,21 @@ class StepsImpl implements Steps {
       const label = inputs.label ?? inputs.title;
       entries.push(this.entry(withNotes({ dir: 'forward', index: 1, id: 'f:inputs', kind: 'inputs', title: inputs.title, label, text: inputs.text ?? '', nodes: show, segment: inputs.segment ?? label }, inputs.notes), new Set(revealed), new Set(show)));
     }
-    const groups: { unit?: Unit; module?: StepModule }[] = [];
+    const groups: Group[] = [];
     for (const unit of this.units) {
       const folded = this.outerFolded(unit.step.module);
       if (folded === undefined) groups.push({ unit });
       else if (groups[groups.length - 1]?.module !== folded) groups.push({ module: folded });
     }
     const moduleUse = (m: StepModule) => unique([...m.inputs, ...m.params]);
+    if (spec.infer !== undefined) {
+      this.buildInfer(entries, groups, revealed, spec.infer);
+      this.setEntries(entries);
+      return;
+    }
     const forwardIds = new Map<(typeof groups)[number], string>();
     for (const group of groups) {
-      const index = entries.length;
-      let info: StepInfo;
-      let prod: Node[];
-      let active: Node[];
-      if (group.module !== undefined) {
-        const m = group.module;
-        prod = m.outputs;
-        active = unique([...prod, ...moduleUse(m)]);
-        info = {
-          dir: 'forward',
-          index,
-          id: `F:${m.id}`,
-          kind: 'module',
-          title: m.forward.title ?? `${m.title}（已折叠）`,
-          label: m.forward.label ?? m.title,
-          text: m.forward.text ?? '',
-          nodes: prod,
-          segment: m.segment,
-          module: m.id,
-        };
-        if (m.sub !== undefined) info.sub = m.sub;
-        const marks = this.units.filter((u) => this.outerFolded(u.step.module) === m).flatMap((u) => u.step.marks ?? []);
-        if (marks.length > 0) info.marks = marks;
-      } else {
-        const unit = group.unit as Unit;
-        const step = unit.step;
-        prod = unit.prod;
-        active = unit.active;
-        info = {
-          dir: 'forward',
-          index,
-          id: `f:${unit.index}`,
-          kind: 'op',
-          title: step.title,
-          label: step.label ?? step.title,
-          text: step.text ?? '',
-          nodes: prod,
-          segment: step.segment ?? step.label ?? step.title,
-        };
-        if (step.sub !== undefined) info.sub = step.sub;
-        if (step.module !== undefined) info.module = step.module;
-        withNotes(withMarks(info, step), step.notes);
-      }
+      const { info, prod, active } = this.forwardGroup(group, entries.length);
       prod.forEach((n) => revealed.add(n));
       forwardIds.set(group, info.id);
       entries.push(this.entry(info, new Set(revealed), new Set(active)));
@@ -447,7 +490,108 @@ class StepsImpl implements Steps {
         ),
       );
     }
+    if (spec.update !== undefined && loss !== undefined) entries.push(this.updateEntry(spec.update, loss, all, entries.length));
     this.setEntries(entries);
+  }
+
+  private buildInfer(entries: Entry[], groups: Group[], revealed: Set<Node>, infer: InferSpec): void {
+    const P = infer.prompt;
+    const T = infer.input.shape[0];
+    const scored = new Set<Node>();
+    for (const n of this.graph.nodes) if (n.inputs.some((i) => i === infer.label || scored.has(i))) scored.add(n);
+    const at = (rows: RowSpec) => (entry: Entry) => ({ ...entry, rows });
+    const prefillRows: RowSpec = { shown: P, active: [0, P], labels: 0 };
+    const inputsEntry = entries.findIndex((e) => e.info.kind === 'inputs');
+    if (inputsEntry >= 0) entries[inputsEntry].rows = prefillRows;
+    const kept = groups.filter((group) => !(group.unit?.prod.some((n) => scored.has(n)) ?? false));
+    const members = new Set(infer.caches.flatMap((c) => c.members));
+    const inCache = (group: Group) => (group.module?.nodes ?? group.unit?.prod ?? []).some((n) => members.has(n));
+    const cacheNodes = new Set(infer.caches.flatMap((c) => c.nodes));
+    const name = infer.input.name;
+    const label = infer.label.name;
+    const sample = (row: number, phase: string) => {
+      const info: StepInfo = {
+        dir: 'forward',
+        index: entries.length,
+        id: `s:${row}`,
+        kind: 'op',
+        title: `采样第 ${row + 2} 个 token`,
+        label: '采样',
+        text: `取第 ${row + 1} 行 $${infer.logits.tex}$ 中最大的一项（greedy），得到 {{${label}[${row}]:token}}，它成为下一个位置的输入。推理时这一行之外的 logits 都不需要，也没有 loss。`,
+        nodes: [infer.logits],
+        segment: phase,
+      };
+      entries.push(at({ shown: row + 1, active: [row, row + 1], labels: row + 1 })(this.entry(info, new Set(revealed), new Set([infer.logits, infer.label]))));
+    };
+    for (const group of kept) {
+      const { info, prod, active } = this.forwardGroup(group, entries.length);
+      prod.forEach((n) => revealed.add(n));
+      info.id = `p:${info.id}`;
+      if (info.segment !== undefined) info.sub = info.segment;
+      info.segment = 'prefill';
+      entries.push(at(prefillRows)(this.entry(info, new Set(revealed), new Set(active))));
+    }
+    sample(P - 1, 'prefill');
+    for (let row = P; row < T; row++) {
+      const phase = `decode ${row - P + 1}`;
+      const runs: { cache: boolean; groups: Group[] }[] = [];
+      for (const group of kept) {
+        const cache = inCache(group);
+        const last = runs[runs.length - 1];
+        if (last !== undefined && last.cache === cache) last.groups.push(group);
+        else runs.push({ cache, groups: [group] });
+      }
+      runs.forEach((run, k) => {
+        const parts = run.groups.map((group) => this.forwardGroup(group, entries.length));
+        const prod = unique(parts.flatMap((part) => part.prod));
+        const active = unique([...parts.flatMap((part) => part.active), ...(run.cache ? [...cacheNodes] : [])]);
+        const info: StepInfo = {
+          dir: 'forward',
+          index: entries.length,
+          id: `d:${row}:${k}`,
+          kind: 'op',
+          title: run.cache ? `${phase}：注意力读取缓存` : `${phase}：逐行计算`,
+          label: run.cache ? '注意力' : '逐行',
+          text: run.cache
+            ? `这一步只有第 ${row + 1} 个位置的 query。key 和 value 的前 ${row} 行来自缓存，不再重算；本步算出第 ${row + 1} 行并追加到缓存。注意力分数只有一行，长度是 ${row + 1}。`
+            : `第 ${row + 1} 个位置的输入是上一步采样得到的 {{${name}[${row}]:token}}。这些运算都是逐行的，只算这一行；前面的行已经在 prefill 或之前的 decode 里算过。`,
+          nodes: prod,
+          segment: phase,
+        };
+        const titles = [...new Set(parts.map((part) => part.info.sub ?? part.info.segment).filter((t): t is string => t !== undefined))];
+        if (titles.length > 0) info.sub = titles.join('、');
+        entries.push(at({ shown: row + 1, active: [row, row + 1], labels: row, cache: run.cache ? cacheNodes : undefined })(this.entry(info, new Set(revealed), new Set(active))));
+      });
+      sample(row, phase);
+    }
+  }
+
+  private updateEntry(update: UpdateSpec, loss: Node, all: Set<Node>, index: number): Entry {
+    const g = this.graph;
+    const params = this.visible.filter((n) => n.kind === 'param' && n.grad !== null);
+    const before = loss.value.data[0];
+    const info: StepInfo = {
+      dir: 'forward',
+      index,
+      id: 'u:adamw',
+      kind: 'op',
+      title: update.title,
+      label: update.label,
+      text: `AdamW 第一步：$m_1$、$v_1$ 从 0 开始，偏差修正后 $\\hat m_1=g$、$\\hat v_1=g^2$，每个参数按 $W\\leftarrow W-\\eta\\big(\\tfrac{g}{|g|+\\epsilon}+\\lambda W\\big)$ 更新，$\\eta=${update.lr}$、$\\lambda=${update.weightDecay}$。每个参数移动的幅度都约等于 $\\eta$，方向与梯度相反。更新前 $\\ell=${before.toFixed(4)}$，用新参数再做一次前向，$\\ell={{${loss.name}:4}}$。`,
+      nodes: [...params, loss],
+      segment: update.label,
+    };
+    const entry = this.entry(info, all, new Set([...params, loss]));
+    entry.enter = () => {
+      const saved = params.map((p) => Array.from(p.value.data));
+      const steps = params.map((p) => Array.from(p.value.data, (w, i) => {
+        const grad = p.grad!.data[i];
+        return w - update.lr * (grad / (Math.abs(grad) + 1e-8) + update.weightDecay * w);
+      }));
+      g.batch(() => params.forEach((p, k) => p.set(reshape(steps[k], p.shape))));
+      return () => g.batch(() => params.forEach((p, k) => p.set(reshape(saved[k], p.shape))));
+    };
+    return entry;
   }
 
   private setEntries(entries: Entry[]): void {
@@ -473,7 +617,10 @@ class StepsImpl implements Steps {
   go(i: number): void {
     const next = Math.max(0, Math.min(this.entries.length - 1, i));
     if (next === this.current) return;
+    this.leave?.();
+    this.leave = undefined;
     this.current = next;
+    this.leave = this.entries[next].enter?.();
     this.notify();
   }
 
@@ -504,6 +651,7 @@ class StepsImpl implements Steps {
       focus: this.focus,
       revealed: (node) => entry.revealed.has(node),
       active: (node) => entry.active.has(node),
+      row: (node, position) => rowState(entry, this.spec.infer, node, position),
     };
   }
 
@@ -563,12 +711,33 @@ class StepsImpl implements Steps {
   }
 
   dispose(): void {
+    this.leave?.();
+    this.leave = undefined;
     this.subscribers.length = 0;
   }
 
   private notify(): void {
     [...this.subscribers].forEach((fn) => fn());
   }
+}
+
+function rowState(entry: Entry, infer: InferSpec | undefined, node: Node, position: number): RowState | undefined {
+  const rows = entry.rows;
+  if (rows === undefined || infer === undefined) return undefined;
+  if (node === infer.label) {
+    if (position >= rows.labels || position < infer.prompt - 1) return 'hidden';
+    return entry.active.has(node) && position !== rows.labels - 1 ? 'inactive' : undefined;
+  }
+  if (position >= rows.shown) return 'hidden';
+  if (!entry.active.has(node)) return undefined;
+  if (rows.cache?.has(node) === true) return undefined;
+  return position >= rows.active[0] && position < rows.active[1] ? undefined : 'inactive';
+}
+
+function reshape(flat: number[], shape: readonly number[]): Nested {
+  if (shape.length === 0) return flat[0];
+  const stride = shape.slice(1).reduce((a, b) => a * b, 1);
+  return Array.from({ length: shape[0] }, (_, i) => reshape(flat.slice(i * stride, (i + 1) * stride), shape.slice(1)));
 }
 
 export function createSteps(g: Graph, spec: StepsSpec): Steps {

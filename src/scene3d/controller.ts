@@ -2,7 +2,7 @@ import { AmbientLight, Color, DirectionalLight, type OrthographicCamera, SRGBCol
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Graph, Node } from '../autograd';
 import { type Explainer, explain } from '../explain';
-import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
+import { type RowState, type StepInfo, type StepState, type Steps, allVisible } from '../steps';
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { PlateMesh } from './blocks';
 import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
@@ -20,6 +20,7 @@ import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
+import { tokenAxes } from './hover';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
 import { type Renderable, createRenderable, renderableFor } from './renderable';
@@ -61,6 +62,17 @@ export class SceneController implements EditHost {
   private frontRow = true;
   lod = false;
   stepNodes = new Set<Node>();
+  private positions: Map<Node, number> | undefined;
+
+  positionAxis(node: Node): number | undefined {
+    if (this.positions === undefined) {
+      const axes = tokenAxes(this.g.nodes);
+      const length = this.g.nodes.find((n) => n.kind === 'input' || n.kind === 'label')?.shape[0];
+      for (const n of this.g.nodes) if (n.kind === 'buffer' && n.shape.length > 0 && n.shape[0] === length) axes.set(n, 0);
+      this.positions = axes;
+    }
+    return this.positions.get(node);
+  }
   renderables: Renderable[] = [];
   boards: BoardGeometry[] = [];
   levelLayout: LevelLayout | undefined;
@@ -188,6 +200,7 @@ export class SceneController implements EditHost {
       focus: state.focus,
       revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
       active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
+      row: (node, position) => state.row?.(node, position) ?? viewRow(views, state, node, position),
     };
   }
 
@@ -402,4 +415,9 @@ export class SceneController implements EditHost {
     this.renderer.forceContextLoss();
     this.root.remove();
   }
+}
+
+function viewRow(views: [Node, Node][], state: StepState, node: Node, position: number): RowState | undefined {
+  const view = views.find(([, source]) => source === node)?.[0];
+  return view === undefined ? undefined : state.row?.(view, position);
 }

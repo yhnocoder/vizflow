@@ -7,6 +7,7 @@ inputs:
   v:    { shape: [T, Hkv, dv] }
   mask: { shape: [T, T] }
 outputs: [o]
+cache: [k, v]
 fold:
   label: '$\of{o}$'
   title: 注意力（已折叠）
