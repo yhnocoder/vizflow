@@ -1,0 +1,60 @@
+title: DeepSeek V3 MoE：4 张卡的专家并行
+lede: 这一页只画一个 MoE 层的前向，专家按编号分到 2 个节点、每个节点 2 张卡上，token 也按位置分到 4 张卡上。计算和单卡的 MoE 完全相同，默认视图里柱子用两种颜色区分偶数号卡和奇数号卡上的数据。上方的「按卡分开」把计算图画成每张卡一份，每份只画这张卡上的数据，dispatch 和 combine 画成卡之间的连线，悬停连线可以看到传输量和链路。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 悬停标签看卡片 · 按卡分开时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  MoE: ./deepseek_v3/moe-ep.yaml
+mesh: { ep: { size: 4, nodes: 2 } }
+dims: { T: 8, d: 4, Ne: 8, G: 2, TG: 1, K: 2, mf: 2, Sh: 1 }
+dtype: bf16
+real: { name: DeepSeek-V3, d: 7168, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1, mesh: { ep: { size: 32, nodes: 4 } } }
+init: { seed: 20261011 }
+inputs:
+  x:
+    shape: [T, d]
+    place: { ep: shard(0) }
+    value:
+      - [0.9, -0.4, 0.3, 0.7]
+      - [-0.6, 0.8, -0.2, 0.5]
+      - [0.2, 0.6, -0.9, -0.3]
+      - [-0.8, -0.5, 0.4, 0.1]
+      - [0.5, 0.1, 0.8, -0.7]
+      - [-0.3, -0.9, -0.6, 0.6]
+      - [0.7, 0.4, 0.2, -0.8]
+      - [-0.1, 0.3, 0.9, 0.4]
+overview:
+  label: 总览
+  title: 一个 MoE 层，4 张卡
+  text: |
+    输入 $\of{x}$ 是进入 MoE 的隐状态，$T=\of{T}$ 个 token 按位置分到 4 张卡上，每张卡 \of{T//4} 个，和数据并行的注意力之后的状态一致。\of{Ne} 个路由专家分到 4 张卡上，每张卡 \of{Ne//4} 个；gate 的权重、偏置和共享专家在每张卡上都有一份。
+    每张卡先为自己的 token 选专家，然后 dispatch 把 token 发到专家所在的卡，各卡对收到的行做 grouped GEMM 并乘上路由权重，combine 再把结果送回 token 所在的卡按 token 求和。DeepSeek 公开的推理部署里，prefill 阶段的路由专家用 32 路专家并行，横跨 4 个节点，注意力和共享专家按数据并行；每张卡放 9 个路由专家，其中 1 个是为负载均衡加的冗余专家，这一页不画冗余专家。
+    按组限制专家是为了限制跨节点的通信：这一页 \of{Ne} 个专家分成 $G=\of{G}$ 组，每组正好在一个节点上，每个 token 只能用 $\of{TG}$ 组，所以只发往 1 个节点。
+    $$\of{moe}={{ moe | matrix:2 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    路由专家的权重按专家叠成三维张量，沿专家这一维切开，每张卡只有自己的专家。$\of{x}$ 按 token 切开。$W_r$、偏置和共享专家的权重在每张卡上都有一份。
+body:
+  - mlp:
+      use: MoE
+      title: mlp
+      params: { E: Ne, G: G, TG: TG, K: K, mf: mf, Sh: Sh }
+      inputs: { x: x }
+      outputs: { out: moe }
+panels:
+  - title: 对应的 DeepEP 与 DeepGEMM 调用
+    code: |-
+      # 示意，每张卡上运行一份；省略 FP8 缩放与 BLOCK_M 补齐
+      topk_idx, topk_w = gate(x)                       # 本卡的 token
+      event = buffer.dispatch(x, topk_idx=topk_idx, topk_weights=topk_w, num_experts=E,
+                              expert_alignment=deep_gemm.get_mk_alignment_for_contiguous_layout(),
+                              do_expand=True, ...)    # buffer 是 EPBuffer
+      recv_x, _, recv_w, handle = event.current_stream_wait()   # 本卡专家的行，每行一个权重
+      layout = handle.psum_num_recv_tokens_per_expert
+      deep_gemm.m_grouped_fp8_gemm_nt_contiguous(recv_x, W_gate_up, h, layout, use_psum_layout=True)
+      a = silu(h_gate) * h_up
+      deep_gemm.m_grouped_fp8_gemm_nt_contiguous(a, W_down, ys, layout, use_psum_layout=True)
+      event = buffer.combine(ys * recv_w[:, None], handle, bias=shared_experts(x))
+      routed, _ = event.current_stream_wait()          # 回到本卡的 token，只求和
+    note: 跨节点的 token 先经 RDMA 到目标节点上的同号 GPU，再经 NVLink 转发；combine 走相反的路线并在同号 GPU 上先做部分求和。DeepSeek-V3：256 个路由专家分 8 组，每个 token 选 4 组里的 8 个，moe_intermediate_size = 2048。

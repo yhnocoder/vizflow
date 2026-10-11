@@ -1,0 +1,138 @@
+module: DeepseekV3EPMoE
+subtitle: DeepseekV3MoE，专家并行
+import:
+  GLU: vizflow/nn/glu
+params:
+  E:   { type: dim }
+  G:   { type: dim }
+  TG:  { type: dim }
+  K:   { type: dim }
+  mf:  { type: dim }
+  Sh:  { type: dim }
+  rsf: { type: float, default: 2.5 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [out]
+weights:
+  Wr: { shape: [E, d], tex: 'W_{r}' }
+  Wg: { shape: [E, mf, d], tex: 'W_{g}', place: { ep: shard(0) } }
+  Wu: { shape: [E, mf, d], tex: 'W_{u}', place: { ep: shard(0) } }
+  Wd: { shape: [E, d, mf], tex: 'W_{d}', place: { ep: shard(0) } }
+buffers:
+  bias: { value: zeros(E), tex: '\mathbf{b}', dtype: fp32 }
+fold:
+  label: '$\of{out}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    路由、dispatch、\of{E} 个路由专家的 grouped GEMM、combine 和共享专家都收进了盒子。输出仍按 token 切分，每张卡拿回自己那 \of{T//4} 个 token 的结果。
+    $$\of{out}={{ out | matrix:2 }}$$
+body:
+  - gate:
+      title: gate
+      subtitle: DeepseekV3TopkRouter
+      folded: true
+      fold:
+        label: '$\of{sel},\ \of{rw}$'
+        title: gate（已折叠）
+        text: |
+          gate 和单卡的 MoE 相同，每张卡只为自己的 token 计算：sigmoid 亲和度加上负载均衡的偏置，按组限制后选出 $K=\of{K}$ 个专家，再把选中的亲和度归一化成权重。$W_r$ 和偏置在每张卡上都有完整的一份。展开这个盒子可以逐步查看。
+          $$\of{sel}={{ sel | matrix:0 }},\qquad \of{rw}={{ rw | matrix:3 }}$$
+      body:
+        - logits: { op: x @ Wr.T, tex: '\mathbf{r}', dtype: fp32 }
+        - s: { op: sigmoid(logits), tex: '\mathbf{s}' }
+        - sc: { op: s + bias, tex: '\tilde{\mathbf{s}}' }
+        - sg: { op: 'view(sc, T, G, E // G)', tex: '\tilde{\mathbf{s}}^{\mathrm{grp}}' }
+        - top2: { op: 'sg * topk_mask(sg, 2, -1)', tex: '\tilde{\mathbf{s}}^{\mathrm{top2}}' }
+        - gs: { op: 'sum(top2, -1)', tex: '\mathbf{g}' }
+        - gm: { op: 'topk_mask(gs, TG, -1)', tex: '\mathbf{m}^{\mathrm{grp}}' }
+        - em: { op: 'repeat_interleave(gm, E // G, -1)', tex: '\mathbf{m}^{\mathrm{exp}}' }
+        - choice: { op: 'where(em, sc, -inf)', tex: '\tilde{\mathbf{s}}^{\mathrm{cand}}' }
+        - sel: { op: 'topk_mask(choice, K, -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
+        - w: { op: s * sel, tex: '\mathbf{w}' }
+        - den: { op: 'sum(w, -1, keepdim=true) + 1e-20', tex: '\textstyle\sum\mathbf{w}' }
+        - wn: { op: w / den, tex: '\bar{\mathbf{w}}' }
+        - rw: { op: wn * rsf, tex: '\mathbf{p}' }
+  - dispatch:
+      title: dispatch
+      subtitle: DeepEP EPBuffer.dispatch
+      body:
+        - R: { op: 'dispatch(x, sel, K, ep)', tex: 'X^{\pi}' }
+        - P: { op: 'dispatch(rw, sel, K, ep)', tex: 'P^{\pi}' }
+        - ex: { op: 'route_experts(sel, K)', tex: '\mathbf{e}^{\pi}', dtype: int64 }
+        - pr: { op: 'gather(P, 1, view(ex, T * K, 1))', tex: '\mathbf{p}^{\pi}' }
+  - experts:
+      title: experts
+      subtitle: DeepGEMM，M 分组 GEMM
+      body:
+        - gate_e: { op: 'grouped_mm(R, Wg, ex)', tex: '\mathbf{gate}^{\pi}' }
+        - up_e: { op: 'grouped_mm(R, Wu, ex)', tex: '\mathbf{up}^{\pi}' }
+        - a_e: { op: silu(gate_e), tex: '\mathrm{SiLU}(\mathbf{gate}^{\pi})' }
+        - m_e: { op: a_e * up_e, tex: '\mathbf{m}^{\pi}' }
+        - Y: { op: 'grouped_mm(m_e, Wd, ex)', tex: 'Y^{\pi}' }
+        - Yw: { op: Y * pr, tex: '\mathbf{p}^{\pi}\odot Y^{\pi}' }
+  - combine:
+      title: combine
+      subtitle: DeepEP EPBuffer.combine
+      body:
+        - routed: { op: 'combine(Yw, sel, sel, ep)', tex: '\mathbf{y}^{\mathrm{r}}' }
+  - shared_experts:
+      use: GLU
+      subtitle: DeepseekV3MLP，共享专家
+      suffix: s
+      folded: true
+      params: { act: silu, f: mf*Sh, name: shared }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+  - out: { op: routed + shared, tex: '\mathbf{moe}' }
+steps:
+  - id: dispatch
+    show: [R, P]
+    label: '$\of{R},\ \of{P}$'
+    title: dispatch：token 发到专家所在的卡
+    text: |
+      \of{E} 个路由专家按编号平均分到 4 张卡上，专家 $e$ 在 rank $\lfloor e/\of{E//4}\rfloor$。每个 token 按 $\of{sel}$ 复制给它选中的 $K=\of{K}$ 个专家，一个 token 去同一张卡上的两个专家只发一份，到卡上再展开成两行。每张卡收到的行按本地专家排好，接着按来源卡和 token 的顺序，这些行就是 grouped GEMM 的输入 $\of{R}$。
+      DeepEP 的 hybrid 模式分两跳：去别的节点的 token 先经 RDMA 发到目标节点上与源卡同号的 GPU，再由这张卡经 NVLink 转发给持有专家的卡；同一节点内直接经 NVLink 发送。每个 token 的消息里除了隐状态，还带着它的 top-$K$ 专家编号和权重，所以 $\of{P}$ 和 $\of{R}$ 是同一次 dispatch 送到的。
+      $$X^{\pi}_r=\mathbf{x}_{i_r}:\quad \of{R}={{ R | matrix:2 }}$$
+  - id: local_weights
+    show: [ex, pr]
+    label: '$\of{pr}$'
+    title: 每一行取出自己专家的权重
+    text: |
+      卡上的第 $r$ 行交给本地专家 $e_r$，$\of{ex}=(e_r)$ 来自 dispatch 返回的每个专家的行数，就是 DeepGEMM 的 <code>grouped_layout</code>。第 $r$ 行从带来的 $K$ 个权重里取出专家 $e_r$ 的那一个，$p^{\pi}_r=p_{i_r,e_r}$。
+      $$\of{pr}={{ pr | matrix:3 }}$$
+  - id: gemm_in
+    show: [Wg, Wu, gate_e, up_e]
+    label: '$\of{gate_e},\ \of{up_e}$'
+    title: grouped GEMM：gate_proj 和 up_proj
+    text: |
+      每张卡只存自己那 \of{E//4} 个专家的 $W_g$、$W_u$、$W_d$，也只算分给这些专家的行。每一行乘它所属专家的权重：$\mathbf{gate}^{\pi}_r=W_{g}[e_r]\,X^{\pi}_r$。各张卡分到的行数不同，取决于路由。DeepGEMM 的 <code>m_grouped_fp8_gemm_nt_contiguous</code> 要求每个专家的那一段补齐到 BLOCK_M 的整数倍，这里不补，也不用 FP8。
+      $$\of{gate_e}={{ gate_e | matrix:2 }}$$
+  - id: act
+    show: [a_e, m_e]
+    label: '$\of{m_e}$'
+    title: SwiGLU
+    text: |
+      逐元素计算，每张卡只处理自己的行。
+      $$\of{m_e}=\mathrm{SiLU}(\of{gate_e})\odot\of{up_e}={{ m_e | matrix:2 }}$$
+  - id: gemm_out
+    show: [Wd, Y, Yw]
+    label: '$\of{Yw}$'
+    title: grouped GEMM：down_proj，乘路由权重
+    text: |
+      再做一次 M 分组 GEMM 回到 $d$ 维，然后每一行乘上自己的路由权重 $p^{\pi}_r$。权重在专家所在的卡上乘，combine 只做求和。
+      $$(\mathbf{p}^{\pi}\odot Y^{\pi})_r=p^{\pi}_r\,W_{d}[e_r]\,\mathbf{m}^{\pi}_r:\quad \of{Yw}={{ Yw | matrix:2 }}$$
+  - id: combine
+    show: routed
+    label: '$\of{routed}$'
+    title: combine：各行加回自己的 token
+    text: |
+      每一行送回它的 token 所在的卡，按 token 求和，权重已经乘过，这里只加。hybrid 模式的路线和 dispatch 相反：同一节点内持有专家的卡先经 NVLink 把行写到与 token 所在卡同号的 GPU，在那里按 token 先加成部分和，再经 RDMA 写回 token 所在的卡，最后把来自各节点的部分和加起来。combine 用 BF16 传输。
+      $$\mathbf{y}^{\mathrm{r}}_t=\sum_{r:\,i_r=t}p^{\pi}_r\,Y^{\pi}_r:\quad \of{routed}={{ routed | matrix:2 }}$$
+  - id: add
+    show: out
+    label: '$\of{out}=\of{routed}+\of{shared}$'
+    title: 加上共享专家
+    text: |
+      共享专家每个位置都要经过，权重在每张卡上都有一份，每张卡只算自己的 token，不需要通信。DeepEP 的 combine 可以通过 <code>bias</code> 参数在求和的最后一步加上共享专家的输出，这里画成单独的一次相加。
+      $$\of{out}={{ out | matrix:2 }}$$
