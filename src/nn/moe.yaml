@@ -121,7 +121,7 @@ steps:
     label: '$\of{den}$'
     title: 选中的概率求和
     text: |
-      参数 norm_topk_prob 为 true，<code>if self.norm_topk_prob:</code> 成立，执行 <code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>。这一步先算右边的 <code>sum</code>，每个位置一个和。
+      选中的概率重新归一化：<code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>。这一步先算右边的 <code>sum</code>，每个位置一个和。
       $$\textstyle\sum\mathbf{p}^{\mathrm{top}}={{ den | matrix:3 }}$$
     backward:
       label: '$\partial\of{top}$'
