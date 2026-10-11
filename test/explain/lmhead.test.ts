@@ -113,13 +113,13 @@ describe('explain on the lm_head graph', () => {
     expect(card.rows[0]).toEqual({ label: 'shape', value: '(1, 5)' });
     expect(card.rows[1]).toEqual({ label: '真实模型', value: 'Qwen3-8B：(1, 151936)' });
     expect(card.rows[2].label).toBe('当前值');
-    expect(card.rows[2].value.startsWith('[')).toBe(true);
+    expect(card.rows[2].value.startsWith('$[')).toBe(true);
     expect(ex.nodeCard(h, 'forward').tex).toEqual(['\\mathbf{h}']);
     expect(ex.nodeCard(loss, 'backward').tex).toEqual(['\\frac{\\partial\\ell}{\\partial\\ell}=1']);
     expect(ex.nodeCard(logp, 'forward').tex).toEqual(['\\log\\mathbf{p}=\\mathbf{z}-\\mathrm{LSE}']);
     const hBack = ex.nodeCard(h, 'backward');
     expect(hBack.rows.find((r) => r.label === 'Jacobian')!.value).toBe('$\\partial \\mathbf{z}/\\partial \\mathbf{h}$：(5, 4)');
-    expect(hBack.rows.at(-1)!.value).toBe('[' + Array.from(h.grad!.data, (v) => (v < 0 ? '−' : '') + Math.abs(v).toFixed(3)).join(', ') + ']');
+    expect(hBack.rows.at(-1)!.value).toBe('$[' + Array.from(h.grad!.data, (v) => (v < 0 ? '-' : '') + Math.abs(v).toFixed(3)).join(',\\ ') + ']$');
   });
 
   it('ignores consumers that do not reach the loss', () => {

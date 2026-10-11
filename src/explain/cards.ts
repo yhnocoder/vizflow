@@ -25,9 +25,9 @@ const VALUE_PREVIEW = 8;
 const NOTE_TERMS = 8;
 
 function valueText(t: Tensor): string {
-  if (t.shape.length === 0) return formatNumber(t.data[0]);
-  const shown = Array.from(t.data.subarray(0, VALUE_PREVIEW), (v) => formatNumber(v));
-  return `[${shown.join(', ')}${t.size > VALUE_PREVIEW ? ', …' : ''}]`;
+  if (t.shape.length === 0) return `$${formatNumber(t.data[0], { tex: true })}$`;
+  const shown = Array.from(t.data.subarray(0, VALUE_PREVIEW), (v) => formatNumber(v, { tex: true }));
+  return `$[${shown.join(',\\ ')}${t.size > VALUE_PREVIEW ? ',\\ \\ldots' : ''}]$`;
 }
 
 function squeeze(shape: readonly number[]): number[] {
@@ -94,7 +94,7 @@ export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', re
 }
 
 const parenthesized = (v: number) => (v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true }));
-const term = (v: number) => (v < 0 ? `(${formatNumber(v)})` : formatNumber(v));
+const term = (v: number) => (v < 0 ? `(${formatNumber(v, { tex: true })})` : formatNumber(v, { tex: true }));
 
 function localTexOf(e: FlowEdge): string {
   if (isCell(e.from)) return '1';
@@ -131,10 +131,10 @@ function sumNote(explainer: Explainer, e: FlowEdge): string | undefined {
   const total = grad === null ? 0 : grad.get(e.from.index);
   const name = `$${elemTex(e.from)}$`;
   if (siblings.length > NOTE_TERMS) {
-    return `${name} 有 ${siblings.length} 条出边，各条传回的量相加得到 ${formatNumber(total)}。`;
+    return `${name} 有 ${siblings.length} 条出边，各条传回的量相加得到 $${formatNumber(total, { tex: true })}$。`;
   }
-  const terms = siblings.map((s) => term(explainer.contribution(s))).join(' + ');
-  return `${name} 有 ${siblings.length} 条出边，各条传回的量相加：${terms} = ${formatNumber(total)}。`;
+  const terms = siblings.map((s) => term(explainer.contribution(s))).join('+');
+  return `${name} 有 ${siblings.length} 条出边，各条传回的量相加：$${terms}=${formatNumber(total, { tex: true })}$。`;
 }
 
 export function edgeCardOf(explainer: Explainer, e: FlowEdge): EdgeCard {
