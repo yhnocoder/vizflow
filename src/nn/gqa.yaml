@@ -27,9 +27,9 @@ body:
       - S[h]:  { op: 'select_matmul(q, kT[h], h-1)', tex: 'S^{(\of{h})}' }
       - Ss[h]: { op: 'S[h] * dh ** -0.5', tex: '\tilde{S}^{(\of{h})}' }
       - Sm[h]: { op: 'Ss[h] + mask', tex: '\bar{S}^{(\of{h})}' }
-      - ex[h]: { op: 'exp(Sm[h])', tex: '\mathrm{ex}^{(\of{h})}' }
+      - ex[h]: { op: 'exp(Sm[h])', tex: '\mathrm{ex}^{(\of{h})}', dtype: fp32 }
       - Z[h]:  { op: 'sum(ex[h], -1, keepdim=true)', tex: 'Z^{(\of{h})}' }
-      - P[h]:  { op: 'ex[h] / Z[h]', tex: 'P^{(\of{h})}' }
+      - P[h]:  { op: 'ex[h] / Z[h]', tex: 'P^{(\of{h})}', dtype: q }
       - o[h]:  { op: 'P[h] @ V[h]', tex: '\mathbf{o}^{(\of{h})}' }
   - o: 'cat(o[1..H], dim=1)'
 steps:

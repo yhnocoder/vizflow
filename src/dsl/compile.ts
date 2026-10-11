@@ -1,4 +1,4 @@
-import { type Graph, Node, graph, opDef } from '../autograd';
+import { DTYPES, type Graph, Node, graph, opDef } from '../autograd';
 import { explainOf, trailingSubscript } from '../explain';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
 import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
@@ -70,6 +70,7 @@ interface Make {
   tex: string;
   anon: Node[];
   counter: number;
+  dtype?: string;
 }
 
 interface Env {
@@ -101,14 +102,14 @@ interface ResolvedStep {
   show: Node[];
 }
 
-const ITEM_KEYS = new Set(['op', 'tex']);
+const ITEM_KEYS = new Set(['op', 'tex', 'dtype']);
 const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
 const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', 'brace', ...MODULE_ITEM_KEYS]);
 const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
 const PAGE_KEYS = new Set([
-  'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
+  'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'dtype', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
 ]);
 const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward']);
@@ -176,6 +177,12 @@ function join(path: string, name: string): string {
 
 function list<T>(value: T | T[] | undefined): T[] {
   return value === undefined ? [] : Array.isArray(value) ? value : [value];
+}
+
+function dtypeOption(decl: Record<string, unknown>, at: Where): { dtype?: string } {
+  if (decl.dtype === undefined) return {};
+  if (typeof decl.dtype !== 'string') fail(child(at, decl, 'dtype'), 'dtype must be a string');
+  return { dtype: decl.dtype };
 }
 
 function checkKeys(obj: Record<string, unknown>, allowed: ReadonlySet<string>, where: Where): void {
@@ -289,7 +296,13 @@ class Compiler {
     }
     for (const [name, value] of extraDims) real[name] = value.real;
     this.real = page.real !== undefined;
-    this.g = graph(this.real ? { dims, real } : { dims });
+    const dtype = page.dtype;
+    if (dtype !== undefined && typeof dtype !== 'string') fail(child(pageWhere, page, 'dtype'), 'dtype must be a string');
+    try {
+      this.g = graph({ dims, ...(this.real ? { real } : {}), ...(dtype === undefined ? {} : { dtype }) });
+    } catch (error) {
+      fail(child(pageWhere, page, 'dtype'), (error as Error).message);
+    }
     this.values = record(page.values, child(pageWhere, page, 'values'), 'values');
     const init = record(page.init, child(pageWhere, page, 'init'), 'init');
     this.random = rng(typeof init.seed === 'number' ? init.seed : DEFAULT_SEED);
@@ -563,7 +576,8 @@ class Compiler {
     const elem = top ? elemOf(tex) : `(${elemOf(tex)})`;
     let node: Node;
     try {
-      node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem });
+      const dtype = top && make.dtype !== undefined ? { dtype: make.dtype } : {};
+      node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[op](...positional, { ...options, name, tex, elem, ...dtype });
     } catch (error) {
       if (error instanceof NeedDim || error instanceof DslError) throw error;
       this.fail(env, (error as Error).message, at);
@@ -859,7 +873,7 @@ class PageCompiler {
           node = c.g.label(name, given ?? this.tokenIds(spec.tokens as unknown[], child(at, spec, 'tokens')), { tokens: vocab as string[], tex, elem: elemOf(tex) });
         } else if (spec.value !== undefined) {
           const values = (given ?? spec.value) as Nested;
-          node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex) });
+          node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex), ...dtypeOption(spec, at) });
         } else {
           fail(at, 'a page input needs tokens or value');
         }
@@ -1123,7 +1137,7 @@ class PageCompiler {
     for (const [name, weightDecl] of Object.entries(weights)) {
       const at = child(weightsWhere, weights, name);
       if (!isRecord(weightDecl)) fail(at, `weight '${name}' must be a mapping`);
-      checkKeys(weightDecl, new Set(['shape', 'init', 'tex']), at);
+      checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype']), at);
       const shape = c.shapeOf(weightDecl.shape, { ...env, where: child(at, weightDecl, 'shape') }, child(at, weightDecl, 'shape'));
       const binding = bound?.map[name];
       if (binding !== undefined) {
@@ -1143,7 +1157,7 @@ class PageCompiler {
       const values = c.takeValue(path) ?? c.initValues(init, shape.map((d) => d.toy));
       let node: Node;
       try {
-        node = c.g.param(path, c.leafSpec(shape), values, { tex, elem: elemOf(tex) });
+        node = c.g.param(path, c.leafSpec(shape), values, { tex, elem: elemOf(tex), ...dtypeOption(weightDecl, at) });
       } catch (error) {
         if (error instanceof DslError || error instanceof NeedDim) throw error;
         fail(at, (error as Error).message);
@@ -1160,7 +1174,8 @@ class PageCompiler {
     for (const [name, bufferDecl] of Object.entries(buffers)) {
       const at = child(buffersWhere, buffers, name);
       if (!isRecord(bufferDecl)) fail(at, `buffer '${name}' must be a mapping`);
-      checkKeys(bufferDecl, new Set(['value', 'shape', 'tex']), at);
+      checkKeys(bufferDecl, new Set(['value', 'shape', 'tex', 'dtype']), at);
+      const bufferDtype = dtypeOption(bufferDecl, at);
       const valueWhere = child(at, bufferDecl, 'value');
       const value = c.expression(bufferDecl.value, { ...env, where: valueWhere, buffers: true }, undefined);
       if (!isRecord(value) || !('buffer' in value)) fail(valueWhere, 'a buffer value must call rope_cos, rope_sin or causal_mask');
@@ -1178,7 +1193,7 @@ class PageCompiler {
       const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
       const node = c.bufferNode(key, () => {
         try {
-          const created = c.g.buffer(join(scope.path, name), c.leafSpec(buffer.shape), buffer.values, { tex, elem: elemOf(tex) });
+          const created = c.g.buffer(join(scope.path, name), c.leafSpec(buffer.shape), buffer.values, { tex, elem: elemOf(tex), ...bufferDtype });
           c.setOwner(created, entries);
           return created;
         } catch (error) {
@@ -1382,6 +1397,7 @@ class PageCompiler {
     const c = this.c;
     let expr: unknown = value;
     let declared: string | undefined;
+    let dtype: string | undefined;
     let exprWhere = env.where;
     if (isRecord(value)) {
       checkKeys(value, ITEM_KEYS, env.where);
@@ -1392,6 +1408,7 @@ class PageCompiler {
         if (typeof value.tex !== 'string') fail(child(env.where, value, 'tex'), 'tex must be a string');
         declared = value.tex;
       }
+      if (value.dtype !== undefined) dtype = this.itemDtype(value.dtype, { ...env, where: child(env.where, value, 'dtype') });
     }
     if (scope.local(name) !== undefined || scope.groups.has(name)) fail(env.where, `name '${name}' is already defined in ${c.scopeLabel(scope)}`);
     const override = scope.texOverride.get(name) ?? scope.texOverride.get(base);
@@ -1400,7 +1417,7 @@ class PageCompiler {
     else if (declared !== undefined) tex = this.marked(c.ofText(declared, env), scope, declared.includes('\\of{'));
     else if (scope.outputTex.has(name)) tex = scope.outputTex.get(name) as string;
     else tex = this.marked(c.loopTex(base, indices), scope, false);
-    const make: Make = { path: join(scope.path, name), tex, anon: [], counter: 0 };
+    const make: Make = { path: join(scope.path, name), tex, anon: [], counter: 0, dtype };
     const result = c.expression(expr, { ...env, where: exprWhere }, make);
     if (!(result instanceof Node) || result.name !== make.path) fail(exprWhere, `'${name}' must compute a new node; its expression only refers to an existing value`);
     scope.anon.set(result, make.anon);
@@ -1411,6 +1428,14 @@ class PageCompiler {
     }
     entries.push({ kind: 'node', node: result });
     return { kind: 'node', name, node: result, created: c.g.nodes.slice(before) };
+  }
+
+  itemDtype(value: unknown, env: Env): string {
+    if (typeof value !== 'string') fail(env.where, 'dtype must be a dtype name or the name of a tensor');
+    if ((DTYPES as readonly string[]).includes(value)) return value;
+    const node = this.c.expression(value, env, undefined);
+    if (!(node instanceof Node)) fail(env.where, `dtype '${value}' is neither a dtype (${DTYPES.join(', ')}) nor a tensor`);
+    return node.dtype;
   }
 
   instance(

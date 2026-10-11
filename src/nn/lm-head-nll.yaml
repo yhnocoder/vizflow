@@ -10,7 +10,7 @@ weights:
   W: { shape: [V, d] }
 body:
   - z:    h @ W.T
-  - LSE:  'logsumexp(z, -1, keepdim=true)'
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
   - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
   - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\boldsymbol{\ell}' }
   - loss: { op: mean(lt), tex: '\ell' }
