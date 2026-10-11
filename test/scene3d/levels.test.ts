@@ -157,3 +157,38 @@ describe('levelPlan with rank-2 activations', () => {
     }
   });
 });
+
+describe('levelPlan with views and head-selecting boards', () => {
+  it('draws a view on its input and reads each head of a rank-3 operand under its own columns', () => {
+    const g = graph({ dims: { T, H: 2, dh: DH } });
+    const x = g.input('x', [T, 2 * DH], [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]);
+    const K = g.param('K', [DH, 3], [[1, 0, 1], [0, 1, 1]]);
+    const flat = g.mul(x, 2, { name: 'flat' });
+    const heads = g.view(flat, T, 2, DH);
+    const S = g.select_matmul(heads, K, 1, { name: 'S' });
+    const loss = g.loss(g.sum(S, null, { name: 'loss' }));
+    const module: StepModule = {
+      id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], fixed: false, folded: false, segment: 'att', forward: {}, backward: {},
+    };
+    const spec: StepsSpec = {
+      forward: [
+        { show: [x, K], title: 'inputs', kind: 'inputs' },
+        { show: [flat, heads], title: 'flat', segment: 'att', module: 'att' },
+        { show: [S], title: 'S', segment: 'att', module: 'att' },
+        { show: [loss], title: 'loss', segment: 'loss' },
+      ],
+      backward: 'reverse',
+      modules: [module],
+    };
+    const layout = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    expect(layout.blocks.some((b) => b.node === heads)).toBe(false);
+    expect(layout.sourceOf.get(heads)).toBe(flat);
+    const board = layout.boards.find((b) => b.op === S)!;
+    expect(board.a.node).toBe(flat);
+    const flatXs = blockOf(layout.blocks, flat).elements.filter((e) => e.row === 0).map((e) => e.x);
+    const outXs = board.out.elements.filter((e) => e.row === 0).map((e) => e.x);
+    expect(outXs[0]).toBeCloseTo(flatXs[DH]);
+    expect(board.y).toBeGreaterThan(blockOf(layout.blocks, flat).elements[0].y);
+  });
+});
+

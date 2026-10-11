@@ -40,6 +40,7 @@ import { editableLayout } from './editconfig';
 import { LABEL_SAFE_MARGIN, type Label, LabelLayer, anchorOffset } from './labels';
 import {
   type Block,
+  type Element,
   type BoardGeometry,
   DISC_RADIUS,
   LINE_HEIGHT,
@@ -825,7 +826,12 @@ class SceneController implements EditHost {
   }
 
   private renderableOf(node: Node): Renderable | undefined {
-    return this.renderables.find((r) => r.block.node === node && r.block.copyOf === undefined);
+    const source = this.levelLayout?.sourceOf.get(node) ?? node;
+    return this.renderables.find((r) => r.block.node === source && r.block.copyOf === undefined);
+  }
+
+  private elementOf(block: Block, node: Node, index: readonly number[]): Element {
+    return block.node === node ? elementAt(block, index) : block.elements[offsetOf(node.shape, index as number[])];
   }
 
   private renderableFor(block: Block): Renderable | undefined {
@@ -907,7 +913,9 @@ class SceneController implements EditHost {
       title.el.dataset.node = node.name;
       title.offset = this.options.labels?.[node.name];
       title.visible = named && block.untitled !== true;
-      texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
+      const view = block.copyOf === undefined ? [...(this.levelLayout?.sourceOf ?? [])].find(([, source]) => source === node)?.[0] : undefined;
+      const tex = view === undefined ? node.tex : `${view.tex}=${node.tex}`;
+      texOf(title, backward ? `\\partial\\ell/\\partial ${(view ?? node).tex}` : tex);
       if (renderable.bars !== undefined) {
         title.pos = [block.title.x, block.title.y, block.title.z];
         title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
@@ -992,14 +1000,14 @@ class SceneController implements EditHost {
 
   private anchorOut(node: Node, index: number[], renderable = this.renderableOf(node)): Vec3 | undefined {
     if (renderable === undefined) return undefined;
-    const element = elementAt(renderable.block, index);
+    const element = this.elementOf(renderable.block, node, index);
     if (renderable.nodes !== undefined) return renderable.nodes.anchorOut(element);
     return barTop(element, renderable.transition.current[offsetOf(node.shape, index)]);
   }
 
   private anchorIn(node: Node, index: number[], renderable = this.renderableOf(node)): Vec3 | undefined {
     if (renderable === undefined) return undefined;
-    const element = elementAt(renderable.block, index);
+    const element = this.elementOf(renderable.block, node, index);
     if (renderable.nodes !== undefined) return renderable.nodes.anchorIn(element);
     return barBottom(element, renderable.transition.current[offsetOf(node.shape, index)]);
   }
@@ -1215,7 +1223,7 @@ class SceneController implements EditHost {
         const rows = [board.out.batched ? r : undefined];
         let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
         if (edge.arg === 0) {
-          const aElement = elementAt(board.a, operands.a);
+          const aElement = this.elementOf(board.a, edge.op.inputs[0], operands.a);
           const to: Vec3 = [tile(board.b, k, i).x - tileW / 2 - 0.01, y, tile(board.b, k, i).z];
           const previous = board.previous;
           if (i === 0 && previous !== undefined) {
@@ -1242,10 +1250,10 @@ class SceneController implements EditHost {
       const copy = levels?.copyFor(from.node, to.node);
       const fromR = copy === undefined ? this.renderableOf(from.node) : this.renderableFor(copy);
       const toR = this.renderableOf(to.node);
-      if (fromR === undefined || toR === undefined || !this.shown(fromR.block) || !this.shown(toR.block)) continue;
+      if (fromR === undefined || toR === undefined || fromR === toR || !this.shown(fromR.block) || !this.shown(toR.block)) continue;
       const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
-      const fromElement = elementAt(fromR.block, from.index);
-      const toElement = elementAt(toR.block, to.index);
+      const fromElement = this.elementOf(fromR.block, from.node, from.index);
+      const toElement = this.elementOf(toR.block, to.node, to.index);
       let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
       if (fromR.block.table !== undefined && Math.abs(fromElement.y - toElement.y) < SAME_LEVEL) {
         const y = toElement.y + LINE_HEIGHT;
