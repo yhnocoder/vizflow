@@ -31,12 +31,16 @@ const frequencies = (spec: RopeSpec) => range(spec.dh / 2).map((i) => 1 / Math.p
 
 const rowsOf = (nodes: Node[]) => nodes[0].shape[0];
 
-const headCount = (nodes: Node[], dh: number) => (nodes.length > 1 ? nodes.length : nodes[0].shape[1] / dh);
+const headCount = (nodes: Node[], dh: number) => {
+  if (nodes.length > 1) return nodes.length;
+  return nodes[0].shape.length === 3 ? nodes[0].shape[1] : nodes[0].shape[1] / dh;
+};
 
 function headMatrix(nodes: Node[], head: number, dh: number): number[][] {
   const node = nodes.length > 1 ? nodes[head] : nodes[0];
-  const offset = nodes.length > 1 ? 0 : head * dh;
-  return range(node.shape[0]).map((r) => range(dh).map((c) => node.value.get([r, offset + c])));
+  const split = nodes.length === 1 && node.shape.length === 3;
+  const offset = nodes.length > 1 || split ? 0 : head * dh;
+  return range(node.shape[0]).map((r) => range(dh).map((c) => node.value.get(split ? [r, head, c] : [r, offset + c])));
 }
 
 const kvHead = (spec: RopeSpec, head: number) => Math.floor(head / (headCount(spec.q, spec.dh) / headCount(spec.k, spec.dh)));

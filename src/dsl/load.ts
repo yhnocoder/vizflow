@@ -56,6 +56,10 @@ export class Loader {
     return new URL(ref, from).href;
   }
 
+  text(url: string): Promise<string> {
+    return this.read(url);
+  }
+
   async module(url: string, chain: readonly string[], where: Where): Promise<ModuleDef> {
     if (chain.includes(url)) fail(where, `circular import: ${[...chain, url].join(' -> ')}`);
     const cached = this.cache.get(url);

@@ -261,6 +261,24 @@ describe('mountSections', () => {
     expect(fixture.steps.current).toBe(3);
   });
 
+  it('reads q and k laid out as (T, H, dh) the same as (T, H dh)', () => {
+    const shown = (split: boolean) => {
+      const g = graph({ dims: { T: 3 } });
+      const shape = split ? ['T', 2, 2] : ['T', 4];
+      const data = (m: number[][]) => (split ? m.map((r) => [r.slice(0, 2), r.slice(2)]) : m);
+      const q = g.param('q', shape, data(Q));
+      const k = g.param('k', shape, data(K));
+      g.sum(g.mul(q, k), null, { name: 'loss' });
+      const el = container();
+      const item: SectionItem = { rope: { q: [q], k: [k], rows: [-1, 1], head: 2, theta: 10, dh: 2, positions: 24 }, rows: [{ cells: [['rope_dial', 'rope_curve']] }] };
+      mounted.push(mountSections(el, g, [item]));
+      return [...el.querySelectorAll('.vf-ropekv dd, .vf-rope-curve .vf-note')].map(text);
+    };
+    const flat = shown(false);
+    expect(flat[3]).toContain(`（转之前 ${(Q[2][2] * K[0][2] + Q[2][3] * K[0][3]).toFixed(3).replace('-', '−')}）`);
+    expect(shown(true)).toEqual(flat);
+  });
+
   it('refuses rope blocks without the rope option', () => {
     const fixture = attentionGraph();
     expect(() => mountSections(container(), fixture.g, [{ rows: [{ cells: [['rope_dial']] }] }])).toThrow("section: rope_dial needs the section's rope option");

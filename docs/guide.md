@@ -627,7 +627,7 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 ### 5.2 mountPanels
 
-`mountPanels(el, g, items, { steps })` 按顺序画出一列面板卡片。传入 `steps` 时，面板跟随当前样本，模板里的 `b` 有值，matrix 函数能拿到当前步骤状态。返回值和其他 mount 一样有 `dispose()`。
+`mountPanels(el, g, items, { steps })` 按顺序画出一列面板卡片。卡片标题、列标题、按钮文字、序列标签和图注都按 `renderText` 渲染，数学符号写成 `$...$` 行内公式，不用 unicode 的数学字符；默认标题里的节点名用节点的 tex。传入 `steps` 时，面板跟随当前样本，模板里的 `b` 有值，matrix 函数能拿到当前步骤状态。返回值和其他 mount 一样有 `dispose()`。
 
 **loss**：损失读数，下方可选一行说明和一组按钮。点「更新一步」后画出损失曲线，其他任何输入变化都会清空曲线。
 
@@ -645,7 +645,7 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 **sliders**：一个节点的每个元素一个滑块。
 
 ```js
-{ sliders: h, min: -2.5, max: 2.5, step: 0.01, title: '隐状态 h，(1, d)' }
+{ sliders: h, min: -2.5, max: 2.5, step: 0.01, title: '隐状态 $\\mathbf{h}$，(1, d)' }
 ```
 
 `min`、`max`、`step` 默认 −2.5、2.5、0.01。标题默认为「节点名，shape」。每个滑块的无障碍名称是节点名加下标数字，例如 `h₁`、`x₃`。二维节点只显示当前样本那一行。
@@ -653,8 +653,8 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 **tokens**：类别表，每行一个类别，单选按钮设为目标类。
 
 ```js
-{ tokens: t, columns: [z, logp, { node: z, grad: true, title: '∂ℓ/∂z' }], title: '词表与目标 token' }
-{ tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true, title: 'p − y' }] }
+{ tokens: t, columns: [z, logp, { node: z, grad: true, title: '$\\partial\\ell/\\partial\\mathbf{z}$' }], title: '词表与目标 token' }
+{ tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true, title: '$\\mathbf{p}-\\mathbf{y}$' }] }
 ```
 
 `columns` 中每一项是节点（显示值）或 `{ node, grad, title }`（`grad: true` 显示梯度，按正负着色）；数值列保留 3 位小数。给了 `sliders` 时每行带一个滑块，用来按类别调 logits，`min`、`max` 默认 −2.5、2.5。列的长度要等于类别数。token 的前导空格显示为 `␣`。label 既没有 tokens 也没有 classes 时抛错。
@@ -662,8 +662,8 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 **matrix**：矩阵热力图，单元格保留 2 位小数，按正负着色。
 
 ```js
-{ matrix: W.T, highlight: t, title: 'Wᵀ' }
-{ matrix: W.T, grad: true, highlight: t, title: '∂ℓ/∂Wᵀ', note: '...' }
+{ matrix: W.T, highlight: t, title: '$W^{\\top}$' }
+{ matrix: W.T, grad: true, highlight: t, title: '$\\partial\\ell/\\partial W^{\\top}$', note: '...' }
 { matrix: (graph, state) => graph.jacobian(p, x, { row: state.focus }),
   highlight: { node: t, axis: 'row' }, title: 'Softmax 的 Jacobian', note: '...' }
 ```
@@ -684,7 +684,72 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 面板放在哪里由页面决定。同一张图可以挂多次 `mountPanels`，分别放进不同容器，例如 softmax-ce 页把 loss 面板和其他面板放在两个容器里。
 
-### 5.3 页面里自己的文字
+### 5.3 讲解段落与 Markdown 文件
+
+YAML 页面的 `sections` 在场景下方画讲解段落。每一段是一张卡片，由若干行组成，一行可以分成几栏；栏里放 Markdown 正文和内置组件。较长的段落写在单独的 Markdown 文件里，YAML 只留标题、文件路径和组件要用的节点：
+
+```yaml
+sections:
+  - title: RoPE：用旋转来编码位置
+    src: qwen3/rope.md
+    rope: { q: layer.self_attn.qn, k: layer.self_attn.kn, rows: [-1, 1], head: 1, theta: 10, dh: dh, positions: 24 }
+```
+
+`src` 相对于 YAML 文件解析，与 `import` 的模块路径相同，开发服务器和发布后的页面都在运行时读取这个文件，所以它要和 YAML 一起部署。`src` 和 `rows` 只能写一个。`rope` 给出 RoPE 组件读取的 q、k 节点、取哪一行（负数从末尾数）、第几个 head、$\theta$、$d_h$ 和曲线画到的位置数。q、k 可以是 $(T, H d_h)$ 的一个节点，也可以是 $(T, H, d_h)$ 的一个节点，或者每个 head 一个 $(T, d_h)$ 节点的列表。
+
+Markdown 文件的写法：
+
+````markdown
+:::: columns 300 1fr
+::: column
+::: rope_dial
+:::
+:::
+
+::: column
+::: lead
+开头的一段，字号稍大。
+:::
+
+### 一、问题
+
+正文，公式写 $\mathbf{q}\cdot\mathbf{k}$，模板写 {{T}}。
+:::
+::::
+
+### 五、为什么 v 不转
+
+正文。
+
+---
+
+### 七、回到这一页
+
+::: buttons
+- { label: 在图上看 RoPE 这几步, go: layer.self_attn.apply_rotary_pos_emb.qc }
+- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layer.self_attn.S[1]' }
+:::
+
+::: rope_compare
+scores: 'layer.self_attn.Ss[1..H]'
+weights: 'layer.self_attn.P[1..H]'
+ids: ids
+:::
+````
+
+规则：
+
+- 以三个或更多冒号开头、后面跟名字的一行打开一个块，只有冒号的一行关闭最近打开的块。外层块可以多写一个冒号，便于对齐阅读，冒号个数不影响解析。
+- 块以外的文字是 Markdown 正文，可以写 `$...$`、`$$...$$` 公式（只用 LaTeX）、`{{...}}` 模板和第 4.5 节的内置小图。代码块（三个反引号）里的冒号行按普通文字处理。
+- 单独一行 `---` 结束当前行，下一行从分隔线后开始。`columns` 块自己占一行，它前后的正文各成一行。
+- `columns 宽度...` 只能写在最外层，里面只能放 `column` 块，每栏一个宽度：数字是像素，其他写法（如 `1fr`）原样作为 CSS 网格宽度。窄屏下各栏改为上下排列。
+- `lead` 块的内容是开头段落，按 Markdown 渲染，字号稍大。
+- 其他名字是内置组件。`rope_dial`（两个箭头随 $t$、$s$ 转动的表盘）和 `rope_curve`（整个 head 的点积随 $t-s$ 变化的曲线）没有内容；`buttons` 的内容是 YAML 列表，每项 `{ label, go }`，点击后跳到第一个显示 `go` 节点的前向步骤，没有这样的步骤时跳到 `go` 所在模块折叠后的那一步；`rope_compare` 的内容是 YAML 映射，`scores`、`weights` 是每个 head 一个的打分和权重节点，`ids` 是 token 输入，用来对比加不加 RoPE 的打分。组件名后面不能带参数，参数写在内容里。
+- 出错时报告 Markdown 文件的行号，例如 `qwen3/rope.md:12:1: '::: lead' is not closed`。组件内容里的节点路径写错时，报告那一行。
+
+段落也可以直接写在 YAML 里：`rows` 是行的列表，一行是块的列表，或者 `{ columns: [300, 1fr], cells: [[块...], [块...]] }`；块写成 `rope_dial`、`rope_curve`、`{ text: Markdown }`、`{ lead: Markdown }`、`{ buttons: [...] }`、`{ rope_compare: {...} }`。
+
+### 5.4 页面里自己的文字
 
 标题下的导语等页面自己的文字如果含公式，用 formula 入口的 `renderText` 渲染：
 
@@ -1047,7 +1112,7 @@ mountPanels('#side', g, [
       reset: true,
       text: '目标 "{{t:token}}"，log p = {{log p[t]:3}}',
   } },
-  { sliders: h, min: -2.5, max: 2.5, step: 0.01, title: '隐状态 h，(1, d)' },
+  { sliders: h, min: -2.5, max: 2.5, step: 0.01, title: '隐状态 $\\mathbf{h}$，(1, d)' },
   { tokens: t, columns: [z, logp, { node: z, grad: true, title: '∂ℓ/∂z' }], title: '词表与目标 token' },
   { matrix: W.T, highlight: t, title: 'Wᵀ，(d, V) = (4, 5)' },
   { matrix: W.T, grad: true, highlight: t, title: '∂ℓ/∂Wᵀ = hᵀg，(4, 5)', note: '...' },

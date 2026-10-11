@@ -7,6 +7,7 @@ import type { PanelItem, SectionBlock, SectionItem, SectionRow } from '../ui';
 import { checkFigure, figureNames, figureTag } from '../ui/figure-spec';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
+import { sectionRows } from './section-md';
 import { DslError, type Where, child, fail } from './source';
 import { OP_TEX, addMark, defaultTex, elemOf, numberTex, opTex } from './tex';
 
@@ -786,6 +787,7 @@ class PageCompiler {
     rootDef: ModuleDef,
     rootDims: Map<string, Num>,
     extraDims: Map<string, Num>,
+    private readonly sectionSources: Map<object, { file: string; rows: unknown[] }>,
   ) {
     this.c = new Compiler(page, where, rootDims, extraDims);
     this.root = new Scope(rootDef, '', []);
@@ -1779,6 +1781,8 @@ class PageCompiler {
       if (!isRecord(section)) fail(at, 'a section must be a mapping');
       const field = (key: string) => child(at, section, key);
       const out: SectionItem = { rows: [] };
+      const source = this.sectionSources.get(section);
+      if (source !== undefined && section.rows !== undefined) fail(field('rows'), 'a section takes either src or rows');
       if (section.title !== undefined) out.title = textAt(section.title, field('title'));
       if (section.rope !== undefined) {
         const rope = section.rope;
@@ -1798,10 +1802,11 @@ class PageCompiler {
         if (!Number.isInteger(out.rope.dh) || out.rope.dh < 2 || out.rope.dh % 2 !== 0) fail(ropeAt('dh'), 'dh must be an even integer');
         if (!Number.isInteger(out.rope.positions) || out.rope.positions < 2) fail(ropeAt('positions'), 'positions must be an integer of at least 2');
       }
-      const rows = section.rows;
-      if (!Array.isArray(rows)) fail(field('rows'), 'rows must be a list');
+      const rows = source === undefined ? section.rows : source.rows;
+      const rowsField = source === undefined ? field('rows') : { file: source.file, path: 'rows', obj: undefined };
+      if (!Array.isArray(rows)) fail(rowsField, 'a section needs src or rows');
       out.rows = rows.map((row, r): SectionRow => {
-        const rowAt = child(field('rows'), rows, r);
+        const rowAt = child(rowsField, rows, r);
         if (Array.isArray(row)) return { cells: [row.map((b, k) => block(b, child(rowAt, row, k)))] };
         if (!isRecord(row) || !Array.isArray(row.cells)) fail(rowAt, 'a row must be a list of blocks or a mapping with cells');
         const cells = row.cells;
@@ -1853,12 +1858,23 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
   for (const [name, decl] of Object.entries(locals)) {
     await loader.directUses(decl as Record<string, unknown>, pageFile, pageFile === undefined ? [] : [pageFile], child(modulesWhere, locals, name), namespace);
   }
+  const sectionSources = new Map<object, { file: string; rows: unknown[] }>();
+  if (Array.isArray(spec.sections)) {
+    const sectionsWhere = child(where, spec, 'sections');
+    for (const [i, section] of spec.sections.entries()) {
+      if (!isRecord(section) || section.src === undefined) continue;
+      const at = child(child(sectionsWhere, spec.sections, i), section, 'src');
+      if (typeof section.src !== 'string') fail(at, 'src must be a path to a Markdown file');
+      const url = loader.resolve(section.src, pageFile, at);
+      sectionSources.set(section, { file: url, rows: sectionRows(await loader.text(url), url) });
+    }
+  }
   const rootDef: ModuleDef = { name: String(spec.title), file, decl: spec, where, namespace };
   const rootDims = rootDimsOf(spec, where);
   const extra = new Map<string, Num>();
   for (;;) {
     try {
-      return new PageCompiler(spec, where, rootDef, rootDims, extra).run();
+      return new PageCompiler(spec, where, rootDef, rootDims, extra, sectionSources).run();
     } catch (error) {
       if (!(error instanceof NeedDim)) throw error;
       if (extra.has(error.name)) throw new Error(`dsl: dimension ${error.name} could not be registered`);

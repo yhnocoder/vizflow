@@ -112,7 +112,8 @@ export type SectionRowSpec = SectionBlockSpec[] | { columns?: (number | string)[
 export interface SectionSpec {
   title?: Text;
   rope?: { q: Path | Path[]; k: Path | Path[]; rows?: [number, number]; head?: number; theta: number; dh: number; positions?: number };
-  rows: SectionRowSpec[];
+  src?: string;
+  rows?: SectionRowSpec[];
 }
 
 export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'outputs'> {
