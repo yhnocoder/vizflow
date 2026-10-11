@@ -56,7 +56,7 @@ body:
             suffix: q
             inputs: { x: q }
             outputs: { out: qn }
-            tex: { out: '\bar{\of{q}}' }
+            tex: { out: '\bar{\of{q}}', ms: '\mathrm{ms}^{q}', r: 'r^{q}' }
             steps:
               square:
                 title: q_norm、k_norm：逐元素平方
@@ -106,7 +106,7 @@ body:
             beside: q_norm
             inputs: { x: k }
             outputs: { out: kn }
-            tex: { out: '\bar{\of{k}}' }
+            tex: { out: '\bar{\of{k}}', ms: '\mathrm{ms}^{k}', r: 'r^{k}' }
   - apply_rotary_pos_emb:
       use: RoPE
       params: { theta: theta }
@@ -171,6 +171,7 @@ body:
       inline: true
       inputs: { q: qr, k: kr, v: v, mask: M }
       outputs: { o: o }
+      brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
       steps:
         krep:
           title: repeat_kv：复制 k
@@ -277,6 +278,7 @@ body:
   - att: { op: o @ Wo.T, tex: '\mathbf{att}' }
 steps:
   - id: qkv
+    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: 'nn.Linear $\times$ 3' }
     show: [Wq.T, Wk.T, Wv.T, q, k, v]
     label: '$\of{q},\ \of{k},\ \of{v}$'
     title: q_proj、k_proj、v_proj
@@ -291,6 +293,7 @@ steps:
         三块权重的梯度都是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。$n_{t,k}$ 沿第 $k$ 行穿过三块板，一共 $\of{H*dh}+\of{Hkv*dh}+\of{Hkv*dh}$ 段，全部相加。
         $$\frac{\partial\ell}{\partial W_q^{\top}}=\of{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}},\qquad \frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: o_proj
+    brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]
     label: o_proj
     title: o_proj

@@ -517,7 +517,17 @@ class SceneController implements EditHost {
   }
 
   private currentState(): StepState {
-    return this.options.steps?.state() ?? allVisible(this.g);
+    const state = this.options.steps?.state() ?? allVisible(this.g);
+    const views = [...(this.levelLayout?.sourceOf ?? [])];
+    if (views.length === 0) return state;
+    return {
+      dir: state.dir,
+      index: state.index,
+      kind: state.kind,
+      focus: state.focus,
+      revealed: (node) => state.revealed(node),
+      active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
+    };
   }
 
   private currentInfo(): PageStepInfo | undefined {
@@ -632,11 +642,12 @@ class SceneController implements EditHost {
     if (this.ovnav === undefined || steps === undefined || info === undefined) return;
     this.ovnav.prev.disabled = steps.current === 0;
     this.ovnav.next.disabled = steps.current === steps.list.length - 1;
-    const key = `${steps.current}:${info.label}:${info.sub ?? ''}`;
+    const where = steps.modules.find((m) => m.id === info.module)?.title;
+    const key = `${steps.current}:${info.label}:${where ?? ''}`;
     if (this.ovnav.text.dataset.key === key) return;
     this.ovnav.text.dataset.key = key;
     const small = document.createElement('small');
-    renderText(`${info.dir === 'forward' ? '前向' : '反向'}${info.sub ? ` · ${info.sub}` : ''}`, small);
+    renderText(`${info.dir === 'forward' ? '前向' : '反向'}${where ? ` · ${where}` : ''}`, small);
     const label = document.createElement('span');
     renderText(info.label, label);
     this.ovnav.text.replaceChildren(small, ...label.childNodes);
@@ -721,8 +732,8 @@ class SceneController implements EditHost {
     this.bindCard(renderable.title, node);
     if (block.plate !== undefined) renderable.plate = new PlateMesh(block, this.theme);
     renderable.classes = block.classLabels.map((text) => {
-      const label = this.labels.add(block.role === 'board-b' ? 'colh' : 'cls');
-      if (block.role === 'planar') label.under = renderable.values.filter((_, i) => block.elements[i].col === text.col);
+      const label = this.labels.add(block.role === 'board-b' || text.anchor === 'above' ? 'colh' : 'cls');
+      if (block.role === 'planar' && text.anchor === 'below') label.under = renderable.values.filter((_, i) => block.elements[i].col === text.col);
       return label;
     });
     renderable.rows = block.rowLabels.map(() => this.labels.add('kk'));
@@ -860,7 +871,7 @@ class SceneController implements EditHost {
   private markFar(): void {
     const levels = [...new Set(this.renderables.map((r) => levelKey(r.block.elements[0].y)))].sort((a, b) => a - b);
     const levelOf = (r: Renderable) => levels.indexOf(levelKey(r.block.elements[0].y));
-    const stepLevels = this.renderables.filter((r) => r.block.node.kind === 'op' && this.state.active(r.block.node)).map(levelOf);
+    const stepLevels = this.renderables.filter((r) => r.block.copyOf === undefined && r.block.node.kind === 'op' && this.state.active(r.block.node)).map(levelOf);
     const enabled = this.follow && this.farOn && !this.lod && stepLevels.length > 0;
     for (const r of this.renderables) {
       const level = levelOf(r);
@@ -914,7 +925,8 @@ class SceneController implements EditHost {
       title.offset = this.options.labels?.[node.name];
       title.visible = named && block.untitled !== true;
       const view = block.copyOf === undefined ? [...(this.levelLayout?.sourceOf ?? [])].find(([, source]) => source === node)?.[0] : undefined;
-      const tex = view === undefined ? node.tex : `${view.tex}=${node.tex}`;
+      const continued = this.levelLayout?.boards.some((b) => b.op === node && b.previous !== undefined) === true;
+      const tex = view === undefined ? node.tex : continued ? view.tex : `${view.tex}=${node.tex}`;
       texOf(title, backward ? `\\partial\\ell/\\partial ${(view ?? node).tex}` : tex);
       if (renderable.bars !== undefined) {
         title.pos = [block.title.x, block.title.y, block.title.z];
@@ -948,7 +960,7 @@ class SceneController implements EditHost {
       renderable.classes.forEach((label, i) => {
         const text = block.classLabels[i];
         const target = this.targetOf(block, block.rows - 1);
-        const isTarget = this.aligned.has(node) && !block.batched && target === text.col;
+        const isTarget = this.aligned.has(node) && !block.batched && block.rows === 1 && target === text.col;
         label.setText(block.role === 'planar' && isTarget ? `${text.text} · 目标` : text.text);
         label.setFlag('vf-on', isTarget);
         label.pos = [text.x, text.y, text.z];
@@ -1464,7 +1476,7 @@ class SceneController implements EditHost {
   private followGoal(): FollowGoal {
     const hh = this.halfHeight();
     const { lo, top } = this.levelRange();
-    const keys = this.lod ? [] : this.renderables.filter((r) => this.state.active(r.block.node));
+    const keys = this.lod ? [] : this.renderables.filter((r) => r.block.copyOf === undefined && this.state.active(r.block.node));
     if (keys.length === 0) return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, zoom: Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN)) };
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
@@ -1730,7 +1742,7 @@ class SceneController implements EditHost {
 
   private gridOf(node: Node): ValueGrid {
     const [, cols] = rowsCols(node.shape);
-    return { label: this.state.dir === 'backward' ? '梯度' : '当前值', values: this.valuesOf(node), cols };
+    return { label: this.state.dir === 'backward' ? '梯度' : '当前值', values: this.valuesOf(node), cols, heads: node.shape.length === 3 ? node.shape[1] : undefined };
   }
 
   private showNodeCard(node: Node, el: HTMLElement): void {

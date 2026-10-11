@@ -38,11 +38,16 @@ export const GAP = {
   scalarAfterBoard: 3.2,
   loss: 2.0,
   linearBoard: 3.5,
+  ownBoard: 2.4,
   board: 2.7,
   copy: 5.3,
+  copyAfterBoard: 3.2,
+  copyPerTileRow: 0.3,
   afterBoard: 4.2,
+  moduleAfterBoard: 4.6,
   afterCopy: 2.6,
   afterScalar: 1.3,
+  afterBoardScalar: 2.0,
   vectorAfterScalar: 1.1,
   afterVector: 3.0,
   plate: 2.3,
@@ -67,7 +72,7 @@ export const FOLD = {
 export const BOX_MARGIN = { left: 0.6, right: 0.6, back: 0.55, front: 0.6 } as const;
 export const TOP_ROOM = 1.5;
 
-export const BRACE_PAD = { below: 0.6, belowBoard: 0.9, above: 1.0, aboveBoard: 1.4 } as const;
+export const BRACE_PAD = { below: 0.6, belowBoard: 0.9, above: 1.0, aboveBoard: 1.4, aboveTable: 1.6 } as const;
 export const BRACE_X = { left: 1.7, right: 2.2, outer: 4.0 } as const;
 
 const TITLE = {
@@ -615,12 +620,13 @@ class Plan implements LevelPlan {
           continue;
         }
         const board = this.boards.get(e.node);
+        const passedOn = this.consumers(e.node).every((u) => this.copies.some((c) => c.node === e.node && c.board === undefined && c.consumers.includes(u)));
         if (board !== undefined && e.copy === undefined && this.drawnA(board).level === level) {
-          e.title = 'below';
+          e.title = passedOn ? 'right' : 'below';
           continue;
         }
         if (e.copy !== undefined && e.copy.board === undefined) {
-          e.title = 'below';
+          e.title = this.boards.has(e.node) && passedOn ? 'right' : 'below';
           continue;
         }
         lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
@@ -643,30 +649,28 @@ class Plan implements LevelPlan {
       const side = m.parent === null && (this.split(m) || m.fixed) ? 'outer' : parent !== undefined && !this.split(parent) ? 'left' : 'right';
       this.modules.push({ id: m.id, fixed: m.fixed, title: m.title, subtitle: m.subtitle || undefined, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
     }
-    const runs: { title: string; nodes: Node[] }[] = [];
+    const runs: { title: string; subtitle?: string; nodes: Node[]; inside: boolean }[] = [];
     let last: string | undefined;
     for (const step of this.spec.forward) {
-      if (step.kind === 'inputs' || step.segment === undefined) {
-        last = undefined;
-        continue;
-      }
       const owner = step.module === undefined ? undefined : this.byId.get(step.module);
       const isModule = owner !== undefined && this.chain(owner.id).some((m) => m.segment === step.segment);
-      if (isModule) {
+      const title = step.kind === 'inputs' ? undefined : (step.brace?.title ?? (isModule ? undefined : step.segment));
+      if (title === undefined) {
         last = undefined;
         continue;
       }
       const nodes = list(step.show);
-      if (last === step.segment) runs[runs.length - 1].nodes.push(...nodes);
-      else runs.push({ title: step.segment, nodes: [...nodes] });
-      last = step.segment;
+      if (last === title) runs[runs.length - 1].nodes.push(...nodes);
+      else runs.push({ title, subtitle: step.brace?.subtitle, nodes: [...nodes], inside: step.brace !== undefined && isModule });
+      last = title;
     }
     runs.forEach((run, i) => {
       const params = run.nodes.some((n) => isLeafLike(n));
       const nested = run.nodes.some((n) => this.innermost(n) !== undefined);
       const copies = this.copies.filter((c) => c.board === undefined && c.consumers.some((u) => run.nodes.includes(u))).map((c) => c.node);
+      const side = params && !run.inside ? 'right' : 'left';
       this.segments.push({ title: run.title, nodes: run.nodes, params, nested });
-      this.modules.push({ id: `segment:${i}`, title: run.title, nodes: [...run.nodes, ...copies], side: params ? 'right' : 'left', inner: !params && nested });
+      this.modules.push({ id: `segment:${i}`, title: run.title, subtitle: run.subtitle, nodes: [...run.nodes, ...copies], side, inner: side === 'left' && (nested || run.inside) });
     });
   }
 
@@ -674,6 +678,7 @@ class Plan implements LevelPlan {
     const folded = (id: string) => ctx.folded(id);
     const isFolded = (m: StepModule) => m.fixed || folded(m.id);
     const hiddenNode = (n: Node) => this.computed.has(n) && this.stepModules.some((m) => isFolded(m) && m.nodes.includes(n) && !m.outputs.includes(n));
+    const outerFold = (id: string | null): StepModule | undefined => this.chain(id).find(isFolded);
     const hidden = new Map<Entry, boolean>();
     const hiddenOf = (e: Entry): boolean => {
       const known = hidden.get(e);
@@ -681,36 +686,39 @@ class Plan implements LevelPlan {
       let value: boolean;
       if (e.copy !== undefined) value = e.copy.consumers.every(hiddenNode);
       else if (this.computed.has(e.node)) value = hiddenNode(e.node);
-      else if (e.node.kind === 'buffer') value = this.consumers(e.node).every(hiddenNode);
+      else if (e.node.kind === 'buffer') value = outerFold(e.level.module) !== undefined;
       else value = false;
       hidden.set(e, value);
       return value;
     };
-    const outerFold = (id: string | null): StepModule | undefined => this.chain(id).find(isFolded);
     const flags = (level: Level) => {
       const shown = level.entries.filter((e) => !hiddenOf(e));
       const own = shown.filter((e) => e.kind !== 'tile' && e.kind !== 'vector' && !(isLeafLike(e.node) && e.copy === undefined));
       return {
         visible: shown.length > 0,
         board: shown.some((e) => e.kind === 'tile' && e.table === undefined),
+        tileRows: Math.max(0, ...shown.filter((e) => e.kind === 'tile' && e.table === undefined).map((e) => e.rows)),
         linear: shown.some((e) => e.kind === 'tile' && isLeafLike(e.node) && e.table === undefined),
         scalar: own.length > 0 && own.every((e) => e.kind === 'disc' || e.kind === 'box'),
         loss: own.some((e) => e.kind === 'box'),
         vector: shown.some((e) => e.kind === 'vector'),
         buffer: shown.some((e) => e.node.kind === 'buffer'),
         copy: level.copyOnly,
+        copied: shown.some((e) => e.copy !== undefined),
+        module: level.module,
         fixedOutput: own.length > 0 && own.every((e) => this.stepModules.some((m) => m.fixed && m.outputs.includes(e.node))),
       };
     };
     type Flags = ReturnType<typeof flags>;
-    const gap = (f: Flags, prev: Flags): number => {
+    const opens = (f: Flags, prev: Flags) => f.module !== null && f.module !== prev.module && this.chain(f.module).some((m) => m.id === prev.module);
+    const gap = (f: Flags, prev: Flags, before: Flags | undefined): number => {
       if (f.fixedOutput) return GAP.fixedOutput;
       if (f.scalar) return prev.board ? GAP.scalarAfterBoard : f.loss ? GAP.loss : GAP.scalar;
-      if (f.board) return f.linear ? GAP.linearBoard : GAP.board;
-      if (f.copy) return GAP.copy;
-      if (prev.board) return GAP.afterBoard;
+      if (f.board) return !f.linear ? GAP.board : f.copied || prev.board ? GAP.linearBoard : GAP.ownBoard;
+      if (f.copy) return prev.board ? GAP.copyAfterBoard + GAP.copyPerTileRow * prev.tileRows : GAP.copy;
+      if (prev.board) return opens(f, prev) ? GAP.moduleAfterBoard : GAP.afterBoard;
       if (prev.copy) return GAP.afterCopy;
-      if (prev.scalar) return f.vector ? GAP.vectorAfterScalar : GAP.afterScalar;
+      if (prev.scalar) return f.vector ? GAP.vectorAfterScalar : before?.board ? GAP.afterBoardScalar : GAP.afterScalar;
       if (prev.vector) return GAP.afterVector;
       return GAP.plate;
     };
@@ -724,6 +732,7 @@ class Plan implements LevelPlan {
     let brd = false;
     let boxBrd = false;
     let prev: Flags | undefined;
+    let before: Flags | undefined;
     const close = () => {
       const top = Math.max(y + (inBox > 0 ? (brd ? FOLD.endBoard : FOLD.end) : 0), bs + FOLD.minHeight);
       boxBrd = inBox > 0 && brd;
@@ -749,10 +758,11 @@ class Plan implements LevelPlan {
           y += inBox > 0 ? (f.board ? FOLD.board : f.buffer ? FOLD.buffer : FOLD.other) : FOLD.first;
           inBox++;
         } else if (after) y += boxBrd ? FOLD.afterBoard : FOLD.after;
-        else y += gap(f, prev!);
+        else y += gap(f, prev!, before);
         first = false;
         after = false;
         brd = f.board;
+        before = prev;
         prev = f;
       }
       level.y = y;
@@ -805,7 +815,9 @@ class Plan implements LevelPlan {
       const lo = shown[0];
       const hi = shown[shown.length - 1];
       const board = (l: Level) => flags(l).board;
-      return [lo.y - (board(lo) ? BRACE_PAD.belowBoard : BRACE_PAD.below), hi.y + (shown.length === 1 && board(hi) ? BRACE_PAD.aboveBoard : BRACE_PAD.above)];
+      const table = (l: Level) => l.entries.some((e) => e.kind === 'tile' && e.table !== undefined && !hiddenOf(e));
+      const above = shown.length > 1 ? BRACE_PAD.above : table(hi) ? BRACE_PAD.aboveTable : board(hi) ? BRACE_PAD.aboveBoard : BRACE_PAD.above;
+      return [lo.y - (board(lo) || table(lo) ? BRACE_PAD.belowBoard : BRACE_PAD.below), hi.y + above];
     };
     for (const m of this.stepModules) {
       if (outerFold(m.parent) !== undefined) continue;
@@ -813,12 +825,28 @@ class Plan implements LevelPlan {
       const range = isFolded(m) ? boxY.get(m.id) : spanOf(own);
       if (range !== undefined) ranges.set(m.id, range);
     }
-    this.segments.forEach((segment, i) => {
-      if (segment.nodes.some((n) => hiddenNode(n) || this.chain(this.innermost(n)?.id).some(isFolded))) return;
-      const levels = this.levels.filter((l) => l.entries.some((e) => (segment.nodes.includes(e.node) || (e.copy !== undefined && e.copy.consumers.some((u) => segment.nodes.includes(u)))) && !hiddenOf(e)));
-      const range = spanOf(levels);
+    const sideOf = new Map(this.modules.map((m) => [m.id, m.side]));
+    const segmentLevels = this.segments.map((segment) =>
+      segment.nodes.some((n) => hiddenNode(n) || this.chain(this.innermost(n)?.id).some(isFolded))
+        ? []
+        : this.levels.filter((l) => l.entries.some((e) => !hiddenOf(e) && (e.copy === undefined ? segment.nodes.includes(e.node) : e.copy.consumers.some((u) => segment.nodes.includes(u))))),
+    );
+    segmentLevels.forEach((levels, i) => {
+      const side = sideOf.get(`segment:${i}`);
+      const next = segmentLevels.find((other, j) => j > i && other.length > 0 && sideOf.get(`segment:${j}`) === side);
+      const own = next === undefined ? levels : levels.filter((l) => !next.includes(l));
+      const range = spanOf(own.length > 0 ? own : levels);
       if (range !== undefined) ranges.set(`segment:${i}`, range);
     });
+    for (const m of this.stepModules) {
+      const range = ranges.get(m.id);
+      if (range === undefined || m.fixed || (isFolded(m) && this.split(m))) continue;
+      const direct = (input: Node) => this.consumers(input).some((u) => m.nodes.includes(u) && !this.copies.some((c) => c.node === input && c.consumers.includes(u)));
+      const inputLevels = this.levels.filter((l) => flags(l).visible && l.y < range[0] && l.entries.some((e) => e.copy === undefined && !hiddenOf(e) && m.inputs.includes(e.node) && direct(e.node)));
+      const covered = (y: number) => [...ranges].some(([id, r]) => id !== m.id && sideOf.get(id) === sideOf.get(m.id) && r[0] <= y && y <= r[1]);
+      const lows = inputLevels.filter((l) => !covered(l.y)).map((l) => l.y - BRACE_PAD.below);
+      if (lows.length > 0) ranges.set(m.id, [Math.min(range[0], ...lows), range[1]]);
+    }
 
     const io: ModuleIO[] = [];
     for (const m of this.stepModules) {
@@ -938,7 +966,7 @@ class Plan implements LevelPlan {
       copyOf: e.copy?.node,
       hidden,
       quiet: e.quiet,
-      untitled: e.title === 'none' && e.kind !== 'tile' && e.kind !== 'vector',
+      untitled: e.title === 'none',
       role: e.kind === 'tile' ? 'board-b' : scalar ? 'scalar' : 'planar',
       shape: e.kind === 'tile' ? 'tile' : e.kind === 'disc' ? 'disc' : e.kind === 'box' ? 'box' : 'bar',
       rows: e.rows,

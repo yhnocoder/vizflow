@@ -141,6 +141,7 @@ modules:
       - id: res1
         show: a
         segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{x}_0+\mathbf{att}$' }
         label: '$\of{a}=\of{x}+\of{att}$'
         title: 残差相加
         text: |
@@ -155,6 +156,7 @@ modules:
       - id: res2
         show: x_out
         segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
         label: '$\of{x_out}=\of{a}+\of{down}$'
         title: 残差相加
         text: |
@@ -218,6 +220,7 @@ steps:
   - id: embed
     show: [E, e]
     segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
     label: '$\of{e}=E[x]$'
     title: embed_tokens
     text: |
@@ -232,6 +235,7 @@ steps:
   - id: logits
     show: [W.T, z]
     segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
     label: '$\of{z}$'
     title: lm_head
     text: |
@@ -246,6 +250,7 @@ steps:
   - id: lse
     show: LSE
     segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
     label: '$\of{LSE}$'
     title: log-sum-exp
     text: |
@@ -260,6 +265,7 @@ steps:
   - id: logp
     show: logp
     segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
     label: '$\of{logp}$'
     title: log_softmax
     text: |
@@ -274,6 +280,7 @@ steps:
   - id: nll
     show: lt
     segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
     label: '$\of{lt}$'
     title: nll_loss（逐位置）
     text: |
@@ -288,6 +295,7 @@ steps:
   - id: mean
     show: loss
     segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
     label: '$\of{loss}$'
     title: 取平均
     text: |

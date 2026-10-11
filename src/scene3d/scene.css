@@ -438,6 +438,27 @@
   margin: 6px 0 2px;
 }
 
+.vf-pop .vf-jg-heads {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+
+.vf-pop .vf-jg-head {
+  flex: 1;
+  min-width: 0;
+}
+
+.vf-pop .vf-jg-head .vf-jg {
+  margin: 2px 0 0;
+}
+
+.vf-pop .vf-jg-label {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+}
+
 .vf-pop .vf-jg div {
   text-align: center;
   padding: 2px 0;

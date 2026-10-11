@@ -17,6 +17,7 @@ export interface ValueGrid {
   label: string;
   values: ArrayLike<number>;
   cols: number;
+  heads?: number;
 }
 
 export function shade(v: number, limit: number): string {
@@ -25,21 +26,38 @@ export function shade(v: number, limit: number): string {
 }
 
 export function valueGridElement(grid: ValueGrid): HTMLElement {
-  const el = element('div', 'vf-jg');
-  el.style.gridTemplateColumns = `repeat(${grid.cols}, minmax(0, 1fr))`;
   let limit = 0;
   for (let i = 0; i < grid.values.length; i++) if (Number.isFinite(grid.values[i])) limit = Math.max(limit, Math.abs(grid.values[i]));
   limit = limit || 1;
   const blank = grid.cols > GRID_BLANK_COLUMNS;
-  for (let i = 0; i < grid.values.length; i++) {
-    const v = grid.values[i];
-    const cell = document.createElement('div');
-    if (Number.isFinite(v)) cell.style.background = shade(v, limit);
-    cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '';
-    if (!blank && !Number.isFinite(v)) cell.appendChild(render(formatNumber(v, { tex: true })));
-    el.appendChild(cell);
+  const heads = grid.heads ?? 1;
+  const width = grid.cols / heads;
+  const rows = Math.ceil(grid.values.length / grid.cols);
+  const block = (head: number) => {
+    const el = element('div', 'vf-jg');
+    el.style.gridTemplateColumns = `repeat(${width}, minmax(0, 1fr))`;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < width; c++) {
+        const v = grid.values[r * grid.cols + head * width + c];
+        const cell = document.createElement('div');
+        if (Number.isFinite(v)) cell.style.background = shade(v, limit);
+        cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '';
+        if (!blank && !Number.isFinite(v)) cell.appendChild(render(formatNumber(v, { tex: true })));
+        el.appendChild(cell);
+      }
+    }
+    return el;
+  };
+  if (heads === 1) return block(0);
+  const wrap = element('div', 'vf-jg-heads');
+  for (let h = 0; h < heads; h++) {
+    const column = element('div', 'vf-jg-head');
+    const label = element('div', 'vf-jg-label');
+    renderText(`$h_{${h + 1}}$`, label);
+    column.append(label, block(h));
+    wrap.appendChild(column);
   }
-  return el;
+  return wrap;
 }
 
 function element(tag: string, className: string, text?: string): HTMLElement {

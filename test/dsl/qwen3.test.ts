@@ -118,9 +118,9 @@ const MATH_UNICODE = /[\u0370-\u03FF\u2070-\u209F\u2190-\u22FF\u0300-\u036F\u203
 const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: '传到γ2和a', b_fh: '传到γ和x' };
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 const LABEL_CHANGES: Record<string, string> = {
-  qkrs: '$\\mathrm{ms}_{q},\\ r_{q},\\ \\mathrm{ms}_{k},\\ r_{k}$',
-  b_qkrs: '$\\partial\\mathrm{ms}_{q},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{k},\\ \\partial{\\mathbf{k}}^{2}$',
-  b_qkah: '$\\partial r_{q},\\ \\partial\\mathbf{q},\\ \\partial r_{k},\\ \\partial\\mathbf{k}$',
+  qkrs: '$\\mathrm{ms}^{q},\\ r^{q},\\ \\mathrm{ms}^{k},\\ r^{k}$',
+  b_qkrs: '$\\partial\\mathrm{ms}^{q},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}^{k},\\ \\partial{\\mathbf{k}}^{2}$',
+  b_qkah: '$\\partial r^{q},\\ \\partial\\mathbf{q},\\ \\partial r^{k},\\ \\partial\\mathbf{k}$',
   b_qkn: '$\\partial\\boldsymbol{\\gamma}_{q},\\ \\partial\\hat{\\mathbf{q}},\\ \\partial\\boldsymbol{\\gamma}_{k},\\ \\partial\\hat{\\mathbf{k}}$',
 };
 

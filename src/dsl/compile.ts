@@ -103,7 +103,7 @@ interface ResolvedStep {
 
 const ITEM_KEYS = new Set(['op', 'tex']);
 const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
-const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', ...MODULE_ITEM_KEYS]);
+const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', 'brace', ...MODULE_ITEM_KEYS]);
 const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
@@ -111,7 +111,8 @@ const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
 ]);
-const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'backward']);
+const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward']);
+const BRACE_KEYS = new Set(['title', 'subtitle']);
 const PATCH_KEYS = new Set(['title', 'label', 'text', 'append', 'backward']);
 const TEXT_KEYS = new Set(['title', 'text', 'label']);
 const FOLD_KEYS = new Set(['title', 'text', 'label', 'backward']);
@@ -1484,6 +1485,11 @@ class PageCompiler {
       if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
     }
     const steps = this.moduleSteps(scope, decl, childEnv, slots);
+    if (use.brace !== undefined) {
+      if (!inline) fail(child(env.where, use, 'brace'), 'only an inline instance takes brace; a module with a box has its own brace');
+      const brace = this.braceOf(use.brace, { ...env, where: child(env.where, use, 'brace') });
+      for (const rec of steps) rec.step.brace ??= brace;
+    }
     this.moduleBackward(decl, childEnv);
     for (const [output, target, at] of bindings) this.define(parent, target, scope.entries.get(output) as Node, { ...env, where: at });
     this.pendingPatches[this.pendingPatches.length - 1].push(() => this.patch(scope, steps, use, env));
@@ -1512,6 +1518,18 @@ class PageCompiler {
         fail(givenAt, `input has shape (${node.shape.join(', ')}), but dimension ${i} of ${scope.def.name}'s pattern (${pattern.join(', ')}) is ${isNum(expected) ? expected.toy : '?'}`);
       }
     });
+  }
+
+  braceOf(value: unknown, env: Env): { title: string; subtitle?: string } {
+    const spec = record(value, env.where, 'brace');
+    checkKeys(spec, BRACE_KEYS, env.where);
+    if (typeof spec.title !== 'string') fail(env.where, 'brace needs a title');
+    const brace: { title: string; subtitle?: string } = { title: this.c.ofText(spec.title, { ...env, where: child(env.where, spec, 'title') }) };
+    if (spec.subtitle !== undefined) {
+      if (typeof spec.subtitle !== 'string') fail(child(env.where, spec, 'subtitle'), 'subtitle must be a string');
+      brace.subtitle = this.c.ofText(spec.subtitle, { ...env, where: child(env.where, spec, 'subtitle') });
+    }
+    return brace;
   }
 
   titleOf(decl: Record<string, unknown>, fallback: string, env: Env): string {
@@ -1549,6 +1567,7 @@ class PageCompiler {
         if (typeof step.segment !== 'string') fail(child(at, step, 'segment'), 'segment must be a string');
         forward.segment = step.segment;
       }
+      if (step.brace !== undefined) forward.brace = this.braceOf(step.brace, fieldEnv('brace'));
       if (step.backward !== undefined) forward.backward = this.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
       return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
     });

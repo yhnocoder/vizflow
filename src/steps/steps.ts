@@ -20,6 +20,7 @@ export interface ForwardStep {
   segment?: string;
   sub?: string;
   module?: string;
+  brace?: { title: string; subtitle?: string };
   backward?: BackwardOverride;
 }
 
