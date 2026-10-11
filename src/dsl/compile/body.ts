@@ -5,6 +5,7 @@ import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { define, marked } from './declare';
 import { compileInstance } from './instance';
+import { registerFormula } from './formula';
 import { FOR_KEYS, GROUP_KEYS, ITEM_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
 import type { Compiler } from './text';
@@ -195,6 +196,7 @@ function compileItem(
     entries.push(group);
     const rec = openModule(c, join(scope.path, name), group.title as string, group.subtitle, value, valueEnv);
     const groupSlots = compileItems(c, scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
+    registerFormula(c, scope.path, [{ decl: value, env: valueEnv }], rec);
     closeModule(c, rec, c.g.nodes.slice(before));
     slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
     return { name, beside: besideOf(value, valueWhere) };

@@ -43,6 +43,7 @@ export interface ModuleRec {
   parent: string | null;
   title: string;
   subtitle: string;
+  formula?: string;
   fixed: boolean;
   folded: boolean;
   split: boolean;
@@ -51,6 +52,13 @@ export interface ModuleRec {
   decl: Record<string, unknown>;
   env: Env;
   defaults?: { decl: Record<string, unknown>; env: Env };
+}
+
+export interface FormulaRec {
+  owner: string;
+  tex: string;
+  env: Env;
+  target: { formula?: string };
 }
 
 export interface StepRec {

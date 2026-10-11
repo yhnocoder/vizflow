@@ -2,6 +2,7 @@ import type { Node } from '../../autograd';
 import type { BackwardOverride, ForwardStep } from '../../steps';
 import { child, fail } from '../source';
 import { BRACE_KEYS, PATCH_KEYS, STEP_KEYS, TEXT_KEYS } from './keys';
+import { notesOf } from './notes';
 import type { Compiler } from './text';
 import type { Env, Scope, Slot, StepRec } from './types';
 import { checkKeys, isRecord, join, list, record } from './util';
@@ -19,7 +20,7 @@ function combineLabels(a: string | undefined, b: string | undefined): string | u
   return ma !== null && mb !== null ? `$${ma[1]},\\ ${mb[1]}$` : `${a}, ${b}`;
 }
 
-export function braceOf(c: Compiler, value: unknown, env: Env): { title: string; subtitle?: string } {
+export function braceOf(c: Compiler, value: unknown, env: Env): { title: string; subtitle?: string; formula?: string } {
   const spec = record(value, env.where, 'brace');
   checkKeys(spec, BRACE_KEYS, env.where);
   if (typeof spec.title !== 'string') fail(env.where, 'brace needs a title');
@@ -61,6 +62,7 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
     }
     if (step.brace !== undefined) forward.brace = braceOf(c, step.brace, fieldEnv('brace'));
     if (step.backward !== undefined) forward.backward = c.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
+    if (step.notes !== undefined) forward.notes = notesOf(c, step.notes, fieldEnv('notes'));
     return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
   });
 }
@@ -172,5 +174,6 @@ export function patchSteps(c: Compiler, scope: Scope, steps: StepRec[], use: Rec
       target.step.text = target.step.text ? `${target.step.text}\n${extra}` : extra;
     }
     if (spec.backward !== undefined) target.step.backward = { ...target.step.backward, ...c.texts(spec.backward, fieldEnv('backward'), TEXT_KEYS) };
+    if (spec.notes !== undefined) target.step.notes = [...(target.step.notes ?? []), ...notesOf(c, spec.notes, fieldEnv('notes'))];
   }
 }

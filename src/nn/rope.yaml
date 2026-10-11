@@ -1,5 +1,6 @@
 module: RoPE
 subtitle: RoPE
+formula: '\step{add}{\of{q_embed}=}\step{cos}{\of{q}\odot\cos}\step{add}{+}\step{sin}{\step{rh}{\mathrm{rh}(\of{q})}\odot\sin}'
 params:
   theta: { type: float, default: 1e4 }
 inputs:

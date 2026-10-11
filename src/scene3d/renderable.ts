@@ -17,6 +17,7 @@ export interface Renderable {
   clipped: boolean[];
   cap: number;
   far: boolean;
+  seeThrough: boolean;
   scale: { forward: number; backward: number };
   ticks: { forward: number[]; backward: number[] };
   title: Label | undefined;
@@ -41,6 +42,7 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     clipped: block.elements.map(() => false),
     cap,
     far: false,
+    seeThrough: false,
     scale,
     ticks: {
       forward: block.axis === undefined ? [] : niceTicks(node.value.data, scale.forward, TICK_COUNT, cap),

@@ -87,6 +87,22 @@ export function buildTools(c: SceneController): OverviewNav | undefined {
     });
     tools.appendChild(far);
   }
+  if (c.options.steps !== undefined) {
+    const see = chip('遮挡半透明');
+    see.setAttribute('aria-pressed', 'true');
+    see.addEventListener('click', () => {
+      see.setAttribute('aria-pressed', String(c.toggleSeeThrough()));
+      c.refresh();
+    });
+    tools.appendChild(see);
+  }
+  const front = chip('只画最前一行');
+  front.setAttribute('aria-pressed', 'true');
+  front.addEventListener('click', () => {
+    front.setAttribute('aria-pressed', String(c.toggleFrontRow()));
+    c.refresh();
+  });
+  tools.appendChild(front);
   if (c.follow && modules.length > 0 && c.options.steps !== undefined) {
     const foldAll = chip('全部折叠');
     foldAll.addEventListener('click', () => c.steps?.setAllFolded?.(true));
