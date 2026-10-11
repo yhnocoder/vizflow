@@ -2,6 +2,7 @@ import { type Graph, type Node, graph } from '../../autograd';
 import { BATCH_ROW_SPACING, BOARD_BACK_OFFSET, BOARD_FRONT, type LayoutItem, type Vec3, board, stack } from '../../scene3d/layout';
 import type { ForwardStep, StepsSpec } from '../../steps';
 import type { PanelItem } from '../../ui';
+import { mulberry32 } from '../../tensor';
 
 export interface PackedRow {
   id: string;
@@ -55,16 +56,6 @@ const V_X = 15;
 const PIECE_SHIFT = 3.5;
 const LAST_SHIFT = 8;
 
-function rng(seed: number): () => number {
-  let a = seed;
-  return () => {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function uniformMatrix(random: () => number, rows: number, cols: number): number[][] {
   return Array.from({ length: rows }, () => Array.from({ length: cols }, () => Math.round((random() * 2 - 1) * 100) / 100));
@@ -143,7 +134,7 @@ function pmatrix(name: string, rows: number, cols: number): string {
 
 export function packedAttention(rows: readonly PackedRow[], options: PackedOptions = {}): PackedPage {
   const d = options.d ?? DEFAULT_D;
-  const random = rng(options.seed ?? DEFAULT_SEED);
+  const random = mulberry32(options.seed ?? DEFAULT_SEED);
   const requests = packedRequests(rows);
   const N = requests.reduce((sum, r) => sum + r.n, 0);
   const total = requests.reduce((sum, r) => sum + r.cached + r.n, 0);

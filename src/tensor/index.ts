@@ -14,3 +14,4 @@ export {
 } from './shape';
 export { broadcastShapes, broadcastIndex, unbroadcast } from './broadcast';
 export { formatNumber, defaultDigits } from './format';
+export { mulberry32 } from './random';

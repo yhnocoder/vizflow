@@ -5,6 +5,7 @@ import type { NoteSide, StepNote } from '../steps';
 import { type Box, intersects } from './avoid';
 import type { SceneController } from './controller';
 import { shown } from './renderable';
+import { mulberry32 } from '../tensor';
 
 export const NOTE_GAP = 46;
 export const NOTE_MARGIN = 10;
@@ -53,15 +54,6 @@ function hash(text: string): number {
   return h >>> 0;
 }
 
-function random(seed: number): () => number {
-  let a = seed;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296 - 0.5;
-  };
-}
 
 function overlap(a: Box, b: Box): number {
   if (!intersects(a, b)) return 0;
@@ -122,7 +114,8 @@ export function arrowPaths(start: Point, end: Point, seed: number, from: Box): s
   const length = Math.hypot(dx, dy) || 1;
   const nx = -dy / length;
   const ny = dx / length;
-  const rand = random(seed);
+  const uniform = mulberry32(seed);
+  const rand = () => uniform() - 0.5;
   const magnitude = Math.min(Math.max(length * NOTE_BEND, 8), 42);
   const controls = (sign: number): Point[] => [
     start,
