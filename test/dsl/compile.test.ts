@@ -538,6 +538,109 @@ sections:
     await expect(page(`${base}  - rows: [[{ chart: q }]]\n`)).rejects.toThrow(/sections\[0\]\.rows\[0\]\[0\]\.chart: unknown block 'chart'/);
     await expect(page(`${base}  - { rope: { q: q, k: q, theta: 10, dh: d }, rows: [] }\n`)).rejects.toThrow(/sections\[0\]\.rope\.dh: dh must be an even integer/);
   });
+
+  const MD_PAGE = `
+title: t
+dims: { T: 2, d: 4 }
+inputs: {}
+weights:
+  q: { shape: [T, d], init: ones }
+  k: { shape: [T, d], init: ones }
+body:
+  - S: q @ k.T
+  - l: mean(S)
+sections:
+  - { title: RoPE, src: text/rope.md, rope: { q: q, k: k, theta: 10, dh: d } }
+`;
+  const MD = [
+    ':::: columns 300 1fr',
+    '::: column',
+    '::: rope_dial',
+    ':::',
+    ':::',
+    '',
+    '::: column',
+    '::: lead',
+    '开头 $x$',
+    ':::',
+    '',
+    '### 一',
+    '',
+    '正文 $d = {{d}}$',
+    ':::',
+    '::::',
+    '',
+    '第二行',
+    '',
+    '```',
+    '::: not_a_block',
+    '```',
+    '',
+    '---',
+    '',
+    '::: buttons',
+    '- { label: 去, go: S }',
+    ':::',
+    '',
+    '::: rope_compare',
+    'scores: [S]',
+    'weights: S',
+    'ids: q',
+    ':::',
+    '',
+  ].join('\n');
+
+  it('loads a section from a Markdown file next to the page', async () => {
+    const result = await page(MD_PAGE, { 'mem:/pages/text/rope.md': MD });
+    const S = result.nodes.get('S');
+    const [section] = result.sections;
+    expect(section.title).toBe('RoPE');
+    expect(section.rows).toEqual([
+      { columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头 $x$' }, { text: '### 一\n\n正文 $d = {{d}}$' }]] },
+      { cells: [[{ text: '第二行\n\n```\n::: not_a_block\n```' }]] },
+      { cells: [[{ buttons: [{ label: '去', go: S }] }, { rope_compare: { scores: [S], weights: [S], ids: result.nodes.get('q') } }]] },
+    ]);
+  });
+
+  it('reports Markdown section errors at their line in the Markdown file', async () => {
+    const at = (md: string) => page(MD_PAGE, { 'mem:/pages/text/rope.md': md });
+    await expect(at('::: buttons\n- { label: 去, go: nope }\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:2:.*nope/);
+    await expect(at('文字\n\n::: chart\n- 1\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:4:1 rows\[0\]\[1\]\.chart: unknown block 'chart'/);
+    await expect(at('::: lead\n开头\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: '::: lead' is not closed");
+    await expect(at(':::\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: ':::' closes nothing");
+    await expect(at('::: column\n:::\n')).rejects.toThrow("'::: column' can only be used inside '::: columns'");
+    await expect(at(':::: columns 1fr\n文字\n::::\n')).rejects.toThrow("mem:/pages/text/rope.md:2:1: only '::: column' blocks can go inside '::: columns'");
+    await expect(at('::: rope_dial big\n:::\n')).rejects.toThrow("'::: rope_dial' takes no arguments");
+    await expect(page(MD_PAGE, {})).rejects.toThrow('no file mem:/pages/text/rope.md');
+    await expect(page(MD_PAGE.replace('src: text/rope.md', 'src: text/rope.md, rows: []'), { 'mem:/pages/text/rope.md': MD })).rejects.toThrow('a section takes either src or rows');
+  });
+});
+
+describe('figure filters in step text', () => {
+  const base = (text: string) => `
+title: t
+dims: { T: 3, d: 4 }
+inputs: {}
+buffers:
+  cos: { value: 'rope_cos(T, d, 10)' }
+weights:
+  x: { shape: [T, d], init: ones }
+body:
+  - y: x * cos
+  - l: mean(y)
+steps:
+  - { id: s, show: y, title: s, text: '${text}' }
+`;
+
+  it('expands a figure filter into a vf-figure tag with the graph name', async () => {
+    const result = await page(base('a {{ cos | rope_wave:cos:12 }} b'));
+    expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('a <vf-figure name="rope_wave" node="cos" args="cos:12"></vf-figure> b');
+  });
+
+  it('reports a bad figure argument where it is written', async () => {
+    await expect(page(base('{{ cos | rope_wave:tan }}'))).rejects.toThrow(/rope_wave needs cos or sin as its first argument, got 'tan' in '\{\{ cos \| rope_wave:tan \}\}'/);
+    await expect(page(base('{{ cos | chart }}'))).rejects.toThrow(/unknown template filter 'chart'/);
+  });
 });
 
 describe('page structure', () => {

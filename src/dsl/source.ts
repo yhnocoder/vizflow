@@ -45,13 +45,28 @@ function quoteShift(node: YamlNode): number {
   return node.type === 'QUOTE_DOUBLE' || node.type === 'QUOTE_SINGLE' ? 1 : 0;
 }
 
-export function parseYaml(text: string, file: string): unknown {
+export function place(obj: object, key: string | number | undefined, file: string, line: number): void {
+  const pos = { file, line, col: 1, shift: 0 };
+  if (key === undefined) {
+    ownPositions.set(obj, pos);
+    return;
+  }
+  const keys = positions.get(obj) ?? new Map<string | number, Pos>();
+  keys.set(key, pos);
+  positions.set(obj, keys);
+}
+
+export function parseYaml(text: string, file: string, firstLine = 1): unknown {
   const lineCounter = new LineCounter();
   const doc = parseDocument(text, { lineCounter, uniqueKeys: true });
-  const posAt = (offset: number, shift = 0): Pos => ({ file, ...lineCounter.linePos(offset), shift });
+  const linePos = (offset: number) => {
+    const { line, col } = lineCounter.linePos(offset);
+    return { line: line + firstLine - 1, col };
+  };
+  const posAt = (offset: number, shift = 0): Pos => ({ file, ...linePos(offset), shift });
   const first = doc.errors[0];
   if (first !== undefined) {
-    const { line, col } = lineCounter.linePos(first.pos[0]);
+    const { line, col } = linePos(first.pos[0]);
     throw new DslError(`${file}:${line}:${col}: ${first.message.split('\n')[0]}`);
   }
   const convert = (node: unknown): unknown => {

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { graph } from '../../src/core';
 import { createSteps } from '../../src/steps';
 import { mountPanels, mountSections, type Mounted, type PageSequence, type SectionItem } from '../../src/ui';
+import { shown } from './shown';
 
 const TOKENS = ['a', 'b', 'c'];
 const Q = [
@@ -56,10 +57,10 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const text = (el: Element | null) => el?.textContent ?? '';
+const text = (el: Element | null) => (el === null ? '' : shown(el));
 
 function button(el: HTMLElement, name: string | RegExp): HTMLButtonElement {
-  const found = [...el.querySelectorAll('button')].find((b) => (typeof name === 'string' ? b.textContent === name : name.test(b.textContent ?? '')));
+  const found = [...el.querySelectorAll('button')].find((b) => (typeof name === 'string' ? shown(b) === name : name.test(shown(b))));
   if (found === undefined) throw new Error(`no button ${name}`);
   return found;
 }
@@ -83,23 +84,24 @@ describe('new panels', () => {
     const all = g.nodes.filter((n) => n.kind === 'param');
     mounted.push(
       mountPanels(el, g, [
-        { loss: { parts: lt, hint: '走几步看损失下降' } },
-        { sequence: true, labels: ['x₁', 'x₂ · y₁', 'x₃ · y₂', 'y₃'], sgd: { params: all, lr: 0.5, label: '更新一步全部参数' }, random: true, reset: true, title: '序列' },
+        { loss: { parts: lt, hint: '走几步看 $\\ell$ 下降' } },
+        { sequence: true, labels: ['$x_1$', '$x_2 \\cdot y_1$', '$x_3 \\cdot y_2$', '$y_3$'], sgd: { params: all, lr: 0.5, label: '更新一步全部参数' }, random: true, reset: true, title: '序列' },
       ], { steps, sequence: sequenceOf(ids, y, g) }),
     );
-    const rows = [...el.querySelectorAll('.vf-lossrows span')].map(text);
-    expect(rows).toEqual(Array.from(lt.value.data, (v, t) => `ℓ${'₁₂₃'[t]} = ${v.toFixed(3)}`));
-    expect(text(el.querySelector('.vf-spark text'))).toBe('走几步看损失下降');
+    const rows = [...el.querySelectorAll('.vf-lossrows > span')].map(text);
+    expect(rows).toEqual(Array.from(lt.value.data, (v, t) => `$\\ell_{${t + 1}}$ = ${v.toFixed(3)}`));
+    expect(text(el.querySelector('.vf-spark-hint'))).toBe('走几步看 $\\ell$ 下降');
+    expect(el.querySelector('.vf-spark-hint')!.namespaceURI).toBe('http://www.w3.org/1999/xhtml');
     const selects = [...el.querySelectorAll<HTMLSelectElement>('.vf-seqrow select')];
     expect(selects.map((s) => s.value)).toEqual(['0', '2', '1', '0']);
-    expect([...el.querySelectorAll('.vf-seqrow label')].map((l) => l.firstChild?.textContent)).toEqual(['x₁', 'x₂ · y₁', 'x₃ · y₂', 'y₃']);
+    expect([...el.querySelectorAll('.vf-seqrow label')].map((l) => text(l.firstElementChild))).toEqual(['$x_1$', '$x_2 \\cdot y_1$', '$x_3 \\cdot y_2$', '$y_3$']);
 
     const before = g.loss().value.data[0];
-    button(el, '更新一步全部参数（η = 0.5）').click();
-    button(el, '更新一步全部参数（η = 0.5）').click();
+    button(el, '更新一步全部参数（$\\eta = 0.5$）').click();
+    button(el, '更新一步全部参数（$\\eta = 0.5$）').click();
     expect(g.loss().value.data[0]).toBeLessThan(before);
     expect(el.querySelector('.vf-spark path')).not.toBeNull();
-    expect(el.querySelector('.vf-spark text')).toBeNull();
+    expect(el.querySelector('.vf-spark-hint')).toBeNull();
 
     selects[1].value = '1';
     selects[1].dispatchEvent(new Event('change', { bubbles: true }));
@@ -129,7 +131,7 @@ describe('new panels', () => {
     expect(grids).toHaveLength(2);
     expect(el.querySelector<HTMLElement>('.vf-attg')!.style.gridTemplateColumns).toBe('repeat(2, minmax(0, 1fr))');
     const cells = [...grids[1].children].map(text);
-    expect(cells.slice(0, 4)).toEqual(['h2', 'a', 'c', 'b']);
+    expect(cells.slice(0, 4)).toEqual(['$h_{2}$', 'a', 'c', 'b']);
     expect(cells.slice(4, 8)).toEqual(['a', P.value.get([0, 0]).toFixed(2), '·', '·']);
     expect(cells[15]).toBe(P.value.get([2, 2]).toFixed(2));
     expect(() => mountPanels(container(), g, [{ attention: [g.nodes.find((n) => n.name === 'q')!], ids }])).toThrow(/must be a square matrix/);
@@ -143,8 +145,8 @@ describe('new panels', () => {
         {
           title: 'lm_head 权重',
           matrices: [
-            { matrix: W.T, caption: 'Wᵀ', limit: 1.2 },
-            { matrix: W.T, grad: true, caption: '∂ℓ/∂Wᵀ', limit: 0.3 },
+            { matrix: W.T, caption: '$W^\\top$', limit: 1.2 },
+            { matrix: W.T, grad: true, caption: '$\\partial\\ell/\\partial W^\\top$', limit: 0.3 },
           ],
           highlight: { node: y, all: true },
           rows: 'h',
@@ -152,9 +154,9 @@ describe('new panels', () => {
         },
       ]),
     );
-    expect([...el.querySelectorAll('.vf-wcap')].map(text)).toEqual(['Wᵀ', '∂ℓ/∂Wᵀ']);
+    expect([...el.querySelectorAll('.vf-wcap')].map(text)).toEqual(['$W^\\top$', '$\\partial\\ell/\\partial W^\\top$']);
     const grid = el.querySelectorAll('.vf-wmat')[0];
-    expect([...grid.querySelectorAll('.vf-rh')].map(text)).toEqual(['h₁', 'h₂', 'h₃', 'h₄']);
+    expect([...grid.querySelectorAll('.vf-rh')].map(text)).toEqual(['$h_{1}$', '$h_{2}$', '$h_{3}$', '$h_{4}$']);
     expect(grid.querySelector('.vf-frame')).toBeNull();
     const framed = [...grid.querySelectorAll<HTMLElement>('.vf-ct')].map((c) => c.style.gridColumn);
     expect(new Set(framed)).toEqual(new Set(['2', '3', '4']));
@@ -196,8 +198,8 @@ describe('mountSections', () => {
     const el = container();
     mounted.push(mountSections(el, fixture.g, [sectionItem(fixture)], { steps: fixture.steps }));
     const kv = () => [...el.querySelectorAll('.vf-ropekv dd')].map(text);
-    expect([...el.querySelectorAll('.vf-seg')[0].querySelectorAll('button')].map(text)).toEqual(['ω = 1.000', 'ω = 0.316']);
-    expect(text(el.querySelector('.vf-ropecap'))).toBe('选一对分量：ω = 1 是第 1、3 分量，ω = 0.316 是第 2、4 分量');
+    expect([...el.querySelectorAll('.vf-seg')[0].querySelectorAll('button')].map(text)).toEqual(['$\\omega = 1.000$', '$\\omega = 0.316$']);
+    expect(text(el.querySelector('.vf-ropecap'))).toBe('选一对分量：$\\omega = 1$ 是第 1、3 分量，$\\omega = 0.316$ 是第 2、4 分量');
     const q = Q[2];
     const k = K[0];
     const angle = 2;
@@ -206,20 +208,20 @@ describe('mountSections', () => {
     const first = kv();
     expect(first.slice(0, 3)).toEqual(['2.000 rad', '0.000 rad', '2']);
     expect(first[3]).toBe(`${pair.toFixed(3).replace('-', '−')}（转之前 ${(q[0] * k[0] + q[2] * k[2]).toFixed(3).replace('-', '−')}）`);
-    button(el, 't 和 s 同时 +1').click();
+    button(el, '$t$ 和 $s$ 同时 +1').click();
     expect(kv().slice(0, 2)).toEqual(['3.000 rad', '1.000 rad']);
     expect(kv()[3]).toBe(first[3]);
     expect(kv()[4]).toBe(first[4]);
-    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toContain('t − s = 2。');
-    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toContain('q̄ 取自最后一个位置的 head 1，k̄ 取自第一个位置');
+    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toContain('$t-s=2$。');
+    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toContain('$\\bar{\\mathbf{q}}$ 取自最后一个位置的 head 1，$\\bar{\\mathbf{k}}$ 取自第一个位置');
     const s = el.querySelectorAll<HTMLInputElement>('.vf-ropectl input')[1];
     expect(s.max).toBe('23');
     s.value = '5';
     s.dispatchEvent(new Event('input', { bubbles: true }));
-    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toBe('t − s = -2 < 0，在 causal attention 里这一对会被 mask 挡住；曲线只画了 t − s ≥ 0 的部分。');
-    button(el, '回到 t = 2，s = 0').click();
+    expect(text(el.querySelector('.vf-rope-curve .vf-note'))).toBe('$t-s=-2<0$，在 causal attention 里这一对会被 mask 挡住；曲线只画了 $t-s\\ge 0$ 的部分。');
+    button(el, '回到 $t = 2$，$s = 0$').click();
     expect(kv().slice(0, 2)).toEqual(['2.000 rad', '0.000 rad']);
-    button(el, 'ω = 0.316').click();
+    button(el, '$\\omega = 0.316$').click();
     expect(kv()[0]).toBe(`${(2 / Math.sqrt(10)).toFixed(3)} rad`);
     expect(el.querySelectorAll('.vf-rope-curve svg circle').length).toBe(25);
   });
@@ -230,7 +232,12 @@ describe('mountSections', () => {
     let jumped = 0;
     mounted.push(mountSections(el, fixture.g, [sectionItem(fixture)], { steps: fixture.steps, onJump: () => jumped++ }));
     const caps = [...el.querySelectorAll('.vf-ropecmp .vf-cap')].map(text);
-    expect(caps).toEqual(['不加 RoPE：q̄ k̄ᵀ / √d_h', '加了 RoPE：q′ k′ᵀ / √d_h（页面里的 S̃）', '不加 RoPE 的注意力权重', '加了 RoPE 的注意力权重（页面里的 P）']);
+    expect(caps).toEqual([
+      '不加 RoPE：$\\bar{\\mathbf{q}}\\bar{\\mathbf{k}}^{\\top}/\\sqrt{d_h}$',
+      "加了 RoPE：$\\mathbf{q}'\\mathbf{k}'^{\\top}/\\sqrt{d_h}$（页面里的 $\\tilde{S}$）",
+      '不加 RoPE 的注意力权重',
+      '加了 RoPE 的注意力权重（页面里的 $P$）',
+    ]);
     const grids = [...el.querySelectorAll('.vf-cmpg')];
     const s0 = (Q[2].reduce((a, v, c) => a + v * K[0][c], 0) / 2).toFixed(2).replace('-', '−');
     expect(text(grids[0].children[13])).toBe(s0);
@@ -252,6 +259,24 @@ describe('mountSections', () => {
     mounted.push(mountSections(el, fixture.g, [sectionItem(fixture)], { steps: fixture.steps }));
     button(el, '看打分').click();
     expect(fixture.steps.current).toBe(3);
+  });
+
+  it('reads q and k laid out as (T, H, dh) the same as (T, H dh)', () => {
+    const shown = (split: boolean) => {
+      const g = graph({ dims: { T: 3 } });
+      const shape = split ? ['T', 2, 2] : ['T', 4];
+      const data = (m: number[][]) => (split ? m.map((r) => [r.slice(0, 2), r.slice(2)]) : m);
+      const q = g.param('q', shape, data(Q));
+      const k = g.param('k', shape, data(K));
+      g.sum(g.mul(q, k), null, { name: 'loss' });
+      const el = container();
+      const item: SectionItem = { rope: { q: [q], k: [k], rows: [-1, 1], head: 2, theta: 10, dh: 2, positions: 24 }, rows: [{ cells: [['rope_dial', 'rope_curve']] }] };
+      mounted.push(mountSections(el, g, [item]));
+      return [...el.querySelectorAll('.vf-ropekv dd, .vf-rope-curve .vf-note')].map(text);
+    };
+    const flat = shown(false);
+    expect(flat[3]).toContain(`（转之前 ${(Q[2][2] * K[0][2] + Q[2][3] * K[0][3]).toFixed(3).replace('-', '−')}）`);
+    expect(shown(true)).toEqual(flat);
   });
 
   it('refuses rope blocks without the rope option', () => {

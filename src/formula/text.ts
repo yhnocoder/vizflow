@@ -45,7 +45,7 @@ function splitTex(source: string): Segment[] {
   return segments;
 }
 
-const blockTag = /^<(?:p|div|ul|ol|pre|table|h[1-6]|blockquote)[\s>]/i;
+const blockTag = /^<(?:p|div|ul|ol|pre|table|h[1-6]|blockquote|vf-figure)[\s>]/i;
 const preTag = /^<pre[\s>]/i;
 
 function dedent(source: string): string {

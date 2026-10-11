@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { graph } from '../../src/core';
 import { createSteps, type StepInfo } from '../../src/steps';
 import { mountSteps, type Mounted } from '../../src/ui';
+import { shown } from './shown';
 
 type Extra = { kind?: string; segment?: string; sub?: string; module?: string };
 
@@ -13,7 +14,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const text = (el: Element | null) => el?.textContent ?? '';
+const text = (el: Element | null) => (el === null ? '' : shown(el));
 
 function timelineSteps() {
   const g = graph({ dims: { V: 3 } });
@@ -29,16 +30,16 @@ function timelineSteps() {
       { show: a, title: 'a', label: 'a' },
       { show: b, title: 'b', label: 'b' },
       { show: c, title: 'c', label: 'c' },
-      { show: d, title: 'loss', label: 'ℓ' },
+      { show: d, title: 'loss', label: '$\\ell$' },
     ],
   });
   const extra: Extra[] = [
     { kind: 'overview', segment: '总览' },
     { kind: 'inputs', segment: '输入' },
     { kind: 'op', segment: 'self_attn' },
-    { kind: 'op', segment: 'self_attn', sub: 'q_norm · k_norm' },
-    { kind: 'op', segment: 'self_attn', sub: 'q_norm · k_norm' },
-    { kind: 'module', segment: 'mlp', module: 'mlp' },
+    { kind: 'op', segment: 'self_attn', sub: 'q_norm $\\cdot$ k_norm' },
+    { kind: 'op', segment: 'self_attn', sub: 'q_norm $\\cdot$ k_norm' },
+    { kind: 'module', segment: '$\\cdots$ 第 1 到 $N-1$ 层', module: 'mlp' },
   ];
   steps.list.forEach((info: StepInfo, i) => Object.assign(info, extra[i] ?? { kind: 'op', segment: 'nll_loss' }));
   Object.assign(steps, { modules: [{ id: 'mlp' }] });
@@ -56,7 +57,7 @@ describe('mountSteps timeline', () => {
     const forwardCount = steps.list.filter((s) => s.dir === 'forward').length;
     const barsOf = () => [...el.querySelectorAll<HTMLButtonElement>('.vf-tb')];
     let bars = barsOf();
-    expect(bars.map((b) => b.title)).toEqual(['总览', '输入', 'self_attn', 'mlp']);
+    expect(bars.map((b) => b.title)).toEqual(['总览', '输入', 'self_attn', '⋯ 第 1 到 N−1 层']);
     expect(bars.map((b) => b.style.flex)).toEqual(['1 1 0px', '1 1 0px', '3 1 0px', '1 1 0px']);
     expect(bars[0].classList.contains('vf-on')).toBe(true);
     expect(bars[0].style.getPropertyValue('--vf-fr')).toBe('100%');
@@ -72,7 +73,7 @@ describe('mountSteps timeline', () => {
     expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual([
       'vf-tl-inner:self_attn',
       'vf-st:a',
-      'vf-tl-inner vf-sub:q_norm · k_norm',
+      'vf-tl-inner vf-sub:q_norm $\\cdot$ k_norm',
       'vf-st:b',
       'vf-st:c',
     ]);
@@ -80,7 +81,7 @@ describe('mountSteps timeline', () => {
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
     steps.go(5);
-    expect(text(el.querySelector('.vf-tl-inner'))).toBe('mlp（已折叠）');
+    expect(text(el.querySelector('.vf-tl-inner'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
 
     barsOf()[1].click();
     expect(steps.current).toBe(1);

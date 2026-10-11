@@ -41,7 +41,7 @@ test('a gradient step lowers the loss and draws the curve', async ({ page }) => 
   await open(page);
   await expect(page.locator('.vf-spark')).toHaveCount(0);
   const before = Number(await lossText(page));
-  await page.getByRole('button', { name: /梯度下降一步（η = 1）/ }).click();
+  await page.getByRole('button', { name: /^梯度下降一步/ }).click();
   await expect(page.locator('.vf-spark path')).toHaveCount(1);
   const after = Number(await lossText(page));
   expect(after).toBeLessThan(before);

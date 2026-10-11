@@ -1,7 +1,9 @@
 import { For, Show, createMemo, onCleanup, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
+import { Rich, plain } from './rich';
 import type { StepInfo, Steps } from '../steps';
+import { renderFigures } from './figures';
 import { resolveElement, trackSteps } from './mount';
 import type { Mounted } from './mounted';
 
@@ -24,6 +26,7 @@ function StepsView(props: { steps: Steps }) {
     const text = steps.text();
     renderText(text.title, title);
     renderText(text.body, body);
+    renderFigures(body, steps.graph);
   };
   const schedule = () => {
     if (frame === undefined) frame = requestAnimationFrame(draw);
@@ -205,8 +208,8 @@ function Timeline(props: {
                   type="button"
                   class="vf-tb"
                   classList={{ 'vf-on': on(), 'vf-done': done() }}
-                  title={segment.name}
-                  aria-label={segment.name}
+                  title={plain(segment.name)}
+                  aria-label={plain(segment.name)}
                   style={{ flex: `${segment.positions.length} 1 0`, ...(on() ? { '--vf-fr': `${fraction().toFixed(0)}%` } : {}) }}
                   onClick={() => steps.go(segment.positions[0])}
                 />
@@ -222,12 +225,12 @@ function Timeline(props: {
       </div>
       <div class="vf-tl-sub">
         <Show when={view().showName}>
-          <span class="vf-tl-inner">{view().active.name + (view().active.folded ? '（已折叠）' : '')}</span>
+          <Rich class="vf-tl-inner" text={view().active.name + (view().active.folded ? '（已折叠）' : '')} />
         </Show>
         <For each={view().items}>
           {(item) => (
             <>
-              <Show when={item.heading}>{(heading) => <span class="vf-tl-inner vf-sub">{heading()}</span>}</Show>
+              <Show when={item.heading}>{(heading) => <Rich class="vf-tl-inner vf-sub" text={heading()} />}</Show>
               <button
                 type="button"
                 class="vf-st"

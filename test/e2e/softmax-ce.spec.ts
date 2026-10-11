@@ -177,7 +177,7 @@ test('slider, target choice and a gradient step change the loss as expected', as
   await expect(page.locator('.vf-wmat .vf-frame.vf-rt')).toHaveCSS('grid-row-start', '3');
   const p = softmax(x);
   const stepped = x.map((v, j) => v - (p[j] - (j === 1 ? 1 : 0)));
-  await page.getByRole('button', { name: /梯度下降一步（η = 1）/ }).click();
+  await page.getByRole('button', { name: /^梯度下降一步/ }).click();
   expect(await readLoss(page, 'single')).toBeCloseTo(crossEntropy(stepped, 1), 12);
   expect(crossEntropy(stepped, 1)).toBeLessThan(crossEntropy(x, 1));
   await expect(page.locator('.vf-spark path')).toHaveCount(1);
@@ -198,7 +198,7 @@ test('slider, target choice and a gradient step change the loss as expected', as
     const pb = softmax(row);
     return row.map((v, j) => v - (pb[j] - (j === targets[b] ? 1 : 0)) / rows.length);
   });
-  await page.getByRole('button', { name: /梯度下降一步（η = 1）/ }).click();
+  await page.getByRole('button', { name: /^梯度下降一步/ }).click();
   expect(await readLoss(page, 'batch')).toBeCloseTo(batchLoss(after), 12);
   expect(batchLoss(after)).toBeLessThan(batchLoss(rows));
 });

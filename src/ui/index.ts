@@ -11,6 +11,8 @@ if (!document.getElementById(styleId)) {
 }
 
 export { mountSteps } from './steps';
+export { renderFigures } from './figures';
+export { figureNames } from './figure-spec';
 export {
   mountPanels,
   type PanelItem,
