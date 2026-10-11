@@ -69,6 +69,10 @@ describe('explain for buffers', () => {
     g.sum(g.exp(y), { name: 'loss' });
     const ex = explain(g);
     expect(ex.edges(y).map((edge) => ('node' in edge.from ? edge.from.node.name : ''))).toEqual(['s', 'M', 's', 'M']);
+    const fromM = ex.edges(y).find((edge) => 'node' in edge.from && edge.from.node === M)!;
+    expect(fromM.constant).toBe(true);
+    const edgeCard = ex.edgeCard(fromM);
+    expect([edgeCard.upstream, edgeCard.product, edgeCard.note]).toEqual([undefined, undefined, '常量，不需要梯度，这条边只表示前向依赖。']);
     const card = ex.nodeCard(M, 'backward');
     expect(card.tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathbf{M}}=0']);
     expect(card.rows.at(-1)).toEqual({ label: '当前梯度', kind: 'grad', value: '无' });

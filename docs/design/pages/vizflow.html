@@ -589,10 +589,11 @@ isLeafLike(node: Node): boolean</code></pre>
 interface EdgeCard {
   title: string;
   local: { tex: string; value: number };
-  upstream: { tex: string; value: number };
-  product: { tex: string; value: number };
+  upstream?: { tex: string; value: number };
+  product?: { tex: string; value: number };
   note?: string;
 }</code></pre>
+<p>起点是 buffer 的边带 <code>constant: true</code>。它的连线卡片只有局部导数，没有上游梯度和传回的量，说明写「常量，不需要梯度，这条边只表示前向依赖。」3D 场景在反向步骤不画这类边。</p>
 
 <h3>连线模式</h3>
 <p>每个运算从一个固定的小集合里选一种连线模式，scene3d 根据模式和布局模板决定线怎么画，卡片根据局部导数和公式模板生成文字，两者都不需要知道具体是哪个运算。新运算选定一种模式，就能得到全部讲解内容。</p>
