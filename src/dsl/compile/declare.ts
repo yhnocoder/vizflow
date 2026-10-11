@@ -1,4 +1,5 @@
-import { type Node, type Placement, REPLICATE, opDef } from '../../autograd';
+import { type Node, type Placement, QUANT_FORMATS, REPLICATE, SCALE_RULES, opDef } from '../../autograd';
+import { QUANT_MODULE } from '../load';
 import type { LayoutEntry } from '../../scene3d';
 import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
@@ -10,6 +11,14 @@ import { checkKeys, dtypeOption, isNum, isRecord, join, num, record } from './ut
 const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
+const WEIGHT_KEYS = new Set(['shape', 'init', 'tex', 'dtype', 'place', 'quant']);
+const QUANT_KEYS = new Set(['fmt', 'rule', 'block', 'folded']);
+
+export interface PreludeItem {
+  item: Record<string, unknown>;
+  where: Where;
+  after: () => void;
+}
 
 export function define(c: Compiler, scope: Scope, name: string, node: Node, env: Env): void {
   if (scope.local(name) !== undefined || scope.groups.has(name)) c.fail(env, `name '${name}' is already defined in ${c.scopeLabel(scope)}`);
@@ -89,7 +98,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, weightDecl] of Object.entries(weights)) {
     const at = child(weightsWhere, weights, name);
     if (!isRecord(weightDecl)) fail(at, `weight '${name}' must be a mapping`);
-    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype', 'place']), at);
+    checkKeys(weightDecl, WEIGHT_KEYS, at);
     const shape = shapeOf(c, weightDecl.shape, { ...env, where: child(at, weightDecl, 'shape') }, child(at, weightDecl, 'shape'));
     const binding = bound?.map[name];
     if (binding !== undefined) {
@@ -134,6 +143,39 @@ function placeOf(c: Compiler, spec: unknown, node: Node, where: Where): Placemen
   if (dim < 0 || dim >= node.shape.length) fail(at, `shard(${match[1]}) is outside the ${node.shape.length} dimensions of '${node.name}'`);
   if (node.shape[dim] % mesh.size !== 0) fail(at, `dimension ${dim} of '${node.name}' has size ${node.shape[dim]}, which ${mesh.size} devices cannot split evenly`);
   return { kind: 'shard', dim };
+}
+
+export function quantPrelude(scope: Scope, decl: Record<string, unknown>, env: Env): PreludeItem[] {
+  const weightsWhere = child(env.where, decl, 'weights');
+  const weights = record(decl.weights, weightsWhere, 'weights');
+  const prelude: PreludeItem[] = [];
+  for (const [name, weightDecl] of Object.entries(weights)) {
+    if (!isRecord(weightDecl) || weightDecl.quant === undefined) continue;
+    const where = child(child(weightsWhere, weights, name), weightDecl, 'quant');
+    const quant = weightDecl.quant;
+    if (!isRecord(quant)) fail(where, 'quant must be a mapping with block and optional fmt, rule, folded');
+    checkKeys(quant, QUANT_KEYS, where);
+    const choice = (key: string, allowed: readonly string[]) => {
+      const value = quant[key];
+      if (value !== undefined && (typeof value !== 'string' || !allowed.includes(value))) fail(child(where, quant, key), `${key} must be one of ${allowed.join(', ')}`);
+    };
+    choice('fmt', QUANT_FORMATS);
+    choice('rule', SCALE_RULES);
+    const block = quant.block;
+    if (!Array.isArray(block) || block.length !== 2) fail(child(where, quant, 'block'), 'block must be a list [rows, cols]');
+    const folded = quant.folded ?? true;
+    if (typeof folded !== 'boolean') fail(child(where, quant, 'folded'), 'folded must be true or false');
+    const params: Record<string, unknown> = { br: block[0], bc: block[1] };
+    if (quant.fmt !== undefined) params.fmt = quant.fmt;
+    if (quant.rule !== undefined) params.rule = quant.rule;
+    const instance = `${name}_quant`;
+    prelude.push({
+      item: { [instance]: { use: QUANT_MODULE, suffix: `\\of{${name}}`, params, inputs: { x: name }, folded } },
+      where,
+      after: () => scope.entries.set(name, scope.children.get(instance)!.entries.get('xq')!),
+    });
+  }
+  return prelude;
 }
 
 export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, unknown>, env: Env, entries: LayoutEntry[]): void {

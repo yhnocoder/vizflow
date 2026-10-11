@@ -1,0 +1,67 @@
+module: Quant
+subtitle: 块缩放量化与反量化
+formula: '\step{dequant}{\of{xq}=}\step{quant}{\operatorname{round}\big(}\of{x}\step{scale}{/\of{s}}\step{quant}{\big)}\step{dequant}{\,\of{s}}'
+params:
+  fmt:  { type: text, default: fp8_e4m3 }
+  rule: { type: text, default: amax }
+  br:   { type: dim }
+  bc:   { type: dim }
+  name: { type: text, default_key: true }
+inputs:
+  x: { shape: [..., n] }
+outputs: [xq]
+fold:
+  label: '$\of{xq}$'
+  title: \of{name}（已折叠）
+  text: |
+    量化再反量化以后的值，与原值的差就是量化误差。
+    $$\of{xq}={{ xq | matrix:3 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      反向用直通估计器，梯度原样交给输入，只有被截断的元素梯度为 0。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - s:  { op: 'block_scale(x, br, bc, fmt, rule)', tex: '\mathbf{s}', beside: x }
+  - q:  { op: 'quantize(x, s, br, bc, fmt)', tex: '\mathbf{q}' }
+  - xq: { op: 'dequantize(q, s, br, bc)', tex: '\hat{\of{x}}', dtype: x }
+  - e:  { op: xq - x, tex: '\mathbf{e}', beside: xq }
+steps:
+  - id: scale
+    show: s
+    label: '$\of{s}$'
+    title: \of{name}：每块一个缩放因子
+    text: |
+      把最后两维切成 $\of{br}\times\of{bc}$ 的块，每块按块内的最大绝对值算一个缩放因子，规则是 <code>\of{rule}</code>。<code>amax</code> 规则取 $s=\max|x|/q_{\max}$，块内最大的元素正好落在格式的最大值 $q_{\max}$ 上；<code>ue8m0</code> 再把 $s$ 向上取到 2 的整数次幂。缩放因子的个数是块数，它的 dtype 由规则决定。
+      $$\of{s}={{ s | matrix:5 }}$$
+    backward:
+      label: '$\partial\of{s}$'
+      title: 缩放因子当作常数
+      text: 缩放因子只用来换算，反向时当作常数，不向输入传梯度。
+  - id: quant
+    show: q
+    label: '$\of{q}$'
+    title: 除以缩放因子再舍入
+    text: |
+      每个元素除以自己所在块的缩放因子，再按 <code>\of{fmt}</code> 的格式就近舍入，平局取偶数，超出范围的值截到 $\pm q_{\max}$。得到的码字就是真实存储的数，浮点格式越大的数间隔越宽。
+      $$\of{q}={{ q | matrix:1 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 直通估计器
+      text: |
+        舍入的导数几乎处处为 0，训练时用直通估计器，把舍入当作恒等函数：$\partial\of{q}/\partial\of{x}=1/s$，与反量化的 $s$ 相乘，合起来 $\partial\of{xq}/\partial\of{x}=1$。缩放因子当作常数。$|x/s|$ 超过 $q_{\max}$ 被截断的元素梯度为 0。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: dequant
+    show: [xq, e]
+    label: '$\of{xq},\ \of{e}$'
+    title: 反量化与量化误差
+    text: |
+      码字乘回自己所在块的缩放因子，得到参与后续计算的近似值 $\of{xq}$，dtype 回到输入的 dtype。$\of{e}=\of{xq}-\of{x}$ 是量化误差，它只用来显示，不参与后面的计算。同一块里的误差与这一块的缩放因子成正比，块里有离群值时缩放因子变大，这一块其余元素的误差也跟着变大。
+      $$\of{xq}={{ xq | matrix:3 }},\qquad \of{e}={{ e | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{q}$'
+      title: 传到码字
+      text: |
+        $\partial\of{xq}/\partial\of{q}=s$，梯度乘上所在块的缩放因子交给码字。
+        $$\frac{\partial\ell}{\partial\of{q}}={{ q.grad | matrix:3 }}$$

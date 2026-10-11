@@ -3,6 +3,7 @@ import { type Where, child, fail, parseYaml } from './source';
 const bundled: Record<string, string> = import.meta.glob('../nn/*.yaml', { query: '?raw', import: 'default', eager: true });
 
 export const PACKAGE_PREFIX = 'vizflow/nn/';
+export const QUANT_MODULE = `${PACKAGE_PREFIX}quant`;
 
 export interface ModuleDef {
   name: string;
@@ -117,5 +118,7 @@ export class Loader {
       }
     };
     await visit(decl.body, child(where, decl, 'body'));
+    const weights = isRecord(decl.weights) ? Object.values(decl.weights) : [];
+    if (!namespace.has(QUANT_MODULE) && weights.some((w) => isRecord(w) && w.quant !== undefined)) namespace.set(QUANT_MODULE, await this.module(QUANT_MODULE, chain, child(where, decl, 'weights')));
   }
 }

@@ -40,3 +40,4 @@ export {
   type QuantFormat,
   type ScaleRule,
 } from './ops';
+export { QUANT_FORMATS, SCALE_RULES } from './quant';

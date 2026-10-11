@@ -3,7 +3,7 @@ import type { LayoutEntry, LayoutTree } from '../../scene3d';
 import { type Ast, ParseError, parseRange } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
-import { define, marked } from './declare';
+import { type PreludeItem, define, marked, quantPrelude } from './declare';
 import { compileInstance } from './instance';
 import { registerFormula } from './formula';
 import { FOR_KEYS, GROUP_KEYS, ITEM_KEYS } from './keys';
@@ -59,20 +59,30 @@ function rangeOf(c: Compiler, text: unknown, env: Env): number[] {
 export function compileBody(c: Compiler, scope: Scope, decl: Record<string, unknown>, env: Env, entries: LayoutEntry[]): { slots: Slot[] } {
   const bodyWhere = child(env.where, decl, 'body');
   if (!Array.isArray(decl.body)) fail(bodyWhere, 'body must be a list');
+  const prelude = quantPrelude(scope, decl, env);
   const counts = new Map<ModuleDef, number>();
-  countInstances(c, decl.body, env, counts);
+  countInstances(c, [...prelude.map((p) => p.item), ...decl.body], env, counts);
   const ordinals = new Map<ModuleDef, number>();
-  return { slots: compileItems(c, scope, decl.body, { ...env, where: bodyWhere }, entries, counts, ordinals) };
+  return { slots: compileItems(c, scope, decl.body, { ...env, where: bodyWhere }, entries, counts, ordinals, prelude) };
 }
 
-function compileItems(c: Compiler, scope: Scope, items: unknown[], env: Env, entries: LayoutEntry[], counts: Map<ModuleDef, number>, ordinals: Map<ModuleDef, number>): Slot[] {
+function compileItems(
+  c: Compiler,
+  scope: Scope,
+  items: unknown[],
+  env: Env,
+  entries: LayoutEntry[],
+  counts: Map<ModuleDef, number>,
+  ordinals: Map<ModuleDef, number>,
+  prelude: PreludeItem[] = [],
+): Slot[] {
   const slots: Slot[] = [];
   const named = new Set<string>();
   let lanes: Lanes | undefined;
   const patches: (() => void)[] = [];
   c.pendingPatches.push(patches);
-  items.forEach((item, index) => {
-    const at = child(env.where, items, index);
+  const listed = [...prelude, ...items.map((item, index) => ({ item, where: child(env.where, items, index), after: undefined }))];
+  listed.forEach(({ item, where: at, after }) => {
     if (!isRecord(item)) fail(at, 'a body item must be a mapping');
     const start = entries.length;
     const before = c.g.nodes.length;
@@ -97,6 +107,7 @@ function compileItems(c: Compiler, scope: Scope, items: unknown[], env: Env, ent
       group.members.push({ name, created, slot });
     }
     if (name !== undefined) named.add(name);
+    after?.();
   });
   c.pendingPatches.pop();
   for (const patch of patches) patch();
