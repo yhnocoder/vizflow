@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { type Tensor, graph } from '../../src/core';
 import { FLOAT_FORMATS, roundToDtype, roundToFormat, roundUpToPowerOfTwo } from '../../src/autograd/rounding';
 
 function bf16ByBits(x: number): number {
@@ -68,5 +69,32 @@ describe('rounding', () => {
     expect(roundUpToPowerOfTwo(0.25)).toBe(0.25);
     expect(roundUpToPowerOfTwo(3e-5)).toBe(2 ** -15);
     expect(() => roundUpToPowerOfTwo(0)).toThrow(/positive/);
+  });
+});
+
+describe('graph rounding', () => {
+  it('leaves values unrounded by default', () => {
+    const g = graph({ dims: { V: 2 }, dtype: 'bf16' });
+    const x = g.input('x', ['V'], [0.1, 1 / 3]);
+    expect([...x.value.data]).toEqual([0.1, 1 / 3]);
+    expect(g.rounding).toBe(false);
+  });
+
+  it('rounds leaf and op values to each node dtype and recomputes with rounding', () => {
+    const g = graph({ dims: { V: 2 }, dtype: 'bf16', rounding: true });
+    const x = g.input('x', ['V'], [0.1, 1 / 3]);
+    const w = g.param('w', ['V'], [3, 3], { dtype: 'fp32' });
+    const y = g.mul(x, w, { name: 'y' });
+    const z = g.mul(x, w, { name: 'z', dtype: 'fp8_e4m3' });
+    const loss = g.sum(y, null, { name: 'loss' });
+    expect([...x.value.data]).toEqual([roundToDtype(0.1, 'bf16'), roundToDtype(1 / 3, 'bf16')]);
+    expect(y.dtype).toBe('fp32');
+    expect([...y.value.data]).toEqual([...x.value.data].map((v) => Math.fround(v * 3)));
+    expect([...z.value.data]).toEqual([...x.value.data].map((v) => roundToDtype(v * 3, 'fp8_e4m3')));
+    x.set([1000, 0.2]);
+    expect(x.value.data[0]).toBe(1000);
+    expect(z.value.data[0]).toBe(448);
+    expect([...(w.grad as Tensor).data]).toEqual([...x.value.data]);
+    expect(loss.value.data[0]).toBe(Math.fround(Math.fround(3000) + Math.fround(roundToDtype(0.2, 'bf16') * 3)));
   });
 });
