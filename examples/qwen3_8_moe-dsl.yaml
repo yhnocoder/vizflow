@@ -28,7 +28,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 3 个位置。MoE 里每个位置的梯度只进入选中它的那几个路由专家和共享专家。
+      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 3 个位置。MoE 里每个位置的梯度只进入选中它的那几个路由专家和共享专家。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -340,12 +340,18 @@ panels:
       x0 = layers[:-2](model.embed_tokens(input_ids))   # 图里是占位盒子
       lin, full = model.layers[-2], model.layers[-1]
       a = x0 + lin.linear_attn(lin.input_layernorm(x0))  # Qwen3_5MoeGatedDeltaNet
-      x1 = a + lin.mlp(lin.post_attention_layernorm(a))   # Qwen3_5MoeSparseMoeBlock
+      n = lin.post_attention_layernorm(a)
+      mlp = lin.mlp                                      # Qwen3_5MoeSparseMoeBlock
+      shared = mlp.shared_expert(n)                      # Qwen3_5MoeMLP
+      _, top, idx = mlp.gate(n)                          # softmax、topk、归一化
+      routed = mlp.experts(n, idx, top)                  # 与 Qwen3MoeExperts 相同
+      shared = F.sigmoid(mlp.shared_expert_gate(n)) * shared
+      x1 = a + routed + shared
       a = x1 + full.self_attn(full.input_layernorm(x1))  # Qwen3_5MoeAttention
-      x = a + full.mlp(full.post_attention_layernorm(a))
+      x = a + full.mlp(full.post_attention_layernorm(a))   # 同上
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
-    note: Qwen3.8-2.4T-A95B：d = 8192，92 层，每 4 层一个 full_attention；softmax 注意力 64 个 query head、4 个 kv head，head_dim = 256，只有前 64 维做 RoPE，rope_theta = $10^7$；Gated DeltaNet 16 个 key head、128 个 value head，$d_k=d_v=128$，卷积核长 4；512 个路由专家，每个 token 选 10 个，moe_intermediate_size = shared_expert_intermediate_size = 2048；V = 248320。config 里的 <code>output_gate_type = "swish"</code> 指 Gated DeltaNet 里门控 RMSNorm 的激活，swish 就是 SiLU，与 HF <code>qwen3_5_moe</code> 代码里写死的 SiLU 相同；注意力的输出门是 sigmoid。
+    note: Qwen3.8-2.4T-A95B：d = 8192，92 层，每 4 层一个 full_attention；softmax 注意力 64 个 query head、4 个 kv head，head_dim = 256，只有前 64 维做 RoPE，rope_theta = $10^7$；Gated DeltaNet 16 个 key head、128 个 value head，$d_k=d_v=128$，卷积核长 4；512 个路由专家，每个 token 选 10 个，moe_intermediate_size = shared_expert_intermediate_size = 2048；V = 248320。config 里的 <code>output_gate_type</code> 字段 HF 和 vLLM 的代码都不读取；HF 的门控 RMSNorm 用 SiLU，注意力输出门用 sigmoid，本页按 HF 画。
 values:
   linear_layer.input_layernorm.weight: [0.03, -0.04, 0.02, 0.05]
   linear_layer.post_attention_layernorm.weight: [-0.02, 0.04, 0.01, -0.03]

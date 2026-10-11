@@ -26,7 +26,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。跨位置的梯度只经过注意力权重 $P$；MoE 里每个位置的梯度只进入选中它的那几个专家，router 的梯度经过 softmax 传给所有专家的分数。
+      整条反向路径一起显示。跨位置的梯度只在注意力里产生，经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$ 传给更早的位置；MoE 里每个位置的梯度只进入选中它的那几个专家，router 的梯度经过 softmax 传给所有专家的分数。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -270,18 +270,25 @@ panels:
       layer = model.layers[-1]
       a = x0 + layer.self_attn(layer.input_layernorm(x0))
       n = layer.post_attention_layernorm(a)
+      mlp = layer.mlp                                  # Qwen3MoeSparseMoeBlock
       logits = F.linear(n, mlp.gate.weight)            # Qwen3MoeTopKRouter
       probs = F.softmax(logits, dtype=torch.float, dim=-1)
-      top, idx = torch.topk(probs, K, dim=-1)
+      top, idx = torch.topk(probs, mlp.gate.top_k, dim=-1)
       top /= top.sum(dim=-1, keepdim=True)             # norm_topk_prob
       top = top.to(logits.dtype)
-      moe = torch.zeros_like(n)                        # Qwen3MoeExperts
-      mask = F.one_hot(idx, num_classes=E).permute(2, 1, 0)
-      for e in range(E):
+      experts = mlp.experts                            # Qwen3MoeExperts
+      moe = torch.zeros_like(n)
+      mask = F.one_hot(idx, num_classes=experts.num_experts + 1).permute(2, 1, 0)
+      expert_hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
+      for e in expert_hit:
+          e = e[0]
+          if e == experts.num_experts:
+              continue
           pos, tok = torch.where(mask[e])
           g, u = F.linear(n[tok], experts.gate_up_proj[e]).chunk(2, dim=-1)
           y = F.linear(F.silu(g) * u, experts.down_proj[e])
-          moe.index_add_(0, tok, y * top[tok, pos, None])
+          y = y * top[tok, pos, None]
+          moe.index_add_(0, tok, y.to(moe.dtype))
       x = a + moe
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
