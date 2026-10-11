@@ -1,5 +1,5 @@
 title: Qwen3.5 最后两层：从 token 到损失
-lede: Qwen3.5 的 decoder 层有两种：每 4 层里前 3 层用 Gated DeltaNet 做线性注意力，第 4 层用带输出门的 softmax 注意力。这一页从 token id 开始，经过占位的前 $N-2$ 层、第 $N-1$ 层（linear_attention）、第 $N$ 层（full_attention）、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
+lede: Qwen3.5 的 decoder 层有两种：每 4 层里前 3 层用 Gated DeltaNet 做线性注意力，第 4 层用带输出门的 softmax 注意力。这一页从 token id 开始，经过占位的前 $N-2$ 层、第 $N-1$ 层（linear_attention）、第 $N$ 层（full_attention）、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。推理从 2 个 token 的 prompt 开始，生成到 $T=4$ 个位置，用上方的开关在训练和推理之间切换。词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
@@ -7,12 +7,13 @@ import:
   GLU:                 vizflow/nn/glu
   GatedDeltaNet:       ./qwen3_5/gated-deltanet.yaml
   GatedAttention:      ./qwen3_5/attention.yaml
-dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4 }
+dims: { T: 4, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 3 }
 dtype: bf16
 real: { name: Qwen3.5-27B, d: 5120, f: 17408, V: 248320, H: 24, Hkv: 4, dh: 256, rd: 64, Hk: 16, Hv: 48, dk: 128, dv: 128, K: 4 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261011 }
-sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
+sequence: { tokens: [the, cat], input: ids, label: y }
+generate: { steps: 3 }
 inputs: {}
 weights:
   E: { shape: [V, d] }
@@ -21,20 +22,20 @@ overview:
   label: 总览
   title: 整张图
   text: |
-    这一页从 token id 一直画到损失。Qwen3.5-27B 有 $N=64$ 层，layer_types 按「linear、linear、linear、full」循环 16 次，最后两层正好是一个 linear_attention 层和一个 full_attention 层，这里把它们完整展开，前 $N-2$ 层收成一个占位盒子。两种层的外壳相同：以 0 为中心的 RMSNorm、token mixer、残差、RMSNorm、SwiGLU MLP、残差，只有 token mixer 不同。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span>。尺寸用 $d=4$、$f=6$、$V=5$；softmax 注意力有 2 个 query head、1 个 kv head，$d_h=8$；Gated DeltaNet 有 1 个 key head、2 个 value head，$d_k=d_v=2$。
+    这一页从 token id 一直画到损失。Qwen3.5-27B 有 $N=64$ 层，layer_types 按「linear、linear、linear、full」循环 16 次，最后两层正好是一个 linear_attention 层和一个 full_attention 层，这里把它们完整展开，前 $N-2$ 层收成一个占位盒子。两种层的外壳相同：以 0 为中心的 RMSNorm、token mixer、残差、RMSNorm、SwiGLU MLP、残差，只有 token mixer 不同。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span> <span class="ctx">{{ids[3]:token}}</span>，后两个是推理时生成的；标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span> <span class="ctx">{{y[3]:token}}</span>。尺寸用 $d=4$、$f=6$、$V=5$；softmax 注意力有 2 个 query head、1 个 kv head，$d_h=8$；Gated DeltaNet 有 1 个 key head、2 个 value head，$d_k=d_v=2$。
     $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
   backward:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 3 个位置。
+      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 $K-1=2$ 个位置。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入
   title: 输入和参数
   text: |
     输入只有 token id，其余都是参数和常量。三处 RMSNorm 和 q_norm、k_norm 的权重以 0 为中心，乘的是 $1+\boldsymbol{\gamma}$。Gated DeltaNet 除了几个投影，还有短卷积的核 $W_{\mathrm{conv}}$、每个 value head 一个的 $\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$，以及门控 RMSNorm 的权重。RoPE 的 cos/sin 表、causal mask 和状态的初值 $S_0=0$ 由形状决定，不需要梯度。
-    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
 
 modules:
   LinearDecoderLayer:
@@ -311,7 +312,7 @@ steps:
     title: nll_loss（逐位置）
     text: |
       每个位置按标签取出目标 token 的 log p，取负号。
-      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\\{{lt[3]:3}}\end{pmatrix}$$
     backward:
       label: '$\partial\of{logp}$'
       title: 穿过 nll

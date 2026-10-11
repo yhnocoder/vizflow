@@ -23,8 +23,8 @@ SEED = 20261011
 COMMAND = "uv run scripts/gen_qwen3_5_fixture.py"
 OUT = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "torch" / "qwen3_5.json"
 
-DIMS = {"T": 3, "d": 4, "f": 6, "V": 5, "H": 2, "Hkv": 1, "dh": 8, "rd": 2, "Hk": 1, "Hv": 2, "dk": 2, "dv": 2, "K": 4}
-SEQUENCE = [2, 4, 3, 0]
+DIMS = {"T": 4, "d": 4, "f": 6, "V": 5, "H": 2, "Hkv": 1, "dh": 8, "rd": 2, "Hk": 1, "Hv": 2, "dk": 2, "dv": 2, "K": 3}
+SEQUENCE = [2, 4, 3, 0, 1]
 
 
 def float64_everywhere():

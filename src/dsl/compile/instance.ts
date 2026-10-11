@@ -5,7 +5,7 @@ import { type Where, child, fail } from '../source';
 import { compileBody } from './body';
 import { registerFormula } from './formula';
 import { declareBuffers, declareParams, declareWeights, define, marked, matchShape } from './declare';
-import { INSTANCE_KEYS, MODULE_ITEM_KEYS, MODULE_KEYS } from './keys';
+import { CACHE_KEYS, INSTANCE_KEYS, MODULE_ITEM_KEYS, MODULE_KEYS } from './keys';
 import { closeModule, openModule, titleOf } from './modules';
 import { braceOf, moduleBackward, moduleSteps, patchSteps } from './steps';
 import type { Compiler } from './text';
@@ -97,7 +97,7 @@ export function compileInstance(
   for (const output of outputs) {
     if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
   }
-  if (decl.cache !== undefined) declareCache(c, scope, decl, where, c.g.nodes.slice(before));
+  if (decl.cache !== undefined) declareCache(c, decl, childEnv, where, c.g.nodes.slice(before));
   const steps = moduleSteps(c, scope, decl, childEnv, slots);
   const formulaSources = [{ decl, env: childEnv }, { decl: use, env }];
   if (use.brace !== undefined) {
@@ -117,13 +117,25 @@ export function compileInstance(
   return { kind: 'child', def, steps, created };
 }
 
-function declareCache(c: Compiler, scope: Scope, decl: Record<string, unknown>, where: Where, created: Node[]): void {
+function declareCache(c: Compiler, decl: Record<string, unknown>, env: Env, where: Where, created: Node[]): void {
   const at = child(where, decl, 'cache');
-  if (!Array.isArray(decl.cache)) fail(at, 'cache must be a list of names');
-  const nodes = (decl.cache as unknown[]).map((name, i) => {
-    const node = typeof name === 'string' ? scope.entries.get(name) : undefined;
-    if (node === undefined) fail(child(at, decl.cache as unknown[], i), `cache: '${String(name)}' is not an input or node of this module`);
-    return node;
-  });
-  c.caches.push({ nodes, members: created });
+  const spec = Array.isArray(decl.cache) ? { nodes: decl.cache } : record(decl.cache, at, 'cache');
+  if (!Array.isArray(decl.cache)) checkKeys(spec, CACHE_KEYS, at);
+  const listAt = Array.isArray(decl.cache) ? at : child(at, spec, 'nodes');
+  if (!Array.isArray(spec.nodes)) fail(listAt, 'cache must be a list of names, or { nodes, note }');
+  if (spec.note !== undefined && typeof spec.note !== 'string') fail(child(at, spec, 'note'), 'cache.note must be text');
+  const names = spec.nodes as unknown[];
+  const nodes = names.flatMap((name, i) => c.nodeList(name, { ...env, where: child(listAt, names, i) }));
+  const recoverable = new Set<Node>(nodes);
+  const positional = new Map<Node, boolean>();
+  const varies = (n: Node): boolean => {
+    let known = positional.get(n);
+    if (known === undefined) positional.set(n, (known = n.kind === 'input' || n.kind === 'label' || n.inputs.some(varies)));
+    return known;
+  };
+  for (const n of created) {
+    if (n.kind === 'op' && n.inputs.some((i) => recoverable.has(i)) && n.inputs.every((i) => recoverable.has(i) || !varies(i))) recoverable.add(n);
+  }
+  const kept = c.caches.filter((cache) => !cache.nodes.every((n) => recoverable.has(n)));
+  c.caches.splice(0, c.caches.length, ...kept, { nodes, members: created, ...(typeof spec.note === 'string' ? { note: spec.note } : {}) });
 }

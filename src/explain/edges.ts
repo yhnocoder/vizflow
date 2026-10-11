@@ -111,8 +111,7 @@ function selectEdges(op: Node, args: number[], def: OpExplain, ctx: OpCtx): Flow
   return edges;
 }
 
-export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
-  const args = differentiableArgs(op);
+export function edgesOf(op: Node, def: OpExplain, args: number[] = differentiableArgs(op)): FlowEdge[] {
   const ctx = contextOf(op);
   switch (def.pattern) {
     case 'elementwise':

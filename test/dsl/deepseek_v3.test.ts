@@ -48,7 +48,7 @@ describe('deepseek_v3-dsl.yaml against transformers DeepseekV3Model in float64',
       expect(row.slice(0, 3).some((v) => v === 1) && row.slice(3).some((v) => v === 1)).toBe(false);
     }
     for (const name of ['sc', 'gs', 'gm', 'em', 'choice', 'sel']) expect(page.nodes.get(`moe_layer.mlp.${name}`)!.grad).toBeNull();
-    const steps = createSteps(page.graph, page.steps);
+    const steps = createSteps(page.graph, page.modes?.train ?? page.steps);
     expect(steps.list.map((s) => s.title)).toContain('专家的权重');
   });
 });

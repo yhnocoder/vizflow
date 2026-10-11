@@ -1,5 +1,5 @@
 title: DeepSeek V3：MLA 与 MoE，从 token 到损失
-lede: DeepSeek V3 的 61 个 decoder 层都用 multi-head latent attention（MLA），前 3 层的 MLP 是普通的 SwiGLU，之后 58 层换成 MoE。这一页从 token id 开始，经过占位的第 1、2 层、第 3 层（最后一个 dense 层）、第 4 层（第一个 MoE 层）、占位的第 5 到 61 层、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
+lede: DeepSeek V3 的 61 个 decoder 层都用 multi-head latent attention（MLA），前 3 层的 MLP 是普通的 SwiGLU，之后 58 层换成 MoE。这一页从 token id 开始，经过占位的第 1、2 层、第 3 层（最后一个 dense 层）、第 4 层（第一个 MoE 层）、占位的第 5 到 61 层、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。推理从 2 个 token 的 prompt 开始，生成到 $T=4$ 个位置，用上方的开关在训练和推理之间切换。词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
@@ -7,12 +7,13 @@ import:
   MLA:     vizflow/nn/mla
   GLU:     vizflow/nn/glu
   MoE:     ./deepseek_v3/moe.yaml
-dims: { T: 3, d: 4, f: 6, V: 5, H: 2, dn: 2, dr: 2, dv: 2, rq: 3, rkv: 3, Ne: 6, G: 2, TG: 1, K: 2, mf: 2, Sh: 1 }
+dims: { T: 4, d: 4, f: 6, V: 5, H: 2, dn: 2, dr: 2, dv: 2, rq: 3, rkv: 3, Ne: 6, G: 2, TG: 1, K: 2, mf: 2, Sh: 1 }
 dtype: bf16
 real: { name: DeepSeek-V3, d: 7168, f: 18432, V: 129280, H: 128, dn: 128, dr: 64, dv: 128, rq: 1536, rkv: 512, Ne: 256, G: 8, TG: 4, K: 8, mf: 2048, Sh: 1 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261011 }
-sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
+sequence: { tokens: [the, cat], input: ids, label: y }
+generate: { steps: 3 }
 inputs: {}
 weights:
   E: { shape: [V, d] }
@@ -21,7 +22,7 @@ overview:
   label: 总览
   title: 整张图
   text: |
-    这一页从 token id 一直画到损失。DeepSeek V3 有 $N=61$ 层，<code>first_k_dense_replace = 3</code>：前 3 层的 MLP 是 SwiGLU，后面 58 层是 MoE。这里展开第 3 层和第 4 层，一个 dense 层、一个 MoE 层，其余的层收成占位盒子。两种层的注意力都是 MLA：q 和 kv 先压缩成低维的 latent 再展开成多个 head，每个 head 另有一小段维度做 RoPE。MoE 层里每个位置从 \of{Ne} 个路由专家里选 $K=\of{K}$ 个，再加上一个所有位置都经过的共享专家。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span>。尺寸用 $d=4$、$V=5$；MLA 有 2 个 head，$d_n=d_r=d_v=2$，两个 latent 都是 3 维；MoE 有 6 个路由专家，分 2 组。
+    这一页从 token id 一直画到损失。DeepSeek V3 有 $N=61$ 层，<code>first_k_dense_replace = 3</code>：前 3 层的 MLP 是 SwiGLU，后面 58 层是 MoE。这里展开第 3 层和第 4 层，一个 dense 层、一个 MoE 层，其余的层收成占位盒子。两种层的注意力都是 MLA：q 和 kv 先压缩成低维的 latent 再展开成多个 head，每个 head 另有一小段维度做 RoPE。MoE 层里每个位置从 \of{Ne} 个路由专家里选 $K=\of{K}$ 个，再加上一个所有位置都经过的共享专家。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span> <span class="ctx">{{ids[3]:token}}</span>，后两个是推理时生成的；标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span> <span class="ctx">{{y[3]:token}}</span>。尺寸用 $d=4$、$V=5$；MLA 有 2 个 head，$d_n=d_r=d_v=2$，两个 latent 都是 3 维；MoE 有 6 个路由专家，分 2 组。
     $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
   backward:
     label: 总览
@@ -34,7 +35,7 @@ leaves:
   title: 输入和参数
   text: |
     输入只有 token id，其余都是参数和常量。MLA 有五个投影和两个 RMSNorm，MoE 层的 gate 有一块 $W_r$，每个路由专家和共享专家各有三块权重。gate 的偏置 $\mathbf{b}$ 是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和 causal mask 由形状决定，不需要梯度。
-    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
 
 modules:
   DenseDecoderLayer:
@@ -330,7 +331,7 @@ steps:
     title: nll_loss（逐位置）
     text: |
       每个位置按标签取出目标 token 的 log p，取负号。
-      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\\{{lt[3]:3}}\end{pmatrix}$$
     backward:
       label: '$\partial\of{logp}$'
       title: 穿过 nll

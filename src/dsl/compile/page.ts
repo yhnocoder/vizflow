@@ -1,6 +1,6 @@
 import type { Graph, Node } from '../../autograd';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../../scene3d';
-import { type ForwardStep, type InferSpec, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
+import { type ForwardStep, type InferSpec, checkCache, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
 import { type Nested, inferShape } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import { DslError, type Where, child, fail } from '../source';
@@ -264,6 +264,11 @@ function generate(g: Graph, sequence: PageSequence): void {
 function inferSpec(c: Compiler, prompt: number): InferSpec {
   const [logits, label] = nllOf(c.g).inputs;
   const input = c.g.nodes.find((n) => n.kind === 'label' && n !== label && n.shape[0] === label.shape[0]) as Node;
+  const scored = new Set<Node>();
+  for (const n of c.g.nodes) if (n.inputs.some((i) => i === label || scored.has(i))) scored.add(n);
+  const scope = new Set(c.g.nodes.filter((n) => !scored.has(n)));
+  const problem = checkCache(c.g, label.shape[0], prompt, c.caches, scope, [logits]);
+  if (problem !== undefined) fail(child(c.pageWhere, c.page, 'generate'), problem);
   return { prompt, input, label, logits, caches: c.caches };
 }
 

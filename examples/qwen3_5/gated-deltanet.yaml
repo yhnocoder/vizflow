@@ -12,6 +12,7 @@ params:
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
+cache: [mixed_qkv]
 weights:
   Wqkv:    { shape: [2*Hk*dk + Hv*dv, d] }
   Wz:      { shape: [Hv*dv, d] }

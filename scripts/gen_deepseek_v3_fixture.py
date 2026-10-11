@@ -23,8 +23,8 @@ SEED = 20261011
 COMMAND = "uv run scripts/gen_deepseek_v3_fixture.py"
 OUT = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "torch" / "deepseek_v3.json"
 
-DIMS = {"T": 3, "d": 4, "f": 6, "V": 5, "H": 2, "dn": 2, "dr": 2, "dv": 2, "rq": 3, "rkv": 3, "Ne": 6, "G": 2, "TG": 1, "K": 2, "mf": 2, "Sh": 1}
-SEQUENCE = [2, 4, 3, 0]
+DIMS = {"T": 4, "d": 4, "f": 6, "V": 5, "H": 2, "dn": 2, "dr": 2, "dv": 2, "rq": 3, "rkv": 3, "Ne": 6, "G": 2, "TG": 1, "K": 2, "mf": 2, "Sh": 1}
+SEQUENCE = [2, 4, 3, 0, 1]
 ROUTER_BIAS = [0, 0.1, -0.02, 0, 0.02, -0.03]
 
 

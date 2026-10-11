@@ -11,6 +11,7 @@ inputs:
   g:    { shape: [T, H] }
   beta: { shape: [T, H] }
 outputs: [o]
+cache: ['S[1..T]']
 buffers:
   'S[0]': { value: 'zeros(H, dk, dv)', tex: 'S_{0}', dtype: fp32 }
 fold:

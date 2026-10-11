@@ -20,7 +20,6 @@ import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
-import { keyAxes, tokenAxes } from './hover';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
 import { type Renderable, createRenderable, renderableFor } from './renderable';
@@ -62,26 +61,8 @@ export class SceneController implements EditHost {
   private frontRow = true;
   lod = false;
   stepNodes = new Set<Node>();
-  private positions: Map<Node, number> | undefined;
-  private keys: Map<Node, number> | undefined;
-
-  positionAxis(node: Node): number | undefined {
-    if (this.positions === undefined) {
-      const axes = tokenAxes(this.g.nodes);
-      const length = this.g.nodes.find((n) => n.kind === 'input' || n.kind === 'label')?.shape[0];
-      for (const n of this.g.nodes) if (n.kind === 'buffer' && n.shape.length > 0 && n.shape[0] === length) axes.set(n, 0);
-      this.positions = axes;
-      this.keys = keyAxes(this.g.nodes, axes);
-    }
-    return this.positions.get(node);
-  }
-
   rowAt(node: Node, index: readonly number[]): RowState | undefined {
-    const row = this.state.row;
-    const axis = this.positionAxis(node);
-    if (row === undefined || axis === undefined) return undefined;
-    const key = this.keys?.get(node);
-    return row(node, index[axis], key === undefined ? undefined : index[key]);
+    return this.state.row?.(node, index);
   }
   renderables: Renderable[] = [];
   boards: BoardGeometry[] = [];
@@ -210,7 +191,7 @@ export class SceneController implements EditHost {
       focus: state.focus,
       revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
       active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
-      row: (node, position, key) => state.row?.(node, position, key) ?? viewRow(views, state, node, position, key),
+      row: (node, index) => state.row?.(node, index) ?? viewRow(views, state, node, index),
     };
   }
 
@@ -427,7 +408,7 @@ export class SceneController implements EditHost {
   }
 }
 
-function viewRow(views: [Node, Node][], state: StepState, node: Node, position: number, key: number | undefined): RowState | undefined {
+function viewRow(views: [Node, Node][], state: StepState, node: Node, index: readonly number[]): RowState | undefined {
   const view = views.find(([, source]) => source === node)?.[0];
-  return view === undefined ? undefined : state.row?.(view, position, key);
+  return view === undefined || view.shape.length !== index.length ? undefined : state.row?.(view, index);
 }

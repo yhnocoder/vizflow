@@ -40,9 +40,9 @@ describe('qwen3_5-dsl.yaml against transformers Qwen3_5TextModel in float64', ()
   });
 
   it('builds forward and backward steps with the recurrence unrolled per position', () => {
-    const steps = createSteps(page.graph, page.steps);
+    const steps = createSteps(page.graph, page.modes?.train ?? page.steps);
     const titles = steps.list.map((s) => s.title);
-    for (const t of [1, 2, 3]) expect(titles).toContain(`位置 $${t}$：delta rule 写入`);
+    for (const t of [1, 2, 3, 4]) expect(titles).toContain(`位置 $${t}$：delta rule 写入`);
     expect(page.nodes.get('linear_layer.linear_attn.gated_delta_rule.S[3]')!.shape).toEqual([2, 2, 2]);
   });
 });

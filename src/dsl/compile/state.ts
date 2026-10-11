@@ -1,6 +1,6 @@
 import { type Graph, type Node, graph } from '../../autograd';
 import type { LayoutEntry } from '../../scene3d';
-import type { BackwardOverride } from '../../steps';
+import type { BackwardOverride, CacheDecl } from '../../steps';
 import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
@@ -29,7 +29,7 @@ export class CompilerState {
   readonly backward: { node: Node; text: BackwardOverride; where: Where }[] = [];
   readonly pendingPatches: (() => void)[][] = [];
   readonly formulas: FormulaRec[] = [];
-  readonly caches: { nodes: Node[]; members: Node[] }[] = [];
+  readonly caches: CacheDecl[] = [];
   readonly root: Scope;
   protected readonly rangeCounts = new WeakMap<Node[], Num>();
   private readonly values: Record<string, unknown>;

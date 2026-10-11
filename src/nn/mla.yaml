@@ -15,6 +15,9 @@ params:
 inputs:
   x: { shape: [T, d] }
 outputs: [att]
+cache:
+  nodes: [ckvn, k_emb]
+  note: 每个位置只缓存压缩后的 latent 和共享的 RoPE key，比把每个 head 的 k、v 都存下来小得多，这是 MLA 的设计目的。代码实现有区别：HF transformers 的 DeepSeek V3 实现缓存的是展开后每个 head 的 k、v，没有省下显存；vLLM、SGLang 才按这里的方式只缓存 latent，并把 kv_b_proj 的权重合并进 query 和输出投影。
 weights:
   Wqa:  { shape: [rq, d] }
   Wqb:  { shape: [H*(dn + dr), rq] }
