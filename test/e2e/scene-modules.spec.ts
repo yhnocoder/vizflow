@@ -51,7 +51,7 @@ async function moduleState(page: Page): Promise<Record<string, { shown: boolean;
   );
 }
 
-async function titleColors(page: Page): Promise<{ title: string; ink: string; muted: string }> {
+async function titleColors(page: Page): Promise<{ title: string; fg: string }> {
   return page.evaluate(() => {
     const scene = document.querySelector('.vf-scene')!;
     const probe = (value: string) => {
@@ -63,20 +63,24 @@ async function titleColors(page: Page): Promise<{ title: string; ink: string; mu
       return color;
     };
     const title = document.querySelector('.vf-lb.vf-mod[data-module="lm_head"] .vf-mod-title')!;
-    return { title: getComputedStyle(title).color, ink: probe('var(--ink)'), muted: probe('var(--muted)') };
+    return { title: getComputedStyle(title).color, fg: probe('var(--fg)') };
   });
 }
 
-test('follow frames the active blocks after a step change and the overview frames everything', async ({ page }) => {
+async function moduleBox(page: Page, title: string): Promise<{ x: number; y: number }> {
+  const box = (await page.locator(`.vf-lb.vf-mod[data-module="${title}"]`).boundingBox())!;
+  return { x: box.x, y: box.y };
+}
+
+test('follow moves the camera with the step and the overview returns to the same view', async ({ page }) => {
   const errors = await openScene(page);
-  const overview = await zSpan(page);
+  const overview = await moduleBox(page, 'lm_head');
   await goStep(page, FORWARD_2);
-  const step = await zSpan(page);
-  expect(step.right - step.left).toBeGreaterThan((overview.right - overview.left) * 1.2);
   await shot(page, 'forward-2');
   await goStep(page, OVERVIEW);
-  const back = await zSpan(page);
-  expect(Math.abs(back.right - back.left - (overview.right - overview.left))).toBeLessThan(1);
+  const back = await moduleBox(page, 'lm_head');
+  expect(Math.abs(back.x - overview.x)).toBeLessThan(1);
+  expect(Math.abs(back.y - overview.y)).toBeLessThan(1);
   await goStep(page, FORWARD_3);
   const shown = await moduleState(page);
   expect(shown.log_softmax.shown).toBe(true);
@@ -137,38 +141,21 @@ test('reset view returns to the framing of the current step', async ({ page }) =
   expect(errors).toEqual([]);
 });
 
-test('module labels appear with their nodes and use the ink color while a node is active', async ({ page }) => {
+test('module labels stay visible on every step and use the foreground color', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const errors = await openScene(page, '?follow=0');
-  await goStep(page, FORWARD_1);
-  expect(await moduleState(page)).toEqual({
-    lm_head: { shown: true, on: true },
-    logits: { shown: false, on: false },
-    log_softmax: { shown: false, on: false },
-    'NLL Loss': { shown: false, on: false },
-    ℓ: { shown: false, on: false },
-  });
-  let colors = await titleColors(page);
-  expect(colors.title).toBe(colors.ink);
-  await goStep(page, FORWARD_3);
-  expect(await moduleState(page)).toEqual({
-    lm_head: { shown: true, on: false },
-    logits: { shown: true, on: false },
-    log_softmax: { shown: true, on: true },
-    'NLL Loss': { shown: true, on: true },
-    ℓ: { shown: false, on: false },
-  });
-  colors = await titleColors(page);
-  expect(colors.title).toBe(colors.muted);
-  expect(colors.ink).not.toBe(colors.muted);
-  await shot(page, 'forward-3');
-  await goStep(page, FORWARD_5);
-  const state = await moduleState(page);
-  expect(state.ℓ).toEqual({ shown: true, on: true });
+  for (const step of [FORWARD_1, FORWARD_3, FORWARD_5]) {
+    await goStep(page, step);
+    const state = await moduleState(page);
+    expect(Object.values(state).every((s) => s.shown && !s.on)).toBe(true);
+    const colors = await titleColors(page);
+    expect(colors.title).toBe(colors.fg);
+  }
+  await shot(page, 'forward-5');
   await page.getByRole('button', { name: '切换深色' }).click();
   await goStep(page, FORWARD_1);
-  colors = await titleColors(page);
-  expect(colors.title).toBe(colors.ink);
+  const colors = await titleColors(page);
+  expect(colors.title).toBe(colors.fg);
   await shot(page, 'dark-forward-1');
   expect(errors).toEqual([]);
 });

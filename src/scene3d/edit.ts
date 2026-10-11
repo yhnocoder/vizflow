@@ -170,7 +170,7 @@ export function mountEditor(host: EditHost): () => void {
   };
 
   const startLabelDrag = (ev: PointerEvent): boolean => {
-    const el = (ev.target as HTMLElement).closest<HTMLElement>('.vf-lb.vf-ttl, .vf-lb.vf-node');
+    const el = (ev.target as HTMLElement).closest<HTMLElement>('.vf-lb.vf-ttl, .vf-lb.vf-ntl');
     const name = el?.dataset.node;
     const label = host.labels.labels.find((l) => l.el === el);
     if (label === undefined || name === undefined) return false;

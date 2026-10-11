@@ -7,6 +7,39 @@ export const POP_OFFSET_Y = 14;
 export const TIP_OFFSET = 14;
 const POP_MARGIN = 12;
 const TIP_MARGIN = 8;
+export const GRID_BLANK_COLUMNS = 10;
+export const GRID_DIGITS = 2;
+export const SHADE_MIN = 8;
+export const SHADE_RANGE = 62;
+const HIDDEN_ROWS = new Set(['当前值', '当前梯度', 'Jacobian']);
+
+export interface ValueGrid {
+  label: string;
+  values: ArrayLike<number>;
+  cols: number;
+}
+
+export function shade(v: number, limit: number): string {
+  const percent = Math.abs(v) < 1e-9 ? 0 : SHADE_MIN + Math.min(Math.abs(v) / limit, 1) * SHADE_RANGE;
+  return `color-mix(in srgb, var(${v >= 0 ? '--pos' : '--neg'}) ${percent.toFixed(0)}%, transparent)`;
+}
+
+function gridElement(grid: ValueGrid): HTMLElement {
+  const el = element('div', 'vf-jg');
+  el.style.gridTemplateColumns = `repeat(${grid.cols}, minmax(0, 1fr))`;
+  let limit = 0;
+  for (let i = 0; i < grid.values.length; i++) if (Number.isFinite(grid.values[i])) limit = Math.max(limit, Math.abs(grid.values[i]));
+  limit = limit || 1;
+  const blank = grid.cols > GRID_BLANK_COLUMNS;
+  for (let i = 0; i < grid.values.length; i++) {
+    const v = grid.values[i];
+    const cell = document.createElement('div');
+    if (Number.isFinite(v)) cell.style.background = shade(v, limit);
+    cell.textContent = blank ? '\u00a0' : Number.isFinite(v) ? formatNumber(v, { digits: GRID_DIGITS }) : '−∞';
+    el.appendChild(cell);
+  }
+  return el;
+}
 
 function element(tag: string, className: string, text?: string): HTMLElement {
   const el = document.createElement(tag);
@@ -21,7 +54,7 @@ function note(text: string): HTMLElement {
   return el;
 }
 
-export function nodeCardElement(card: NodeCard): DocumentFragment {
+export function nodeCardElement(card: NodeCard, grid?: ValueGrid): DocumentFragment {
   const fragment = document.createDocumentFragment();
   fragment.appendChild(element('h4', 'vf-pop-title', card.title));
   const eqs = element('div', 'vf-eqs');
@@ -30,10 +63,12 @@ export function nodeCardElement(card: NodeCard): DocumentFragment {
   if (card.note !== undefined) fragment.appendChild(note(card.note));
   const dl = element('dl', 'vf-rows');
   for (const row of card.rows) {
+    if (grid !== undefined && HIDDEN_ROWS.has(row.label)) continue;
     dl.appendChild(element('dt', '', row.label));
     dl.appendChild(element('dd', '', row.value));
   }
   fragment.appendChild(dl);
+  if (grid !== undefined) fragment.append(element('div', 'vf-lab', grid.label), gridElement(grid));
   return fragment;
 }
 

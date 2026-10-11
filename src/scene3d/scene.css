@@ -49,12 +49,8 @@
 
 .vf-lb.vf-val {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--fg);
-}
-
-.vf-lb.vf-val.vf-target {
-  font-weight: 600;
 }
 
 .vf-lb.vf-tick {
@@ -66,19 +62,27 @@
 .vf-lb.vf-ttl {
   font-family: var(--serif);
   font-style: italic;
-  font-size: 17px;
+  font-size: 16px;
   color: var(--fg);
   padding: 2px 4px;
   border-radius: 5px;
 }
 
-.vf-lb.vf-node {
+.vf-lb.vf-ntl {
   font-family: var(--serif);
-  font-size: 15px;
+  font-size: 14px;
   color: var(--fg);
-  background: color-mix(in srgb, var(--surface) 82%, transparent);
-  padding: 0 6px;
+  padding: 0 3px;
   border-radius: 4px;
+}
+
+.vf-lb.vf-nv {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  padding: 0 3px;
+  border-radius: 3px;
 }
 
 .vf-lb.vf-cls,
@@ -110,24 +114,16 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  line-height: 1.3;
-  padding-right: 6px;
+  text-align: right;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.25;
+  color: var(--fg);
 }
 
 .vf-lb.vf-mod-right {
   align-items: flex-start;
-  padding-right: 0;
-  padding-left: 6px;
-}
-
-.vf-mod-title {
-  font-family: var(--serif);
-  font-size: 15px;
-  color: var(--muted);
-}
-
-.vf-lb.vf-mod.vf-on .vf-mod-title {
-  color: var(--ink);
+  text-align: left;
 }
 
 .vf-mod-sub {
@@ -136,19 +132,34 @@
   color: var(--muted);
 }
 
+.vf-mod-act {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--pos);
+}
+
+.vf-lb.vf-mod.vf-foldable {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.vf-lb.vf-mod.vf-foldable:hover {
+  color: var(--pos);
+}
+
 .vf-lb.vf-off {
   opacity: 0;
   pointer-events: none !important;
 }
 
 .vf-lb.vf-ttl,
-.vf-lb.vf-node {
+.vf-lb.vf-ntl {
   pointer-events: auto;
   cursor: help;
 }
 
 .vf-lb.vf-ttl:hover,
-.vf-lb.vf-node:hover {
+.vf-lb.vf-ntl:hover {
   background: color-mix(in srgb, var(--ink) 7%, var(--surface));
 }
 
@@ -165,6 +176,14 @@
   font-size: 12px;
   color: var(--muted);
   flex-wrap: wrap;
+}
+
+.vf-key,
+.vf-hint {
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin-left: -6px;
 }
 
 .vf-sw {
@@ -208,6 +227,67 @@
 .vf-chip:hover {
   color: var(--fg);
   border-color: var(--line-strong);
+}
+
+.vf-chip[aria-pressed='true'] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+
+.vf-ovnav {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 6px;
+  max-width: calc(100% - 24px);
+  box-shadow: 0 4px 16px rgba(20, 20, 19, 0.06);
+}
+
+.vf-ovnav .vf-nav {
+  font: inherit;
+  font-size: 14px;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.vf-ovnav .vf-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.vf-ovnav .vf-nav:focus-visible {
+  outline: 2px solid var(--pos);
+  outline-offset: 2px;
+}
+
+.vf-ovnav .vf-ovnav-text {
+  font-family: var(--serif);
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  padding: 0 8px 0 4px;
+}
+
+.vf-ovnav small {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 6px;
 }
 
 .vf-chip:focus-visible {
@@ -255,6 +335,24 @@
   box-shadow: 0 10px 30px rgba(20, 20, 19, 0.12);
   pointer-events: none;
   font-size: 13px;
+  max-height: calc(100% - 24px);
+  overflow: auto;
+}
+
+.vf-pop .vf-jg {
+  display: grid;
+  gap: 1px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  margin: 6px 0 2px;
+}
+
+.vf-pop .vf-jg div {
+  text-align: center;
+  padding: 2px 0;
+  border-radius: 2px;
+  overflow: hidden;
 }
 
 .vf-pop .vf-pop-title {
@@ -338,5 +436,16 @@
 @container (max-width: 600px) {
   .vf-hint {
     display: none;
+  }
+
+  .vf-stage-tools {
+    left: 12px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .vf-scene.vf-follow .vf-key {
+    top: auto;
+    bottom: 58px;
   }
 }
