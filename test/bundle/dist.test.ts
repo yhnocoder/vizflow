@@ -201,3 +201,26 @@ describe('module build output', () => {
     expect(graphCode('core.js')).not.toContain('process.env.NODE_ENV');
   });
 });
+
+describe('package.json sideEffects', () => {
+  test('every entry that injects styles is marked as having side effects', () => {
+    const injecting = readdirSync('src', { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && existsSync(join('src', entry.name, 'index.ts')))
+      .map((entry) => join('src', entry.name, 'index.ts'))
+      .filter((file) => /createElement\('style'\)|import '\.\.\/theme'/.test(readFileSync(file, 'utf8')));
+    expect(injecting).toContain(join('src', 'ui', 'index.ts'));
+    for (const file of injecting) expect(packageJson.sideEffects, file).toContain(`./${file}`);
+  });
+
+  test('every module imported only for its side effects is marked as having side effects', () => {
+    const sources = readdirSync('src', { recursive: true, encoding: 'utf8' }).filter((file) => /\.tsx?$/.test(file));
+    const targets = sources.flatMap((file) =>
+      [...readFileSync(join('src', file), 'utf8').matchAll(/^import '(\.[^'?]*)';$/gm)].map(([, specifier]) => {
+        const base = join('src', dirname(file), specifier);
+        return existsSync(`${base}.ts`) ? `${base}.ts` : join(base, 'index.ts');
+      }),
+    );
+    expect(targets).toContain(join('src', 'explain', 'ops', 'index.ts'));
+    for (const target of targets) expect(packageJson.sideEffects, target).toContain(`./${target}`);
+  });
+});
