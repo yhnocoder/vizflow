@@ -112,10 +112,10 @@ describe('placement propagation', () => {
       g.embedding(ids, E, { name: 'e' });
       const x = g.input('x', [2, 4], values([2, 4], 14));
       g.softmax(x, 1, { name: 's' });
-      const out = g.gather(x, 1, g.label('t', [[0], [1]]), { name: 'picked' });
+      const out = g.causal_conv1d(x, g.input('w', [4, 2], values([4, 2], 15)), { name: 'conv' });
       return { leaves: [[E, { kind: 'shard', dim: 1 }], [x, { kind: 'shard', dim: 1 }]], out };
     });
-    expect(() => p.of(out)).toThrow(/运算 gather 没有放置规则/);
+    expect(() => p.of(out)).toThrow(/运算 causal_conv1d 没有放置规则/);
     expect(() => p.of(out.graph.node('e')!)).toThrow(/embedding 表要是 Replicate/);
     expect(() => p.of(out.graph.node('s')!)).toThrow(/沿被切分的第 1 维做 softmax 需要先通信/);
   });

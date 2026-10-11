@@ -1,5 +1,5 @@
 import { CubicBezierCurve3, ConeGeometry, DoubleSide, Group, Mesh, MeshBasicMaterial, PlaneGeometry, TubeGeometry, Vector3 } from 'three';
-import { type CommPhase, type CommTransfer, type Device, type MeshTopology, type Node, type Placements, commTransfers, rankDevice } from '../autograd';
+import { COMM_OPS, type CommPhase, type CommTransfer, type Device, type MeshTopology, type Node, type Placements, commTransfers, rankDevice } from '../autograd';
 import { renderText } from '../formula';
 import { forEachIndex } from '../tensor';
 import type { LinearRgb, ThemeColors } from '../theme';
@@ -26,7 +26,6 @@ export const LINK_SPREAD = 0.6;
 export const LINK_BULGE = 2.5;
 export const LINK_RADIUS = 0.045;
 export const LINK_HOVER_DISTANCE = 7;
-export const COMM_OPS: ReadonlySet<string> = new Set(['all_reduce', 'dispatch', 'combine']);
 
 const LINK_SEGMENTS = 32;
 const LINK_SIDES = 6;
@@ -171,7 +170,7 @@ export function commCalls(nodes: readonly Node[]): CommCall[] {
   for (const node of nodes) {
     const op = node.op;
     if (op === undefined || !COMM_OPS.has(op)) continue;
-    const same = op === 'all_reduce' ? undefined : calls.find((call) => call.op === op && call.node.inputs[1] === node.inputs[1]);
+    const same = op === 'all_reduce' || op === 'send_recv' ? undefined : calls.find((call) => call.op === op && call.node.inputs[1] === node.inputs[1]);
     if (same === undefined) calls.push({ op, node, carried: [] });
     else same.carried.push(node);
   }
@@ -268,6 +267,7 @@ interface DrawnLink {
 function hopText(op: string, hop: number): string {
   if (op === 'dispatch') return hop === 0 ? '第 1 跳：经 RDMA 发到目标节点上的同号 GPU' : '第 2 跳：节点内经 NVLink 转发给持有专家的卡';
   if (op === 'combine') return hop === 0 ? '第 1 跳：节点内经 NVLink 写到与 token 所在卡同号的 GPU，在那里按 token 部分求和' : '第 2 跳：部分和写回 token 所在的卡';
+  if (op === 'send_recv') return '环形传递：每张卡把手里的块发给环上的下一张卡';
   return '环形 all_reduce 的一段';
 }
 
@@ -567,6 +567,7 @@ export class PlatformLayer {
     const hidden = [this.slots[edge.from], this.slots[edge.to]].some((s) => s.kind === 'hidden');
     if (hidden) row('卡', edge.pairs.map(([s, d]) => `${s}→${d}`).join('、'));
     if (call.op === 'all_reduce') row('规模', `$T=${MODE_TOKENS[parallelMode(c)]}$ 个 token，隐藏维取真实模型的大小`);
+    else if (call.op === 'send_recv') row('规模', `$T=${MODE_TOKENS[parallelMode(c)]}$ 个 token，每张卡发 $T/n$ 行，$n$ 和隐藏维取真实模型的大小`);
     else row('规模', '这一页的 token 和路由；每条消息按真实模型的隐藏维计算，含 top-$k$ 专家编号与权重');
     if (call.carried.length > 0) row('同一条消息', call.carried.map((n) => `$${n.tex}$`).join('、'));
     fragment.appendChild(dl);
