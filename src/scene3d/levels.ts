@@ -385,6 +385,7 @@ class Plan implements LevelPlan {
     }
     const levelOfNode = new Map<Node, Level>();
     const unitLevels = new Map<number, Level[]>();
+    const sharedLevels: Level[] = [];
     units.forEach((prod, index) => {
       for (const copy of this.copies) {
         if (copy.board !== undefined) continue;
@@ -400,6 +401,7 @@ class Plan implements LevelPlan {
       const shared = target >= 0 && target < index && !own.some((n) => n.inputs.some((i) => units[target].includes(i))) ? (unitLevels.get(target) ?? []) : [];
       const levels = Array.from({ length: Math.max(...depth.values()) + 1 }, (_, i) => shared[i] ?? this.newLevel());
       unitLevels.set(index, levels);
+      if (shared.length > 0) sharedLevels.push(...shared);
       for (const n of own) {
         const level = levels[depth.get(n)!];
         for (const copy of this.copies) if (copy.board !== undefined && this.boards.get(n)?.a === copy.node && copy.consumers.includes(n) && !this.copyEntries.has(copy)) this.entry(copy.node, level, copy);
@@ -416,6 +418,8 @@ class Plan implements LevelPlan {
         levelOfNode.set(n, level);
       }
     });
+    const firstUse = (e: Entry) => Math.min(...this.consumers(e.node).map((u) => u.id));
+    for (const level of new Set(sharedLevels)) level.entries.sort((a, b) => firstUse(a) - firstUse(b));
     for (const [view, source] of this.sourceOf) {
       const e = this.entryOf.get(source);
       if (e !== undefined) this.entryOf.set(view, e);
