@@ -676,6 +676,24 @@ def rotate_half_cases():
     ]
 
 
+def lse_merge(o_a, lse_a, o_b, lse_b):
+    lse = torch.logaddexp(lse_a, lse_b)
+    return torch.exp(lse_a - lse) * o_a + torch.exp(lse_b - lse) * o_b
+
+
+def lse_merge_cases():
+    cases = []
+    for shape in [(3, 2), (2, 3, 4)]:
+        lse_shape = (*shape[:-1], 1)
+        tensors = [("input", randn(*shape)), ("input", randn(*lse_shape) * 2), ("input", randn(*shape)), ("input", randn(*lse_shape) * 2)]
+        cases.append(op_case("lse_merge", f"o {shape} lse {lse_shape}", lse_merge, tensors, [tensor_arg(i) for i in range(4)]))
+    lse_b = randn(3, 1)
+    lse_b[1, 0] = -math.inf
+    tensors = [("input", randn(3, 2)), ("input", randn(3, 1)), ("input", randn(3, 2)), ("input", lse_b)]
+    cases.append(op_case("lse_merge", "second block fully masked on row 1", lse_merge, tensors, [tensor_arg(i) for i in range(4)]))
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -693,7 +711,7 @@ def main():
     transformer_ops = transformer_op_fixtures()
     sorted_moe_ops = sorted_moe_cases()
     scaled_mm_ops = scaled_mm_cases()
-    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops + cache_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops + cache_cases() + lse_merge_cases())
     write("pages.json", pages + stable_pages)
 
 
