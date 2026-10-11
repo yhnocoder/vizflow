@@ -15,3 +15,54 @@ export const gatherExplain: OpExplain = {
     return [{ arg: 0, index }];
   },
 };
+
+export const embeddingExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `${s.in[1]}[${s.in[0]}]`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const row = Math.round(ctx.inputs[0].get(out.slice(0, -1)));
+    return [{ arg: 1, index: [row, out[out.length - 1]] }];
+  },
+};
+
+export const narrowExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => {
+      const { dim, start, length } = s.attrs as { dim: number; start: number; length: number };
+      return `\\operatorname{narrow}(${s.in[0]},${dim},${start},${length})`;
+    },
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const attrs = ctx.attrs as { dim: number; start: number };
+    const dim = normDim(attrs.dim, out.length);
+    const index = [...out];
+    index[dim] += attrs.start < 0 ? attrs.start + ctx.inputs[0].shape[dim] : attrs.start;
+    return [{ arg: 0, index }];
+  },
+};
+
+export const catExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{cat}(${s.in.join(',')})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const dim = normDim((ctx.attrs as { dim: number }).dim, out.length);
+    const index = [...out];
+    let arg = 0;
+    while (index[dim] >= ctx.inputs[arg].shape[dim]) {
+      index[dim] -= ctx.inputs[arg].shape[dim];
+      arg++;
+    }
+    return [{ arg, index }];
+  },
+};

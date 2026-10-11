@@ -133,7 +133,7 @@ function parseTail(text: string, source: string): { offset: number; format: numb
 }
 
 function validate(source: string, t: NodeRef, format: number | 'token' | undefined): void {
-  if (t.grad && t.node.kind === 'label') throw fail(source, `label '${t.node.name}' has no gradient`);
+  if (t.grad && t.node.grad === null) throw fail(source, `${t.node.kind} '${t.node.name}' has no gradient`);
   if (format === 'token' && t.node.tokens === undefined) throw fail(source, `node '${t.node.name}' has no tokens`);
   const shape = t.node.shape;
   const count = t.subscripts?.length ?? 0;

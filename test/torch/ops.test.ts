@@ -6,7 +6,7 @@ interface OpCase {
   op: string;
   title: string;
   tensors: (EncodedTensor & { kind: 'input' | 'label' })[];
-  args: (number | number[] | { tensor: number })[];
+  args: (number | number[] | { tensor: number } | { tensor: number }[])[];
   options: Record<string, unknown>;
   output: EncodedTensor;
   upstream: EncodedTensor;
@@ -16,8 +16,8 @@ interface OpCase {
 
 const fixture = loadFixture<OpCase>('ops.json');
 
-function isTensorRef(arg: OpCase['args'][number]): arg is { tensor: number } {
-  return typeof arg === 'object' && !Array.isArray(arg);
+function isTensorRef(arg: unknown): arg is { tensor: number } {
+  return typeof arg === 'object' && arg !== null && !Array.isArray(arg);
 }
 
 function run(c: OpCase) {
@@ -25,7 +25,11 @@ function run(c: OpCase) {
   const leaves = c.tensors.map((t, i) =>
     t.kind === 'label' ? g.label(`t${i}`, nested(t)) : g.input(`x${i}`, t.shape, decode(t.values)),
   );
-  const args = c.args.map((arg) => (isTensorRef(arg) ? leaves[arg.tensor] : arg));
+  const args = c.args.map((arg) => {
+    if (isTensorRef(arg)) return leaves[arg.tensor];
+    if (Array.isArray(arg) && arg.every(isTensorRef)) return arg.map((ref) => leaves[ref.tensor]);
+    return arg;
+  });
   const call = (g as unknown as Record<string, (...a: unknown[]) => Node>)[c.op];
   const out = call(...args, { ...c.options, name: 'out' });
   const upstream = g.input('upstream', c.upstream.shape, decode(c.upstream.values));

@@ -314,6 +314,23 @@ describe('matrix panel', () => {
   });
 });
 
+describe('loss panel with a buffer', () => {
+  it('refuses a buffer in sgd.params and random.nodes', () => {
+    const g = graph();
+    const x = g.input('x', [2], [1, 2]);
+    const c = g.buffer('c', [2], [0.5, 0]);
+    g.sum(g.mul(x, c));
+    expect(() => mountPanels(container(), g, [{ loss: { sgd: { params: [x, c], lr: 0.1 } } }])).toThrow(
+      "loss panel: buffer 'c' is a constant without gradient and cannot be in sgd.params",
+    );
+    expect(() => mountPanels(container(), g, [{ loss: { random: { nodes: [c], range: [-1, 1] } } }])).toThrow(
+      "loss panel: buffer 'c' is a constant without gradient and cannot be in random.nodes",
+    );
+    const el = panels(container(), g, [{ loss: { sgd: { params: [x], lr: 0.1 }, reset: true } }]);
+    expect(text(el.querySelector('.vf-loss-value'))).toBe('0.500');
+  });
+});
+
 describe('code and note panels', () => {
   it('marks comments and renders notes', () => {
     const { g } = softmaxGraph();

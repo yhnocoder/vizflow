@@ -7,13 +7,27 @@ export function isCell(ref: ElemRef | CellRef): ref is CellRef {
   return 'cell' in ref;
 }
 
-export function subscript(shape: readonly number[], index: readonly number[]): string {
-  const shown = index.filter((_, d) => shape[d] !== 1);
-  return shown.length === 0 ? '' : `_{${shown.map((i) => i + 1).join(',')}}`;
+function trailingSubscript(elem: string): { base: string; inner: string } | undefined {
+  const single = /(?<!\\)_([^{}\\\s])$/.exec(elem);
+  if (single !== null) return { base: elem.slice(0, single.index), inner: single[1] };
+  if (!elem.endsWith('}')) return undefined;
+  let depth = 0;
+  for (let i = elem.length - 1; i >= 0; i--) {
+    if (elem[i] === '}') depth++;
+    else if (elem[i] === '{') depth--;
+    if (depth > 0) continue;
+    if (i === 0 || elem[i - 1] !== '_' || (i >= 2 && elem[i - 2] === '\\')) return undefined;
+    return { base: elem.slice(0, i - 1), inner: elem.slice(i + 1, -1) };
+  }
+  return undefined;
 }
 
 export function elemTexOf(node: Node, index: readonly number[]): string {
-  return `${node.elem}${subscript(node.shape, index)}`;
+  const shown = index.filter((_, d) => node.shape[d] !== 1).map((i) => i + 1);
+  if (shown.length === 0) return node.elem;
+  const merged = trailingSubscript(node.elem);
+  if (merged === undefined) return `${node.elem}_{${shown.join(',')}}`;
+  return `${merged.base}_{${merged.inner},${shown.join(',')}}`;
 }
 
 export function matmulOperands(op: Node, index: readonly [number, number, number]): { a: number[]; b: number[]; out: number[] } {

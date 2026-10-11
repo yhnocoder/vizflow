@@ -1,9 +1,15 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { broadcastIndex, normDim } from '../../tensor';
+import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
   const input = ctx.inputs[arg];
+  if (input === undefined) return (ctx.attrs as { other: number }).other;
   return input.get(broadcastIndex(out, input.shape));
+}
+
+function scalarTex(attrs: object): string {
+  const v = (attrs as { other: number }).other;
+  return v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true });
 }
 
 function binary(
@@ -15,8 +21,8 @@ function binary(
     pattern: 'elementwise',
     local: (ctx, out, arg) => local(operand(ctx, 0, out), operand(ctx, 1, out), arg),
     tex: {
-      forward: (s) => forward(s.in[0], s.in[1]),
-      local: (s) => localTex(s.ins[0], s.ins[1], s.arg),
+      forward: (s) => forward(s.in[0], s.in[1] ?? scalarTex(s.attrs)),
+      local: (s) => localTex(s.ins[0], s.ins[1] ?? scalarTex(s.attrs), s.arg),
     },
   };
 }
@@ -55,6 +61,35 @@ export const divExplain = binary(
 export const negExplain = unary((a) => `-${a}`, () => -1, () => '-1');
 export const expExplain = unary((a) => `\\exp(${a})`, (_x, y) => y, (x) => `e^{${x}}`);
 export const logExplain = unary((a) => `\\log ${a}`, (x) => 1 / x, (x) => `\\frac{1}{${x}}`);
+export const rsqrtExplain = unary(
+  (a) => `\\frac{1}{\\sqrt{${a}}}`,
+  (_x, y) => -0.5 * y ** 3,
+  (_x, y) => `-\\frac{1}{2}{${y}}^{3}`,
+);
+export const sqrtExplain = unary((a) => `\\sqrt{${a}}`, (_x, y) => 0.5 / y, (_x, y) => `\\frac{1}{2${y}}`);
+export const sigmoidExplain = unary((a) => `\\sigma(${a})`, (_x, y) => y * (1 - y), (_x, y) => `${y}(1-${y})`);
+export const siluExplain = unary(
+  (a) => `\\operatorname{SiLU}(${a})`,
+  (x) => {
+    const s = 1 / (1 + Math.exp(-x));
+    return s * (1 + x * (1 - s));
+  },
+  (x) => `\\sigma(${x})\\left(1+${x}\\left(1-\\sigma(${x})\\right)\\right)`,
+);
+
+const exponentOf = (attrs: object) => (attrs as { exponent: number }).exponent;
+
+export const powExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, _out, _arg, input) => exponentOf(ctx.attrs) * ctx.inputs[0].get(input) ** (exponentOf(ctx.attrs) - 1),
+  tex: {
+    forward: (s) => `{${s.in[0]}}^{${exponentOf(s.attrs)}}`,
+    local: (s) => {
+      const p = exponentOf(s.attrs);
+      return p - 1 === 1 ? `${p}${s.in}` : `${p}{${s.in}}^{${p - 1}}`;
+    },
+  },
+};
 
 export const transposeExplain: OpExplain = {
   pattern: 'elementwise',

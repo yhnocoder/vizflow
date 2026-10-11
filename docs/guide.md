@@ -199,7 +199,7 @@ const g = graph({
 - `real`：真实模型的尺寸。给出后，层名卡片多显示一行「真实模型」，例如 `Qwen3-8B：(1, 151936)`。
 - `check`：有限差分检查的开关。打开时，每创建一个运算节点、每次重算之后，都对每个运算检查 `backward` 与数值导数是否一致，不一致时抛出 `gradient check failed: ...`。不写时的默认值取决于引用方式：通过构建工具引用时，开发服务器下打开，生产构建里关闭；直接引用 `dist/*.js` 时关闭，要检查时写 `check: true`。写了 `check` 时总是按写的值。内置运算已经在测试中检查过，发布的页面不需要检查。
 
-### 2.2 叶子节点：input、param、label
+### 2.2 叶子节点：input、param、label、buffer
 
 ```js
 const h = g.input('h', [1, 'd'], [0.8, -1.1, 0.5, 1.4]);
@@ -215,6 +215,12 @@ const t = g.label('t', [0], { tokens: [' mat', ' floor', ' sofa', ' dog', ' sat'
 
 - `g.input(name, shape, values, options?)` 与 `g.param(...)` 创建数值叶子。`values` 可以是扁平数组，也可以是嵌套数组，元素个数必须等于 shape 的元素个数。两者在计算上没有区别，都有梯度，都可以 `set`，都可以放进损失面板的 `sgd.params`、`random.nodes` 和滑块。区分它们是为了表达含义：模型权重用 `param`，输入数据和 logits 用 `input`。只有一个 logits 输入的小部件把它放进 `sgd.params`，「梯度下降一步」就直接更新 logits（见 9.3）。
 - `g.label(name, values, options?)` 创建整数标签，shape 从 `values` 推断：`0` 是 `()`，`[0]` 是 `(1,)`，`[0, 1, 2]` 是 `(3,)`，`[[0], [1], [2]]` 是 `(3, 1)`。`tokens` 是每个类别的显示名，`classes` 是类别数，默认等于 `tokens.length`。没有 `tokens` 时必须给 `classes`，否则 tokens 面板和 3D 场景的目标列无法工作。
+
+- `g.buffer(name, shape, values, options?)` 创建常量叶子，对应 torch 的 `register_buffer`，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 `-Infinity`，causal mask 写成 `s > t ? -Infinity : 0`。buffer 没有梯度：`grad` 为 `null`，不进入自动生成的反向步骤，不能放进损失面板的 `sgd.params` 和 `random.nodes`，模板里对它取 `.grad` 报错。它可以 `set`，`g.reset()` 时恢复创建时的值。3D 场景照常画出它，但它与 label 一样，到运算节点的边不画。
+
+```js
+const M = g.buffer('M', ['T', 'T'], [[0, -Infinity, -Infinity], [0, 0, -Infinity], [0, 0, 0]], { tex: 'M', elem: 'M' });
+```
 
 label 的 shape 要与使用它的运算一致：
 
@@ -236,12 +242,13 @@ const logp = g.sub(z, L, { name: 'log p', tex: '\\log\\mathbf{p}', elem: '\\log 
 const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```
 
-第一版内置运算：
+内置运算：
 
 | 运算 | 调用 | 说明 |
 |---|---|---|
-| `add` `sub` `mul` `div` | `g.add(a, b)` | 按 torch 规则广播 |
-| `neg` `exp` `log` | `g.exp(a)` | 逐元素 |
+| `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` | `g.exp(a)` | 逐元素 |
+| `pow` | `g.pow(a, 2)` | `exponent` 是数 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合 |
 | `transpose` | `g.transpose(a, dim0, dim1)` | 二维节点也可以写 `W.T` |
 | `sum` `mean` | `g.sum(a)`、`g.sum(a, -1, { keepdim: true })` | 省略 `dim` 时对全部元素归约；`dim` 可以是数或数组 |
@@ -249,9 +256,26 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `logsumexp` | `g.logsumexp(a, dim, { keepdim })` | |
 | `softmax` `log_softmax` | `g.softmax(a, dim)` | |
 | `gather` | `g.gather(a, dim, index)` | `index` 是 label 节点，维数与 `a` 相同 |
+| `embedding` | `g.embedding(ids, E)` | `ids` 是 label 节点（token id，0 维或 1 维），`E` 是 `(num, dim)`，输出 shape 为 `[...ids.shape, dim]`；`ids` 不求梯度 |
+| `narrow` | `g.narrow(a, dim, start, length)` | `start` 可以为负数；`length` 可以是维度名 |
+| `cat` | `g.cat([a, b, c], dim)` | 节点数组，个数任意，至少一个；`dim` 默认 0 |
 | `nll_loss` | `g.nll_loss(input, target, { reduction, ignore_index })` | `reduction` 默认 `'mean'`，可选 `'sum'`、`'none'`；`ignore_index` 默认 `-100` |
 
 选项对象里可以写的键：该运算的 torch 关键字参数（例如 `keepdim`、`reduction`），以及 `name`、`tex`、`elem`、`card`。写了其他键会抛错 `<运算名>: unknown option '<键>'`。`dim` 可以用负数。shape 不匹配在建图时就抛错，例如 `matmul: cannot multiply (1, 4) by (5, 4)`。
+
+**标量运算数**：`add`、`sub`、`mul`、`div` 的第二个参数可以是数，对应 torch 的 `x + eps`、`x * scaling`。第一个参数必须是节点。数不成为节点，3D 场景里没有它的连线；卡片公式里直接写这个数，按模板的统一数值格式显示（见 4.2），负数加括号。例如 `g.mul(S, 0.5)` 的卡片写作 $\mathbf{S}\cdot 0.500$，对 $S$ 的局部导数是 0.5。很小的数（例如 `1e-6`）按这个格式显示为 `0.000`，需要写成 $\epsilon$ 时用节点的 `card` 选项覆盖公式。
+
+**split**：`g.split(tensor, split_size, dim = 0, options?)` 对应 `torch.split`，返回若干个 `narrow` 节点组成的数组，它本身不是运算节点。`split_size` 不整除时最后一块较小。没有给 `names` 时第 i 块命名为 `${tensor.name}_${i}`（从 1 开始），例如 `q_1`、`q_2`。`options` 的 `names`、`tex`、`elem` 是数组，按块逐个给出，个数必须等于块数：
+
+```js
+const [q1, q2] = g.split(q, 'dh', 1, {
+  names: ['q1', 'q2'],
+  tex: ['\\mathbf{q}^{(1)}', '\\mathbf{q}^{(2)}'],
+  elem: ['q^{(1)}', 'q^{(2)}'],
+});
+```
+
+**尺寸参数写维度名**：`narrow` 的 `length` 和 `split` 的 `split_size` 可以写 `graph({ dims })` 里的名字。计算 shape 时按 `dims` 取值，计算卡片上「真实模型」那一行的 shape 时按 `real` 里的同名值取值，`real` 里没有这个名字时用 `dims` 的值。上面的例子在 `dims: { dh: 4 }`、`real: { dh: 128 }` 下，`q1` 的 shape 是 `(T, 4)`，卡片显示 `(T, 128)` 对应的真实尺寸。写成数字 `4` 时，卡片上的真实尺寸也只能是 4。
 
 `W.T` 是二维节点的转置。第一次访问时创建名为 `W.T` 的 transpose 节点，之后每次访问返回同一个节点，所以 `g.matmul(h, W.T)` 和 `board(h, W.T, z)` 里的 `W.T` 是同一个节点。
 
@@ -268,7 +292,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 每个节点有两个 LaTeX 写法：
 
 - `tex`：张量级写法，用在卡片公式和自动生成的反向正文里，例如 `\mathbf{h}`、`W^{\top}`、`\log\mathbf{p}`、`\ell`。
-- `elem`：元素级的底，元素写成 `${elem}_{i}` 或 `${elem}_{k,i}`，下标从 1 开始，例如 `h_{2}`、`W^{\top}_{2,3}`、`\log p_{1}`。
+- `elem`：元素级的底，元素写成 `${elem}_{i}` 或 `${elem}_{k,i}`，下标从 1 开始，例如 `h_{2}`、`W^{\top}_{2,3}`、`\log p_{1}`。`elem` 本身以下标结尾时，元素下标并进这个下标：`elem` 为 `\mathrm{ms}_{1}` 时元素写成 `\mathrm{ms}_{1,2}`，为 `r_1` 时写成 `r_{1,2}`。所以 RMSNorm 这类按层编号的节点可以直接把编号写在 `elem` 的下标里。下标后面还有别的内容时（例如 `x_1^{2}`）不合并，这时把整个写法包进花括号，写成 `{x_1^{2}}`。
 
 默认值：名字是单个字母时，`elem` 是这个字母，`tex` 对非标量是 `\mathbf{字母}`，对标量是字母本身；名字更长时两者都是 `\mathrm{名字}`。名字含空格或不是单个字母时（例如 `'log p'`、`'loss'`），手动给出 `tex` 和 `elem`，否则卡片上显示成 `\mathrm{log p}` 这样的写法。JavaScript 字符串里的反斜杠要写两个：`'\\log\\mathbf{p}'`。
 
@@ -281,7 +305,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 ```js
 loss.value.data[0];        // 当前损失
 z.value.get([0, 2]);       // 按下标读一个元素
-h.grad;                    // ∂ℓ/∂h，Tensor；label 的 grad 为 null
+h.grad;                    // ∂ℓ/∂h，Tensor；label 和 buffer 的 grad 为 null
 h.set([0.1, 0.2, 0.3, 0.4]);  // 只能对 input、param、label 调用，之后立即重算并通知
 t.index();                 // label 的整数值
 g.batch(() => { h.set(...); t.set(1); });  // 多次 set 只重算一次
@@ -330,7 +354,7 @@ const steps = createSteps(g, {
 
 `backward` 省略或写 `'auto'` 时，反向步骤由库生成：
 
-1. `visible` 中求梯度的节点（label 除外，损失之后创建的节点除外）按创建顺序倒序排列。
+1. `visible` 中求梯度的节点（label 与 buffer 除外，损失之后创建的节点除外）按创建顺序倒序排列。
 2. 损失节点和它前面第一个可见节点合成第一步，之后每个可见节点一步。
 3. 默认标题是 `∂ℓ/∂节点名`（合成的步骤用其中的非损失节点），按钮文字是 `∂节点名`，正文是该节点反向层名卡片的链式法则公式。
 
@@ -462,7 +486,7 @@ String.raw`$$\frac{ {{u[t]}} }{ {{S}} }$$`    // 正确
 
 ### 4.4 模板的范围与报错时机
 
-模板只能读取节点的值与梯度。模板在 `createSteps` 和 `mountPanels` 时编译，名字不存在、下标个数不对、对 label 取 `.grad`、对没有 tokens 的节点取 `:token` 都在这时抛出带模板原文的错误，例如：
+模板只能读取节点的值与梯度。模板在 `createSteps` 和 `mountPanels` 时编译，名字不存在、下标个数不对、对 label 或 buffer 取 `.grad`、对没有 tokens 的节点取 `:token` 都在这时抛出带模板原文的错误，例如：
 
 ```
 cannot parse template '{{x}}': node 'x' with shape (5) needs a subscript
@@ -741,6 +765,9 @@ const y = g.square(x, { name: 'y' });
 ```
 
 - `defaults` 写 torch 里按关键字传的参数及默认值，它们出现在选项对象里；`differentiable` 标出每个张量参数是否求梯度（例如整数下标为 `false`）。
+- `list` 写一个接受节点数组的张量参数名，例如内置的 `cat` 写 `args: ['tensors', 'dim']`、`tensors: ['tensors']`、`list: 'tensors'`。数组里的节点按顺序展开成输入，`forward`、`backward`、`shape` 收到的输入个数等于数组长度。这个参数必须是唯一的张量参数，也不能同时写 `differentiable`。
+- `scalars` 列出可以传数的张量参数，例如内置的 `add` 写 `scalars: ['other']`。传数时它不成为输入，存进 `attrs` 的同名字段，`forward` 收到的输入少一个。
+- `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`。规则见 2.3 的「尺寸参数写维度名」。
 - 讲解部分（`explain`）可以写在 `defineOp` 的 `explain` 字段里，也可以用 `registerExplain` 单独注册。`pattern` 从 `'elementwise'`、`'reduce'`、`'dense'`、`'contract'`、`'select'` 中选一个，决定连线怎么画。`local` 返回一条边的局部导数，`tex.forward` 与 `tex.local` 给出卡片上的公式。接口定义见设计文档「定义新运算」与「连线模式」两节。
 - 只有数值、没有讲解的运算可以用在只引入 core 的场合。用到 steps 或 scene3d 时必须有讲解，否则抛错 `explain: op '<名字>' of node '<节点>' has no explain definition`。
 - 同名运算只能注册一次。运算名不能与计算图已有的成员同名（例如 `input`、`loss`、`node`）。
@@ -1048,6 +1075,16 @@ VIZFLOW_CHROMIUM=/path/to/chromium npm run e2e -- my-page
 | `matmul: cannot multiply (1, 4) by (5, 4)` | shape 不匹配。lm_head 的权重存成 `(V, d)`，要乘 `W.T`。 |
 | `nll_loss: input (5,) does not match target (1,)` | label 的 shape 不对。单样本 `(C,)` 配 `0`，批量 `(N, C)` 配 `[...]`，见 2.2。 |
 | `gather: index (...) must have the same number of dimensions as input (...)` | gather 的 label 维数要与输入相同，单样本写 `[0]`。 |
+| `add: argument 'input' must be a node` | 数只能放在第二个参数，`1 + x` 要写成 `g.add(x, 1)`。 |
+| `embedding: index 7 at [2] is out of range for weight (5, 4)` | token id 超出 embedding 表的行数。 |
+| `narrow: start 3 and length 2 are out of range for input (2, 4) along dim 1` | 切片超出这一维的长度。 |
+| `narrow: dimension 'dh' is not defined`、`split: dimension 'dh' is not defined` | 尺寸参数写的维度名不在 `graph({ dims })` 里。 |
+| `split: names has 1 entries for 2 chunks` | `names`、`tex`、`elem` 的个数要等于块数。 |
+| `cat: tensors (2, 1) and (3, 1) differ outside dim 1` | 除拼接的维度外，各输入的 shape 必须相同。 |
+| `cat: argument 'tensors' must be a non-empty array of nodes` | `cat` 的第一个参数要写成数组 `g.cat([a, b], dim)`。 |
+| `loss panel: buffer 'M' is a constant without gradient and cannot be in sgd.params` | buffer 没有梯度，不能更新也不能随机取值，改用 input 或 param。 |
+| `cannot parse template '{{M.grad[0, 1]}}': buffer 'M' has no gradient` | 模板对 buffer 取了 `.grad`。 |
+| `op 'embedding' is already defined` | 页面又用 `defineOp` 注册了一个内置运算，删掉页面里的定义。 |
 | `gradient check failed: op 'exp' (node 'u'), input 0 'x' at [2]: backward ... vs numeric ...` | 打开 `check` 时某个运算的 `backward` 与数值导数不一致，通常是自定义运算的 `backward` 写错。 |
 | `graph has no loss node` | 挂了 loss 面板，但图里没有元素个数为 1 的运算节点。 |
 | 反向步骤一个都没有 | 图里没有损失节点。只演示 softmax 等不含损失的图时这是预期行为。 |
@@ -1055,7 +1092,7 @@ VIZFLOW_CHROMIUM=/path/to/chromium npm run e2e -- my-page
 | `override: backward step 6 does not exist (there are 5 steps)` | `override` 的序号超出自动生成的反向步骤数，先用 `'auto'` 看有几步。 |
 | `merge: node 'x' is not in any backward step` | 被合并的节点不在 `visible` 中，或在损失之后创建，或是 label。 |
 | 反向步骤的节点不对，或者损失不是预期的节点 | 损失之后又创建了标量运算。用 `g.loss(loss)` 指定损失。 |
-| `cannot parse template '{{...}}': ...` | 模板写错，见第 4 节。常见的是非标量节点没写下标、名字拼错、对 label 取 `.grad`。 |
+| `cannot parse template '{{...}}': ...` | 模板写错，见第 4 节。常见的是非标量节点没写下标、名字拼错、对 label 或 buffer 取 `.grad`。 |
 | `template at '{{{t+1}} }$' starts with '{{{'; leave a space before the template` | 模板紧贴 LaTeX 花括号，中间加空格。`}}}` 同理。 |
 | `cannot parse template '{{b+1}}': 'b' is the current sample index; rename node 'b'` | 图里有名为 `b` 的节点，改名。 |
 | `setFocus: 3 is out of range ...` | 样本下标超出可见节点的行数。 |

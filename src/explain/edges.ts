@@ -17,7 +17,7 @@ export function contextOf(node: Node): OpCtx {
 function differentiableArgs(node: Node): number[] {
   const def = opDef(node.op as string);
   const flags = def?.differentiable;
-  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].kind !== 'label' && (flags === undefined || flags[arg]));
+  return node.inputs.map((_, arg) => arg).filter((arg) => node.inputs[arg].grad !== null && (flags === undefined || flags[arg]));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
@@ -98,11 +98,12 @@ function contractEdges(op: Node): FlowEdge[] {
   return edges;
 }
 
-function selectEdges(op: Node, def: OpExplain, ctx: OpCtx): FlowEdge[] {
+function selectEdges(op: Node, args: number[], def: OpExplain, ctx: OpCtx): FlowEdge[] {
   if (def.selected === undefined) throw new Error(`explain: op '${op.op}' uses the select pattern but has no 'selected'`);
   const edges: FlowEdge[] = [];
   forEachIndex(op.shape, (out) => {
     def.selected!(ctx, out).forEach((pick, ordinal) => {
+      if (!args.includes(pick.arg)) return;
       const suffix = `${out.join(',')}#${ordinal}`;
       edges.push(edge(op, pick.arg, suffix, { node: op.inputs[pick.arg], index: pick.index }, { node: op, index: out }));
     });
@@ -115,7 +116,7 @@ export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
   const ctx = contextOf(op);
   switch (def.pattern) {
     case 'elementwise':
-      if (def.selected !== undefined) return selectEdges(op, def, ctx);
+      if (def.selected !== undefined) return selectEdges(op, args, def, ctx);
       return oneToOne(op, args, (arg, out) => broadcastIndex(out, op.inputs[arg].shape));
     case 'reduce':
       return reduceEdges(op, args);
@@ -124,7 +125,7 @@ export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
     case 'contract':
       return contractEdges(op);
     case 'select':
-      return selectEdges(op, def, ctx);
+      return selectEdges(op, args, def, ctx);
   }
 }
 

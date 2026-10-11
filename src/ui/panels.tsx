@@ -158,6 +158,11 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
     g.batch(() => random.nodes.forEach((n) => n.set(Array.from(n.value.data, () => Math.round((low + Math.random() * (high - low)) * 100) / 100))));
   };
 
+  for (const [field, nodes] of [['sgd.params', options.sgd?.params], ['random.nodes', options.random?.nodes]] as const) {
+    for (const node of nodes ?? []) {
+      if (node.kind === 'buffer') throw new Error(`loss panel: buffer '${node.name}' is a constant without gradient and cannot be in ${field}`);
+    }
+  }
   const names = (nodes: Node[]) => nodes.map((n) => n.name).join('、');
   const hasButtons = options.sgd !== undefined || options.random !== undefined || options.reset === true;
 

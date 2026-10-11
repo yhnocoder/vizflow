@@ -12,7 +12,7 @@ describe('LaTeX templates render with KaTeX', () => {
     const g = graph();
     const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
     const node = g.exp(x);
-    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100 } };
+    const ctx = { node, inputs: [x.value, x.value], out: node.value, attrs: { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2 } };
     for (const def of builtinOps) {
       const ex = builtinExplains[def.name];
       expect(ex, def.name).toBeDefined();
@@ -61,6 +61,33 @@ describe('LaTeX templates render with KaTeX', () => {
       renders(card.title);
       renders(card.local.tex);
       renders(card.upstream.tex);
+      renders(card.product.tex);
+    }
+  });
+
+  it('cards of a decoder-style graph with scalar operands, buffers and subscripted elem', () => {
+    const g = graph({ dims: { T: 3, d: 4, V: 5, dh: 2 }, real: { d: 4096, dh: 128, name: 'Qwen3-8B' } });
+    const ids = g.label('ids', [2, 4, 3], { classes: 5 });
+    const E = g.param('E', ['V', 'd'], Array.from({ length: 20 }, (_, i) => ((i * 7) % 11) / 5 - 1), { tex: 'E', elem: 'E' });
+    const M = g.buffer('M', ['T', 'T'], [[0, -Infinity, -Infinity], [0, 0, -Infinity], [0, 0, 0]]);
+    const e = g.embedding(ids, E, { name: 'e' });
+    const sq = g.pow(e, 2, { name: 'sq', tex: '\\mathbf{e}^{2}', elem: '{e^{2}}' });
+    const ms = g.mean(sq, -1, { keepdim: true, name: 'ms1', tex: '\\mathrm{ms}_{1}', elem: '\\mathrm{ms}_{1}' });
+    const r = g.rsqrt(g.add(ms, 1e-6, { name: 'ms+eps' }), { name: 'r1', tex: 'r_1', elem: 'r_1' });
+    const xh = g.mul(e, r, { name: 'xh' });
+    const [a, b] = g.split(xh, 'dh', 1);
+    const S = g.mul(g.matmul(a, b.T, { name: 'S' }), 0.5, { name: 'S2' });
+    const P = g.softmax(g.add(S, M, { name: 'Sm' }), -1, { name: 'P' });
+    const h = g.cat([g.sigmoid(a, { name: 'sa' }), g.silu(g.sqrt(g.sub(g.div(b, -2, { name: 'bd' }), -3, { name: 'bs' }), { name: 'sb' }), { name: 'tb' })], 1, { name: 'h' });
+    g.sum(g.mul(g.matmul(P, h, { name: 'o' }), h), { name: 'loss' });
+    const ex = explain(g);
+    for (const node of g.nodes) {
+      for (const dir of ['forward', 'backward'] as const) ex.nodeCard(node, dir).tex.forEach(renders);
+    }
+    for (const edge of ex.edges()) {
+      const card = ex.edgeCard(edge);
+      renders(card.title);
+      renders(card.local.tex);
       renders(card.product.tex);
     }
   });
