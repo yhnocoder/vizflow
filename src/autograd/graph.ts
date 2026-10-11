@@ -1,6 +1,7 @@
 import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor';
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
+import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, promoteDtypes } from './dtype';
 import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
@@ -10,6 +11,7 @@ export interface GraphOptions {
   dims?: Record<string, number>;
   real?: { name?: string } & Record<string, number | string>;
   check?: boolean;
+  dtype?: string;
 }
 
 export interface OpOptions extends NodeOptions {
@@ -30,6 +32,7 @@ export interface SplitOptions {
 export interface Graph extends BuiltinOps {
   readonly dims: Readonly<Record<string, number>>;
   readonly real: Readonly<Record<string, number | string>> | undefined;
+  readonly dtype: Dtype;
   readonly nodes: readonly Node[];
   readonly version: number;
   input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
@@ -53,7 +56,7 @@ interface NodeState {
   transposed: Node | undefined;
 }
 
-const NODE_OPTION_KEYS = new Set(['name', 'tex', 'elem', 'card']);
+const NODE_OPTION_KEYS = new Set(['name', 'tex', 'elem', 'card', 'dtype']);
 const SPLIT_OPTION_KEYS = ['names', 'tex', 'elem'] as const;
 const CONSTANT_KINDS: ReadonlySet<NodeKind> = new Set(['label', 'buffer']);
 
@@ -91,6 +94,7 @@ function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Read
 class GraphImpl {
   readonly dims: Readonly<Record<string, number>>;
   readonly real: Readonly<Record<string, number | string>> | undefined;
+  readonly dtype: Dtype;
   readonly nodes: Node[] = [];
   version = 0;
   self!: Graph;
@@ -109,6 +113,7 @@ class GraphImpl {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
     this.real = options.real === undefined ? undefined : Object.freeze({ ...options.real });
     this.check = options.check ?? checkByDefault();
+    this.dtype = options.dtype === undefined ? DEFAULT_DTYPE : checkDtype(options.dtype, 'graph');
     if (this.real !== undefined) {
       const numeric: Record<string, number> = { ...this.dims };
       for (const [key, value] of Object.entries(this.real)) {
@@ -287,7 +292,8 @@ class GraphImpl {
     const realShape = this.realDims === undefined ? shape : resolveShape(shapeSpec, this.realDims, name);
     const value = this.tensorFor(name, shape, values);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: value.clone(), transposed: undefined };
-    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, tokens, state);
+    const dtype = kind === 'label' ? LABEL_DTYPE : this.dtype;
+    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state);
   }
 
   private createOp(def: AnyOpDef, inputs: Node[], given: Record<string, unknown>, options: OpOptions): Node {
@@ -299,7 +305,8 @@ class GraphImpl {
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
-    return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, undefined, state);
+    const dtype = promoteDtypes(inputs.map((n) => n.dtype), this.dtype);
+    return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
   }
 
   private addNode(
@@ -311,6 +318,7 @@ class GraphImpl {
     shape: number[],
     realShape: number[],
     options: NodeOptions,
+    dtype: Dtype,
     tokens: string[] | undefined,
     state: NodeState,
   ): Node {
@@ -327,6 +335,7 @@ class GraphImpl {
       attrs: Object.freeze({ ...attrs }),
       shape: Object.freeze([...shape]),
       realShape: Object.freeze([...realShape]),
+      dtype: options.dtype === undefined ? dtype : checkDtype(options.dtype, `node '${name}'`),
       tex: options.tex ?? defaults.tex,
       elem: options.elem ?? defaults.elem,
       tokens: tokens === undefined ? undefined : Object.freeze([...tokens]),

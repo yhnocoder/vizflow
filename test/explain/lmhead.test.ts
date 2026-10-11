@@ -99,10 +99,10 @@ describe('explain on the lm_head graph', () => {
     expect(backward.tex).toEqual([
       '\\frac{\\partial\\ell}{\\partial \\mathbf{z}}=\\Big(\\frac{\\partial \\mathrm{LSE}}{\\partial \\mathbf{z}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\mathrm{LSE}}+\\Big(\\frac{\\partial \\log\\mathbf{p}}{\\partial \\mathbf{z}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\log\\mathbf{p}}',
     ]);
-    expect(backward.rows.map((r) => r.label)).toEqual(['shape', '真实模型', 'Jacobian', 'Jacobian', '当前梯度']);
+    expect(backward.rows.map((r) => r.label)).toEqual(['shape', '真实模型', 'dtype', 'Jacobian', 'Jacobian', '当前梯度']);
     expect(backward.rows[1].value).toBe('Qwen3-8B：(1, 151936)');
-    expect(backward.rows[2].value).toBe('$\\partial \\mathrm{LSE}/\\partial \\mathbf{z}$：(5,)');
-    expect(backward.rows[3].value).toBe('$\\partial \\log\\mathbf{p}/\\partial \\mathbf{z}$：(5, 5)');
+    expect(backward.rows[3].value).toBe('$\\partial \\mathrm{LSE}/\\partial \\mathbf{z}$：(5,)');
+    expect(backward.rows[4].value).toBe('$\\partial \\log\\mathbf{p}/\\partial \\mathbf{z}$：(5, 5)');
   });
 
   it('builds forward cards with shape, real model and values', () => {
@@ -112,8 +112,9 @@ describe('explain on the lm_head graph', () => {
     expect(card.tex).toEqual(['\\mathbf{z}=\\mathbf{h}\\mathbf{W}^{\\top}']);
     expect(card.rows[0]).toEqual({ label: 'shape', value: '(1, 5)' });
     expect(card.rows[1]).toEqual({ label: '真实模型', value: 'Qwen3-8B：(1, 151936)' });
-    expect(card.rows[2].label).toBe('当前值');
-    expect(card.rows[2].value.startsWith('$[')).toBe(true);
+    expect(card.rows[2]).toEqual({ label: 'dtype', value: 'fp32' });
+    expect(card.rows[3].label).toBe('当前值');
+    expect(card.rows[3].value.startsWith('$[')).toBe(true);
     expect(ex.nodeCard(h, 'forward').tex).toEqual(['\\mathbf{h}']);
     expect(ex.nodeCard(loss, 'backward').tex).toEqual(['\\frac{\\partial\\ell}{\\partial\\ell}=1']);
     expect(ex.nodeCard(logp, 'forward').tex).toEqual(['\\log\\mathbf{p}=\\mathbf{z}-\\mathrm{LSE}']);
@@ -132,8 +133,8 @@ describe('explain on the lm_head graph', () => {
     const ex = explain(g);
     const card = ex.nodeCard(x, 'backward');
     expect(card.tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathbf{x}}=\\Big(\\frac{\\partial \\mathbf{y}}{\\partial \\mathbf{x}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\mathbf{y}}']);
-    expect(card.rows.map((r) => r.label)).toEqual(['shape', 'Jacobian', '当前梯度']);
-    expect(card.rows[1].value).toBe('$\\partial \\mathbf{y}/\\partial \\mathbf{x}$：(3, 3)');
+    expect(card.rows.map((r) => r.label)).toEqual(['shape', 'dtype', 'Jacobian', '当前梯度']);
+    expect(card.rows[2].value).toBe('$\\partial \\mathbf{y}/\\partial \\mathbf{x}$：(3, 3)');
     expect(ex.nodeCard(side, 'backward').tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathrm{side}}=0']);
   });
 
@@ -149,6 +150,6 @@ describe('explain on the lm_head graph', () => {
     const backward = ex.nodeCard(x, 'backward');
     expect(backward.title).toBe('$\\frac{\\partial\\ell}{\\partial \\mathbf{x}}$');
     expect(backward.tex).toEqual(['\\mathbf{g}']);
-    expect(backward.rows.map((r) => r.label)).toEqual(['shape', 'Jacobian', '当前梯度']);
+    expect(backward.rows.map((r) => r.label)).toEqual(['shape', 'dtype', 'Jacobian', '当前梯度']);
   });
 });

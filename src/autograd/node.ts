@@ -1,4 +1,5 @@
 import type { Nested, Tensor } from '../tensor';
+import type { Dtype } from './dtype';
 import type { Graph } from './graph';
 
 export type NodeKind = 'input' | 'param' | 'label' | 'buffer' | 'op';
@@ -11,6 +12,7 @@ export interface CardText {
 
 export interface NodeOptions {
   tex?: string;
+  dtype?: string;
   elem?: string;
   card?: { forward?: Partial<CardText>; backward?: Partial<CardText> };
 }
@@ -32,6 +34,7 @@ export interface NodeInit {
   attrs: Readonly<Record<string, unknown>>;
   shape: readonly number[];
   realShape: readonly number[];
+  dtype: Dtype;
   tex: string;
   elem: string;
   tokens: readonly string[] | undefined;
@@ -49,6 +52,7 @@ export class Node {
   readonly attrs: Readonly<Record<string, unknown>>;
   readonly shape: readonly number[];
   readonly realShape: readonly number[];
+  readonly dtype: Dtype;
   readonly tex: string;
   readonly elem: string;
   readonly tokens: readonly string[] | undefined;
@@ -65,6 +69,7 @@ export class Node {
     this.attrs = init.attrs;
     this.shape = init.shape;
     this.realShape = init.realShape;
+    this.dtype = init.dtype;
     this.tex = init.tex;
     this.elem = init.elem;
     this.tokens = init.tokens;

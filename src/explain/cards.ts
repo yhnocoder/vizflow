@@ -76,7 +76,7 @@ function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
 
 export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', reachesLoss: (node: Node) => boolean): NodeCard {
   const override = node.card?.[dir] ?? {};
-  const rows: CardRow[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node)];
+  const rows: CardRow[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node), { label: 'dtype', value: node.dtype }];
   let card: NodeCard;
   if (dir === 'forward') {
     rows.push({ label: '当前值', kind: 'value', value: valueText(node.value) });
