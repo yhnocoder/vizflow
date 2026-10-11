@@ -38,6 +38,19 @@ const NODE_ANCHOR_X = 0.2;
 const NODE_ANCHOR_Y = 0.08;
 const DISC_SEGMENTS = 32;
 const VISIBLE_HEIGHT = 0.004;
+export const SEE_THROUGH_FILL = 0.15;
+export const SEE_THROUGH_INK: Record<SeeThrough, number> = { off: 1, fade: 0.35, wire: 0.45 };
+
+export type SeeThrough = 'off' | 'fade' | 'wire';
+
+function seeThroughFill(material: MeshLambertMaterial, mode: SeeThrough): void {
+  const fade = mode === 'fade';
+  if (material.transparent !== fade) material.needsUpdate = true;
+  material.transparent = fade;
+  material.opacity = fade ? SEE_THROUGH_FILL : 1;
+  material.depthWrite = !fade;
+  material.visible = mode !== 'wire';
+}
 
 const matrix = new Matrix4();
 const color = new Color();
@@ -51,6 +64,7 @@ export interface BarUpdate {
   clipped: ArrayLike<boolean>;
   colors: LinearRgb[];
   outlineOpacity: ArrayLike<number>;
+  seeThrough: SeeThrough;
 }
 
 export class BarMesh {
@@ -87,6 +101,9 @@ export class BarMesh {
 
   update(elements: Element[], data: BarUpdate): void {
     const [w, d] = this.block.footprint;
+    seeThroughFill(this.material, data.seeThrough);
+    this.breaks.visible = data.seeThrough === 'off';
+    const ink = SEE_THROUGH_INK[data.seeThrough];
     const lines = [];
     for (let i = 0; i < elements.length; i++) {
       const { x, y, z } = elements[i];
@@ -99,7 +116,7 @@ export class BarMesh {
       if (shown && data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
       else matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       this.breaks.setMatrixAt(i, matrix);
-      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i], dashed: false });
+      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i] * ink, dashed: false });
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -175,12 +192,13 @@ export class NodeMesh {
     this.outlineMaterial.color.setRGB(...theme.ink);
   }
 
-  update(elements: Element[], colors: LinearRgb[], revealed: boolean[]): void {
+  update(elements: Element[], colors: LinearRgb[], revealed: boolean[], seeThrough: SeeThrough = 'off'): void {
     elements.forEach((element, i) => {
       this.meshes[i].position.set(element.x, element.y + this.height / 2, element.z);
       this.materials[i].color.setRGB(...colors[i]);
+      seeThroughFill(this.materials[i], seeThrough);
     });
-    this.outlineMaterial.opacity = revealed.some((r) => r) ? NODE_OUTLINE_REVEALED : NODE_OUTLINE_HIDDEN;
+    this.outlineMaterial.opacity = (revealed.some((r) => r) ? NODE_OUTLINE_REVEALED : NODE_OUTLINE_HIDDEN) * SEE_THROUGH_INK[seeThrough];
   }
 
   anchorIn(element: Element): Vec3 {
@@ -255,10 +273,13 @@ export class PlateMesh {
     this.axisMaterial.color.setRGB(...theme.ink);
   }
 
-  update(state: { revealed: boolean; far: boolean }, frameXs: number[], ticks: number[], scale: number, frameZs?: number[]): void {
+  update(state: { revealed: boolean; far: boolean; seeThrough?: SeeThrough }, frameXs: number[], ticks: number[], scale: number, frameZs?: number[]): void {
     const { revealed } = state;
-    this.outlineMaterial.opacity = state.far ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN;
-    this.frameMaterial.opacity = revealed ? FRAME_REVEALED : FRAME_HIDDEN;
+    const seeThrough = state.seeThrough ?? 'off';
+    const ink = SEE_THROUGH_INK[seeThrough];
+    seeThroughFill(this.material, seeThrough);
+    this.outlineMaterial.opacity = (state.far ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN) * ink;
+    this.frameMaterial.opacity = (revealed ? FRAME_REVEALED : FRAME_HIDDEN) * ink;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];
       if (frameZs !== undefined) frame.position.z = frameZs[Math.min(r, frameZs.length - 1)];
@@ -276,7 +297,7 @@ export class PlateMesh {
         this.axis.geometry = new BufferGeometry().setFromPoints(points);
       }
       this.axisMaterial.opacity = AXIS_REVEALED;
-      this.axis.visible = revealed;
+      this.axis.visible = revealed && seeThrough === 'off';
     }
   }
 

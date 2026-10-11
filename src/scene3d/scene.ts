@@ -32,7 +32,7 @@ import { render, renderText } from '../formula';
 import { type StepInfo, type StepModule, type StepState, type Steps, allVisible, isLeafLike } from '../steps';
 import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { type LinearRgb, type ThemeColors, onThemeChange, readTheme } from '../theme';
-import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
+import { BarMesh, NodeMesh, PlateMesh, type SeeThrough, barBottom, barTop } from './blocks';
 import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import { type EditHost, mountEditor } from './edit';
@@ -109,6 +109,11 @@ export const FOLLOW_EDGE_FILL = 0.82;
 export const FOLLOW_BOTTOM_SLACK = 2;
 export const FOLLOW_TOP_SLACK = 1;
 export const FAR_LEVELS = 2;
+export const SEE_THROUGH_DEFAULT: SeeThrough = 'fade';
+export const SEE_THROUGH_ORDER: SeeThrough[] = ['off', 'fade', 'wire'];
+export const SEE_THROUGH_TEXT: Record<SeeThrough, string> = { off: '遮挡：关', fade: '遮挡：半透明', wire: '遮挡：线框' };
+export const SEE_THROUGH_MIN_OVERLAP = 6;
+export const SEE_THROUGH_DEPTH_GAP = 0.3;
 export const VALUE_MIN_ZOOM = 0.55;
 export const VALUE_ALL_ROWS_ZOOM = 1.45;
 export const EDGE_HOVER_DISTANCE = 6;
@@ -178,6 +183,7 @@ interface Renderable {
   clipped: boolean[];
   cap: number;
   far: boolean;
+  seeThrough: SeeThrough;
   scale: { forward: number; backward: number };
   ticks: { forward: number[]; backward: number[] };
   title: Label | undefined;
@@ -355,6 +361,7 @@ class SceneController implements EditHost {
   private lastFrame: number | undefined;
   private wheelTimer = 0;
   private farOn = true;
+  private seeThroughMode: SeeThrough = SEE_THROUGH_DEFAULT;
   private lod = false;
   private stepNodes = new Set<Node>();
   private readonly highlightMaterial: MeshBasicMaterial;
@@ -610,6 +617,18 @@ class SceneController implements EditHost {
       });
       tools.appendChild(far);
     }
+    if (this.options.steps !== undefined) {
+      const see = chip(SEE_THROUGH_TEXT[this.seeThroughMode]);
+      see.setAttribute('aria-pressed', String(this.seeThroughMode !== 'off'));
+      see.addEventListener('click', () => {
+        this.seeThroughMode = SEE_THROUGH_ORDER[(SEE_THROUGH_ORDER.indexOf(this.seeThroughMode) + 1) % SEE_THROUGH_ORDER.length];
+        see.textContent = SEE_THROUGH_TEXT[this.seeThroughMode];
+        see.setAttribute('aria-pressed', String(this.seeThroughMode !== 'off'));
+        this.markSeeThrough();
+        this.refresh();
+      });
+      tools.appendChild(see);
+    }
     if (this.follow && modules.length > 0 && this.options.steps !== undefined) {
       const foldAll = chip('全部折叠');
       foldAll.addEventListener('click', () => this.steps?.setAllFolded?.(true));
@@ -714,6 +733,7 @@ class SceneController implements EditHost {
       clipped: block.elements.map(() => false),
       cap,
       far: false,
+      seeThrough: 'off',
       scale,
       ticks: {
         forward: block.axis === undefined ? [] : niceTicks(node.value.data, scale.forward, TICK_COUNT, cap),
@@ -887,6 +907,86 @@ class SceneController implements EditHost {
     }
   }
 
+  private screenBox(renderable: Renderable, direction: Vector3): { x0: number; x1: number; y0: number; y1: number; depth: number } | undefined {
+    const { block } = renderable;
+    if (block.hidden === true || block.elements.length === 0) return undefined;
+    const [w, d] = block.footprint;
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    const grow = (x: number, y: number, z: number) => {
+      lo[0] = Math.min(lo[0], x);
+      lo[1] = Math.min(lo[1], y);
+      lo[2] = Math.min(lo[2], z);
+      hi[0] = Math.max(hi[0], x);
+      hi[1] = Math.max(hi[1], y);
+      hi[2] = Math.max(hi[2], z);
+    };
+    const lift = renderable.nodes?.height;
+    block.elements.forEach((e, i) => {
+      const h = lift ?? renderable.transition.current[i] ?? 0;
+      grow(e.x - w / 2, e.y + Math.min(h, 0), e.z - d / 2);
+      grow(e.x + w / 2, e.y + Math.max(h, 0), e.z + d / 2);
+    });
+    const plate = block.plate;
+    if (plate !== undefined) {
+      grow(plate.x - plate.w / 2, plate.y, plate.z - plate.d / 2);
+      grow(plate.x + plate.w / 2, plate.y, plate.z + plate.d / 2);
+    }
+    const box = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity, depth: 0 };
+    const corner = new Vector3();
+    for (let k = 0; k < 8; k++) {
+      corner.set(k & 1 ? hi[0] : lo[0], k & 2 ? hi[1] : lo[1], k & 4 ? hi[2] : lo[2]).project(this.camera);
+      const px = ((corner.x + 1) / 2) * this.width;
+      const py = ((1 - corner.y) / 2) * this.height;
+      box.x0 = Math.min(box.x0, px);
+      box.x1 = Math.max(box.x1, px);
+      box.y0 = Math.min(box.y0, py);
+      box.y1 = Math.max(box.y1, py);
+    }
+    corner.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2).sub(this.camera.position);
+    box.depth = corner.dot(direction);
+    return box;
+  }
+
+  private markSeeThrough(): boolean {
+    const mode = this.seeThroughMode;
+    const enabled = mode !== 'off' && !this.lod && this.options.steps !== undefined && !(this.state.dir === 'forward' && this.state.index === 0);
+    const direction = this.camera.getWorldDirection(new Vector3());
+    const boxes = new Map<Renderable, NonNullable<ReturnType<SceneController['screenBox']>>>();
+    if (enabled) {
+      for (const r of this.renderables) {
+        const box = this.screenBox(r, direction);
+        if (box !== undefined) boxes.set(r, box);
+      }
+    }
+    const backward = this.state.dir === 'backward';
+    const involved = new Set(this.stepNodes);
+    for (const d of this.edges) {
+      if (!this.stepNodes.has(backward ? d.fromNode : d.toNode)) continue;
+      involved.add(d.fromNode);
+      involved.add(d.toNode);
+    }
+    const inStep = (node: Node) => this.state.active(node) || involved.has(node);
+    const targets = [...boxes].filter(([r]) => inStep(r.block.node) && this.state.revealed(r.block.node)).map(([, box]) => box);
+    let changed = false;
+    for (const r of this.renderables) {
+      const box = boxes.get(r);
+      const covers =
+        box !== undefined &&
+        !inStep(r.block.node) &&
+        targets.some(
+          (t) =>
+            box.depth < t.depth - SEE_THROUGH_DEPTH_GAP &&
+            Math.min(box.x1, t.x1) - Math.max(box.x0, t.x0) > SEE_THROUGH_MIN_OVERLAP &&
+            Math.min(box.y1, t.y1) - Math.max(box.y0, t.y0) > SEE_THROUGH_MIN_OVERLAP,
+        );
+      const next: SeeThrough = covers ? mode : 'off';
+      if (next !== r.seeThrough) changed = true;
+      r.seeThrough = next;
+    }
+    return changed;
+  }
+
   private refresh(): void {
     if (this.disposed) return;
     this.state = this.currentState();
@@ -899,6 +999,7 @@ class SceneController implements EditHost {
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     this.markFar();
+    this.markSeeThrough();
     const stepKey = `${dir}:${this.state.index}:${info?.id ?? ''}`;
     if (this.follow && this.stepKey !== undefined && stepKey !== this.stepKey) {
       this.goal = this.followGoal();
@@ -913,6 +1014,7 @@ class SceneController implements EditHost {
       const revealed = this.state.revealed(node) && !hidden;
       const active = this.state.active(node);
       const far = renderable.far;
+      const clear = renderable.seeThrough === 'off';
       const values = this.valuesOf(node);
       const scale = renderable.scale[dir];
       for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
@@ -926,8 +1028,8 @@ class SceneController implements EditHost {
       const focusedRow = (row: number) => !block.batched || row === this.state.focus;
       const front = Math.max(...block.elements.map((e) => e.z));
       const stepped = block.copyOf === undefined || backward ? this.stepNodes.has(node) : active && !this.stepNodes.has(node);
-      const showValues = revealed && stepped && block.quiet !== true && !this.lod && (!this.follow || zoom >= VALUE_MIN_ZOOM);
-      const named = revealed && !this.lod && !far;
+      const showValues = revealed && clear && stepped && block.quiet !== true && !this.lod && (!this.follow || zoom >= VALUE_MIN_ZOOM);
+      const named = revealed && clear && !this.lod && !far;
       const title = renderable.title!;
       title.el.dataset.node = node.name;
       title.offset = this.options.labels?.[node.name];
@@ -963,7 +1065,7 @@ class SceneController implements EditHost {
           label.visible = showValues && focusedRow(element.row);
         });
         const colors = block.elements.map((element, i) => nodeColor(values[i], this.theme, { dir, revealed, active, far, focused: focusedRow(element.row) }));
-        mesh.update(block.elements, colors, block.elements.map(() => revealed));
+        mesh.update(block.elements, colors, block.elements.map(() => revealed), renderable.seeThrough);
       }
       renderable.classes.forEach((label, i) => {
         const text = block.classLabels[i];
@@ -999,7 +1101,7 @@ class SceneController implements EditHost {
           return column?.x ?? block.elements[0].x;
         });
         const frameZs = table === undefined ? undefined : Array.from(table.label.value.data, (id) => block.elements.find((e) => e.row === Math.round(id))?.z ?? block.elements[0].z);
-        renderable.plate.update({ revealed, far }, frameXs, ticks, scale, frameZs);
+        renderable.plate.update({ revealed, far, seeThrough: renderable.seeThrough }, frameXs, ticks, scale, frameZs);
       }
     }
     this.updateBraces();
@@ -1369,7 +1471,7 @@ class SceneController implements EditHost {
           label.pos = [element.x, element.y + (h >= 0 ? h + VALUE_LABEL_GAP : h - VALUE_LABEL_GAP), element.z];
         }
       });
-      renderable.bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline });
+      renderable.bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough });
     }
     for (const d of this.edges) {
       const [a, b] = d.endpoints();
@@ -1432,6 +1534,7 @@ class SceneController implements EditHost {
       this.labelsDirty = true;
     }
     const moved = this.controls.update();
+    if ((moved || stepped || following || this.labelsDirty) && this.markSeeThrough()) this.refresh();
     if (this.labelsDirty || moved || following) this.placeBraces();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
