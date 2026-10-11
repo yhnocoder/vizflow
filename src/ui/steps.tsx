@@ -81,7 +81,7 @@ function StepsView(props: { steps: Steps }) {
 
   const timeline = createMemo(() => {
     stepsVersion();
-    return steps.list.some((info) => segmentOf(info) !== undefined);
+    return steps.modules.length > 0;
   });
   const lastIndex = createMemo(() => {
     stepsVersion();
@@ -124,7 +124,6 @@ function StepsView(props: { steps: Steps }) {
 
 type TimelineInfo = StepInfo & { kind?: 'overview' | 'inputs' | 'op' | 'module'; segment?: string; sub?: string; module?: string };
 
-const segmentOf = (info: StepInfo) => (info as TimelineInfo).segment || undefined;
 
 interface Segment {
   name: string;

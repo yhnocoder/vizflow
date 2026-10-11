@@ -73,11 +73,6 @@ export interface SceneHandle {
   dispose(): void;
 }
 
-interface FoldingSteps extends Steps {
-  folded?(id: string): boolean;
-  setFolded?(id: string, folded: boolean): void;
-  setAllFolded?(folded: boolean): void;
-}
 
 type PageStepInfo = StepInfo & { kind?: string; sub?: string };
 
@@ -394,8 +389,8 @@ class SceneController implements EditHost {
     return this.options.steps?.visible ?? this.g.nodes;
   }
 
-  private get steps(): FoldingSteps | undefined {
-    return this.options.steps as FoldingSteps | undefined;
+  private get steps(): Steps | undefined {
+    return this.options.steps as Steps | undefined;
   }
 
   setDirection(direction: Vec3): void {

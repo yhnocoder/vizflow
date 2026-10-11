@@ -217,10 +217,10 @@ inputs:
   b: { value: [[1, 0, 1, 0], [0, 1, 0, 1]] }
   c: { value: [[1, 2], [3, 4]] }
 body:
-  - ra: { use: RoPE, inputs: { x: a }, outputs: { out: a2 } }
-  - rb: { use: RoPE, inputs: { x: b }, outputs: { out: b2 } }
-  - rc: { use: RoPE, params: { theta: 100 }, inputs: { x: b }, outputs: { out: b3 } }
-  - rd: { use: RoPE, inputs: { x: c }, outputs: { out: c2 } }
+  - ra: { use: RoPE, params: { dh: 4 }, inputs: { q: a, k: b }, outputs: { q_embed: a2, k_embed: b2 } }
+  - rb: { use: RoPE, params: { dh: 4 }, inputs: { q: b, k: a }, outputs: { q_embed: b3, k_embed: a3 } }
+  - rc: { use: RoPE, params: { dh: 4, theta: 100 }, inputs: { q: b, k: b }, outputs: { q_embed: b4, k_embed: b5 } }
+  - rd: { use: RoPE, params: { dh: 2 }, inputs: { q: c, k: c }, outputs: { q_embed: c2, k_embed: c3 } }
 `);
     const buffers = rope.graph.nodes.filter((n) => n.kind === 'buffer').map((n) => n.name);
     expect(buffers).toEqual(['ra.cos', 'ra.sin', 'rc.cos', 'rc.sin', 'rd.cos', 'rd.sin']);
@@ -458,8 +458,9 @@ panels:
   - { matrix: E.T, highlight: ids }
 `, files);
     expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('{{n.ms[0]:3}} {{ n.out[b, 1] }} {{ids[b]:token}} {{ n.out.grad[0, 0] }} {{l}}');
-    const override = (result.steps.backward as { override: Record<number, { title?: string; text?: string }> }).override;
-    const entry = Object.values(override)[0];
+    expect(result.steps.backward).toBe('reverse');
+    const h = result.nodes.get('h')!;
+    const entry = result.steps.forward.find((s) => (Array.isArray(s.show) ? s.show : [s.show]).includes(h))!.backward!;
     expect(entry.title).toBe('back to h');
     expect(entry.text).toContain('{{n.out.grad[1, 1]:2}}');
     const [loss, tokens, matrix] = result.panels as [{ loss: { sgd: { params: unknown[] } } }, { tokens: unknown; columns: unknown[] }, { matrix: unknown; highlight: unknown }];
@@ -577,12 +578,16 @@ body:
       { title: 'g', children: ['s'] },
     ]);
     expect(result.modules.map((m) => [m.title, m.subtitle, m.nodes.length])).toEqual([
-      ['n', undefined, 7],
-      ['head $1$', undefined, 8],
-      ['n', undefined, 7],
-      ['head $2$', undefined, 8],
+      ['head $1$', '', 7],
+      ['n', '', 6],
+      ['head $2$', '', 7],
+      ['n', '', 6],
       ['g', 'grouped', 1],
     ]);
+    expect(result.modules.map((m) => [m.id, m.parent])).toEqual([['h[1]', null], ['n[1]', 'h[1]'], ['h[2]', null], ['n[2]', 'h[2]'], ['g', null]]);
+    expect(result.modules[1].inputs.map((n) => n.name)).toEqual(['p[1]']);
+    expect(result.modules[1].outputs.map((n) => n.name)).toEqual(['n[1].out']);
+    expect(result.modules[1].params.map((n) => n.name)).toEqual(['n[1].W']);
     expect(result.nodes.get('Wq')!.realShape).toEqual([128, 64]);
     expect(result.nodes.get('n[1].W')!.realShape).toEqual([64]);
     expect(result.graph.dims['4:128']).toBe(4);
@@ -600,7 +605,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 γ']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });

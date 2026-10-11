@@ -9,5 +9,9 @@ export {
   type ForwardStep,
   type BackwardOverride,
   type BackwardSpec,
+  type PageModule,
+  type StepModule,
+  type StepKind,
+  isLeafLike,
 } from './steps';
 export { compileTemplate } from './template';

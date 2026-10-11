@@ -79,7 +79,7 @@ function denseEdges(op: Node, args: number[]): FlowEdge[] {
 function contractEdges(op: Node): FlowEdge[] {
   const [A, B] = op.inputs;
   const rows = A.shape.length === 1 ? 1 : A.shape[0];
-  const inner = A.shape[A.shape.length - 1];
+  const inner = B.shape[0];
   const cols = B.shape.length === 1 ? 1 : B.shape[1];
   const edges: FlowEdge[] = [];
   for (let r = 0; r < rows; r++) {

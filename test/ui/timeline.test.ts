@@ -41,6 +41,7 @@ function timelineSteps() {
     { kind: 'module', segment: 'mlp', module: 'mlp' },
   ];
   steps.list.forEach((info: StepInfo, i) => Object.assign(info, extra[i] ?? { kind: 'op', segment: 'nll_loss' }));
+  Object.assign(steps, { modules: [{ id: 'mlp' }] });
   return steps;
 }
 
@@ -103,7 +104,7 @@ describe('mountSteps timeline', () => {
     expect(steps.current).toBe(first);
   });
 
-  it('keeps the flat track when no step has a segment', () => {
+  it('keeps the flat track when the steps have no modules', () => {
     const g = graph({ dims: { V: 3 } });
     const x = g.input('x', ['V'], [1, 2, 3]);
     const steps = createSteps(g, { forward: [{ show: x, title: 'x' }] });
