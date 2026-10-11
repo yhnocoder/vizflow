@@ -1,5 +1,6 @@
 module: RMSNorm
 subtitle: RMSNorm
+formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\operatorname{mean}\big(\step{square}{{\of{x}}^{2}}\big)+\epsilon}}'
 params:
   eps:      { type: float, default: 1e-6 }
   name:     { type: text, default_key: true }

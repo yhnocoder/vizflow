@@ -4,7 +4,7 @@ import type { BackwardOverride } from '../../steps';
 import type { Nested } from '../../tensor';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
-import { type Env, type ModuleRec, NeedDim, type Num, Scope } from './types';
+import { type Env, type FormulaRec, type ModuleRec, NeedDim, type Num, Scope } from './types';
 import { isRecord, record } from './util';
 
 const DEFAULT_SEED = 1;
@@ -28,6 +28,7 @@ export class CompilerState {
   readonly moduleStack: ModuleRec[] = [];
   readonly backward: { node: Node; text: BackwardOverride; where: Where }[] = [];
   readonly pendingPatches: (() => void)[][] = [];
+  readonly formulas: FormulaRec[] = [];
   readonly root: Scope;
   protected readonly rangeCounts = new WeakMap<Node[], Num>();
   private readonly values: Record<string, unknown>;

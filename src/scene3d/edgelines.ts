@@ -79,13 +79,22 @@ export class EdgeLines {
     this.updateHighlight();
   }
 
+  private touchesBar(d: DrawnEdge): boolean {
+    const bar = this.bar;
+    if (bar === undefined) return false;
+    const block = bar.renderable.block;
+    const element = block.elements[bar.index];
+    const touches = (end: FlowEdge['from']) => 'index' in end && end.node === block.node && end.index.every((v, i) => v === element.index[i]);
+    return touches(d.edge.from) || touches(d.edge.to);
+  }
+
   private restyle(): void {
     const bar = this.bar;
     const block = bar?.renderable.block;
     const element = bar === undefined ? undefined : block!.elements[bar.index];
-    const touches = (end: FlowEdge['from']) => 'index' in end && end.node === block!.node && end.index.every((v, i) => v === element!.index[i]);
+    const related = this.edges.map((d) => element !== undefined && this.touchesBar(d));
     this.lines.setPolylines(
-      this.edges.map((d) => ({ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, touches(d.edge.from) || touches(d.edge.to)) })),
+      this.edges.flatMap((d, i) => (d.backRow === true && !related[i] ? [] : [{ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, related[i]) }])),
     );
     const axis = block === undefined ? undefined : this.tokenAxes.get(block.node);
     this.tokenFrame.set(block !== undefined && element !== undefined && axis !== undefined ? tokenRect(block, element, axis) : undefined);
@@ -123,7 +132,7 @@ export class EdgeLines {
     let best: DrawnEdge | undefined;
     let bestDistance = EDGE_HOVER_DISTANCE;
     for (const d of this.edges) {
-      if (!c.state.revealed(d.fromNode)) continue;
+      if (!c.state.revealed(d.fromNode) || (d.backRow === true && !this.touchesBar(d))) continue;
       for (let i = 0; i + 3 < d.screen.length; i += 2) {
         const distance = segmentDistance(x, y, d.screen[i], d.screen[i + 1], d.screen[i + 2], d.screen[i + 3]);
         if (distance < bestDistance) {

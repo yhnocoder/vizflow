@@ -10,7 +10,7 @@ export const katexAdapter: FormulaAdapter = {
     const key = `${display ? 'display' : 'inline'}:${tex}`;
     let html = renderedHtml.get(key);
     if (html === undefined) {
-      html = katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: { '\\arraystretch': ARRAY_STRETCH } });
+      html = katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: { '\\arraystretch': ARRAY_STRETCH }, trust: (context) => context.command === '\\htmlData', strict: (code: string) => (code === 'htmlExtension' ? 'ignore' : 'warn') });
       renderedHtml.set(key, html);
     }
     target.innerHTML = html;

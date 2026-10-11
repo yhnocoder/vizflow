@@ -3,7 +3,8 @@ import { type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
 import { LONG_EDGE } from './edgelines';
-import { type Block, LINE_HEIGHT, type Vec3, elementAt } from './layout';
+import { tokenAxes } from './hover';
+import { type Block, type Element, LINE_HEIGHT, type Vec3, elementAt } from './layout';
 import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
 
@@ -29,9 +30,27 @@ export interface DrawnEdge {
   bow?: number;
   jac?: { module: StepModule; value: number };
   link?: boolean;
+  backRow?: boolean;
 }
 
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
+
+const crossRowCache = new WeakMap<object, Set<Node>>();
+
+function crossRowOps(c: SceneController): Set<Node> {
+  const known = crossRowCache.get(c.explainer);
+  if (known !== undefined) return known;
+  const axes = tokenAxes(c.g.nodes);
+  const ops = new Set<Node>();
+  for (const edge of c.explainer.edges()) {
+    if (!('index' in edge.from) || !('index' in edge.to)) continue;
+    const fromAxis = axes.get(edge.from.node);
+    const toAxis = axes.get(edge.to.node);
+    if (fromAxis !== undefined && toAxis !== undefined && edge.from.index[fromAxis] !== edge.to.index[toAxis]) ops.add(edge.op);
+  }
+  crossRowCache.set(c.explainer, ops);
+  return ops;
+}
 
 export function buildEdges(c: SceneController): DrawnEdge[] {
   const drawn: DrawnEdge[] = [];
@@ -54,6 +73,11 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     });
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
   };
+  const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
+  const frontZ = new Map<Block, number>();
+  const frontOf = (block: Block) => frontZ.get(block) ?? frontZ.set(block, Math.max(...block.elements.map((e) => e.z))).get(block)!;
+  const isBackRow = (op: Node, fromIndex: number[], toIndex: number[], block: Block, element: Element) =>
+    c.frontRowOnly && !crossRow.has(op) && fromIndex.length > 1 && toIndex.length > 1 && element.z < frontOf(block) - SAME_LEVEL;
   for (const edge of c.explainer.edges()) {
     if ('cell' in edge.from || 'cell' in edge.to) {
       const board = c.boards.find((b) => b.op === edge.op);
@@ -122,6 +146,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
         bow,
       };
     }
+    if (isBackRow(edge.op, from.index, to.index, toR.block, toElement)) entry.backRow = true;
     push(entry, fromR, toR, rows, c.explainer.zeroGrad(edge));
   }
   if (levels === undefined) return drawn;

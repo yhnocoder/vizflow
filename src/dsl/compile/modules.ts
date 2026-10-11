@@ -86,6 +86,7 @@ export function pageModules(c: Compiler): StepModule[] {
       backward: m.fold.backward,
     };
     if (sub !== undefined) module.sub = sub;
+    if (m.formula !== undefined) module.formula = m.formula;
     return module;
   });
 }

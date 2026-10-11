@@ -7,10 +7,12 @@ import { DslError, type Where, child, fail } from '../source';
 import { defaultTex, elemOf } from '../tex';
 import { compileBody } from './body';
 import { declareBuffers, declareParams, declareWeights, define } from './declare';
+import { markFormulas } from './formula';
 import { OVERVIEW_KEYS, SEQUENCE_KEYS, TEXT_KEYS } from './keys';
 import { pageModules, placeSteps } from './modules';
 import { compilePanels } from './panels';
 import { type SectionSources, compileSections } from './sections';
+import { notesOf } from './notes';
 import { moduleBackward, moduleSteps } from './steps';
 import type { Compiler } from './text';
 import type { Env } from './types';
@@ -81,6 +83,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
     if (target === undefined) fail(entry.where, `node '${entry.node.name}' is not computed in any forward step`);
     target.backward = { ...target.backward, ...entry.text };
   }
+  markFormulas(c, steps);
   const modules = pageModules(c);
   placeSteps(c, forward, modules);
   const leaves = leavesStep(c, env);
@@ -91,6 +94,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
     const texts = c.texts(overview, { ...env, where: overviewWhere }, OVERVIEW_KEYS);
     stepsSpec.overview = { title: texts.title ?? String(page.title), text: texts.text ?? '' };
     if (texts.label !== undefined) stepsSpec.overview.label = texts.label;
+    if (overview.notes !== undefined) stepsSpec.overview.notes = notesOf(c, overview.notes, { ...env, where: child(overviewWhere, overview, 'notes') });
     if (overview.backward !== undefined) stepsSpec.overview.backward = c.texts(overview.backward, { ...env, where: child(overviewWhere, overview, 'backward') }, TEXT_KEYS);
   }
   warnDuplicateTex(c);
