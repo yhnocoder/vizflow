@@ -31,6 +31,7 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
+  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
   - act_fn:
       use: act
       when: not clamped
@@ -38,7 +39,6 @@ body:
       outputs: { out: a }
       tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
-  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
   - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
   - act_fn:
       use: act
@@ -59,6 +59,18 @@ steps:
     backward:
       label: '$\partial W_g,\ \partial\of{x}$'
       title: 传到 gate_proj 权重和 $\of{x}$
+  - id: clamp_gate
+    when: clamped
+    show: gc
+    label: '$\bar{\mathbf{gate}}$'
+    title: 截断 gate 的上界
+    text: |
+      进入激活之前，gate 只截上界：大于 $L=\of{limit}$ 的值变成 $L$，对应 <code>self.gate_proj(x).clamp(max=self.limit)</code>。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断。
+      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过截断
+      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
   - id: up_proj
     show: [Wu.T, up]
     label: '$\mathbf{up}$'
@@ -66,24 +78,27 @@ steps:
     text: |
       up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 写的是 <code>self.act_fn(self.gate_proj(x)) * self.up_proj(x)</code>，先算 gate_proj 和激活，再算 up_proj。
       $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
+    when: not clamped
     backward:
       label: '$\partial W_u,\ \partial\of{x}$'
       title: 传到 up_proj 权重和 $\of{x}$
       text: |
         $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: clamp_gate
+  - id: up_proj
     when: clamped
-    show: gc
-    label: '$\bar{\mathbf{gate}}$'
-    title: 截断 gate 的上界
+    show: [Wu.T, up]
+    label: '$\mathbf{up}$'
+    title: up_proj
     text: |
-      进入激活之前，gate 只截上界：大于 $L=\of{limit}$ 的值变成 $L$，对应 <code>gate.clamp(max=limit)</code>。
-      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
+      up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断，激活放在两个截断之后。
+      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
     backward:
-      label: '$\partial\mathbf{gate}$'
-      title: 穿过截断
-      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
+      label: '$\partial W_u,\ \partial\of{x}$'
+      title: 传到 up_proj 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: clamp_up
     when: clamped
     show: uc
