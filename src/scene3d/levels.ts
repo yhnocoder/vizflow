@@ -206,6 +206,8 @@ function position(lane: Lane, i: number): number {
 
 const list = (nodes: Node | Node[]): Node[] => (Array.isArray(nodes) ? nodes : [nodes]);
 
+const TABLE_GAP = 3.5;
+
 export function levelPlan(spec: StepsSpec): LevelPlan {
   return new Plan(spec);
 }
@@ -217,6 +219,7 @@ class Plan implements LevelPlan {
   private readonly visible: Node[];
   private readonly computed: Set<Node>;
   private readonly levels: Level[] = [];
+  private readonly sharedLevels = new Set<Level>();
   private readonly entries: Entry[] = [];
   private readonly entryOf = new Map<Node, Entry>();
   private readonly sourceOf = new Map<Node, Node>();
@@ -385,7 +388,6 @@ class Plan implements LevelPlan {
     }
     const levelOfNode = new Map<Node, Level>();
     const unitLevels = new Map<number, Level[]>();
-    const sharedLevels: Level[] = [];
     units.forEach((prod, index) => {
       for (const copy of this.copies) {
         if (copy.board !== undefined) continue;
@@ -401,7 +403,7 @@ class Plan implements LevelPlan {
       const shared = target >= 0 && target < index && !own.some((n) => n.inputs.some((i) => units[target].includes(i))) ? (unitLevels.get(target) ?? []) : [];
       const levels = Array.from({ length: Math.max(...depth.values()) + 1 }, (_, i) => shared[i] ?? this.newLevel());
       unitLevels.set(index, levels);
-      if (shared.length > 0) sharedLevels.push(...shared);
+      shared.forEach((level) => this.sharedLevels.add(level));
       for (const n of own) {
         const level = levels[depth.get(n)!];
         for (const copy of this.copies) if (copy.board !== undefined && this.boards.get(n)?.a === copy.node && copy.consumers.includes(n) && !this.copyEntries.has(copy)) this.entry(copy.node, level, copy);
@@ -419,7 +421,7 @@ class Plan implements LevelPlan {
       }
     });
     const firstUse = (e: Entry) => Math.min(...this.consumers(e.node).map((u) => u.id));
-    for (const level of new Set(sharedLevels)) level.entries.sort((a, b) => firstUse(a) - firstUse(b));
+    for (const level of this.sharedLevels) level.entries.sort((a, b) => firstUse(a) - firstUse(b));
     for (const [view, source] of this.sourceOf) {
       const e = this.entryOf.get(source);
       if (e !== undefined) this.entryOf.set(view, e);
@@ -452,7 +454,9 @@ class Plan implements LevelPlan {
       const main = user.inputs[0] === n ? user : user.inputs[0];
       const host = this.entryOf.get(main);
       if (host === undefined) continue;
-      this.entry(n, host.level);
+      const userLevel = this.entryOf.get(user)?.level;
+      const below = userLevel !== undefined && this.sharedLevels.has(userLevel) ? this.levels.slice(0, this.levels.indexOf(userLevel)).reverse().find((l) => !l.copyOnly) : undefined;
+      this.entry(n, below ?? host.level);
     }
   }
 
@@ -544,6 +548,15 @@ class Plan implements LevelPlan {
     for (const [e, main] of beside) e.xs = this.sideXs(e, main);
     for (const e of this.entries) if (e.xs === undefined && e.copy !== undefined) e.xs = this.entryOf.get(e.copy.node)!.xs;
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
+    for (const level of this.levels) {
+      const tables = level.entries.filter((e) => e.node.kind === 'buffer' && e.xs !== undefined);
+      for (let i = 1; i < tables.length; i++) {
+        const left = Math.min(...tables[i - 1].xs!);
+        const width = Math.max(...tables[i].xs!) - Math.min(...tables[i].xs!);
+        const shift = left - TABLE_GAP - width - Math.min(...tables[i].xs!);
+        tables[i].xs = tables[i].xs!.map((x) => x + shift);
+      }
+    }
   }
 
   private placeBoardGroup(board: BoardRef, level: Level, done: Set<Entry>): void {
@@ -641,7 +654,7 @@ class Plan implements LevelPlan {
         }
         lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
       }
-      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => { if (i === 0) e.title = 'left'; });
+      for (const group of lanes.values()) group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => { if (i === 0 || e.node.kind === 'buffer') e.title = 'left'; });
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
     }
