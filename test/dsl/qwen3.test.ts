@@ -20,6 +20,9 @@ interface Reference {
   P: { seq: number[] };
   CF: Record<string, () => [string, string]>;
   CB: Record<string, () => [string, string]>;
+  OPL: Record<string, string>;
+  OPLB: Record<string, string>;
+  MODF: Record<string, [string, string]>;
 }
 
 const ATTN = 'layer.self_attn';
@@ -102,10 +105,8 @@ const MODULES: Record<string, string> = {
 };
 
 const BUFFERS = new Set(['cos', 'sin', 'M']);
-const MODF: Record<string, [string, string]> = {
-  pre: ['x₀', '∂e'], dec: ['x = layer(x₀)', '∂参数, ∂x₀'], rms1: ['n₁', '∂γ₁, ∂x₀'], attn: ['att = self_attn(n₁)', '∂参数, ∂n₁'], qkn: ['q̄, k̄', '∂γ, ∂q, ∂k'],
-  rope: ['q′, k′', '∂q̄, ∂k̄'], rms2: ['n', '∂γ₂, ∂a'], mlp: ['down = mlp(n)', '∂参数, ∂n'], rms: ['h', '∂γ, ∂x'],
-};
+const MATH_UNICODE = /[\u0370-\u03FF\u2070-\u209F\u2190-\u22FF\u0300-\u036F\u2032\u00B7\u00D7\u00F7\u2113\u1D00-\u1DBF\u2212\u00B2\u00B3\u00B9]/;
+const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: '传到γ2和a', b_fh: '传到γ和x' };
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 
 const GLAB: Record<string, string> = {
@@ -150,8 +151,36 @@ function groupOf(ref: Reference, s: RefStep): string {
   return m;
 }
 
-function plain(text: string): string {
-  return text.replace(/<[^>]+>/g, '').replace(/[\s{}]/g, '');
+function mathText(tex: string): string {
+  let mathml: string;
+  try {
+    mathml = katex.renderToString(tex, { output: 'mathml', throwOnError: true });
+  } catch {
+    mathml = katex.renderToString(tex.replace(/_([0-9A-Za-z])_/g, '_$1'), { output: 'mathml', throwOnError: true });
+  }
+  const text = mathml.replace(/<annotation[\s\S]*?<\/annotation>/g, '').replace(/<[^>]+>/g, '');
+  return text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'");
+}
+
+function visible(text: string): string {
+  const rendered = text
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex: string) => mathText(tex))
+    .replace(/\$([^$]+?)\$/g, (_m, tex: string) => mathText(tex))
+    .replace(/<[^>]+>/g, '');
+  return rendered
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[⊤]/g, 'T')
+    .replace(/[⋅]/g, '·')
+    .replace(/-/g, '−')
+    .replace(/[\s{}^_ˉ‾¯~˜√\u2061-\u2063]/g, '');
+}
+
+function refLabel(ref: Reference, s: RefStep): string {
+  if (s.id === 'f0' || s.id === 'ball') return '总览';
+  if (s.id === 'in') return '输入';
+  if (s.fm !== undefined) return ref.MODF[s.fm][s.d === 'f' ? 0 : 1];
+  return s.d === 'f' ? ref.OPL[s.id] : ref.OPLB[s.id.slice(2)];
 }
 
 function node(page: CompiledPage, name: string): Node {
@@ -218,16 +247,15 @@ describe('qwen3-dsl.yaml against the reference page', () => {
         return;
       }
       const [refTitle, refBody] = (want.d === 'f' ? ref.CF : ref.CB)[want.id]();
-      expect(title, `step ${i} ${want.id}`).toBe(refTitle);
-      expect(plain(body), `step ${i} ${want.id}`).toBe(plain(refBody));
+      expect(visible(title), `step ${i} ${want.id}`).toBe(TITLE_CHANGES[want.id] ?? visible(refTitle));
+      expect(visible(body), `step ${i} ${want.id}`).toBe(visible(refBody));
     });
   });
 
-  it('labels steps like the reference OPL, OPLB and MODF tables', () => {
-    const labels = steps.list.map((s) => s.label);
-    expect(labels.slice(0, 12)).toEqual(['总览', '输入', 'e = E[x]', 'x₀', 'x₀²', 'ms₁, r₁', 'x̂₀', 'n₁', 'q, k, v', 'q², k²', 'ms, r', 'q̂, k̂']);
-    expect(labels.slice(44, 52)).toEqual(['LSE', 'log p', 'ℓₜ', 'ℓ', '∂ℓₜ', '∂log p', '∂z, ∂LSE', '∂z']);
-    expect(labels.slice(-3)).toEqual(['∂e', '∂E', '总览']);
+  it('labels steps so that they read like the reference OPL, OPLB and MODF tables', () => {
+    const expected = refSteps(ref);
+    steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(refLabel(ref, expected[i]))));
+    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '${\\mathbf{x}_0}^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
     expect(steps.list.map((s) => s.kind).filter((k) => k !== 'op')).toEqual(['overview', 'inputs', 'module', 'module', 'overview']);
   });
 
@@ -237,7 +265,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       const want = expected[i];
       const segment = GLAB[groupOf(ref, want)];
       const sub = want.mod !== null && want.mod !== segment && want.mod !== 'Qwen3DecoderLayer' ? want.mod : undefined;
-      expect([info.segment, info.sub], `step ${i} ${want.id}`).toEqual([segment, sub]);
+      expect([visible(info.segment), info.sub === undefined ? undefined : visible(info.sub)], `step ${i} ${want.id}`).toEqual([visible(segment), sub === undefined ? undefined : visible(sub)]);
     });
   });
 
@@ -246,7 +274,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     expect(page.modules.map((m) => m.id).sort()).toEqual(Object.values(MODULES).sort());
     for (const [key, mod] of Object.entries(ref.MODS)) {
       const m = byId.get(MODULES[key])!;
-      expect(m.title, key).toBe(mod.t);
+      expect(visible(m.title), key).toBe(visible(mod.t));
       expect(m.parent, key).toBe(mod.parent === null ? null : MODULES[mod.parent]);
       expect(m.fixed, key).toBe(mod.fixed === true);
       expect(m.folded, key).toBe(key === 'pre');
@@ -257,6 +285,16 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     expect(byId.get(ATTN)!.subtitle).toBe('Qwen3Attention');
     expect(byId.get('layer')!.subtitle).toBe('第 N 层');
     expect(byId.get('layer.mlp')!.subtitle).toBe('Qwen3MLP');
+  });
+
+  it('writes labels, titles, segments and module names in LaTeX rather than unicode math', () => {
+    const s = createSteps(page.graph, page.steps);
+    const texts = (list: readonly { label: string; segment: string; sub?: string }[]) => list.flatMap((x, i) => [x.label, x.segment, x.sub ?? '', s.text(i).title]);
+    const all = [...texts(s.list), ...page.modules.flatMap((m) => [m.title, m.subtitle])];
+    s.setAllFolded(true);
+    all.push(...texts(s.list));
+    for (const text of all) expect(text, text).not.toMatch(MATH_UNICODE);
+    s.dispose();
   });
 
   it('renders every step text, label and node TeX', () => {
@@ -300,14 +338,14 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       s.setFolded(id, true);
       expect(s.folded(id), id).toBe(true);
       const own = s.list.filter((x) => x.kind === 'module' && x.module === id);
-      expect(own.map((x) => [x.dir, x.label]), id).toEqual([['forward', MODF[key][0]], ['backward', MODF[key][1]]]);
+      expect(own.map((x) => [x.dir, visible(x.label)]), id).toEqual([['forward', visible(ref.MODF[key][0])], ['backward', visible(ref.MODF[key][1])]]);
       const inside = page.modules.find((m) => m.id === id)!.nodes;
       expect(s.list.some((x) => x.dir === 'forward' && x.kind === 'op' && x.nodes.some((n) => inside.includes(n) && n.kind === 'op')), id).toBe(false);
       for (const info of own) {
         const i = s.list.indexOf(info);
         const [title, body] = (info.dir === 'forward' ? ref.CF[`F_${key}`] : ref.CB[`B_${key}`])();
-        expect(s.text(i).title, `${id} ${info.dir}`).toBe(title);
-        expect(plain(s.text(i).body), `${id} ${info.dir}`).toBe(plain(body));
+        expect(visible(s.text(i).title), `${id} ${info.dir}`).toBe(visible(title));
+        expect(visible(s.text(i).body), `${id} ${info.dir}`).toBe(visible(body));
       }
       s.dispose();
     }
@@ -319,20 +357,20 @@ describe('qwen3-dsl.yaml against the reference page', () => {
     s.setFolded('layers', false);
     expect(s.folded('layers')).toBe(true);
     expect(() => s.setFolded('nope', true)).toThrow();
-    const qkv = s.list.findIndex((x) => x.label === 'q, k, v');
+    const qkv = s.list.findIndex((x) => x.kind === 'op' && x.nodes.some((n) => n.name === `${ATTN}.q`));
     s.go(qkv);
     let notified = 0;
     s.subscribe(() => notified++);
     s.setFolded(ATTN, true);
     expect(notified).toBeGreaterThan(0);
     expect(s.list.filter((x) => x.dir === 'forward')).toHaveLength(48 - 21 + 1);
-    expect(s.list[s.current].label).toBe('att = self_attn(n₁)');
+    expect(visible(s.list[s.current].label)).toBe(visible('att = self_attn(n₁)'));
     s.setAllFolded(true);
-    expect(s.list.map((x) => x.label)).toEqual([
+    expect(s.list.map((x) => visible(x.label))).toEqual([
       '总览', '输入', 'e = E[x]', 'x₀', 'x = layer(x₀)', 'h', 'z', 'LSE', 'log p', 'ℓₜ', 'ℓ',
       '∂ℓₜ', '∂log p', '∂z, ∂LSE', '∂z', '∂W, ∂h', '∂γ, ∂x', '∂参数, ∂x₀', '∂e', '∂E', '总览',
-    ]);
-    expect(s.list[s.current].label).toBe('x = layer(x₀)');
+    ].map(visible));
+    expect(visible(s.list[s.current].label)).toBe(visible('x = layer(x₀)'));
     s.setAllFolded(false);
     expect(s.list).toHaveLength(95);
     expect(s.folded('layers')).toBe(true);

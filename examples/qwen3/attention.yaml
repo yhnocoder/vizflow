@@ -11,6 +11,18 @@ params:
 inputs:
   x: { shape: [T, d] }
 outputs: [att]
+fold:
+  label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
+  title: self_attn（已折叠）
+  text: |
+    q/k/v 投影、q_norm/k_norm、RoPE、eager_attention_forward 和 o_proj 都收进了盒子，从 $\of{x}$ 直接到 $\of{att}$。这和 HF 里 <code>self.self_attn(hidden_states)</code> 这一次调用一一对应：input_layernorm 在它之前，残差相加在它之后，都不属于 self_attn，所以仍然画在盒子外面。参数留在盒子里照常显示。连线是整体 Jacobian 的元素：位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以是块下三角。
+    $$\of{att}=\mathrm{self\_attn}(\of{x})={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 self_attn（已折叠）
+    text: |
+      一次反向同时算出盒子里所有参数的梯度，以及交给 $\of{x}$ 的梯度 $\frac{\partial\ell}{\partial\of{att}}J_{\mathrm{attn}}$。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 weights:
   Wq: { shape: [H*dh, d] }
   Wk: { shape: [Hkv*dh, d] }
@@ -25,16 +37,16 @@ body:
   - k: x @ Wk.T
   - v: x @ Wv.T
   - qk_norm:
-      title: q_norm · k_norm
+      title: q_norm $\cdot$ k_norm
       subtitle: Qwen3RMSNorm，按 head_dim
       fold:
-        label: q̄, k̄
+        label: '$\of{qn},\ \of{kn}$'
         title: q_norm 和 k_norm（已折叠）
         text: |
           每个位置、每个 head 各自做 RMSNorm，Jacobian 是 $d_h\times d_h$ 的小块。
           $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
         backward:
-          label: ∂γ, ∂q, ∂k
+          label: '$\partial\boldsymbol{\gamma},\ \partial\of{q},\ \partial\of{k}$'
           title: 穿过 q_norm 和 k_norm（已折叠）
           text: |
             $$\frac{\partial\ell}{\partial\mathbf{q}}={{ q.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ gq.grad | matrix:3 }}$$
@@ -52,13 +64,13 @@ body:
       steps:
         - id: qksq
           show: [qsq, ksq]
-          label: q², k²
+          label: '$\of{qsq},\ \of{ksq}$'
           title: q_norm、k_norm：逐元素平方
           text: |
             Qwen3 比 Qwen2 多了这一步：在 RoPE 之前，对 q 和 k 的每个 head 各做一次 RMSNorm，范围是 $d_h$，而不是整个 hidden size。它让点积的尺度更稳定。
             $$\mathbf{q}^{2}={{ qsq | matrix:2 }}$$
           backward:
-            label: ∂q, ∂k
+            label: '$\partial\of{q},\ \partial\of{k}$'
             title: 传到 q 和 k
             text: |
               两条路相加。每个 head 交回去的梯度都和这个 head 的输入垂直。
@@ -66,40 +78,40 @@ body:
               $$\frac{\partial\ell}{\partial\mathbf{k}}={{ k.grad | matrix:3 }}$$
         - id: qkrs
           show: [qms, kms, qrr, krr]
-          label: ms, r
+          label: '$\mathrm{ms},\ r$'
           title: 每个 head 的均方根倒数
           text: |
             q 的每个位置、每个 head 各有一个 $r^{q}$，k 只有一个 kv head，每个位置一个 $r^{k}$。
             $$r^{q}={{ qrr | matrix:3 }},\qquad r^{k}={{ krr | matrix:3 }}$$
           backward:
-            label: ∂ms, ∂q²
+            label: '$\partial\mathrm{ms},\ \partial\of{qsq}$'
             title: 传到 ms 和平方
             text: |
               $\partial r/\partial\,\mathrm{ms}=-r^3/2$，再除以 $d_h$ 均分给这一组的每个平方。
               $$\frac{\partial\ell}{\partial\,\mathrm{ms}^{q}}={{ qms.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\,\mathrm{ms}^{k}}={{ kms.grad | matrix:3 }}$$
         - id: qkah
           show: [qah, kah]
-          label: q̂, k̂
+          label: '$\of{qah},\ \of{kah}$'
           title: 归一化
           text: |
             每个分量乘上自己那一组的 $r$。连线只在同一个 head 的同一行之内。
             $$\hat{\mathbf{q}}={{ qah | matrix:2 }}$$
           backward:
-            label: ∂r, ∂q
+            label: '$\partial r,\ \partial\of{q}$'
             title: 传到 r 和 q、k 的直连那条
             text: |
               和普通的 RMSNorm 一样，只是每组只有 $d_h$ 个分量。
               $$\frac{\partial\ell}{\partial r^{q}}={{ qrr.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial r^{k}}={{ krr.grad | matrix:3 }}$$
         - id: qkn
           show: [qn, kn]
-          label: q̄, k̄
-          title: 乘上 γ_q 和 γ_k
+          label: '$\of{qn},\ \of{kn}$'
+          title: 乘上 $\of{gq}$ 和 $\of{gk}$
           text: |
             $\boldsymbol{\gamma}_q$ 的长度是 $d_h$，两个 query head 和所有位置共用，所以它的每个分量连到 $\of{H}\times T$ 个元素。
             $$\bar{\mathbf{q}}={{ qn | matrix:2 }},\qquad \bar{\mathbf{k}}={{ kn | matrix:2 }}$$
           backward:
-            label: ∂γ, ∂q̂
-            title: 传到 γ_q、γ_k 和 q̂、k̂
+            label: '$\partial\boldsymbol{\gamma},\ \partial\of{qah}$'
+            title: 传到 $\of{gq}$、$\of{gk}$ 和 $\of{qah}$、$\of{kah}$
             text: |
               $\boldsymbol{\gamma}_q$ 被两个 head 和三个位置共用，它的梯度把这六组贡献加起来。
               $$\frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ gq.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\boldsymbol{\gamma}_k}={{ gk.grad | matrix:3 }}$$
@@ -110,60 +122,48 @@ body:
       outputs: { q_embed: qr, k_embed: kr }
       tex: { q_embed: "\\mathbf{q}'", k_embed: "\\mathbf{k}'" }
       fold:
-        label: q′, k′
-        title: RoPE（已折叠）
         text: |
           四步合成一个旋转：每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵，位置 1 是单位阵。
           $$\begin{pmatrix}q'_c\\ q'_{c+2}\end{pmatrix}=\begin{pmatrix}\cos t\omega_c & -\sin t\omega_c\\ \sin t\omega_c & \cos t\omega_c\end{pmatrix}\begin{pmatrix}\bar q_c\\ \bar q_{c+2}\end{pmatrix}$$
         backward:
-          label: ∂q̄, ∂k̄
-          title: 穿过 RoPE（已折叠）
           text: |
             旋转矩阵的转置就是它的逆，反向把梯度转回 $-t\,\omega_c$。
             $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }}$$
       steps:
         cos:
-          label: ⊙ cos
           title: RoPE：乘 cos
           text: |
             RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。cos/sin 表的每一行对应一个位置；列按频率排，$\omega_i=\theta^{-2i/d_h}$，Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h=4$ 和 3 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta=10$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 position_id $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs))</code> 生成这张表，所以它们的频率相同、数值也相同。两个 q head 和 k 用的是同一张表。下图把位置延长到 24，阴影是这里用到的前 3 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
             $$\cos={{ apply_rotary_pos_emb.cos | matrix:3 }},\qquad \bar{\mathbf{q}}\odot\cos={{ apply_rotary_pos_emb.qc | matrix:2 }}$$
           backward:
-            label: ∂q̄, ∂k̄
-            title: 传到 q̄、k̄
+            title: 传到 $\of{qn}$、$\of{kn}$
             text: |
               $\bar{\mathbf{q}}$ 有两条路：乘 cos 的直连，和经过 rotate_half 的那条。两条相加，等于用 $-t\,\omega$ 把梯度转回去。
               $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{\mathbf{k}}}={{ kn.grad | matrix:3 }}$$
         rh:
-          label: rotate_half
           title: rotate_half
           text: |
             把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
             $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2),\qquad \mathrm{rh}(\bar{\mathbf{q}})={{ apply_rotary_pos_emb.qrh | matrix:2 }}$$
           backward:
-            label: ∂q̄, ∂k̄
             title: 穿过 rotate_half
             text: 反向就是把梯度按相反的方向搬回去：$\bar q_{c}$ 从 $\mathrm{rh}_{c+2}$ 拿到 $+1$ 倍，$\bar q_{c+2}$ 从 $\mathrm{rh}_{c}$ 拿到 $-1$ 倍。
         sin:
-          label: ⊙ sin
           title: 乘 sin
           text: |
             第 1 行（$t=0$）的 sin 全是 0，所以第一行在这一步全部变成 0。sin 表同样是周期的，和 cos 差四分之一个周期。
             $$\sin={{ apply_rotary_pos_emb.sin | matrix:3 }},\qquad \mathrm{rh}(\bar{\mathbf{q}})\odot\sin={{ apply_rotary_pos_emb.qs | matrix:2 }}$$
           backward:
-            label: ∂rh
             title: 传到 rotate_half 的输出
             text: |
               局部导数是对应位置的 sin。
               $$\frac{\partial\ell}{\partial\,\mathrm{rh}(\bar{\mathbf{q}})}=\frac{\partial\ell}{\partial\mathbf{q}'}\odot\sin={{ apply_rotary_pos_emb.qrh.grad | matrix:3 }}$$
         add:
-          label: q′, k′
           title: 相加
           text: |
             合起来看，每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，被一起转了角度 $t\,\omega_c$。q 和 k 转过的角度只取决于各自的位置，所以 $\mathbf{q}'_t\cdot\mathbf{k}'_s$ 只依赖位置差 $t-s$。
             $$\mathbf{q}'={{ qr | matrix:2 }},\qquad \mathbf{k}'={{ kr | matrix:2 }}$$
           backward:
-            label: ∂(·cos), ∂(·sin)
             title: RoPE 反向：穿过相加
             text: |
               相加的两个输入都拿到同样的梯度。
@@ -186,88 +186,88 @@ body:
 steps:
   - id: qkv
     show: [Wq.T, Wk.T, Wv.T, q, k, v]
-    label: q, k, v
+    label: '$\of{q},\ \of{k},\ \of{v}$'
     title: q_proj、k_proj、v_proj
     text: |
       三个投影的输入都是 $\of{x}$，所以三块权重拼成一块板来画：$n_{t,k}$ 沿第 $k$ 行依次穿过 $W_q^{\top}$、$W_k^{\top}$、$W_v^{\top}$。q 有 \of{H} 个 head，每个 head 宽 $d_h=\of{dh}$，一共宽 \of{H*dh}；k 和 v 只有 \of{Hkv} 个 kv head，各宽 \of{Hkv*dh}，两个 query head 共用它，这就是 GQA。Qwen3 的这三个 Linear 都没有 bias。代码里接下来的 <code>view</code> 只是把列按 head 分组，不移动数据，图里用列之间的空隙表示 head 的分界；q_norm、k_norm 之后的 <code>transpose(1, 2)</code> 也只是换轴。
       $$\mathbf{q}=\of{x}W_q^{\top}={{ q | matrix:2 }}$$
       $$\mathbf{k}=\of{x}W_k^{\top}={{ k | matrix:2 }},\qquad \mathbf{v}=\of{x}W_v^{\top}={{ v | matrix:2 }}$$
     backward:
-      label: ∂W, ∂n₁
-      title: 传到三个投影的权重和 n₁
+      label: '$\partial W,\ \partial\of{x}$'
+      title: 传到三个投影的权重和 $\of{x}$
       text: |
         三块权重的梯度都是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。$n_{t,k}$ 沿第 $k$ 行穿过三块板，一共 $\of{H*dh}+\of{Hkv*dh}+\of{Hkv*dh}$ 段，全部相加。
         $$\frac{\partial\ell}{\partial W_q^{\top}}=\of{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}},\qquad \frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: krep
     show: 'kp[1..H]'
-    label: repeat_kv(k)
+    label: 'repeat_kv($\mathbf{k}$)'
     title: repeat_kv：复制 k
     text: |
       GQA 里 kv head 比 query head 少：这里 \of{H} 个 query head 共用 \of{Hkv} 个 kv head。HF 的 eager 实现先用 <code>repeat_kv</code> 把 k 复制 $n_\text{rep}=\of{H//Hkv}$ 份，每个 query head 拿到一份。复制的局部导数是 1。
       $$\mathbf{k}'^{(1)}=\mathbf{k}'^{(2)}=\mathbf{k}'$$
     backward:
-      label: ∂k′
+      label: '$\partial\of{kr}$'
       title: repeat_kv 反向：两份加回一份
       text: |
         k 被复制给了两个 query head，反向时两份梯度在这里相加，回到唯一的 kv head。GQA 省下的是 k、v 的投影和缓存，梯度的数学形式不变。
         $$\frac{\partial\ell}{\partial\mathbf{k}'}=\frac{\partial\ell}{\partial\mathbf{k}'^{(1)}}+\frac{\partial\ell}{\partial\mathbf{k}'^{(2)}}={{ kr.grad | matrix:3 }}$$
   - id: vrep
     show: 'V[1..H]'
-    label: repeat_kv(v)
+    label: 'repeat_kv($\mathbf{v}$)'
     title: repeat_kv：复制 v
     text: |
       v 也复制两份，直接画成上方 $P\mathbf{v}$ 那一步用的两块板。
       $$\mathbf{v}^{(1)}=\mathbf{v}^{(2)}=\mathbf{v}={{ v | matrix:2 }}$$
     backward:
-      label: ∂v
+      label: '$\partial\of{v}$'
       title: v 的两份加回一份
       text: |
         v 同样把两个 head 的梯度相加。
         $$\frac{\partial\ell}{\partial\mathbf{v}}={{ v.grad | matrix:3 }}$$
   - id: kT
     show: 'kT[1..H]'
-    label: kᵀ
+    label: '$\mathbf{k}^{\top}$'
     title: 转置
     text: <code>key_states.transpose(2, 3)</code> 把 $d_h$ 换到行、位置换到列，接下来就能按「行向量乘板」来算 $\mathbf{q}'\mathbf{k}'^{\top}$。转置只是换轴，局部导数是 1。
     backward:
-      label: ∂k′⁽ʰ⁾
+      label: "$\\partial\\mathbf{k}'^{(h)}$"
       title: 转置回去
       text: 把梯度转置回 $T\times d_h$。
   - id: S
     show: 'S[1..H]'
-    label: q kᵀ
-    title: 打分：q kᵀ
+    label: '$\mathbf{q}\mathbf{k}^{\top}$'
+    title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
     text: |
       每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。$q'_{t,c}$ 沿第 $c$ 行经过 $T$ 个方块，每一列累加后落到 $S_{t,s}$。
       $$S^{(1)}={{ S[1] | matrix:2 }},\qquad S^{(\of{H})}={{ S[H] | matrix:2 }}$$
     backward:
-      label: ∂q′, ∂kᵀ
-      title: 传到 q′ 和 kᵀ
+      label: '$\partial\of{qr},\ \partial\mathbf{k}^{\top}$'
+      title: 传到 $\of{qr}$ 和 $\mathbf{k}^{\top}$
       text: |
-        和普通矩阵乘一样，只是这里两边都是激活：$\frac{\partial\ell}{\partial\mathbf{q}'}=\frac{\partial\ell}{\partial S}\mathbf{k}'$，$\frac{\partial\ell}{\partial\mathbf{k}'^{\top}}=\mathbf{q}'^{\top}\frac{\partial\ell}{\partial S}$。q′ 的两个 head 各收到自己那一份。
+        和普通矩阵乘一样，只是这里两边都是激活：$\frac{\partial\ell}{\partial\mathbf{q}'}=\frac{\partial\ell}{\partial S}\mathbf{k}'$，$\frac{\partial\ell}{\partial\mathbf{k}'^{\top}}=\mathbf{q}'^{\top}\frac{\partial\ell}{\partial S}$。$\mathbf{q}'$ 的两个 head 各收到自己那一份。
         $$\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
   - id: Ssc
     show: 'Ss[1..H]'
-    label: ÷ √d_h
+    label: '$\div\sqrt{d_h}$'
     title: 缩放
     text: |
       乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。
       $$\tilde{S}^{(1)}={{ Ss[1] | matrix:2 }},\qquad \tilde{S}^{(\of{H})}={{ Ss[H] | matrix:2 }}$$
     backward:
-      label: ∂S
+      label: '$\partial S$'
       title: 穿过缩放
       text: |
         局部导数是 $1/\sqrt{d_h}=0.5$。
         $$\frac{\partial\ell}{\partial S^{(1)}}={{ S[1].grad | matrix:3 }}$$
   - id: mask
     show: 'Sm[1..H]'
-    label: + mask
+    label: '$+$ mask'
     title: causal mask
     text: |
       加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 实现里填的不是真正的 $-\infty$，而是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
       $$M={{ M | matrix:2 }},\qquad \bar{S}^{(1)}={{ Sm[1] | matrix:2 }}$$
     backward:
-      label: ∂S̃
+      label: '$\partial\tilde{S}$'
       title: 穿过 mask
       text: 加常量，梯度原样传下去。mask 本身不需要梯度。
   - id: exp
@@ -278,7 +278,7 @@ steps:
       softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。torch 的 softmax kernel 会先减去每行的最大值再取 exp，防止溢出；这一项在相除时会约掉，结果和梯度都不变，这里为了看清结构按定义画。
       $$\mathrm{ex}^{(1)}={{ ex[1] | matrix:3 }},\qquad \mathrm{ex}^{(\of{H})}={{ ex[H] | matrix:3 }}$$
     backward:
-      label: ∂S̄
+      label: '$\partial\bar{S}$'
       title: 穿过 exp
       text: |
         exp 的导数是它自己。合起来就是熟悉的 softmax 反向：$\frac{\partial\ell}{\partial\bar S_{t,s}}=P_{t,s}\big(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}\big)$，其中 $g=\partial\ell/\partial P$。被 mask 的格子 ex 是 0，梯度也是 0。
@@ -291,7 +291,7 @@ steps:
       每个 head、每一行各有一个 $Z$。
       $$Z^{(1)}={{ Z[1] | matrix:3 }},\qquad Z^{(\of{H})}={{ Z[H] | matrix:3 }}$$
     backward:
-      label: ∂ex
+      label: '$\partial\,\mathrm{ex}$'
       title: 传回 ex
       text: |
         求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
@@ -304,7 +304,7 @@ steps:
       每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以 $P_{1,1}=1$。Qwen3 的 attention_dropout 是 0，这里没有 dropout。
       $$P^{(1)}={{ P[1] | matrix:3 }},\qquad P^{(\of{H})}={{ P[H] | matrix:3 }}$$
     backward:
-      label: ∂ex, ∂Z
+      label: '$\partial\,\mathrm{ex},\ \partial Z$'
       title: softmax 反向：穿过相除
       text: |
         $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$；同时 $Z_t$ 连到这一行每个 $P$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$。
@@ -317,7 +317,7 @@ steps:
       每个 head 用注意力权重对 $\mathbf{v}$ 的各行做加权平均。板的行是位置 $s$，列是 $d_h$；$P_{t,s}$ 沿第 $s$ 行经过 $d_h$ 个方块。
       $$\mathbf{o}^{(1)}=P^{(1)}\mathbf{v}^{(1)}={{ o[1] | matrix:2 }},\qquad \mathbf{o}^{(\of{H})}={{ o[H] | matrix:2 }}$$
     backward:
-      label: ∂P, ∂v⁽ʰ⁾
+      label: '$\partial P,\ \partial\mathbf{v}^{(h)}$'
       title: 传到 P 和 v
       text: |
         $\partial\ell/\partial P=\frac{\partial\ell}{\partial\mathbf{o}}\mathbf{v}^{\top}$，$\partial\ell/\partial\mathbf{v}=P^{\top}\frac{\partial\ell}{\partial\mathbf{o}}$。被 mask 的格子 $P_{t,s}=0$，所以它们不会把梯度传给后面位置的 v。
@@ -325,12 +325,12 @@ steps:
   - id: concat
     show: o
     label: 拼接
-    title: 拼回 T × \of{H*dh}
+    title: 拼回 $T\times\of{H*dh}$
     text: |
       <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code> 把两个 head 的输出并排拼回去。只是换轴和重排，局部导数是 1。
       $$\mathbf{o}=[\,\mathbf{o}^{(1)}\,|\,\mathbf{o}^{(2)}\,]={{ o | matrix:2 }}$$
     backward:
-      label: ∂o⁽ʰ⁾
+      label: '$\partial\mathbf{o}^{(h)}$'
       title: 拆回两个 head
       text: 拼接的反向是把梯度按列切回去。
   - id: o_proj
@@ -341,7 +341,7 @@ steps:
       投影回 $d$ 维。o_proj 也没有 bias。
       $$\mathbf{att}=\mathbf{o}W_o^{\top}={{ att | matrix:2 }}\qquad (T\times \of{H*dh})(\of{H*dh}\times d)=(T\times d)$$
     backward:
-      label: ∂W_o, ∂o
+      label: '$\partial W_o,\ \partial\mathbf{o}$'
       title: 传到 o_proj 权重和 o
       text: |
         和其他 Linear 一样：权重的梯度是外积，$T$ 个位置的贡献加在一起；输入的梯度是输出的梯度乘权重。

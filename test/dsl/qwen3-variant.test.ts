@@ -84,10 +84,10 @@ describe('qwen3-dsl.yaml with 4 query heads, 2 kv heads and d_h = 8', () => {
     const steps = createSteps(page.graph, page.steps);
     expect(steps.list.filter((s) => s.dir === 'forward')).toHaveLength(48);
     expect(steps.list.filter((s) => s.dir === 'backward')).toHaveLength(47);
-    const scores = steps.list.find((s) => s.dir === 'forward' && s.label === 'q kᵀ')!;
+    const scores = steps.list.find((s) => s.dir === 'forward' && s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.S[1]'))!;
     expect(scores.nodes.map((n) => n.name)).toEqual([1, 2, 3, 4].map((h) => `layer.self_attn.S[${h}]`));
     expect(scores.segment).toBe('self_attn');
-    expect(steps.list.find((s) => s.label === 'q², k²')!.sub).toBe('q_norm · k_norm');
+    expect(steps.list.find((s) => s.kind === 'op' && s.nodes.some((n) => n.name === 'layer.self_attn.qsq'))!.sub).toBe('q_norm $\\cdot$ k_norm');
     for (let i = 0; i < steps.list.length; i++) expect(() => steps.text(i)).not.toThrow();
   });
 

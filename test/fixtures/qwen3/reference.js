@@ -247,5 +247,14 @@ CB.B_ls=()=>['穿过 log_softmax（已折叠）',''+EQ(tx`\frac{\partial\ell}{\p
 CB.ball=()=>['反向总览',tx`<p>整条反向路径一起显示。损失先把 $1/T$ 分给每个位置；lm_head 之后每个位置各自往下传，直到 attention 才发生跨位置的交流：位置 $t$ 的梯度经过 $P$ 和 $\mathbf{v}$、$\mathbf{k}$ 传给所有 $s\le t$ 的位置。两个残差让 $\mathbf{x}_0$ 至少拿到 $\partial\ell/\partial\mathbf{a}$，再穿过占位的 $N-1$ 层，最后 scatter-add 回 embedding 表里被用到的那几行。</p>`+EQ(tx`\frac{\partial\ell}{\partial\mathbf{x}_0}=${MG('x0')}`)];
 if (seq !== undefined) P.seq = seq.slice();
 compute();
-return { TS, OPS, MODS, ALIAS, st, jac, P, DEF, TOK, T, CF, CB };
+const OPL={emb:'e = E[x]',pre:'x₀',r1sq:'x₀²',r1rs:'ms₁, r₁',r1ah:'x̂₀',r1n:'n₁',qkv:'q, k, v',qksq:'q², k²',qkrs:'ms, r',qkah:'q̂, k̂',qkn:'q̄, k̄',
+  qkc:'⊙ cos',rh:'rotate_half',qks:'⊙ sin',qkr:"q′, k′",krep:'repeat_kv(k)',vrep:'repeat_kv(v)',kT:'kᵀ',S:'q kᵀ',Ssc:'÷ √d_h',mask:'+ mask',exp:'exp',sum:'Z',div:'P',
+  PV:'P v',cat:'拼接',oproj:'o_proj',res1:'a = x₀ + att',r2sq:'a²',r2rs:'ms₂, r₂',r2ah:'â',r2n:'n',gu:'gate, up',silu:'SiLU',mul:'s ⊙ up',dn:'down',res2:'x = a + down',
+  fsq:'x²',frs:'ms, r',fxh:'x̂',fh:'h',lm:'z',lse:'LSE',lp:'log p',nll:'ℓₜ',mean:'ℓ'};
+const OPLB={emb:'∂E',pre:'∂e',r1sq:'∂x₀',r1rs:'∂ms₁, ∂x₀²',r1ah:'∂r₁, ∂x₀',r1n:'∂γ₁, ∂x̂₀',qkv:'∂W, ∂n₁',qksq:'∂q, ∂k',qkrs:'∂ms, ∂q²',qkah:'∂r, ∂q',qkn:'∂γ, ∂q̂',
+  qkc:'∂q̄, ∂k̄',rh:'∂q̄, ∂k̄',qks:'∂rh',qkr:'∂(·cos), ∂(·sin)',krep:'∂k′',vrep:'∂v',kT:'∂k′⁽ʰ⁾',S:'∂q′, ∂kᵀ',Ssc:'∂S',mask:'∂S̃',exp:'∂S̄',sum:'∂ex',div:'∂ex, ∂Z',
+  PV:'∂P, ∂v⁽ʰ⁾',cat:'∂o⁽ʰ⁾',oproj:'∂W_o, ∂o',res1:'∂x₀, ∂att',r2sq:'∂a',r2rs:'∂ms₂, ∂a²',r2ah:'∂r₂, ∂a',r2n:'∂γ₂, ∂â',gu:'∂W, ∂n',silu:'∂gate',mul:'∂s, ∂up',dn:'∂W_d, ∂m',
+  res2:'∂a, ∂down',fsq:'∂x',frs:'∂ms, ∂x²',fxh:'∂r, ∂x',fh:'∂γ, ∂x̂',lm:'∂W, ∂h',lse:'∂z',lp:'∂z, ∂LSE',nll:'∂log p',mean:'∂ℓₜ'};
+const MODF={pre:['x₀','∂e'],dec:['x = layer(x₀)','∂参数, ∂x₀'],rms1:['n₁','∂γ₁, ∂x₀'],attn:['att = self_attn(n₁)','∂参数, ∂n₁'],qkn:['q̄, k̄','∂γ, ∂q, ∂k'],rope:["q′, k′",'∂q̄, ∂k̄'],rms2:['n','∂γ₂, ∂a'],mlp:['down = mlp(n)','∂参数, ∂n'],rms:['h','∂γ, ∂x']};
+return { TS, OPS, MODS, ALIAS, st, jac, P, DEF, TOK, T, CF, CB, OPL, OPLB, MODF };
 }
