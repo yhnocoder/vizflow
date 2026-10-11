@@ -101,6 +101,13 @@ const cases: Case[] = [
     },
   },
   { op: 'rsqrt', build: (g, r) => unary(g, r, 'rsqrt', [2, 3], true) },
+  {
+    op: 'rsqrt',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3], true));
+      return { out: g.rsqrt(x, { eps: 0.25 }), inputs: [x] };
+    },
+  },
   { op: 'sqrt', build: (g, r) => unary(g, r, 'sqrt', [2, 3], true) },
   { op: 'sigmoid', build: (g, r) => unary(g, r, 'sigmoid', [2, 3]) },
   { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },

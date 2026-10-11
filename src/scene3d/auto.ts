@@ -76,7 +76,7 @@ function treeNodes(entries: readonly LayoutEntry[]): Node[] {
 }
 
 function boardOperands(n: Node): [Node, Node] | undefined {
-  if (n.kind !== 'op' || (n.op !== 'matmul' && n.op !== 'narrow_matmul') || n.inputs.length !== 2) return undefined;
+  if (n.kind !== 'op' || (n.op !== 'matmul' && n.op !== 'select_matmul') || n.inputs.length !== 2) return undefined;
   const [a, b] = n.inputs;
   return b.shape.length === 2 && n.shape.length <= 2 ? [a, b] : undefined;
 }

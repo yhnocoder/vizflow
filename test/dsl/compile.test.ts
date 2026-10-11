@@ -864,7 +864,7 @@ body:
     const rms = forward[3];
     expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
     expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial{\\mathbf{f}}^{2}$');
-    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r/1', 'qa.r', 'qb.ms', 'qb.r/1', 'qb.r']);
+    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
     expect(rms.text).toContain('{{qb.r[0]:3}}');
     expect(rms.text).toContain('{{qb.r[1]:3}}');
     await expect(page(`

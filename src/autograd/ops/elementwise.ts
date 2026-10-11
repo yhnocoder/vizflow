@@ -85,7 +85,10 @@ export const powOp = unary<{ exponent: number }>(
   (x, _y, { exponent }) => exponent * x ** (exponent - 1),
   ['input', 'exponent'],
 );
-export const rsqrtOp = unary('rsqrt', (x) => 1 / Math.sqrt(x), (_x, y) => -0.5 * y ** 3);
+export const rsqrtOp: OpDef<{ eps: number }> = {
+  ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3),
+  defaults: { eps: 0 },
+};
 export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
 export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
 export const siluOp = unary('silu', (x) => x * sigmoid(x), (x) => sigmoid(x) * (1 + x * (1 - sigmoid(x))));

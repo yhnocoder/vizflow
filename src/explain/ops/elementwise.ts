@@ -63,11 +63,18 @@ export const divExplain = binary(
 export const negExplain = unary((a) => `-${a}`, () => -1, () => '-1');
 export const expExplain = unary((a) => `\\exp(${a})`, (_x, y) => y, (x) => `e^{${x}}`);
 export const logExplain = unary((a) => `\\log ${a}`, (x) => 1 / x, (x) => `\\frac{1}{${x}}`);
-export const rsqrtExplain = unary(
+const rsqrtBase = unary(
   (a) => `\\frac{1}{\\sqrt{${a}}}`,
   (_x, y) => -0.5 * y ** 3,
   (_x, y) => `-\\frac{1}{2}{${y}}^{3}`,
 );
+export const rsqrtExplain: OpExplain = {
+  ...rsqrtBase,
+  tex: {
+    ...rsqrtBase.tex,
+    forward: (s) => ((s.attrs as { eps?: number }).eps ? `\\frac{1}{\\sqrt{${s.in[0]}+\\epsilon}}` : rsqrtBase.tex.forward(s)),
+  },
+};
 export const sqrtExplain = unary((a) => `\\sqrt{${a}}`, (_x, y) => 0.5 / y, (_x, y) => `\\frac{1}{2${y}}`);
 export const sigmoidExplain = unary((a) => `\\sigma(${a})`, (_x, y) => y * (1 - y), (_x, y) => `${y}(1-${y})`);
 export const siluExplain = unary(

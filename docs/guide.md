@@ -326,7 +326,7 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | 运算 | 调用 | 说明 |
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
-| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量 |
+| `neg` `exp` `log` `rsqrt` `sqrt` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$，`rsqrt(ms, eps=eps)` 不会多出一个 `ms + eps` 节点 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `pow` | `g.pow(a, 2)` | `exponent` 是数 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合 |

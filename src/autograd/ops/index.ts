@@ -42,6 +42,10 @@ export interface NllLossOptions extends OpOptions {
   ignore_index?: number;
 }
 
+export interface RsqrtOptions extends OpOptions {
+  eps?: number;
+}
+
 export interface CatOptions extends OpOptions {
   dim?: number;
 }
@@ -55,7 +59,7 @@ export interface BuiltinOps {
   exp(input: Node, options?: OpOptions): Node;
   log(input: Node, options?: OpOptions): Node;
   pow(input: Node, exponent: number, options?: OpOptions): Node;
-  rsqrt(input: Node, options?: OpOptions): Node;
+  rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;

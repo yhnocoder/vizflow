@@ -19,6 +19,7 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     checkOp(opDef('select')!, [filled([3, 2, 4], 4)], { dim: -1, index: -1 });
     checkOp(opDef('select_matmul')!, [filled([3, 2, 4], 5), filled([4, 3], 6)], { index: 1 });
     checkOp(opDef('rotate_half')!, [filled([3, 2, 4], 7)], {});
+    checkOp(opDef('rsqrt')!, [new Tensor([2, 3], filled([2, 3], 8).data.map((x) => x * x))], { eps: 0.5 });
   });
 
   it('reshape, select and multiply one head', () => {
@@ -30,6 +31,7 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     expect(Array.from(heads.value.data)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(Array.from(g.select(heads, 1, 1).value.data)).toEqual([5, 6, 7, 8]);
     expect(Array.from(g.rotate_half(heads).value.data)).toEqual([-3, -4, 1, 2, -7, -8, 5, 6]);
+    expect(g.rsqrt(x, { eps: 1 }).value.data[2]).toBeCloseTo(0.5, 15);
     const k = g.input('k', [4, 1], [[1], [1], [1], [1]]);
     expect(Array.from(g.select_matmul(heads, k, 1).value.data)).toEqual([26]);
     expect(() => g.view(x, 3, 3)).toThrow(/view: shape \(3, 3\) is invalid for input \(1, 8\)/);
@@ -48,7 +50,7 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
       const x = g.input('x', [T, H * dh], x0.toNested());
       const w = g.input('w', [dh], weight.toNested());
       const q = g.view(x, T, H, dh);
-      const r = g.rsqrt(g.add(g.mean(g.pow(q, 2), -1, { keepdim: true }), 1e-6));
+      const r = g.rsqrt(g.mean(g.pow(q, 2), -1, { keepdim: true }), { eps: 1e-6 });
       const out = g.mul(g.mul(q, r), w);
       const cos = g.input('cos', [T, 1, dh], filled([T, 1, dh], 13).toNested());
       const rot = g.add(g.mul(out, cos), g.rotate_half(out));

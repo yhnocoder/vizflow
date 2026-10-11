@@ -24,7 +24,7 @@ fold:
 body:
   - sq: { op: x ** 2, tex: '{\of{x}}^{2}' }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - r:  { op: rsqrt(ms + eps), tex: r }
+  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}' }
   - out: xh * weight
 steps:
