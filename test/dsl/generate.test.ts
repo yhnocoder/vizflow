@@ -27,21 +27,34 @@ describe('qwen3-infer-dsl: generate and optimizer', () => {
     expect(segments).toEqual(expect.arrayContaining(['prefill', 'decode 1', 'decode 2']));
     expect(steps.list.every((s) => s.dir === 'forward')).toBe(true);
     const decode = steps.list.filter((s) => s.segment === 'decode 1').map((s) => s.title);
-    expect(decode).toEqual(['decode 1：逐行计算', 'decode 1：注意力读取缓存', 'decode 1：逐行计算', '采样第 4 个 token']);
+    expect(decode.slice(0, 4)).toEqual(['decode 1：第 3 个 token 进入模型', 'decode 1：追加到缓存', 'decode 1：如果不用缓存', 'decode 1：读出整个缓存']);
+    expect(decode[decode.length - 1]).toBe('采样第 4 个 token');
+    const compact = steps.list.filter((s) => s.segment === 'decode 2').map((s) => s.title);
+    expect(compact).toEqual(['decode 2：第 4 个 token 进入模型', 'decode 2：注意力读取 4 行缓存', 'decode 2：注意力之后', '采样第 5 个 token']);
   });
 
-  it('shows one row per decode step and keeps the cache rows', () => {
+  it('lights only the new row, reads every cached row and hides future score columns', () => {
     const steps = createSteps(page.graph, page.modes!.infer);
-    const at = steps.list.findIndex((s) => s.title === 'decode 1：注意力读取缓存');
-    steps.go(at);
-    const state = steps.state();
-    const o = page.nodes.get('layer.self_attn.o')!;
-    const k = page.nodes.get('layer.self_attn.kr')!;
-    expect(state.active(k)).toBe(true);
-    expect(state.row!(o, 1)).toBe('inactive');
-    expect(state.row!(o, 2)).toBeUndefined();
-    expect(state.row!(o, 3)).toBe('hidden');
-    expect(state.row!(k, 0)).toBeUndefined();
+    const state = () => steps.state();
+    const node = (name: string) => page.nodes.get(name)!;
+    const k = node('layer.self_attn.apply_rotary_pos_emb.k_embed');
+    const kp = node('layer.self_attn.eager_attention_forward.kp[1]');
+    const S = node('layer.self_attn.eager_attention_forward.S[1]');
+    steps.go(steps.list.findIndex((s) => s.title === 'decode 1：追加到缓存'));
+    expect(state().row!(k, 0)).toBe('inactive');
+    expect(state().row!(k, 2)).toBeUndefined();
+    expect(state().row!(k, 3)).toBe('hidden');
+    steps.go(steps.list.findIndex((s) => s.title === 'decode 1：如果不用缓存'));
+    expect(state().row!(k, 0)).toBeUndefined();
+    steps.go(steps.list.findIndex((s) => s.title.startsWith('decode 1：打分')));
+    expect(state().row!(kp, 0)).toBeUndefined();
+    expect(state().row!(S, 1, 0)).toBe('inactive');
+    expect(state().row!(S, 2, 2)).toBeUndefined();
+    expect(state().row!(S, 2, 3)).toBe('hidden');
+    const lm = steps.list.findIndex((s) => s.segment === 'prefill' && s.nodes.includes(page.nodes.get('z')!));
+    steps.go(lm);
+    expect(state().row!(node('z'), 0)).toBe('inactive');
+    expect(state().row!(node('z'), 1)).toBeUndefined();
   });
 
   it('applies one AdamW step on entering the update step and restores it on leaving', () => {

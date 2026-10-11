@@ -101,6 +101,33 @@ export function tokenAxes(nodes: readonly Node[]): Map<Node, number> {
   return axes;
 }
 
+export function keyAxes(nodes: readonly Node[], tokens: ReadonlyMap<Node, number>): Map<Node, number> {
+  const keys = new Map<Node, number>();
+  const last = (n: Node) => n.shape.length - 1;
+  for (const node of nodes) {
+    if (node.kind !== 'op' || node.shape.length < 2) continue;
+    const { inputs, op, attrs } = node;
+    let key: number | undefined;
+    if (op === 'select_matmul' || op === 'matmul') {
+      const query = tokens.get(inputs[0]);
+      if (query !== undefined && query < last(inputs[0]) && tokens.get(inputs[1]) === last(inputs[1])) key = last(node);
+    } else if (op !== undefined && REDUCE_OPS.has(op)) {
+      const from = keys.get(inputs[0]);
+      const r = inputs[0].shape.length;
+      const dims = attrs.dim === null || attrs.dim === undefined ? [] : (Array.isArray(attrs.dim) ? attrs.dim : [attrs.dim]).map((d) => axisOf(d, r));
+      if (from !== undefined && !dims.includes(from) && attrs.keepdim === true) key = from;
+    } else if (op !== undefined && (ALONG_OPS.has(op) || explainOf(op)?.pattern === 'elementwise')) {
+      const source = inputs.find((input) => keys.has(input) && input.shape.length === node.shape.length);
+      if (source !== undefined) key = keys.get(source);
+      if (key !== undefined) {
+        for (const input of inputs) if (input.kind === 'buffer' && input.shape.length === node.shape.length && input.shape[key] === node.shape[key]) keys.set(input, key);
+      }
+    }
+    if (key !== undefined) keys.set(node, key);
+  }
+  return keys;
+}
+
 export function sameToken(block: Block, element: Element, axis: number): Element[] {
   return block.elements.filter((e) => e.index[axis] === element.index[axis]);
 }
