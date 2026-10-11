@@ -322,7 +322,7 @@ const steps = createSteps(g, {
 ### 3.1 前向步骤
 
 - `overview` 是第 0 步，显示整张图。省略时标题为「总览」、正文为空。`label` 是步骤条上的按钮文字，默认等于 `title`。
-- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文，省略时正文为空，写法见 4.1；`label` 是按钮文字，默认等于 `title`。
+- `forward` 按顺序列出前向各步。`show` 是这一步新出现的节点（一个或数组）；`active` 是这一步高亮的节点，默认等于 `show`；`title` 是正文标题；`text` 是正文，省略时正文为空，写法见 4.1；`label` 是按钮文字，默认等于 `title`；按钮文字里的 `$...$` 按行内公式渲染，例如 `label: String.raw`$\mathbf{q}^{(h)}$``，不含 `$` 的按钮文字原样显示。反向步骤 `override` 里的 `label` 规则相同。
 - 第 k 步时，第 1 到 k 步 `show` 过的节点都出现，`active` 的节点高亮。
 - 所有 `show` 的并集是 `steps.visible`。没有放进任何一步 `show` 的中间节点在 3D 场景里不画，也不成为反向步骤。标签节点（label）不需要放进 `show`。
 

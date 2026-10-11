@@ -436,7 +436,7 @@ allVisible(g: Graph): StepState</code></pre>
 <ul>
   <li>前向第 $k$ 步（$k \ge 1$）：revealed 为第 1 到 $k$ 步 <code>show</code> 的并集；active 为第 $k$ 步的 <code>active</code>，默认等于 <code>show</code>。总览时全部 revealed、全部 active。</li>
   <li><code>visible</code> 是所有 <code>forward.show</code> 的并集，按拓扑序排列。没有放进任何一步的中间节点不显示，也不单独成为反向步骤。</li>
-  <li>前向按钮文字 <code>label</code> 默认等于 <code>title</code>。</li>
+  <li>前向按钮文字 <code>label</code> 默认等于 <code>title</code>。按钮文字里的 <code>$...$</code> 按行内公式渲染，不含 <code>$</code> 时原样显示为文字。</li>
 </ul>
 <p>反向步骤默认自动生成（<code>'auto'</code>）。规则如下：</p>
 <ol>

@@ -69,8 +69,11 @@ function StepsView(props: { steps: Steps }) {
       class="vf-st"
       aria-current={current() === entry.position ? 'step' : undefined}
       onClick={() => steps.go(entry.position)}
+      ref={(el) => {
+        if (entry.info.label.includes('$')) renderText(entry.info.label, el);
+      }}
     >
-      {entry.info.label}
+      {entry.info.label.includes('$') ? undefined : entry.info.label}
     </button>
   );
 

@@ -336,6 +336,20 @@ describe('mountSteps', () => {
     return new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
   }
 
+  it('renders formulas in step labels and keeps plain labels as text', () => {
+    const g = graph({ dims: { V: 5 } });
+    const x = g.input('x', ['V'], X);
+    const p = g.softmax(x, -1, { name: 'p' });
+    const steps = createSteps(g, { forward: [{ show: x, label: '$\\mathbf{x}$', title: 'logits' }, { show: p, label: 'p', title: 'softmax' }] });
+    const el = container();
+    mounted.push(mountSteps(el, steps));
+    const pills = [...el.querySelectorAll<HTMLButtonElement>('.vf-st')];
+    expect(pills[1].querySelector('.vf-tex')).not.toBeNull();
+    expect(pills[1].textContent).not.toContain('$');
+    expect(pills[2].querySelector('.vf-tex')).toBeNull();
+    expect(text(pills[2])).toBe('p');
+  });
+
   it('builds the track and switches steps with buttons and keys', async () => {
     const { steps } = softmaxGraph();
     const el = container();
