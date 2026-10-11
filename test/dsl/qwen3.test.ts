@@ -177,6 +177,13 @@ function mathText(tex: string): string {
   return text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'");
 }
 
+function flatHeads(text: string): string {
+  return text.replace(/\\left\[\\,([\s\S]*?)\\,\\right\]/g, (_m, inner: string) => {
+    const blocks = [...inner.matchAll(/\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}_\{h=\d+\}/g)].map((b) => b[1].split('\\\\'));
+    return `\\begin{pmatrix}${blocks[0].map((_, r) => blocks.map((rows) => rows[r]).join('&')).join('\\\\')}\\end{pmatrix}`;
+  });
+}
+
 function visible(text: string): string {
   const rendered = text
     .replace(/\$\$([\s\S]+?)\$\$/g, (_m, tex: string) => mathText(tex))
@@ -263,7 +270,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       }
       const [refTitle, refBody] = (want.d === 'f' ? ref.CF : ref.CB)[want.id]();
       expect(visible(title), `step ${i} ${want.id}`).toBe(TITLE_CHANGES[want.id] ?? visible(refTitle));
-      expect(visible(body), `step ${i} ${want.id}`).toBe(visible(refBody));
+      expect(visible(flatHeads(body)), `step ${i} ${want.id}`).toBe(visible(refBody));
     });
   });
 
@@ -360,7 +367,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
         const i = s.list.indexOf(info);
         const [title, body] = (info.dir === 'forward' ? ref.CF[`F_${key}`] : ref.CB[`B_${key}`])();
         expect(visible(s.text(i).title), `${id} ${info.dir}`).toBe(visible(title));
-        expect(visible(s.text(i).body), `${id} ${info.dir}`).toBe(visible(body));
+        expect(visible(flatHeads(s.text(i).body)), `${id} ${info.dir}`).toBe(visible(body));
       }
       s.dispose();
     }

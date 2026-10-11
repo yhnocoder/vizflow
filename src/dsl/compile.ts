@@ -239,19 +239,23 @@ function reshapeNested(values: Nested, shape: number[]): Nested {
 
 function matrixTemplate(name: string, shape: readonly number[], format: string): string {
   if (shape.length === 0) return `{{${name}${format}}}`;
-  const rows = shape.length === 1 ? 1 : shape[0];
-  const inner = shape.slice(1);
-  const cols = shape.length === 1 ? shape[0] : inner.reduce((a, b) => a * b, 1);
-  const unravel = (c: number) => inner.map((_, d) => Math.floor(c / inner.slice(d + 1).reduce((a, b) => a * b, 1)) % inner[d]);
-  const cell = (r: number, c: number) => {
-    if (shape.length === 1) return `{{${name}[${c}]${format}}}`;
-    if (shape.length > 2) return `{{${name}[${[r, ...unravel(c)].join(', ')}]${format}}}`;
-    if (cols === 1) return `{{${name}[${r}]${format}}}`;
-    if (rows === 1) return `{{${name}[${c}]${format}}}`;
-    return `{{${name}[${r}, ${c}]${format}}}`;
-  };
-  const lines = [...Array(rows).keys()].map((r) => [...Array(cols).keys()].map((c) => ` ${cell(r, c)} `).join('&'));
-  return `\\begin{pmatrix}${lines.join('\\\\')}\\end{pmatrix}`;
+  const pmatrix = (lines: string[][]) => `\\begin{pmatrix}${lines.map((line) => line.map((c) => ` ${c} `).join('&')).join('\\\\')}\\end{pmatrix}`;
+  const grid = (rows: number, cols: number, cell: (r: number, c: number) => string) =>
+    [...Array(rows).keys()].map((r) => [...Array(cols).keys()].map((c) => `{{${name}[${cell(r, c)}]${format}}}`));
+  if (shape.length === 1) return pmatrix(grid(1, shape[0], (_r, c) => `${c}`));
+  if (shape.length === 2) {
+    const [rows, cols] = shape;
+    return pmatrix(grid(rows, cols, (r, c) => (cols === 1 ? `${r}` : rows === 1 ? `${c}` : `${r}, ${c}`)));
+  }
+  const middle = shape.slice(1, -1);
+  const heads = middle.reduce((a, b) => a * b, 1);
+  const unravel = (h: number) => middle.map((_, d) => Math.floor(h / middle.slice(d + 1).reduce((a, b) => a * b, 1)) % middle[d]);
+  const blocks = [...Array(heads).keys()].map((h) => {
+    const index = unravel(h);
+    const block = pmatrix(grid(shape[0], shape[shape.length - 1], (r, c) => [r, ...index, c].join(', ')));
+    return heads === 1 ? block : `${block}_{h=${index.map((i) => i + 1).join(',')}}`;
+  });
+  return heads === 1 ? blocks[0] : `\\left[\\,${blocks.join('\\;\\;')}\\,\\right]`;
 }
 
 class Compiler {

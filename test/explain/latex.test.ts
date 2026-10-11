@@ -91,4 +91,14 @@ describe('LaTeX templates render with KaTeX', () => {
       renders(card.product.tex);
     }
   });
+
+  it('writes a square as an elementwise product of its input on the node card', () => {
+    const g = graph();
+    const q = g.input('q', [2], [1, 2], { tex: '\\mathbf{q}' });
+    const sq = g.pow(q, 2, { name: 'sq', tex: '{\\mathbf{q}}^{2}' });
+    const cube = g.pow(q, 3, { name: 'cube', tex: 'c' });
+    const ex = explain(g);
+    expect(ex.nodeCard(sq, 'forward').tex).toEqual(['{\\mathbf{q}}^{2}=\\mathbf{q}\\odot \\mathbf{q}']);
+    expect(ex.nodeCard(cube, 'forward').tex).toEqual(['c={\\mathbf{q}}^{3}']);
+  });
 });
