@@ -80,7 +80,7 @@ export function isParamLike(node: Node): boolean {
 
 export function messageBytes(node: Node, tokens: number): number {
   const bytes = DTYPE_BITS[node.dtype] / 8;
-  if (isParamLike(node)) return node.realShape.reduce((a, b) => a * b, 1) * bytes;
+  if (isParamLike(node) || node.realShape.length === 0) return node.realShape.reduce((a, b) => a * b, 1) * bytes;
   const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
   return tokens * width * bytes;
 }

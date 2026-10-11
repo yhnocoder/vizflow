@@ -133,7 +133,7 @@ describe('qwen3 context parallel page', () => {
   it('sizes the all_reduce of a weight gradient by the whole weight', () => {
     const rows = parallelRows(fakeScene(cp, 'backward'), node('layer.self_attn.Wq.T'));
     expect(rows.find((r) => r.label === '梯度放置')?.value).toBe('Partial，all_reduce 之后是 Replicate');
-    expect(rows.find((r) => r.label === '消息大小')?.value).toBe('整个参数的梯度，$S=4096\\times 4096\\times 2\\,\\mathrm{B}=32\\,\\mathrm{MiB}$');
+    expect(rows.find((r) => r.label === '消息大小')?.value).toBe('参数的梯度，与 token 数无关：$S=4096\\times 4096\\times 2\\,\\mathrm{B}=32\\,\\mathrm{MiB}$');
   });
 
   it('marks the ring steps with send_recv forward and the gradient going back on the backward step', () => {
@@ -142,10 +142,31 @@ describe('qwen3 context parallel page', () => {
     const k1 = node('layer.self_attn.k1');
     const ring = steps.list.filter((info) => info.nodes.includes(k1) && info.kind !== 'overview');
     const forward = ring.find((info) => info.dir === 'forward')!;
-    const backward = ring.find((info) => info.dir === 'backward')!;
+    const backward = steps.list.find((info) => info.dir === 'backward' && info.forwardId === forward.id)!;
+    const later = steps.list.find((info) => info.dir === 'backward' && info.nodes.includes(k1))!;
+    expect(parallelNotes(scene, later).some((n) => n.text.startsWith('send_recv 的反向'))).toBe(false);
     expect(parallelNotes(scene, forward).map((n) => n.text)).toContain('send_recv：每张卡把手里的块发给下一张卡，同时从上一张卡收一块');
     const note = parallelNotes(scene, backward).find((n) => n.text.startsWith('send_recv 的反向'))!;
     expect(note.text).toContain('reduce_scatter');
     expect(note.nodes).toEqual([node('layer.self_attn.kr'), node('layer.self_attn.v')]);
+  });
+
+  it('sizes the all_reduce of the scalar loss as one number', () => {
+    const rows = parallelRows(fakeScene(cp, 'forward'), node('loss'));
+    expect(rows.find((r) => r.label === '消息大小')?.value).toBe('一个标量，与 token 数无关：$S=4\\,\\mathrm{B}$');
+  });
+
+  it('keeps the ring transfer and the merge as separate steps in prefill and decode', () => {
+    const list = createSteps(cp.graph, cp.modes!.infer).list;
+    const ops = (info: (typeof list)[number]) => new Set(info.nodes.map((n) => n.op));
+    for (const phase of ['prefill', 'decode']) {
+      const steps = list.filter((info) => info.segment?.startsWith(phase) === true && !info.id.endsWith(':nocache'));
+      const ring = steps.filter((info) => ops(info).has('send_recv'));
+      const merge = steps.filter((info) => ops(info).has('lse_merge'));
+      expect(ring.length, phase).toBeGreaterThan(0);
+      expect(merge.length, phase).toBeGreaterThan(0);
+      for (const info of ring) expect([...ops(info)], info.title).toEqual(['send_recv']);
+      for (const info of merge) expect([...ops(info)], info.title).toEqual(['lse_merge']);
+    }
   });
 });

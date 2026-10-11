@@ -121,4 +121,4 @@ export const combineOp: OpDef<CombineAttrs> = {
   },
 };
 
-export const COMM_OPS: ReadonlySet<string> = new Set([allReduceOp, dispatchOp, combineOp].map((op) => op.name));
+export const COMM_OPS: ReadonlySet<string> = new Set([allReduceOp, dispatchOp, combineOp, sendRecvOp].map((op) => op.name));

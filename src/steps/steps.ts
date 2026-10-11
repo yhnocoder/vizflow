@@ -808,7 +808,9 @@ class StepsImpl implements Steps {
             id,
             title: `${phase}：${part.info.title}`,
             label: part.info.label,
-            text: `decode 每一步只有第 ${pos} 个位置这一行参与这次通信，消息比 prefill 小得多，但各张卡仍然要同步一次，耗时主要是通信的固定延迟。${part.info.text}`,
+            text: part.prod.some((n) => n.op === 'send_recv')
+              ? `这一步沿环传递的是缓存中的块，缓存的 ${pos} 行都要传，不只是第 ${pos} 个位置。decode 每条序列每步只有 1 个新 token，实际部署不对 decode 做上下文并行，这里按 prefill 的做法画出。${part.info.text}`
+              : `decode 每一步只有第 ${pos} 个位置这一行参与这次通信，消息比 prefill 小得多，但各张卡仍然要同步一次，耗时主要是通信的固定延迟。${part.info.text}`,
             nodes: part.prod,
             segment: phase,
             sub: part.info.sub ?? part.info.segment,
@@ -900,7 +902,7 @@ class StepsImpl implements Steps {
           });
           return;
         }
-        const readParts = parts.filter((part) => part.prod.every((n) => derived.has(n)) && part.prod.some((n) => reads.has(n)));
+        const readParts = parts.filter((part) => !isComm(part) && part.prod.every((n) => derived.has(n)) && part.prod.some((n) => reads.has(n)));
         const pushReads = () => {
           const weights = readParts.some((part) => part.prod.some((n) => n.op === 'matmul' && n.inputs.some((i) => horizons(i).every((h) => h === undefined))));
           const sources = readParts.flatMap((part) => part.active).filter((n) => cacheSet.has(n));
@@ -939,6 +941,11 @@ class StepsImpl implements Steps {
           afterWrite(...group.map((part) => part.group));
         };
         parts.forEach((part, j) => {
+          if (isComm(part) && part.prod.some((n) => computes(n, row) || reads.has(n))) {
+            flush();
+            pushComm(part, `d:${row}:${k}:${j}`);
+            return;
+          }
           if (readParts.includes(part)) {
             flush();
             if (part === readParts[0]) pushReads();
@@ -946,17 +953,14 @@ class StepsImpl implements Steps {
             return;
           }
           if (!part.prod.some((n) => computes(n, row))) return;
-          if (isComm(part)) {
-            flush();
-            pushComm(part, `d:${row}:${k}:${j}`);
-            return;
-          }
           const first = part.prod[0];
           const mask = part.active.find((n) => masks.has(n));
           const direct = unique(part.prod.flatMap((n) => n.inputs.filter((i) => cacheSet.has(i) && reads.has(i))));
           const scoring = part.prod.some((n) => scores.has(n));
           if (part.info.kind !== 'module' && !scoring && mask === undefined && direct.length === 0 && !part.active.some((n) => derived.has(n))) {
+            if (part.prod.some((n) => n.op === 'lse_merge')) flush();
             pending.push(part);
+            if (part.prod.some((n) => n.op === 'lse_merge')) flush();
             if (writes.has(groupIndex.get(part.group) ?? -1)) flush();
             return;
           }

@@ -4,7 +4,7 @@ import type { StepInfo, StepNote } from '../steps';
 import type { Tensor } from '../tensor';
 import type { LinearRgb, ThemeColors } from '../theme';
 import type { SceneController } from './controller';
-import { DECODE_LATENCY_NOTE, MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, type ParallelMode, byteSize, gradReduces, stepMode } from './modes';
+import { DECODE_LATENCY_NOTE, MODE_TOKENS, MODE_TOKEN_TEXT, RING_NOTE, type ParallelMode, byteSize, gradReduces, stepMode, stepSends } from './modes';
 
 export const PARTIAL_LEGEND_TEXT = '细柱 = 各卡的部分值，虚线框 = 和';
 export const IDLE_LEGEND_TEXT = '灰色 = 这一轮没有卡计算';
@@ -56,6 +56,7 @@ function sizeRows(node: Node, mode: ParallelMode, T: number, S: number): CardRow
     const shape = node.realShape.join('\\times ');
     return [{ label: '消息大小', value: `参数的梯度，与 token 数无关：$S=${shape}\\times ${bytes}\\,\\mathrm{B}=${bytesText(S)}$` }];
   }
+  if (node.realShape.length === 0) return [{ label: '消息大小', value: `一个标量，与 token 数无关：$S=${bytesText(S)}$` }];
   const width = node.realShape.slice(1).reduce((a, b) => a * b, 1);
   return [
     { label: 'token 数', value: `$T=${T}$，${MODE_TOKEN_TEXT[mode]}` },
@@ -135,7 +136,7 @@ export function parallelNotes(c: SceneController, info: StepInfo | undefined): S
   const steps = c.steps;
   if (parallel === undefined || info === undefined || steps === undefined || info.kind === 'overview') return [];
   const placements = parallel.placements;
-  const sends = info.nodes.filter((node) => node.op === 'send_recv');
+  const sends = stepSends(steps.list, info);
   if (info.dir === 'forward') {
     const notes: StepNote[] = info.nodes.filter((node) => node.op === 'all_reduce').map((node) => ({ nodes: [node], text: ALL_REDUCE_NOTE }));
     if (sends.length > 0) notes.push({ nodes: sends, text: SEND_RECV_NOTE });
