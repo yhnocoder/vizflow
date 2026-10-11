@@ -1,43 +1,49 @@
 module: RoPE
-subtitle: apply_rotary_pos_emb
+subtitle: RoPE
 params:
+  dh:    { type: dim }
   theta: { type: float, default: 1e4 }
 inputs:
-  x: { shape: [T, dh] }
-outputs: [out]
+  q: { shape: [T, n] }
+  k: { shape: [T, m] }
+outputs: [q_embed, k_embed]
 buffers:
   cos: { value: 'rope_cos(T, dh, theta)', tex: '\cos' }
   sin: { value: 'rope_sin(T, dh, theta)', tex: '\sin' }
 body:
-  - c:   { op: x * cos, tex: '\of{x}\odot\cos' }
-  - rh:  { op: rotate_half(x), tex: '\mathrm{rh}(\of{x})' }
-  - s:   { op: rh * sin, tex: '\mathrm{rh}(\of{x})\odot\sin' }
-  - out: c + s
+  - qc:  { op: 'tile_mul(q, cos)', tex: '\of{q}\odot\cos' }
+  - kc:  { op: 'tile_mul(k, cos)', tex: '\of{k}\odot\cos' }
+  - qrh: { op: 'rotate_half(q, size=dh)', tex: '\mathrm{rh}(\of{q})' }
+  - krh: { op: 'rotate_half(k, size=dh)', tex: '\mathrm{rh}(\of{k})' }
+  - qs:  { op: 'tile_mul(qrh, sin)', tex: '\mathrm{rh}(\of{q})\odot\sin' }
+  - ks:  { op: 'tile_mul(krh, sin)', tex: '\mathrm{rh}(\of{k})\odot\sin' }
+  - q_embed: qc + qs
+  - k_embed: kc + ks
 steps:
   - id: cos
-    show: [cos, c]
+    show: [cos, qc, kc]
     label: '$\odot\cos$'
     title: 乘 cos
     text: |
-      RoPE 的公式是 $\of{out}=\of{x}\odot\cos+\mathrm{rotate\_half}(\of{x})\odot\sin$，这里按代码的顺序拆成四步。
+      RoPE 的公式是 $\of{q_embed}=\of{q}\odot\cos+\mathrm{rotate\_half}(\of{q})\odot\sin$，k 也一样，这里按代码的顺序拆成四步。q 和 k 的列按 head 分组，每组宽 $d_h=\of{dh}$，所有 head 用同一张 cos/sin 表。
       cos 和 sin 表的每一行对应一个位置，$\omega_i=\theta^{-2i/d_h}$，$\theta=\of{theta}$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以没有连线。
       $$\cos={{ cos | matrix:3 }}$$
   - id: rh
-    show: rh
+    show: [qrh, krh]
     label: rotate_half
     title: rotate_half
     text: |
-      把后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
+      把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
       $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$
   - id: sin
-    show: [sin, s]
+    show: [sin, qs, ks]
     label: '$\odot\sin$'
     title: 乘 sin
     text: |
       位置 1 的 sin 全是 0，所以第一行在这一步全部变成 0。
       $$\sin={{ sin | matrix:3 }}$$
   - id: add
-    show: out
-    label: '$\of{out}$'
+    show: [q_embed, k_embed]
+    label: '$\of{q_embed},\ \of{k_embed}$'
     title: 相加
-    text: 第 $c$ 个和第 $c+d_h/2$ 个分量组成一对，被一起转了角度 $t\,\omega_c$。两个向量转过的角度只取决于各自的位置，所以旋转后的点积只依赖位置差。
+    text: 每个 head 里第 $c$ 个和第 $c+d_h/2$ 个分量组成一对，被一起转了角度 $t\,\omega_c$。两个向量转过的角度只取决于各自的位置，所以旋转后的点积只依赖位置差。

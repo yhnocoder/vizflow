@@ -109,8 +109,15 @@ export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
 export const identityOp = unary('identity', (x) => x, () => 1);
 
-function rotateHalf(input: Tensor, sign: number): Tensor {
-  const width = input.shape[input.ndim - 1];
+export interface RotateHalfAttrs {
+  size: number | null;
+}
+
+export function rotateWidth(shape: readonly number[], attrs: RotateHalfAttrs): number {
+  return attrs.size ?? shape[shape.length - 1];
+}
+
+function rotateHalf(input: Tensor, width: number, sign: number): Tensor {
   const half = width / 2;
   const out = new Tensor(input.shape);
   for (let i = 0; i < input.size; i++) {
@@ -119,16 +126,22 @@ function rotateHalf(input: Tensor, sign: number): Tensor {
   return out;
 }
 
-export const rotateHalfOp: OpDef<NoAttrs> = {
+export const rotateHalfOp: OpDef<RotateHalfAttrs> = {
   name: 'rotate_half',
-  args: ['input'],
+  args: ['input', 'size'],
   tensors: ['input'],
-  shape: ([a]) => {
-    if (a.length === 0 || a[a.length - 1] % 2 !== 0) throw new Error(`rotate_half: last dimension of (${a.join(', ')}) must be even`);
-    return [...a];
+  sizes: ['size'],
+  defaults: { size: null },
+  shape: (a, attrs) => {
+    const shape = a[0];
+    const width = shape.length === 0 ? 0 : rotateWidth(shape, attrs);
+    if (shape.length === 0 || width % 2 !== 0 || width <= 0 || shape[shape.length - 1] % width !== 0) {
+      throw new Error(`rotate_half: last dimension of (${shape.join(', ')}) must split into even groups of ${width}`);
+    }
+    return [...shape];
   },
-  forward: ([a]) => rotateHalf(a, 1),
-  backward: (gradOut) => [rotateHalf(gradOut, -1)],
+  forward: ([a], attrs) => rotateHalf(a, rotateWidth(a.shape, attrs), 1),
+  backward: (gradOut, _inputs, _out, attrs) => [rotateHalf(gradOut, rotateWidth(gradOut.shape, attrs), -1)],
 };
 
 interface TransposeAttrs {

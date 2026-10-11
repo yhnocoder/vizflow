@@ -23,7 +23,8 @@ import {
 } from './elementwise';
 import { catOp, embeddingOp, gatherOp, narrowOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { matmulOp } from './matmul';
+import { groupMeanOp, groupMulOp, tileMulOp } from './group';
+import { matmulOp, narrowMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -40,6 +41,10 @@ export interface SumOptions extends ReduceOptions {
 export interface NllLossOptions extends OpOptions {
   reduction?: Reduction;
   ignore_index?: number;
+}
+
+export interface RotateHalfOptions extends OpOptions {
+  size?: number | string | null;
 }
 
 export interface CatOptions extends OpOptions {
@@ -62,7 +67,7 @@ export interface BuiltinOps {
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
-  rotate_half(input: Node, options?: OpOptions): Node;
+  rotate_half(input: Node, size?: number | string | null | RotateHalfOptions, options?: RotateHalfOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
   matmul(input: Node, other: Node, options?: OpOptions): Node;
   sum(input: Node, dim?: Dim | null | SumOptions, options?: SumOptions): Node;
@@ -76,6 +81,10 @@ export interface BuiltinOps {
   narrow(input: Node, dim: number, start: number, length: number | string, options?: OpOptions): Node;
   cat(tensors: Node[], dim?: number | CatOptions, options?: CatOptions): Node;
   nll_loss(input: Node, target: Node, options?: NllLossOptions): Node;
+  group_mean(input: Node, size: number | string, options?: OpOptions): Node;
+  group_mul(input: Node, other: Node, options?: OpOptions): Node;
+  tile_mul(input: Node, other: Node, options?: OpOptions): Node;
+  narrow_matmul(input: Node, other: Node, start: number, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -108,6 +117,10 @@ export const builtinOps: readonly AnyOpDef[] = [
   narrowOp,
   catOp,
   nllLossOp,
+  groupMeanOp,
+  groupMulOp,
+  tileMulOp,
+  narrowMatmulOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

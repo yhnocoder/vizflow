@@ -1,7 +1,7 @@
 import { type Graph, Node, graph, opDef } from '../autograd';
 import { explainOf } from '../explain';
-import type { CameraOptions, LayoutEntry, LayoutTree, SceneModule } from '../scene3d';
-import { type BackwardOverride, type ForwardStep, type StepsSpec, backwardGroups } from '../steps';
+import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
+import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { type Nested, inferShape } from '../tensor';
 import type { PanelItem } from '../ui';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';
@@ -13,10 +13,33 @@ export interface CompiledPage {
   graph: Graph;
   steps: StepsSpec;
   tree: LayoutTree;
-  modules: SceneModule[];
+  modules: PageModule[];
   panels: PanelItem[];
   nodes: Map<string, Node>;
+  sequence?: PageSequence;
+  layout?: unknown;
   page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
+}
+
+export interface PageSequence {
+  tokens: string[];
+  length: number;
+  get(): number[];
+  set(ids: number[]): void;
+}
+
+interface ModuleRec {
+  id: string;
+  parent: string | null;
+  title: string;
+  subtitle: string;
+  fixed: boolean;
+  folded: boolean;
+  split: boolean;
+  nodes: Node[];
+  fold: { forward: BackwardOverride; backward: BackwardOverride };
+  decl: Record<string, unknown>;
+  env: Env;
 }
 
 interface Num {
@@ -75,16 +98,21 @@ interface ResolvedStep {
 }
 
 const ITEM_KEYS = new Set(['op', 'tex']);
-const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside']);
-const GROUP_KEYS = new Set(['body', 'steps', 'subtitle', 'beside']);
+const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
+const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
+const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward']);
 const PAGE_KEYS = new Set([
-  'title', 'lede', 'hint', 'camera', 'overview', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'weights',
-  'buffers', 'values', 'body', 'steps', 'backward', 'panels',
+  'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
+  'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'layout',
 ]);
-const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text']);
-const PATCH_KEYS = new Set(['title', 'label', 'text', 'append']);
+const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'backward']);
+const PATCH_KEYS = new Set(['title', 'label', 'text', 'append', 'backward']);
+const TEXT_KEYS = new Set(['title', 'text', 'label']);
+const FOLD_KEYS = new Set(['title', 'text', 'label', 'backward']);
+const OVERVIEW_KEYS = new Set(['title', 'text', 'label', 'backward']);
+const SEQUENCE_KEYS = new Set(['tokens', 'input', 'label']);
 const PARAM_TYPES: ReadonlySet<string> = new Set(['int', 'float', 'dim', 'op', 'tex', 'text']);
 const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
@@ -198,7 +226,8 @@ function matrixTemplate(name: string, shape: readonly number[], format: string):
 class Compiler {
   readonly g: Graph;
   readonly nodes = new Map<string, Node>();
-  readonly modules: SceneModule[] = [];
+  readonly modules: ModuleRec[] = [];
+  readonly moduleStack: ModuleRec[] = [];
   readonly backward: { node: Node; text: BackwardOverride; where: Where }[] = [];
   private readonly values: Record<string, unknown>;
   private readonly usedValues = new Set<string>();
@@ -752,6 +781,7 @@ class PageCompiler {
     const inputsWhere = child(this.where, page, 'inputs');
     const inputs = record(page.inputs, inputsWhere, 'inputs');
     const vocab = page.vocab;
+    const sequence = this.sequenceInputs(env, tree);
     for (const [name, spec] of Object.entries(inputs)) {
       const at = child(inputsWhere, inputs, name);
       if (!isRecord(spec)) fail(at, 'a page input needs tokens or value');
@@ -760,13 +790,7 @@ class PageCompiler {
       const tex = defaultTex(name);
       try {
         if (Array.isArray(spec.tokens)) {
-          if (!Array.isArray(vocab)) fail(at, 'tokens need a vocab list on the page');
-          const ids = (spec.tokens as unknown[]).map((token, i) => {
-            const id = (vocab as unknown[]).indexOf(token);
-            if (id < 0) fail(child(child(at, spec, 'tokens'), spec.tokens as unknown[], i), `token '${String(token)}' is not in vocab`);
-            return id;
-          });
-          node = c.g.label(name, given ?? ids, { tokens: vocab as string[], tex, elem: elemOf(tex) });
+          node = c.g.label(name, given ?? this.tokenIds(spec.tokens as unknown[], child(at, spec, 'tokens')), { tokens: vocab as string[], tex, elem: elemOf(tex) });
         } else if (spec.value !== undefined) {
           const values = (given ?? spec.value) as Nested;
           node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex) });
@@ -789,35 +813,29 @@ class PageCompiler {
     c.checkValuesUsed();
     this.placeLeaves(tree);
     const forward = steps.map((s) => s.step);
-    const visible = [...new Set(forward.flatMap((s) => list(s.show)))].sort((a, b) => a.id - b.id);
-    const merge = forward.map((s) => list(s.show).filter((n) => n.grad !== null)).filter((group) => group.length > 1);
-    const override: Record<number, BackwardOverride> = {};
-    if (c.backward.length > 0) {
-      const groups = backwardGroups(c.g, visible, { auto: true, merge });
-      for (const entry of c.backward) {
-        const index = groups.findIndex((group) => group.includes(entry.node));
-        if (index < 0) fail(entry.where, `node '${entry.node.name}' has no backward step`);
-        override[index + 1] = entry.text;
-      }
+    for (const entry of c.backward) {
+      const target = forward.find((step) => list(step.show).filter((n) => !isLeafLike(n)).includes(entry.node));
+      if (target === undefined) fail(entry.where, `node '${entry.node.name}' is not computed in any forward step`);
+      target.backward = { ...target.backward, ...entry.text };
     }
+    const modules = this.pageModules();
+    this.placeSteps(forward, modules);
+    const leavesStep = this.leavesStep(env);
     const overviewWhere = child(this.where, page, 'overview');
     const overview = page.overview === undefined ? undefined : record(page.overview, overviewWhere, 'overview');
-    const stepsSpec: StepsSpec = {
-      forward,
-      backward: { auto: true, merge, override },
-    };
+    const stepsSpec: StepsSpec = { forward: [...leavesStep, ...forward], backward: 'reverse', modules };
     if (overview !== undefined) {
-      stepsSpec.overview = {
-        title: overview.title === undefined ? String(page.title) : c.text(overview.title, { ...env, where: child(overviewWhere, overview, 'title') }),
-        text: c.text(overview.text, { ...env, where: child(overviewWhere, overview, 'text') }),
-      };
+      const texts = this.texts(overview, { ...env, where: overviewWhere }, OVERVIEW_KEYS);
+      stepsSpec.overview = { title: texts.title ?? String(page.title), text: texts.text ?? '' };
+      if (texts.label !== undefined) stepsSpec.overview.label = texts.label;
+      if (overview.backward !== undefined) stepsSpec.overview.backward = this.texts(overview.backward, { ...env, where: child(overviewWhere, overview, 'backward') }, TEXT_KEYS);
     }
     this.warnDuplicateTex();
-    return {
+    const compiled: CompiledPage = {
       graph: c.g,
       steps: stepsSpec,
       tree,
-      modules: c.modules,
+      modules,
       panels: this.panels(env),
       nodes: c.nodes,
       page: {
@@ -827,6 +845,175 @@ class PageCompiler {
         camera: isRecord(page.camera) ? (page.camera as CameraOptions) : undefined,
       },
     };
+    if (sequence !== undefined) compiled.sequence = sequence;
+    if (page.layout !== undefined) compiled.layout = page.layout;
+    return compiled;
+  }
+
+  tokenIds(tokens: unknown[], where: Where): number[] {
+    const vocab = this.page.vocab;
+    if (!Array.isArray(vocab)) fail(where, 'tokens need a vocab list on the page');
+    return tokens.map((token, i) => {
+      const id = (vocab as unknown[]).indexOf(token);
+      if (id < 0) fail(child(where, tokens, i), `token '${String(token)}' is not in vocab`);
+      return id;
+    });
+  }
+
+  sequenceInputs(env: Env, tree: LayoutTree): PageSequence | undefined {
+    const c = this.c;
+    const page = this.page;
+    if (page.sequence === undefined) return undefined;
+    const where = child(this.where, page, 'sequence');
+    const spec = record(page.sequence, where, 'sequence');
+    checkKeys(spec, SEQUENCE_KEYS, where);
+    if (!Array.isArray(spec.tokens) || spec.tokens.length < 2) fail(child(where, spec, 'tokens'), 'sequence needs a list of at least two tokens');
+    for (const key of ['input', 'label']) if (typeof spec[key] !== 'string') fail(child(where, spec, key), `sequence needs '${key}', the name of the node it creates`);
+    const ids = this.tokenIds(spec.tokens as unknown[], child(where, spec, 'tokens'));
+    const T = ids.length - 1;
+    const rows = this.root.dims.get('T');
+    if (rows !== undefined && rows.toy !== T) fail(child(where, spec, 'tokens'), `sequence has ${ids.length} tokens, so T must be ${T}, but dims gives T = ${rows.toy}`);
+    const tokens = [...(page.vocab as string[])];
+    const make = (key: 'input' | 'label', values: number[]) => {
+      const name = spec[key] as string;
+      const tex = defaultTex(name);
+      const node = c.g.label(name, values, { tokens, tex, elem: elemOf(tex) });
+      this.define(this.root, name, node, { ...env, where: child(where, spec, key) });
+      tree.children.push({ kind: 'node', node });
+      c.setOwner(node, tree.children);
+      return node;
+    };
+    const input = make('input', ids.slice(0, T));
+    const label = make('label', ids.slice(1));
+    const g = c.g;
+    return {
+      tokens,
+      length: ids.length,
+      get: () => [...Array.from(input.value.data, Math.round), Math.round(label.value.data[T - 1])],
+      set: (next) => {
+        if (next.length !== ids.length || !next.every((id) => Number.isInteger(id) && id >= 0 && id < tokens.length)) {
+          throw new Error(`sequence.set: expected ${ids.length} token ids between 0 and ${tokens.length - 1}, got [${next.join(', ')}]`);
+        }
+        g.batch(() => {
+          input.set(next.slice(0, T));
+          label.set(next.slice(1));
+        });
+      },
+    };
+  }
+
+  texts(value: unknown, env: Env, allowed: ReadonlySet<string>): BackwardOverride {
+    const spec = record(value, env.where, 'a step text');
+    checkKeys(spec, allowed, env.where);
+    const out: BackwardOverride = {};
+    for (const key of ['title', 'text', 'label'] as const) {
+      if (spec[key] !== undefined) out[key] = this.c.text(spec[key], { ...env, where: child(env.where, spec, key) });
+    }
+    return out;
+  }
+
+  leavesStep(env: Env): ForwardStep[] {
+    const page = this.page;
+    if (page.leaves === undefined) return [];
+    const where = child(this.where, page, 'leaves');
+    const texts = this.texts(page.leaves, { ...env, where }, TEXT_KEYS);
+    if (texts.title === undefined) fail(where, 'leaves needs a title');
+    const show = this.c.g.nodes.filter((n) => isLeafLike(n));
+    return [{ kind: 'inputs', show, title: texts.title, label: texts.label ?? texts.title, text: texts.text ?? '' }];
+  }
+
+  openModule(id: string, title: string, subtitle: string | undefined, decl: Record<string, unknown>, env: Env): ModuleRec {
+    const flag = (key: string) => {
+      const value = decl[key];
+      if (value !== undefined && typeof value !== 'boolean') fail(child(env.where, decl, key), `${key} must be true or false`);
+      return value === true;
+    };
+    const parent = this.c.moduleStack[this.c.moduleStack.length - 1];
+    const fixed = flag('fixed');
+    const rec: ModuleRec = {
+      id,
+      parent: parent?.id ?? null,
+      title,
+      subtitle: subtitle ?? '',
+      fixed,
+      folded: fixed || flag('folded'),
+      split: flag('split'),
+      nodes: [],
+      fold: { forward: {}, backward: {} },
+      decl,
+      env,
+    };
+    this.c.modules.push(rec);
+    this.c.moduleStack.push(rec);
+    return rec;
+  }
+
+  closeModule(rec: ModuleRec, created: Node[]): void {
+    this.c.moduleStack.pop();
+    rec.nodes = created;
+    const { decl, env } = rec;
+    if (decl.fold === undefined) return;
+    const where = child(env.where, decl, 'fold');
+    const fold = record(decl.fold, where, 'fold');
+    rec.fold.forward = this.texts(fold, { ...env, where }, FOLD_KEYS);
+    if (fold.backward !== undefined) rec.fold.backward = this.texts(fold.backward, { ...env, where: child(where, fold, 'backward') }, TEXT_KEYS);
+  }
+
+  pageModules(): StepModule[] {
+    const recs = this.c.modules.filter((m) => m.nodes.some((n) => !isLeafLike(n)));
+    const byId = new Map(recs.map((m) => [m.id, m]));
+    const chain = (m: ModuleRec): ModuleRec[] => (m.parent === null || !byId.has(m.parent) ? [m] : [...chain(byId.get(m.parent)!), m]);
+    const consumers = (n: Node) => this.c.g.nodes.filter((u) => u.inputs.includes(n));
+    return recs.map((m): StepModule => {
+      const nodes = m.nodes.filter((n) => !isLeafLike(n));
+      const inside = new Set(nodes);
+      const used = nodes.flatMap((n) => n.inputs);
+      const inputs = [...new Set(used.filter((n) => !inside.has(n) && !isLeafLike(n)))];
+      const params = [...new Set(used.flatMap((n) => (isLeafLike(n) && n.kind === 'op' ? [n, n.inputs[0]] : [n])).filter((n) => isLeafLike(n) && n.kind !== 'label'))].sort((a, b) => a.id - b.id);
+      const outputs = nodes.filter((n) => consumers(n).some((u) => !inside.has(u)));
+      const { segment, sub } = this.segmentOf(chain(m));
+      const module: StepModule = {
+        id: m.id,
+        parent: m.parent !== null && byId.has(m.parent) ? m.parent : null,
+        title: m.title,
+        subtitle: m.subtitle,
+        inputs,
+        outputs: outputs.length > 0 ? outputs : nodes.slice(-1),
+        nodes,
+        params,
+        fixed: m.fixed,
+        folded: m.folded,
+        segment: segment ?? m.title,
+        forward: m.fold.forward,
+        backward: m.fold.backward,
+      };
+      if (sub !== undefined) module.sub = sub;
+      return module;
+    });
+  }
+
+  segmentOf(chain: ModuleRec[]): { segment: string | undefined; sub: string | undefined } {
+    const head = chain.find((m) => !m.split);
+    const last = chain[chain.length - 1];
+    const sub = head !== undefined && last !== head && !last.split ? last.title : undefined;
+    return { segment: head?.title, sub };
+  }
+
+  placeSteps(forward: ForwardStep[], modules: StepModule[]): void {
+    const recs = new Map(this.c.modules.map((m) => [m.id, m]));
+    const depth = new Map<string, number>();
+    for (const m of modules) depth.set(m.id, m.parent === null ? 0 : (depth.get(m.parent) ?? 0) + 1);
+    const innermost = (node: Node) => modules.filter((m) => m.nodes.includes(node)).sort((a, b) => depth.get(b.id)! - depth.get(a.id)!)[0];
+    for (const step of forward) {
+      const first = list(step.show).find((n) => !isLeafLike(n));
+      const module = first === undefined ? undefined : innermost(first);
+      const chain: ModuleRec[] = [];
+      for (let m = module === undefined ? undefined : recs.get(module.id); m !== undefined; m = m.parent === null ? undefined : recs.get(m.parent)) chain.unshift(m);
+      const { segment, sub } = this.segmentOf(chain);
+      if (module !== undefined) step.module = module.id;
+      if (step.segment === undefined) step.segment = segment ?? step.label ?? step.title;
+      if (sub !== undefined) step.sub = sub;
+    }
   }
 
   warnDuplicateTex(): void {
@@ -1066,9 +1253,10 @@ class PageCompiler {
         const branch: LayoutTree = { kind: 'module', children: [] };
         const start = c.g.nodes.length;
         if (typeof item.brace === 'string') branch.title = c.ofText(item.brace, { ...loopEnv, where: child(at, item, 'brace') });
+        const rec = branch.title === undefined ? undefined : this.openModule(join(scope.path, `${forName ?? item.for}[${v}]`), branch.title, undefined, {}, loopEnv);
         iterations.push(this.items(scope, item.body, loopEnv, branch.children, counts, ordinals));
         branches.push(branch);
-        if (branch.title !== undefined) this.addModule(branch.title, undefined, c.g.nodes.slice(start));
+        if (rec !== undefined) this.closeModule(rec, c.g.nodes.slice(start));
       }
       entries.push({ kind: 'parallel', branches });
       slots.push({ kind: 'loop', iterations });
@@ -1091,12 +1279,12 @@ class PageCompiler {
       if (!Array.isArray(value.body)) fail(child(valueWhere, value, 'body'), 'body must be a list');
       if (scope.local(name) !== undefined || scope.groups.has(name)) fail(valueWhere, `name '${name}' is already defined`);
       scope.groups.add(name);
-      const group: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
+      const group: LayoutTree = { kind: 'module', title: this.titleOf(value, braceTitle, valueEnv), children: [] };
       if (typeof value.subtitle === 'string') group.subtitle = value.subtitle;
       entries.push(group);
+      const rec = this.openModule(join(scope.path, name), group.title as string, group.subtitle, value, valueEnv);
       const groupSlots = this.items(scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);
-      const created = c.g.nodes.slice(before);
-      this.addModule(braceTitle, group.subtitle, created);
+      this.closeModule(rec, c.g.nodes.slice(before));
       slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
       return { name, beside: besideOf(value, valueWhere) };
     }
@@ -1162,7 +1350,7 @@ class PageCompiler {
     const ordinal = (ordinals.get(def) ?? 0) + 1;
     ordinals.set(def, ordinal);
     let mark: string | undefined;
-    if (typeof use.suffix === 'string') mark = c.ofText(use.suffix, { ...env, where: child(env.where, use, 'suffix') });
+    if (typeof use.suffix === 'string') mark = c.ofText(use.suffix, { ...env, where: child(env.where, use, 'suffix') }) || undefined;
     else if ((counts.get(def) ?? 0) > 1) mark = indices.length > 0 ? indices.join(',') : String(ordinal);
     const scope = new Scope(def, join(parent.path, name), mark === undefined ? [...parent.marks] : [mark, ...parent.marks]);
     parent.children.set(name, scope);
@@ -1208,9 +1396,11 @@ class PageCompiler {
       bindings.push([output, concrete.name, at]);
       if (!scope.texOverride.has(output)) scope.outputTex.set(output, this.marked(c.loopTex(concrete.base, concrete.indices), parent, false));
     }
-    const tree: LayoutTree = { kind: 'module', title: braceTitle, children: [] };
-    if (typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
+    const tree: LayoutTree = { kind: 'module', title: this.titleOf(use, braceTitle, env), children: [] };
+    if (typeof use.subtitle === 'string') tree.subtitle = use.subtitle;
+    else if (typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
     entries.push(tree);
+    const rec = this.openModule(scope.path, tree.title as string, tree.subtitle, use, env);
     this.weights(scope, decl, childEnv, use.weights === undefined ? undefined : { map: record(use.weights, child(env.where, use, 'weights'), 'weights'), env: { ...env, where: child(env.where, use, 'weights') } }, tree.children);
     this.buffers(scope, decl, childEnv, tree.children);
     const { slots } = this.body(scope, decl, childEnv, tree.children);
@@ -1219,10 +1409,10 @@ class PageCompiler {
     }
     const steps = this.moduleSteps(scope, decl, childEnv, slots);
     this.moduleBackward(decl, childEnv);
-    this.patch(scope, steps, use, env);
     for (const [output, target, at] of bindings) this.define(parent, target, scope.entries.get(output) as Node, { ...env, where: at });
+    this.patch(scope, steps, use, env);
     const created = c.g.nodes.slice(before);
-    this.addModule(braceTitle, tree.subtitle, created);
+    this.closeModule(rec, created);
     return { kind: 'child', steps, created };
   }
 
@@ -1244,11 +1434,10 @@ class PageCompiler {
     });
   }
 
-  addModule(title: string, subtitle: string | undefined, nodes: Node[]): void {
-    if (nodes.length === 0) return;
-    const module: SceneModule = { title, nodes };
-    if (subtitle !== undefined) module.subtitle = subtitle;
-    this.c.modules.push(module);
+  titleOf(decl: Record<string, unknown>, fallback: string, env: Env): string {
+    if (decl.title === undefined) return fallback;
+    if (typeof decl.title !== 'string') fail(child(env.where, decl, 'title'), 'title must be a string');
+    return this.c.ofText(decl.title, { ...env, where: child(env.where, decl, 'title') });
   }
 
   resolveSteps(scope: Scope, decl: Record<string, unknown>, env: Env, field: string): ResolvedStep[] {
@@ -1276,6 +1465,11 @@ class PageCompiler {
       if (step.active !== undefined) forward.active = withAnon(list(step.active as unknown).flatMap((s) => c.nodeList(s, fieldEnv('active'))));
       if (step.label !== undefined) forward.label = c.text(step.label, fieldEnv('label'));
       if (step.text !== undefined) forward.text = c.text(step.text, fieldEnv('text'));
+      if (step.segment !== undefined) {
+        if (typeof step.segment !== 'string') fail(child(at, step, 'segment'), 'segment must be a string');
+        forward.segment = step.segment;
+      }
+      if (step.backward !== undefined) forward.backward = this.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
       return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
     });
   }
@@ -1381,6 +1575,7 @@ class PageCompiler {
         const extra = c.text(spec.append, fieldEnv('append'));
         target.step.text = target.step.text ? `${target.step.text}\n${extra}` : extra;
       }
+      if (spec.backward !== undefined) target.step.backward = { ...target.step.backward, ...this.texts(spec.backward, fieldEnv('backward'), TEXT_KEYS) };
     }
   }
 

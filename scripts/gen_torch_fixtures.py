@@ -535,6 +535,53 @@ def transformer_op_fixtures():
     cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
+    cases += head_group_cases()
+    return cases
+
+
+def grouped_view(x, size):
+    return x.reshape(*x.shape[:-1], x.shape[-1] // size, size)
+
+
+def group_mean(x, size):
+    return grouped_view(x, size).mean(-1)
+
+
+def group_mul(x, s):
+    size = x.shape[-1] // s.shape[-1]
+    return (grouped_view(x, size) * s.unsqueeze(-1)).reshape(x.shape)
+
+
+def tile_mul(x, w):
+    size = w.shape[-1]
+    shared = w if w.dim() == 1 else w.unsqueeze(-2)
+    return (grouped_view(x, size) * shared).reshape(x.shape)
+
+
+def rotate_half_groups(x, size):
+    return rotate_half(grouped_view(x, size)).reshape(x.shape)
+
+
+def narrow_matmul(a, b, start):
+    return a[:, start : start + b.shape[0]] @ b
+
+
+def head_group_cases():
+    cases = []
+    for shape, size in [((3, 8), 4), ((6,), 2), ((2, 4), 4)]:
+        cases.append(op_case("group_mean", f"shape {shape} size {size}", lambda x, size=size: group_mean(x, size), [("input", randn(*shape))], [tensor_arg(0), size]))
+    for shape, other in [((3, 8), (3, 2)), ((2, 6), (2, 1)), ((4,), (2,))]:
+        cases.append(op_case("group_mul", f"shape {shape} by {other}", group_mul, [("input", randn(*shape)), ("input", randn(*other))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, other in [((3, 8), (4,)), ((3, 8), (3, 4)), ((2, 4), (4,))]:
+        cases.append(op_case("tile_mul", f"shape {shape} by {other}", tile_mul, [("input", randn(*shape)), ("input", randn(*other))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, size in [((3, 8), 4), ((2, 12), 6)]:
+        cases.append(
+            op_case("rotate_half", f"shape {shape} groups of {size}", lambda x, size=size: rotate_half_groups(x, size), [("input", randn(*shape))], [tensor_arg(0)], {"size": size})
+        )
+    for a, b, start in [((3, 8), (4, 3), 4), ((3, 8), (4, 3), 0), ((2, 5), (2, 4), 1)]:
+        cases.append(
+            op_case("narrow_matmul", f"{a} columns from {start} by {b}", lambda x, y, start=start: narrow_matmul(x, y, start), [("input", randn(*a)), ("input", randn(*b))], [tensor_arg(0), tensor_arg(1), start])
+        )
     return cases
 
 

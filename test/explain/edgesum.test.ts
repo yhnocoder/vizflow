@@ -110,6 +110,32 @@ const cases: Case[] = [
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
   {
+    op: 'rotate_half',
+    build: (g, r) => {
+      const x = g.input('x', [3, 8], randomValues(r, [3, 8]));
+      return { out: g.rotate_half(x, { size: 4 }), inputs: [x] };
+    },
+  },
+  {
+    op: 'group_mean',
+    build: (g, r) => {
+      const x = g.input('x', [3, 8], randomValues(r, [3, 8]));
+      return { out: g.group_mean(x, 4), inputs: [x] };
+    },
+  },
+  { op: 'group_mul', build: (g, r) => binary(g, r, 'group_mul', [3, 8], [3, 2]) },
+  { op: 'group_mul', build: (g, r) => binary(g, r, 'group_mul', [2, 4], [2, 1]) },
+  { op: 'tile_mul', build: (g, r) => binary(g, r, 'tile_mul', [3, 8], [4]) },
+  { op: 'tile_mul', build: (g, r) => binary(g, r, 'tile_mul', [3, 8], [3, 4]) },
+  {
+    op: 'narrow_matmul',
+    build: (g, r) => {
+      const A = g.input('A', [3, 8], randomValues(r, [3, 8]));
+      const B = g.input('B', [4, 3], randomValues(r, [4, 3]));
+      return { out: g.narrow_matmul(A, B, 4), inputs: [A, B] };
+    },
+  },
+  {
     op: 'embedding',
     build: (g, r) => {
       const ids = g.label('ids', [[0, 2], [2, 2]]);

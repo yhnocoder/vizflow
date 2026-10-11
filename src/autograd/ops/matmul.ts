@@ -66,3 +66,37 @@ export const matmulOp: OpDef<NoAttrs> = {
     return [new Tensor(a.shape, gA.data), new Tensor(b.shape, gB.data)];
   },
 };
+
+export interface NarrowMatmulAttrs {
+  start: number;
+}
+
+function narrowMatmulShape(a: readonly number[], b: readonly number[], start: number): number[] {
+  if (a.length !== 2 || b.length !== 2 || !Number.isInteger(start) || start < 0 || start + b[0] > a[1]) {
+    throw new Error(`narrow_matmul: cannot multiply columns ${start}..${start + (b[0] ?? 0) - 1} of ${formatShape(a)} by ${formatShape(b)}`);
+  }
+  return [a[0], b[1]];
+}
+
+function columns(a: Tensor, start: number, width: number): Tensor {
+  const rows = a.shape[0];
+  const out = new Tensor([rows, width]);
+  for (let r = 0; r < rows; r++) out.data.set(a.data.subarray(r * a.shape[1] + start, r * a.shape[1] + start + width), r * width);
+  return out;
+}
+
+export const narrowMatmulOp: OpDef<NarrowMatmulAttrs> = {
+  name: 'narrow_matmul',
+  args: ['input', 'other', 'start'],
+  tensors: ['input', 'other'],
+  shape: ([a, b], { start }) => narrowMatmulShape(a, b, start),
+  forward: ([a, b], { start }) => multiply(columns(a, start, b.shape[0]), b, narrowMatmulShape(a.shape, b.shape, start)),
+  backward: (gradOut, [a, b], _out, { start }) => {
+    const width = b.shape[0];
+    const gSlice = multiply(gradOut, transposed2d(b, 'right'), [a.shape[0], width]);
+    const gA = new Tensor(a.shape);
+    for (let r = 0; r < a.shape[0]; r++) gA.data.set(gSlice.data.subarray(r * width, (r + 1) * width), r * a.shape[1] + start);
+    const gB = multiply(transposed2d(columns(a, start, width), 'left'), gradOut, [width, b.shape[1]]);
+    return [gA, gB];
+  },
+};

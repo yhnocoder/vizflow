@@ -15,14 +15,14 @@ test('qwen3 YAML page compiles in the browser and walks every step without error
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 60_000 });
   await expect(page.locator('vizflow-page > .vf-header .vf-title')).toHaveText('Qwen3 一层：从 token 到损失');
   await expect(page.locator('vizflow-page .vf-stage .vf-scene canvas')).toHaveCount(1);
-  await expect(page.locator('.vf-loss-value')).toHaveText('2.746');
+  await expect(page.locator('.vf-loss-value')).toHaveText('2.777');
   const count = await page.evaluate(() => (window as unknown as Win).vizflow.steps.list.length);
   expect(count).toBeGreaterThan(80);
   for (let i = 0; i < count; i++) {
     await page.evaluate((step) => (window as unknown as Win).vizflow.steps.go(step), i);
   }
   await page.getByRole('button', { name: /更新一步全部参数/ }).click();
-  await expect(page.locator('.vf-loss-value')).not.toHaveText('2.746');
+  await expect(page.locator('.vf-loss-value')).not.toHaveText('2.777');
   expect(errors).toEqual([]);
 });
 
