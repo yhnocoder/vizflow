@@ -36,12 +36,14 @@ import {
   absOp,
   signOp,
   clampMinOp,
+  logicalNotOp,
 } from './elementwise';
 import {
   catOp,
   causalConv1dOp,
   cummaxOp,
   embeddingOp,
+  expandOp,
   gatherOp,
   indexAddOp,
   indexOp,
@@ -52,6 +54,8 @@ import {
   permuteOp,
   repeatInterleaveOp,
   repeatOp,
+  reshapeOp,
+  scatterOp,
   selectOp,
   topkIndicesOp,
   topkMaskOp,
@@ -180,6 +184,12 @@ export interface BuiltinOps {
   pad(input: Node, ...pad: (number | string)[]): Node;
   triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
   masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
+  logical_not(input: Node, options?: OpOptions): Node;
+  scatter(input: Node, dim: number, index: Node, value: number, options?: OpOptions): Node;
+  expand(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
+  expand(input: Node, ...sizes: (number | string)[]): Node;
+  reshape(input: Node, shape: (number | string)[], options?: OpOptions): Node;
+  reshape(input: Node, ...shape: (number | string)[]): Node;
   solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
 }
 
@@ -248,6 +258,10 @@ export const builtinOps: readonly AnyOpDef[] = [
   clampMinOp,
   repeatOp,
   cummaxOp,
+  logicalNotOp,
+  scatterOp,
+  expandOp,
+  reshapeOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

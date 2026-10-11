@@ -34,12 +34,14 @@ import {
   absExplain,
   signExplain,
   clampMinExplain,
+  logicalNotExplain,
 } from './elementwise';
 import {
   catExplain,
   causalConv1dExplain,
   cummaxExplain,
   embeddingExplain,
+  expandExplain,
   gatherExplain,
   indexAddExplain,
   indexExplain,
@@ -50,6 +52,8 @@ import {
   permuteExplain,
   repeatExplain,
   repeatInterleaveExplain,
+  reshapeExplain,
+  scatterExplain,
   selectExplain,
   topkIndicesExplain,
   topkMaskExplain,
@@ -126,6 +130,10 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   clamp_min: clampMinExplain,
   repeat: repeatExplain,
   cummax: cummaxExplain,
+  logical_not: logicalNotExplain,
+  scatter: scatterExplain,
+  expand: expandExplain,
+  reshape: reshapeExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

@@ -543,6 +543,19 @@ def transformer_op_fixtures():
     cases += hash_and_mask_cases()
     cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
     cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
+    cases += group_mask_cases()
+    return cases
+
+
+def group_mask_cases():
+    cases = []
+    for shape, dim, index in [((3, 4), 1, [[2, 0], [1, 3], [3, 2]]), ((4, 3), 0, [[1, 0, 3]]), ((2, 3, 2), -1, [[[1], [0], [1]], [[0], [0], [1]]])]:
+        cases.append(op_case("scatter", f"{shape} dim {dim} index {index} value 1", lambda x, i, dim=dim: x.scatter(dim, i, 1.0), [("input", randn(*shape)), ("label", torch.tensor(index))], [tensor_arg(0), dim, tensor_arg(1), 1.0]))
+    for shape, sizes in [((3, 1), (-1, 4)), ((2, 1, 3), (2, 2, 5, 3)), ((3, 2, 1), (-1, -1, 4))]:
+        cases.append(op_case("expand", f"{shape} to {sizes}", lambda x, sizes=sizes: x.expand(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    for shape, sizes in [((3, 2, 4), (-1, 8)), ((2, 6), (3, 2, 2))]:
+        cases.append(op_case("reshape", f"{shape} to {sizes}", lambda x, sizes=sizes: x.reshape(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    cases.append(op_case("logical_not", "bool (3, 4)", torch.logical_not, [("label", randint(2, (3, 4)).bool())], [tensor_arg(0)]))
     return cases
 
 
