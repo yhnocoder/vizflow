@@ -184,3 +184,13 @@ export const transposeOp: OpDef<TransposeAttrs> = {
   forward: ([a], attrs) => transposeTensor(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [transposeTensor(gradOut, attrs)],
 };
+
+export const geOp: OpDef<{ other: number }> = {
+  name: 'ge',
+  args: ['input', 'other'],
+  tensors: ['input'],
+  differentiable: [false],
+  shape: ([input]) => [...input],
+  forward: ([input], { other }) => mapWith(input, (x) => (x >= other ? 1 : 0)),
+  backward: () => [null],
+};

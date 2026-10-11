@@ -1,5 +1,6 @@
 import { renderText } from '../formula';
 import type { SceneController } from './controller';
+import { parallelLegend } from './parallel';
 
 export const KEY_FRAME_TEXT = '墨线框 = 被取用的行或标签';
 export const JUMP_PLACEHOLDER = '跳到模块…';
@@ -18,11 +19,17 @@ function chip(text: string): HTMLButtonElement {
   return button;
 }
 
-export function buildChrome(root: HTMLDivElement, hint: string | undefined): void {
+export function buildChrome(root: HTMLDivElement, hint: string | undefined, parallel = false): void {
   const key = document.createElement('div');
   key.className = 'vf-key';
   key.innerHTML = `<span><i class="vf-sw" style="background:var(--pos)"></i>正</span><span><i class="vf-sw" style="background:var(--neg)"></i>负</span><span>${KEY_FRAME_TEXT}</span>`;
   root.appendChild(key);
+  if (parallel) {
+    const ranks = document.createElement('div');
+    ranks.className = 'vf-key vf-ranks';
+    ranks.innerHTML = parallelLegend();
+    root.appendChild(ranks);
+  }
   if (hint !== undefined) {
     const el = document.createElement('div');
     el.className = 'vf-hint';

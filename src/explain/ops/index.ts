@@ -20,7 +20,9 @@ import {
   subExplain,
   transposeExplain,
   whereExplain,
+  geExplain,
 } from './elementwise';
+import { allReduceExplain, combineExplain, dispatchExplain } from './comm';
 import {
   catExplain,
   causalConv1dExplain,
@@ -34,6 +36,8 @@ import {
   selectExplain,
   topkMaskExplain,
   viewExplain,
+  indexCopyExplain,
+  topkIndicesExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
 import { groupedMmExplain, matmulExplain, scaledMmExplain, selectMatmulExplain } from './matmul';
@@ -83,6 +87,12 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   grouped_mm: groupedMmExplain,
   scaled_mm: scaledMmExplain,
   index_add: indexAddExplain,
+  ge: geExplain,
+  index_copy: indexCopyExplain,
+  topk_indices: topkIndicesExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
+registerExplain('all_reduce', allReduceExplain);
+registerExplain('dispatch', dispatchExplain);
+registerExplain('combine', combineExplain);

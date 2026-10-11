@@ -1,4 +1,4 @@
-import { type Node, opDef } from '../../autograd';
+import { type Node, type Placement, REPLICATE, opDef } from '../../autograd';
 import type { LayoutEntry } from '../../scene3d';
 import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
@@ -89,7 +89,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
   for (const [name, weightDecl] of Object.entries(weights)) {
     const at = child(weightsWhere, weights, name);
     if (!isRecord(weightDecl)) fail(at, `weight '${name}' must be a mapping`);
-    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype']), at);
+    checkKeys(weightDecl, new Set(['shape', 'init', 'tex', 'dtype', 'place']), at);
     const shape = shapeOf(c, weightDecl.shape, { ...env, where: child(at, weightDecl, 'shape') }, child(at, weightDecl, 'shape'));
     const binding = bound?.map[name];
     if (binding !== undefined) {
@@ -116,7 +116,24 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
     }
     define(c, scope, name, node, { ...env, where: at });
     c.setOwner(node, entries);
+    if (weightDecl.place !== undefined) c.leafPlacements.set(node, placeOf(c, weightDecl.place, node, child(at, weightDecl, 'place')));
   }
+}
+
+function placeOf(c: Compiler, spec: unknown, node: Node, where: Where): Placement {
+  const mesh = c.mesh;
+  if (mesh === undefined) fail(where, 'place needs a mesh on the page');
+  if (!isRecord(spec)) fail(where, `place must map the mesh axis to a placement, for example { ${mesh.axis}: shard(0) }`);
+  for (const axis of Object.keys(spec)) if (axis !== mesh.axis) fail(child(where, spec, axis), `'${axis}' is not an axis of the mesh; the mesh has '${mesh.axis}'`);
+  const at = child(where, spec, mesh.axis);
+  const text = spec[mesh.axis];
+  if (text === 'replicate') return REPLICATE;
+  const match = typeof text === 'string' ? /^shard\((-?\d+)\)$/.exec(text.replace(/\s+/g, '')) : null;
+  if (match === null) fail(at, 'a placement is replicate or shard(<dim>)');
+  const dim = Number(match[1]) < 0 ? Number(match[1]) + node.shape.length : Number(match[1]);
+  if (dim < 0 || dim >= node.shape.length) fail(at, `shard(${match[1]}) is outside the ${node.shape.length} dimensions of '${node.name}'`);
+  if (node.shape[dim] % mesh.size !== 0) fail(at, `dimension ${dim} of '${node.name}' has size ${node.shape[dim]}, which ${mesh.size} devices cannot split evenly`);
+  return { kind: 'shard', dim };
 }
 
 export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, unknown>, env: Env, entries: LayoutEntry[]): void {

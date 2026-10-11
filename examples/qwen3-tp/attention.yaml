@@ -1,0 +1,144 @@
+module: Qwen3TPAttention
+subtitle: Qwen3Attention，按 head 切到各张卡
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  RoPE: vizflow/nn/rope
+  GQA: vizflow/nn/gqa
+params:
+  H:     { type: dim }
+  Hkv:   { type: dim }
+  dh:    { type: dim }
+  theta: { type: float, default: 1e6 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [att]
+cache: [kr, v]
+fold:
+  label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
+  title: self_attn（已折叠）
+  text: |
+    q/k/v 投影、q_norm/k_norm、RoPE、注意力、o_proj 和最后的 all_reduce 都收进了盒子。盒子的输入 $\of{x}$ 和输出 $\of{att}$ 都是 Replicate，每张卡上都有完整的一份；中间的张量按 head 切在两张卡上。
+    $$\of{att}=\mathrm{self\_attn}(\of{x})={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 self_attn（已折叠）
+    text: |
+      盒子里的反向在两张卡上各算各的 head，最后在 $\partial\of{x}$ 上做一次 all_reduce。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+weights:
+  Wq: { shape: [H*dh, d], place: { tp: shard(0) } }
+  Wk: { shape: [Hkv*dh, d], place: { tp: shard(0) } }
+  Wv: { shape: [Hkv*dh, d], place: { tp: shard(0) } }
+  Wo: { shape: [d, H*dh], place: { tp: shard(1) } }
+buffers:
+  M: { value: causal_mask(T) }
+body:
+  - q: 'view(x @ Wq.T, T, H, dh)'
+  - k: 'view(x @ Wk.T, T, Hkv, dh)'
+  - v: 'view(x @ Wv.T, T, Hkv, dh)'
+  - qk_norm:
+      title: q_norm $\cdot$ k_norm
+      folded: true
+      fold:
+        label: '$\of{qn},\ \of{kn}$'
+        title: q_norm 和 k_norm（已折叠）
+        text: |
+          每个位置、每个 head 各自做 RMSNorm，范围是 $d_h$。归一化只在一个 head 之内，所以按 head 切开以后每张卡各算自己的 head，不需要通信。两个 $\boldsymbol{\gamma}$ 是 Replicate，每张卡上都有一份。
+          $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
+        backward:
+          label: '$\partial\boldsymbol{\gamma},\ \partial\of{q},\ \partial\of{k}$'
+          title: 穿过 q_norm 和 k_norm（已折叠）
+          text: |
+            每张卡只用自己的 head 算 $\boldsymbol{\gamma}$ 的梯度，得到的是 Partial：两张卡的部分值相加才是完整的梯度，所以 $\partial\boldsymbol{\gamma}_q$ 和 $\partial\boldsymbol{\gamma}_k$ 在这里各做一次 all_reduce。
+            $$\frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ q_norm.weight.grad | matrix:3 }}$$
+      body:
+        - q_norm:
+            use: RMSNorm
+            inline: true
+            suffix: q
+            inputs: { x: q }
+            outputs: { out: qn }
+            tex: { out: '\bar{\of{q}}', ms: '\mathrm{ms}^{q}', r: 'r^{q}' }
+        - k_norm:
+            use: RMSNorm
+            inline: true
+            suffix: k
+            beside: q_norm
+            inputs: { x: k }
+            outputs: { out: kn }
+            tex: { out: '\bar{\of{k}}', ms: '\mathrm{ms}^{k}', r: 'r^{k}' }
+  - apply_rotary_pos_emb:
+      use: RoPE
+      folded: true
+      params: { theta: theta }
+      inputs: { q: qn, k: kn }
+      outputs: { q_embed: qr, k_embed: kr }
+      tex: { q_embed: "\\mathbf{q}'", k_embed: "\\mathbf{k}'" }
+      fold:
+        text: |
+          RoPE 在每个 head 里把分量两两旋转，只用到这个 head 自己的分量，所以每张卡各转自己的 head。cos、sin 表是 Replicate。
+          $$\mathbf{q}'={{ qr | matrix:2 }}$$
+        backward:
+          text: |
+            反向把梯度转回去，同样只在一个 head 之内。
+            $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }}$$
+  - eager_attention_forward:
+      use: GQA
+      inline: true
+      inputs: { q: qr, k: kr, v: v, mask: M }
+      outputs: { o: o }
+      brace: { title: eager_attention_forward, subtitle: '每个 head 在自己的卡上' }
+      steps:
+        krep:
+          append: 每个 query head 取到的 kv head 和它在同一张卡上：head 1 在 rank 0，head 2 在 rank 1，所以这里不需要通信。
+        S:
+          append: 打分以后的每一张表只属于一个 head，整张表都在这个 head 所在的卡上。
+        div:
+          append: softmax 沿 key 的方向归一化，这个方向没有被切开，所以每张卡各自完成自己 head 的 softmax。
+        concat:
+          append: 两个 head 并排拼回去以后，$\mathbf{o}$ 的前一半列在 rank 0，后一半列在 rank 1，也就是按列切开。拼接只是记账，数据仍然留在各自的卡上。
+  - att_partial: { op: o @ Wo.T, tex: '\mathbf{att}^{\mathrm{part}}' }
+  - att: { op: 'all_reduce(att_partial, tp)', tex: '\mathbf{att}' }
+steps:
+  - id: qkv
+    brace: { title: 'q_proj $\cdot$ k_proj $\cdot$ v_proj', subtitle: '按输出列切开' }
+    show: [Wq.T, Wk.T, Wv.T, q, k, v]
+    label: '$\of{q},\ \of{k},\ \of{v}$'
+    title: q_proj、k_proj、v_proj：按列切开
+    text: |
+      三块权重都按输出的列切开（Megatron 叫 column parallel）：每张卡只存自己那几个 head 的列，$W^{\top}$ 的左半边在 rank 0，右半边在 rank 1。输入 $\of{x}$ 是 Replicate，两张卡上都有完整的一份，所以每张卡直接算出自己 head 的 q、k、v，前向不需要通信。这就是 Megatron 里的 $f$：前向是恒等，什么也不做。
+      $$\mathbf{q}=\of{x}W_q^{\top}={{ q | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
+      title: $f$ 的反向：$\partial\of{x}$ 要 all_reduce
+      text: |
+        反向时每张卡用自己的 head 算 $\frac{\partial\ell}{\partial\mathbf{q}}W_q$ 这样的乘积，但 $\of{x}$ 的每个分量连着所有 head 的列，一张卡只能算出自己那几列的贡献。所以两张卡上的 $\partial\of{x}$ 都只是部分和，是 Partial，要做一次 all_reduce 相加以后才是完整的梯度。这一步对应 Megatron 的 $f$ 的反向，它正好和前向相反：前向不通信，反向 all_reduce。三块权重自己的梯度只和本卡的列有关，留在本卡，不需要通信。
+        $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
+  - id: o_proj
+    brace: { title: o_proj, subtitle: '按输入行切开' }
+    show: [Wo.T, att_partial]
+    label: o_proj
+    title: o_proj：按行切开，得到 Partial
+    text: |
+      $W_o^{\top}$ 按行切开（row parallel）：上半边的行在 rank 0，下半边在 rank 1，正好对上 $\mathbf{o}$ 被切开的列。每张卡把自己的那几列乘上自己的那几行，得到一个完整形状的 $T\times d$ 矩阵，但它只是收缩维上一半的求和。两张卡的结果相加才是真正的输出，这种状态叫 Partial。图里每个格子画成两根细柱，分别是两张卡的部分值，虚线框是它们的和。公式里的上标 $[r]$ 表示 rank $r$ 上的那一块。
+      $$\mathbf{o}W_o^{\top}=\underbrace{\mathbf{o}^{[0]}{W_o^{[0]}}^{\top}}_{\text{rank 0}}+\underbrace{\mathbf{o}^{[1]}{W_o^{[1]}}^{\top}}_{\text{rank 1}}={{ att_partial | matrix:2 }}$$
+    backward:
+      label: '$\partial W_o,\ \partial\mathbf{o}$'
+      title: 传到 o_proj 权重和 o
+      text: |
+        $\frac{\partial\ell}{\partial\mathbf{att}}$ 是 Replicate，每张卡都有完整的一份，各自乘上自己那几行权重，就得到自己那几列的 $\partial\mathbf{o}$，不需要通信。
+        $$\frac{\partial\ell}{\partial\mathbf{o}}=\frac{\partial\ell}{\partial\mathbf{att}}W_o={{ o.grad | matrix:3 }}$$
+  - id: g
+    brace: { title: all_reduce, subtitle: '$g$：前向通信' }
+    show: att
+    label: '$\mathrm{all\_reduce}$'
+    title: $g$：前向 all_reduce
+    text: |
+      all_reduce 把两张卡上的部分值相加，结果发回每一张卡，之后 $\of{att}$ 又是 Replicate，可以和残差相加。这就是 Megatron 里的 $g$：前向 all_reduce。数值上 $\of{att}$ 和单卡的结果完全相同。悬停标签可以看到真实规模下这次通信的消息大小。
+      $$\of{att}=\mathbf{att}^{\mathrm{part}}_{\text{rank 0}}+\mathbf{att}^{\mathrm{part}}_{\text{rank 1}}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{att}^{\mathrm{part}}$'
+      title: $g$ 的反向：不通信
+      text: |
+        前向是求和，反向就是把梯度复制给每一个加数。$\frac{\partial\ell}{\partial\of{att}}$ 本来就是 Replicate，每张卡上都有完整的一份，直接当作自己那份部分和的梯度，不需要通信。$g$ 和 $f$ 正好相反：$g$ 前向 all_reduce、反向不通信，$f$ 前向不通信、反向 all_reduce。
+        $$\frac{\partial\ell}{\partial\mathbf{att}^{\mathrm{part}}}=\frac{\partial\ell}{\partial\of{att}}={{ att.grad | matrix:3 }}$$

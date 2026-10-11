@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { convTaps, indexAddTarget, routeOrder } from '../../autograd/ops/index_ops';
+import { convTaps, indexAddTarget, indexCopySource, routeOrder } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -189,5 +189,27 @@ export const indexAddExplain: OpExplain = {
       if (indexAddTarget(index, r, size) === out[0]) picks.push({ arg: 0, index: [r, ...out.slice(1)] });
     }
     return picks;
+  },
+};
+
+export const indexCopyExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, arg, input) => {
+    const from = indexCopySource(ctx, out);
+    return from.arg === arg && from.index.every((v, d) => v === input[d]) ? 1 : 0;
+  },
+  tex: {
+    forward: (s) => `\\operatorname{index\\_copy}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]},${s.in[2]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [indexCopySource(ctx, out)],
+};
+
+export const topkIndicesExplain: OpExplain = {
+  pattern: 'dense',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{topk}(${s.in[0]},${(s.attrs as { k: number }).k}).\\mathrm{indices}`,
+    local: () => '0',
   },
 };

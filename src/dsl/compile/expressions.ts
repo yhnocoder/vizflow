@@ -1,4 +1,4 @@
-import { Node, opDef } from '../../autograd';
+import { Node, PlacementError, opDef } from '../../autograd';
 import { explainOf } from '../../explain';
 import { type Ast, ParseError, parseExpr } from '../expr';
 import { DslError } from '../source';
@@ -45,7 +45,7 @@ export class ExpressionCompiler extends CompilerState {
 
   resolve(ast: Ast, env: Env, make: Make | undefined, offset: number, top = false): Resolved {
     if (ast.k === 'name') {
-      const found = this.lookupFirst(ast.name, env) ?? (ast.name === 'inf' ? num(Infinity) : undefined);
+      const found = this.lookupFirst(ast.name, env) ?? (ast.name === 'inf' ? num(Infinity) : ast.name === this.mesh?.axis ? ast.name : undefined);
       if (found === undefined) this.fail(env, `name '${ast.name}' is not defined in ${this.scopeLabel(env.scope)}`, offset + ast.pos);
       return found;
     }
@@ -252,6 +252,12 @@ export class ExpressionCompiler extends CompilerState {
     } catch (error) {
       if (error instanceof DslError) throw error;
       this.fail(env, (error as Error).message, at);
+    }
+    try {
+      this.placements?.of(node);
+    } catch (error) {
+      if (error instanceof PlacementError) this.fail(env, error.message, at);
+      throw error;
     }
     if (!top) make.anon.push(node);
     return node;

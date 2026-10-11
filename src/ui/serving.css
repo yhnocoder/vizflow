@@ -1,0 +1,59 @@
+.vf-sv {
+  --sv-now: var(--pos);
+  --sv-decode: var(--neg);
+  --sv-hit: var(--note);
+  --sv-done: var(--line-strong);
+  --sv-wait: var(--line);
+  --sv-duplicate: #c4473f;
+  --sv-inflight: #7a62c9;
+  --sv-pad: var(--muted);
+  font-family: var(--sans);
+  color: var(--fg);
+}
+.vf-sv-stepper { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 10px 0; background: var(--bg); border-bottom: 1px solid var(--line); }
+.vf-sv-stepper input[type=range] { flex: 1 1 12rem; accent-color: var(--pos); }
+.vf-sv-stepper button { font: inherit; font-size: 13.5px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); border-radius: 999px; padding: 3px 14px; cursor: pointer; }
+.vf-sv-stepper button:disabled { opacity: .45; cursor: default; }
+.vf-sv-stepper button:focus-visible, .vf-sv-stepper input:focus-visible { outline: 2px solid var(--pos); outline-offset: 2px; }
+.vf-sv-stepnum { font-family: var(--mono); font-size: 13px; min-width: 7em; }
+.vf-sv-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12.5px; color: var(--muted); margin: 10px 0; }
+.vf-sv-legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.vf-sv-legend i.vf-sv-wait { outline: 1px solid var(--line-strong); }
+.vf-sv-panes { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.vf-sv-pane { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 16px; min-width: 0; }
+.vf-sv-pane h3 { margin: 0 0 6px; font-family: var(--serif); font-weight: 500; font-size: 20px; }
+.vf-sv-stats { display: flex; flex-wrap: wrap; gap: 4px 20px; font-size: 13px; color: var(--muted); }
+.vf-sv-stats b { color: var(--fg); font-family: var(--mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+.vf-sv-firsts, .vf-sv-sub, .vf-sv-head { font-family: var(--mono); font-size: 11.5px; color: var(--muted); margin: 8px 0 3px; }
+.vf-sv-head { color: var(--fg); font-size: 12.5px; margin-top: 12px; }
+.vf-sv-narration { margin: 4px 0 8px; padding-left: 1.2em; font-size: 13.5px; line-height: 1.6; }
+.vf-sv-events { margin: 6px 0 0; padding-left: 1.2em; font-family: var(--mono); font-size: 12px; }
+.vf-sv-scroll { overflow-x: auto; }
+.vf-sv-scroll svg { display: block; }
+.vf-sv-req { display: flex; align-items: center; gap: 8px; height: 19px; }
+.vf-sv-req svg { flex: none; }
+.vf-sv-req-label { width: 11rem; flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vf-sv-req-label b { color: var(--fg); font-weight: 500; }
+.vf-sv-req-label i { font-style: normal; }
+.vf-sv-req-label em { font-style: normal; color: var(--pos); }
+.vf-sv-scale { font-family: var(--mono); font-size: 10.5px; color: var(--muted); flex: none; }
+.vf-sv-cell { fill: var(--sv-wait); stroke: var(--line-strong); stroke-width: .4; }
+.vf-sv-cell-none { fill: none; stroke: var(--line); }
+rect.vf-sv-now, .vf-sv-legend i.vf-sv-now { fill: var(--sv-now); background: var(--sv-now); }
+rect.vf-sv-decode { fill: var(--sv-decode); }
+rect.vf-sv-done, .vf-sv-legend i.vf-sv-done { fill: var(--sv-done); background: var(--sv-done); }
+rect.vf-sv-hit, .vf-sv-legend i.vf-sv-hit { fill: var(--sv-hit); background: var(--sv-hit); }
+rect.vf-sv-duplicate, .vf-sv-legend i.vf-sv-duplicate { fill: var(--sv-duplicate); background: var(--sv-duplicate); }
+rect.vf-sv-inflight, .vf-sv-legend i.vf-sv-inflight { fill: var(--sv-inflight); background: var(--sv-inflight); }
+.vf-sv-legend i.vf-sv-wait { background: var(--sv-wait); }
+rect.vf-sv-pad { fill: var(--sv-pad); opacity: .5; }
+.vf-sv-tick { stroke: var(--fg); stroke-width: 1; }
+.vf-sv-dot { fill: var(--fg); }
+.vf-sv-batch-label, .vf-sv-tl-label { font-family: var(--mono); font-size: 10.5px; fill: var(--surface); }
+.vf-sv-bar { cursor: pointer; }
+.vf-sv-kvline { fill: none; stroke: var(--fg); stroke-width: 1; opacity: .7; }
+.vf-sv-cursor { stroke: var(--pos); stroke-width: 1.5; }
+.vf-sv-lane { font-family: var(--mono); font-size: 11px; fill: var(--muted); }
+.vf-sv-cpu { fill: var(--sv-done); }
+.vf-sv-proc { fill: var(--sv-hit); }
+.vf-sv-gpu { fill: var(--sv-now); }

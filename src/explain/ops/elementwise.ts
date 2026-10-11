@@ -161,3 +161,12 @@ export const whereExplain: OpExplain = {
     local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
   },
 };
+
+export const geExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 0,
+  tex: {
+    forward: (s) => `[${s.in[0]}\\ge ${scalarTex(s.attrs)}]`,
+    local: () => '0',
+  },
+};

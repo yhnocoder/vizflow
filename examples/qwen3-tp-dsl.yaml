@@ -1,0 +1,258 @@
+title: Qwen3 一层，两张卡的张量并行
+lede: 和单卡的 Qwen3 页面算的是同一个 decoder 层，只是权重按 Megatron 的张量并行（TP）切到两张卡上。柱子的颜色表示数据在哪张卡上；Partial 的格子画成两根细柱和一个虚线框。上方的开关在训练和推理之间切换，推理从 2 个 token 的提示开始，先 prefill 再逐个 decode；悬停 all_reduce 的标签可以看到真实规模下的通信量。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 悬停标签看卡片 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm:     vizflow/nn/rmsnorm
+  TPAttention: ./qwen3-tp/attention.yaml
+  TPMLP:       ./qwen3-tp/mlp.yaml
+mesh: { tp: 2 }
+dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 2, dh: 2 }
+dtype: bf16
+real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128, mesh: { tp: 8 } }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat], input: ids, label: y }
+generate: { steps: 2 }
+inputs: {}
+weights:
+  E: { shape: [V, d], init: uniform }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 两张卡上的一个 decoder 层
+  text: |
+    这一页把 Qwen3 的一个 decoder 层放到两张卡上做张量并行。embedding、RMSNorm、残差、final norm 和 lm_head 在两张卡上各存一份完整的副本，叫 Replicate，柱子保持正负两种颜色。attention 按 head 切：head 1 在 rank 0，head 2 在 rank 1；MLP 按中间维 $f$ 切：前 3 列在 rank 0，后 3 列在 rank 1。被切开的张量按它所在的卡着色。
+    o_proj 和 down_proj 的输出是 Partial：每张卡上都是完整形状的矩阵，但只是一半的求和，图里每个格子画成两根细柱（两张卡各自的值）和一个虚线框（两者的和）。all_reduce 把部分和相加，之后又恢复成 Replicate。所有数值和单卡完全相同，并行只改变每个数存在哪里、什么时候需要通信。
+    Megatron 把通信写成两个互为对偶的算子：$f$ 在按列切的投影之前，前向是恒等、反向做 all_reduce；$g$ 在按行切的投影之后，前向做 all_reduce、反向是恒等。一层里 attention 和 MLP 各有一对 $f$ 和 $g$。
+    上方的开关有训练和推理两档。训练有前向和反向，序列的 3 个位置一起计算。推理只有前向：prefill 一次算完提示的所有行，之后每个 decode 步只算新的一行，注意力从 k、v 的缓存里读前面的行。训练、prefill、decode 每次 all_reduce 的 token 数不同，通信量也不同，悬停 all_reduce 的标签可以看到。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      反向的通信和前向正好对调：两个 $g$（all_reduce 之后）反向不通信，两个 $f$（按列切的投影之前）反向要对 $\partial\mathbf{n}$ 做 all_reduce。另外 q_norm、k_norm 的权重是 Replicate，但每张卡只用自己的 head 算它们的梯度，所以这两个梯度也是 Partial，需要 all_reduce。其余按列或按行切开的权重，梯度和权重切法相同，留在各自的卡上。
+      $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入是 token id，每张卡上都有一份。参数里，q、k、v、gate、up 的权重按输出的列切开，o_proj、down_proj 的权重按输入的行切开，图里 $W^{\top}$ 的板一半是 rank 0 的颜色，一半是 rank 1 的颜色。embedding 表、三个 RMSNorm、q_norm、k_norm 和 lm_head 的权重是 Replicate。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+
+modules:
+  Qwen3TPDecoderLayer:
+    subtitle: Qwen3DecoderLayer
+    params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, f: { type: dim }, theta: { type: float, default: 1e6 } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: Qwen3DecoderLayer（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子。输入和输出都是 Replicate，盒子里有两次前向 all_reduce。
+        $$\of{x_out}=\mathrm{layer}(\of{x})={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 Qwen3DecoderLayer（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          folded: true
+          inputs: { x: x }
+          outputs: { out: n1 }
+          fold:
+            text: |
+              RMSNorm 要用到一整行的均方根，这一行在每张卡上都是完整的，所以两张卡各自算一遍，结果相同，是 Replicate。
+              $$\of{n1}={{ n1 | matrix:2 }}$$
+            backward:
+              text: |
+                进入这一步的 $\partial\of{n1}$ 已经做过 all_reduce，是 Replicate，RMSNorm 的反向在两张卡上各算一遍。
+                $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+      - self_attn:
+          use: TPAttention
+          params: { H: H, Hkv: Hkv, dh: dh, theta: theta }
+          inputs: { x: n1 }
+          outputs: { att: att }
+      - a: x + att
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: Qwen3RMSNorm
+          folded: true
+          inputs: { x: a }
+          outputs: { out: n }
+          fold:
+            text: |
+              和 input_layernorm 一样，两张卡各算一遍完整的 RMSNorm。
+              $$\of{n}={{ n | matrix:2 }}$$
+            backward:
+              text: |
+                $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - mlp:
+          use: TPMLP
+          subtitle: Qwen3MLP
+          params: { f: f }
+          inputs: { x: n }
+          outputs: { down: down }
+      - x_out: { op: a + down, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{x}_0+\mathbf{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          $\of{att}$ 已经 all_reduce 过，是 Replicate，和同样是 Replicate 的 $\of{x}$ 直接相加。如果省掉前面的 all_reduce，就成了 Partial 加 Replicate，每张卡都会把 $\of{x}$ 加一次，结果是错的，编译时会报错。
+          $$\of{a}=\of{x}+\of{att}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 attention 的残差
+          text: |
+            梯度复制成两份，一份给 $\of{att}$，一份沿残差交给 $\of{x}$。两份都是 Replicate，不需要通信。
+            $$\frac{\partial\ell}{\partial\of{att}}=\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\mathbf{a}+\mathbf{down}$' }
+        label: '$\of{x_out}=\of{a}+\of{down}$'
+        title: 残差相加
+        text: |
+          MLP 的输出加回 residual stream，得到这一层的输出，仍然是 Replicate。下一层可以直接拿它当输入。
+          $$\of{x_out}=\of{a}+\of{down}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{down}$'
+          title: 穿过 MLP 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{down}}=\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - layer:
+      use: Qwen3TPDecoderLayer
+      title: Qwen3DecoderLayer
+      subtitle: 两张卡的张量并行
+      split: true
+      params: { H: H, Hkv: Hkv, dh: dh, f: f, theta: 10 }
+      inputs: { x: e }
+      outputs: { x_out: x }
+  - norm:
+      use: RMSNorm
+      title: model.norm
+      subtitle: Qwen3RMSNorm
+      folded: true
+      params: { name: final norm }
+      inputs: { x: x }
+      outputs: { out: h }
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      embedding 表在每张卡上各存一份，两张卡按 token id 取出相同的行，得到 Replicate 的 $\mathbf{e}$。Megatron 也可以按词表切 embedding 表，这一页没有切。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        $\partial\mathbf{e}$ 已经是完整的梯度，两张卡各自把它加回被取到的行。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      lm_head 的权重在这一页是 Replicate，两张卡各算一遍完整的 logits。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}=\frac{\partial\ell}{\partial\mathbf{z}}W={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\,\mathrm{LSE}}={{ LSE.grad | matrix:3 }}$$
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+      text: |
+        $$\frac{\partial\ell}{\partial\log\mathbf{p}}={{ logp.grad | matrix:3 }}$$
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      损失在两张卡上算出相同的值。
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+      text: |
+        反向从这里开始，两张卡上的梯度一开始都是 Replicate。
+        $$\frac{\partial\ell}{\partial\ell_t}=\frac{1}{T}=0.333$$
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - title: 对应的 Megatron 写法
+    code: |-
+      # 每张卡运行同一段代码
+      n1 = input_layernorm(x)
+      # f：前向恒等，反向 all_reduce
+      q = ColumnParallelLinear(n1)
+      k = ColumnParallelLinear(n1)
+      v = ColumnParallelLinear(n1)
+      o = attention(q, k, v)
+      # g：前向 all_reduce
+      att = RowParallelLinear(o)
+      a = x + att
+      n = post_attention_layernorm(a)
+      g = ColumnParallelLinear(n)
+      u = ColumnParallelLinear(n)
+      m = silu(g) * u
+      x = a + RowParallelLinear(m)
+    note: Qwen3-8B 在 8 张卡上做 TP 时，每张卡有 4 个 query head、1 个 kv head、1536 列 MLP 中间维。这里用 2 张卡、2 个 query head、2 个 kv head、$d_h=2$、$d=4$、$f=6$。

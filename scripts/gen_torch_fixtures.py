@@ -542,6 +542,23 @@ def transformer_op_fixtures():
     return cases
 
 
+def cache_cases():
+    cases = []
+    for shape, dim, index in [((6, 3), 0, [4, 1]), ((2, 5, 3), 1, [0, 3, 2]), ((3, 4), -1, [2])]:
+        rows = torch.tensor(index)
+        source_shape = list(shape)
+        source_shape[dim] = len(index)
+        cases.append(
+            op_case("index_copy", f"{shape} dim {dim} index {index}", lambda x, i, src, dim=dim: torch.index_copy(x, dim, i.long(), src), [("input", randn(*shape)), ("label", rows.to(torch.float64)), ("input", randn(*source_shape))], [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)])
+        )
+    for shape, k, dim in [((3, 6), 2, -1), ((2, 3, 4), 3, 1), ((5,), 5, 0)]:
+        cases.append(op_case("topk_indices", f"{shape} k {k} dim {dim}", lambda x, k=k, dim=dim: x.topk(k, dim).indices.to(torch.float64), [("label", distinct(*shape))], [tensor_arg(0), k, dim]))
+    for shape, other in [((3, 4), 0.0), ((5,), -1.0)]:
+        values = torch.round(randn(*shape) * 2)
+        cases.append(op_case("ge", f"{shape} other {other}", lambda x, other=other: torch.ge(x, other).to(torch.float64), [("label", values)], [tensor_arg(0), other]))
+    return cases
+
+
 def topk_mask(x, k, dim):
     return torch.zeros_like(x).scatter(dim, x.topk(k, dim)[1], 1.0)
 
@@ -676,7 +693,7 @@ def main():
     transformer_ops = transformer_op_fixtures()
     sorted_moe_ops = sorted_moe_cases()
     scaled_mm_ops = scaled_mm_cases()
-    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops)
+    write("ops.json", ops + stable_ops + transformer_ops + sorted_moe_ops + scaled_mm_ops + cache_cases())
     write("pages.json", pages + stable_pages)
 
 

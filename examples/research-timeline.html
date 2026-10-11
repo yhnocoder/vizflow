@@ -50,25 +50,25 @@ const steps = createStepList([
   },
   {
     id: 'b3',
-    title: 'GPU 运行第 $2$ 批，CPU 调度第 $3$ 批并处理第 $1$ 批的结果',
+    title: 'GPU 运行第 $2$ 批，CPU 处理第 $1$ 批的结果并调度第 $3$ 批',
     label: 'GPU 跑第 2 批',
-    text: 'CPU 先组好第 $3$ 批，再处理第 $1$ 批的输出：把采样出的 token 追加到请求，检查是否结束，结束的请求释放 KV cache。第 $1$ 批的 token 在这一步才到 CPU，比第 $1$ 批在 GPU 上算完晚一步。',
+    text: 'CPU 组好第 $2$ 批后等待第 $1$ 批算完。第 $1$ 批一算完，CPU 就处理它的输出：把采样出的 token 追加到请求，检查是否结束，结束的请求释放 KV cache。这时 GPU 已经在运行第 $2$ 批。处理完后 CPU 再组第 $3$ 批。第 $2$ 批是在第 $1$ 批的 token 到达 CPU 之前组好的，所以一个在第 $1$ 批采样到结束符的请求，在第 $2$ 批里仍然占一行，这一行的结果在处理时丢弃。',
   },
   {
     id: 'b4',
-    title: 'GPU 运行第 $3$ 批，CPU 调度第 $4$ 批并处理第 $2$ 批的结果',
+    title: 'GPU 运行第 $3$ 批，CPU 处理第 $2$ 批的结果并调度第 $4$ 批',
     label: 'GPU 跑第 3 批',
-    text: '之后每一步都重复同样的安排：GPU 运行第 $N$ 批，CPU 调度第 $N+1$ 批并处理第 $N-1$ 批的结果。只要 CPU 这两件事的耗时不超过一批前向，GPU 就不需要等 CPU。',
+    text: '之后每一步都重复同样的安排：GPU 运行第 $N$ 批，CPU 先处理第 $N-1$ 批的结果，再调度第 $N+1$ 批。SGLang 的 event_loop_overlap 和 vLLM 的 step_with_batch_queue 都是这个顺序。只要 CPU 这两件事的耗时不超过一批前向，GPU 就不需要等 CPU。',
   },
 ]);
 
 const items = [];
+const gpuEnd = (n) => SCHEDULE + n * FORWARD;
 for (let n = 1; n <= BATCHES; n++) {
-  const gpuStart = SCHEDULE + (n - 1) * FORWARD;
-  const cpuStart = n === 1 ? 0 : gpuStart - FORWARD;
-  items.push({ lane: 'cpu', start: cpuStart, end: cpuStart + SCHEDULE, label: `调度 ${n}`, kind: 'schedule', step: n - 1 });
-  if (n < BATCHES) items.push({ lane: 'gpu', start: gpuStart, end: gpuStart + FORWARD, label: `前向与采样 ${n}`, kind: 'forward', step: n });
-  if (n + 1 < BATCHES) items.push({ lane: 'cpu', start: gpuStart + FORWARD + SCHEDULE, end: gpuStart + FORWARD + SCHEDULE + PROCESS, label: `处理 ${n} 的结果`, kind: 'output', step: n + 1 });
+  const scheduleStart = n === 1 ? 0 : n === 2 ? SCHEDULE : gpuEnd(n - 2) + PROCESS;
+  items.push({ lane: 'cpu', start: scheduleStart, end: scheduleStart + SCHEDULE, label: `调度 ${n}`, kind: 'schedule', step: n - 1 });
+  if (n < BATCHES) items.push({ lane: 'gpu', start: gpuEnd(n - 1), end: gpuEnd(n), label: `前向与采样 ${n}`, kind: 'forward', step: n });
+  if (n + 1 < BATCHES) items.push({ lane: 'cpu', start: gpuEnd(n), end: gpuEnd(n) + PROCESS, label: `处理 ${n} 的结果`, kind: 'output', step: n + 1 });
 }
 
 mountSteps('#steps', steps);

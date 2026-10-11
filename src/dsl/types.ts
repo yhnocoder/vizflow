@@ -24,6 +24,7 @@ export interface WeightDecl {
   shape: DimExpr[];
   init?: 'ones' | 'zeros' | 'normal' | 'uniform';
   tex?: Tex;
+  place?: Record<Name, string>;
 }
 
 export interface BufferDecl {
@@ -133,7 +134,8 @@ export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'output
   overview?: StepText & { notes?: NoteSpec[] };
   modules?: Record<Name, Omit<ModuleFile, 'module'>>;
   dims: Record<Name, number>;
-  real?: Record<Name, number | string>;
+  real?: Record<Name, number | string | Record<Name, number>>;
+  mesh?: Record<Name, number>;
   vocab?: string[];
   init?: { seed: number };
   inputs: Record<Name, { tokens: string[] } | { value: Nested }>;

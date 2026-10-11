@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>推理调度：vLLM 与 SGLang</title>
+<link rel="icon" href="data:,">
+<style>
+header { margin-bottom: 12px; max-width: 760px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+header p { margin: 0 0 8px; color: var(--muted); max-width: 64ch; }
+.config { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin: 12px 0; }
+.config .row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: end; }
+.config label { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); }
+.config label.check { flex-direction: row; align-items: center; gap: 6px; font-size: 13.5px; color: var(--fg); }
+.config input, .config select { font: inherit; font-size: 14px; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 3px 7px; }
+.config input[type=number] { width: 7rem; font-family: var(--mono); }
+.config input:focus-visible, .config select:focus-visible, .config button:focus-visible { outline: 2px solid var(--pos); outline-offset: 2px; }
+.config button { font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); border-radius: 999px; padding: 2px 12px; cursor: pointer; }
+.preset-text { font-size: 13.5px; margin: 10px 0 0; max-width: 72ch; }
+.tablewrap { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; font-size: 13px; }
+th, td { padding: 3px 6px; border-bottom: 1px solid var(--line); text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+td input { font-family: var(--mono); font-size: 13px; width: 5.4rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 1px 5px; }
+td input.short { width: 3.8rem; }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>推理调度：vLLM 与 SGLang</h1>
+    <p>同一组请求按两个引擎的调度规则逐步推演。每个请求一行 token 格子，下面是这一步拼成的扁平批和 CPU、GPU 的先后。规则来自 vLLM <code>f26d9f43</code> 与 SGLang <code>d62b9c24</code> 的源码，不模拟耗时，只按步推进。左右方向键也可以换步。</p>
+  </header>
+  <section class="config" aria-label="设置">
+    <div class="row">
+      <label>场景<select id="preset"></select></label>
+      <label>每步 token 预算（vLLM）/ chunk 上限（SGLang）<input id="budget" type="number" min="16" step="16"></label>
+      <label>KV 容量（token）<input id="kv" type="number" min="64" step="64"></label>
+      <label>SGLang 排序策略<select id="policy"><option value="fcfs">fcfs（默认）</option><option value="lpm">lpm</option></select></label>
+      <label class="check"><input id="overlap" type="checkbox">重叠调度（两边默认打开）</label>
+    </div>
+    <p class="preset-text" id="preset-text"></p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>请求</th><th>到达步</th><th>提示词长度</th><th>共享前缀长度</th><th>前缀组</th><th>生成长度</th><th></th></tr></thead>
+        <tbody id="requests"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:8px"><button id="add" type="button">添加请求</button></div>
+  </section>
+  <div id="serving"></div>
+</main>
+<script type="module">
+import { mountServing } from '@yhnocoder/vizflow/ui';
+import { SERVING_PRESETS } from '../src/sim/index.ts';
+
+const $ = (id) => document.getElementById(id);
+let config = structuredClone(SERVING_PRESETS[0].config);
+const view = mountServing($('serving'), { config, step: 2 });
+
+const FIELDS = [['id', 'text', 'short'], ['arrive', 'number'], ['prompt', 'number'], ['shared', 'number'], ['group', 'text', 'short'], ['out', 'number']];
+const LIMITS = { arrive: [1, 2000], prompt: [1, 20000], shared: [0, 20000], out: [1, 2000] };
+
+function apply() {
+  const seen = new Set();
+  config.requests.forEach((r, i) => {
+    let id = String(r.id || `R${i}`);
+    while (seen.has(id)) id += "'";
+    seen.add(id);
+    r.id = id;
+  });
+  view.setConfig(structuredClone(config));
+}
+
+function renderTable() {
+  const body = $('requests');
+  body.replaceChildren();
+  config.requests.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    for (const [key, type, cls] of FIELDS) {
+      const td = document.createElement('td');
+      const input = document.createElement('input');
+      input.type = type;
+      input.id = `req-${i}-${key}`;
+      input.value = r[key] ?? (type === 'number' ? 0 : '');
+      input.setAttribute('aria-label', key);
+      if (cls) input.className = cls;
+      input.addEventListener('change', () => {
+        if (type === 'number') {
+          const [lo, hi] = LIMITS[key];
+          r[key] = Math.min(hi, Math.max(lo, Math.round(Number(input.value) || 0)));
+          input.value = r[key];
+        } else r[key] = input.value.trim();
+        apply();
+      });
+      td.append(input);
+      tr.append(td);
+    }
+    const td = document.createElement('td');
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.textContent = '删除';
+    del.disabled = config.requests.length <= 1;
+    del.addEventListener('click', () => { config.requests.splice(i, 1); renderTable(); apply(); });
+    td.append(del);
+    tr.append(td);
+    body.append(tr);
+  });
+}
+
+function loadPreset(name) {
+  const preset = SERVING_PRESETS.find((p) => p.name === name);
+  config = structuredClone(preset.config);
+  $('budget').value = config.budget;
+  $('kv').value = config.kvTokens;
+  $('policy').value = config.policy;
+  $('overlap').checked = config.overlap;
+  $('preset-text').textContent = preset.text;
+  renderTable();
+  apply();
+  view.setStep(2);
+}
+
+for (const p of SERVING_PRESETS) $('preset').append(new Option(p.title, p.name));
+$('preset').addEventListener('change', (e) => loadPreset(e.target.value));
+$('budget').addEventListener('change', (e) => { config.budget = Math.max(16, Math.round(Number(e.target.value) || 512)); e.target.value = config.budget; apply(); });
+$('kv').addEventListener('change', (e) => { config.kvTokens = Math.max(64, Math.round(Number(e.target.value) || 65536)); e.target.value = config.kvTokens; apply(); });
+$('policy').addEventListener('change', (e) => { config.policy = e.target.value; apply(); });
+$('overlap').addEventListener('change', (e) => { config.overlap = e.target.checked; apply(); });
+$('add').addEventListener('click', () => { config.requests.push({ id: `N${config.requests.length}`, arrive: 1, prompt: 64, shared: 0, group: '', out: 8 }); renderTable(); apply(); });
+loadPreset(SERVING_PRESETS[0].name);
+</script>
+</body>
+</html>

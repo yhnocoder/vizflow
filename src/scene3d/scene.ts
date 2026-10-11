@@ -6,6 +6,7 @@ import { editableLayout } from './editconfig';
 import type { LayoutItem, Vec3 } from './layout';
 import type { LevelPlan } from './levels';
 import type { SceneModule } from './modules';
+import type { SceneParallel } from './modes';
 
 export interface CameraOptions {
   direction?: Vec3;
@@ -25,6 +26,7 @@ export interface SceneOptions {
   modules?: SceneModule[];
   levels?: LevelPlan;
   sequence?: { get(): number[]; set(ids: number[]): void };
+  parallel?: SceneParallel;
 }
 
 export interface SceneHandle {

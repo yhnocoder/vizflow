@@ -27,7 +27,10 @@ function signColor(value: number, theme: ThemeColors): LinearRgb {
 }
 
 export function barColor(value: number, theme: ThemeColors, state: BarState): LinearRgb {
-  const base = signColor(value, theme);
+  return stateColor(signColor(value, theme), theme, state);
+}
+
+export function stateColor(base: LinearRgb, theme: ThemeColors, state: BarState): LinearRgb {
   let color = state.active && !state.far ? base : mix(base, theme.surface, state.far ? FAR_MIX : INACTIVE_MIX);
   if (!state.focused) color = mix(color, theme.surface, UNFOCUSED_MIX);
   return color;
