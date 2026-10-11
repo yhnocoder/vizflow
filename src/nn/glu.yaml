@@ -1,8 +1,13 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
-formula: '\step{down}{\of{down}=\big(}\step{act}{\of{act}\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{act}{\big)}\step{gate}{\odot}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+formula: '\step{down}{\of{down}=\big(}\step{act_fn.*}{\of{act}\big(}\step{proj}{\of{x}{\of{Wg}}^{\top}}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+import:
+  Sigmoid: vizflow/nn/sigmoid
+  ReLU:    vizflow/nn/relu
+  GELU:    vizflow/nn/gelu
+  SiLU:    vizflow/nn/silu
 params:
-  act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+  act:  { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
   f:    { type: dim }
   name: { type: text, default_key: true }
 inputs:
@@ -25,7 +30,11 @@ fold:
 body:
   - gate: x @ Wg.T
   - up:   x @ Wu.T
-  - a:    { op: act(gate), tex: '\of{act}(\mathbf{gate})' }
+  - act_fn:
+      use: act
+      inputs: { x: gate }
+      outputs: { out: a }
+      tex: { out: '\of{act}(\mathbf{gate})' }
   - m:    a * up
   - down: m @ Wd.T
 steps:
@@ -36,15 +45,6 @@ steps:
     text: 两个投影的输入都是 $\of{x}$，维度从 $d$ 扩大到 $f$。两个 Linear 都没有 bias。
     backward:
       label: '$\partial W,\ \partial\of{x}$'
-  - id: act
-    show: a
-    label: '$\of{act}$'
-    title: 激活
-    text: |
-      gate 逐元素经过 $\of{act}$：
-      $$\of{act.def}$$
-    backward:
-      label: '$\partial\mathbf{gate}$'
   - id: gate
     show: m
     label: '$\of{a}\odot\mathbf{up}$'

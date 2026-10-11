@@ -6,7 +6,7 @@ import { parseExpr } from '../expr';
 import { child } from '../source';
 import { OP_TEX, defaultTex, numberTex, opTex } from '../tex';
 import { ExpressionCompiler } from './expressions';
-import { type Env, type Num, type OpValue } from './types';
+import { type Env, type ModuleValue, type Num, type OpValue } from './types';
 import { checkKeys, isNum, record } from './util';
 
 function matrixTemplate(name: string, shape: readonly number[], format: string): string {
@@ -70,6 +70,7 @@ export class Compiler extends ExpressionCompiler {
       const param = env.scope.params.get(ref);
       if (param !== undefined) {
         if (param.type === 'op') return opTex((param.value as OpValue).op);
+        if (param.type === 'module') return `\\operatorname{${(param.value as ModuleValue).module}}`;
         if (param.type === 'float') return numberTex((param.value as Num).toy);
         if (param.type === 'tex') return param.value as string;
         if (param.type === 'text') return this.ofText(param.value as string, env);

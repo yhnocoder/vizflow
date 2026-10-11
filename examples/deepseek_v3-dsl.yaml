@@ -3,6 +3,8 @@ lede: DeepSeek V3 的 61 个 decoder 层都用 multi-head latent attention（MLA
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
+  LogSoftmax: vizflow/nn/log-softmax
+  NLLLoss: vizflow/nn/nll-loss
   RMSNorm: vizflow/nn/rmsnorm
   MLA:     vizflow/nn/mla
   GLU:     vizflow/nn/glu
@@ -83,7 +85,7 @@ modules:
       - mlp:
           use: GLU
           subtitle: DeepseekV3MLP
-          params: { act: silu, f: f }
+          params: { act: SiLU, f: f }
           inputs: { x: n }
           outputs: { down: down }
           tex: { a: '\mathrm{SiLU}(\mathbf{gate})', down: '\mathbf{down}' }
@@ -264,10 +266,20 @@ body:
       outputs: { out: h }
       folded: true
   - z:    h @ W.T
-  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
-  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
-  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
-  - loss: { op: mean(lt), tex: '\ell' }
+  - log_softmax:
+      use: LogSoftmax
+      subtitle: F.log_softmax(z.float(), -1)
+      inputs: { x: z }
+      outputs: { out: logp }
+  - nll_loss:
+      use: NLLLoss
+      subtitle: "F.nll_loss(logp, labels)，reduction='mean'"
+      inputs: { logp: logp, y: y }
+      outputs: { loss: loss, lt: lt }
+      tex: { lt: '\ell_t' }
+      steps:
+        pick:
+          append: 标签是输入右移一位：位置 1 的标签是 <span class="ctx">{{y[0]:token}}</span>，位置 2 是 <span class="ctx">{{y[1]:token}}</span>，位置 3 是 <span class="ctx">{{y[2]:token}}</span>。
 steps:
   - id: embed
     show: [E, e]
@@ -298,53 +310,6 @@ steps:
       title: 传到 lm_head 权重和 $\of{h}$
       text: |
         $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
-  - id: lse
-    show: LSE
-    segment: log_softmax
-    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
-    label: '$\of{LSE}$'
-    title: log-sum-exp
-    text: |
-      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
-    backward:
-      label: '$\partial\of{z}$'
-      title: 穿过 LSE
-      text: |
-        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
-  - id: logp
-    show: logp
-    segment: log_softmax
-    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
-    label: '$\of{logp}$'
-    title: log_softmax
-    text: |
-      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
-    backward:
-      label: '$\partial\of{z},\ \partial\of{LSE}$'
-      title: 传到 logits 和 LSE
-  - id: nll
-    show: lt
-    segment: nll_loss
-    brace: { title: nll_loss, subtitle: "reduction='mean'" }
-    label: '$\of{lt}$'
-    title: nll_loss（逐位置）
-    text: |
-      每个位置按标签取出目标 token 的 log p，取负号。
-      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
-    backward:
-      label: '$\partial\of{logp}$'
-      title: 穿过 nll
-  - id: mean
-    show: loss
-    segment: nll_loss
-    brace: { title: nll_loss, subtitle: "reduction='mean'" }
-    label: '$\of{loss}$'
-    title: 取平均
-    text: |
-      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
-    backward:
-      label: '$\partial\of{lt}$'
-      title: 从损失出发
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
   - sequence: true

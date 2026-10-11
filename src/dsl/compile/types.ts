@@ -13,14 +13,18 @@ export interface OpValue {
   op: string;
 }
 
+export interface ModuleValue {
+  module: string;
+}
+
 export interface BufferValue {
   buffer: true;
   shape: Num[];
   values: Nested;
 }
 
-export type ParamType = 'int' | 'float' | 'dim' | 'op' | 'tex' | 'text';
-export type Value = Node | Num | Node[] | string | boolean | OpValue | BufferValue;
+export type ParamType = 'int' | 'float' | 'dim' | 'op' | 'module' | 'tex' | 'text';
+export type Value = Node | Num | Node[] | string | boolean | OpValue | ModuleValue | BufferValue;
 export type Resolved = Value | Scope;
 
 export interface Make {
@@ -75,7 +79,7 @@ export type Slot =
 export class Scope {
   readonly entries = new Map<string, Node>();
   readonly children = new Map<string, Scope>();
-  readonly params = new Map<string, { type: ParamType; value: Num | string | OpValue }>();
+  readonly params = new Map<string, { type: ParamType; value: Num | string | OpValue | ModuleValue }>();
   readonly dims = new Map<string, Num>();
   readonly inputTex = new Map<string, string>();
   readonly anon = new Map<Node, Node[]>();

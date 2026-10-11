@@ -2,6 +2,7 @@ module: DeepseekV3MoE
 subtitle: DeepseekV3MoE
 import:
   GLU: vizflow/nn/glu
+  Sigmoid: vizflow/nn/sigmoid
 params:
   E:   { type: dim }
   G:   { type: dim }
@@ -34,7 +35,19 @@ body:
       subtitle: DeepseekV3TopkRouter
       body:
         - logits: { op: x @ Wr.T, tex: '\mathbf{r}', dtype: fp32 }
-        - s: { op: sigmoid(logits), tex: '\mathbf{s}' }
+        - scores:
+            use: Sigmoid
+            inputs: { x: logits }
+            outputs: { out: s }
+            tex: { out: '\mathbf{s}' }
+            steps:
+              neg:
+                append: 这里算的是 <code>scores = router_logits.sigmoid()</code>。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度 $\of{s}$，各个专家互不影响；V2 和很多别的 MoE 用的是 softmax。
+              recip:
+                backward:
+                  text: |
+                    只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。取倒数的局部导数是 $-\of{s}^{2}$。
+                    $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
         - sc: { op: s + bias, tex: '\tilde{\mathbf{s}}' }
         - sg: { op: 'view(sc, T, G, E // G)', tex: '\tilde{\mathbf{s}}^{\mathrm{grp}}' }
         - top2: { op: 'sg * topk_mask(sg, 2, -1)', tex: '\tilde{\mathbf{s}}^{\mathrm{top2}}' }
@@ -54,7 +67,7 @@ body:
           use: GLU
           subtitle: DeepseekV3Experts，路由专家
           folded: true
-          params: { act: silu, f: mf, name: expert }
+          params: { act: SiLU, f: mf, name: expert }
           inputs: { x: x }
           outputs: { down: 'y[e]' }
       - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
@@ -66,25 +79,24 @@ body:
       subtitle: DeepseekV3MLP，共享专家
       suffix: s
       folded: true
-      params: { act: silu, f: mf*Sh, name: shared }
+      params: { act: SiLU, f: mf*Sh, name: shared }
       inputs: { x: x }
       outputs: { down: shared }
-      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}' }
   - out: { op: routed + shared, tex: '\mathbf{moe}' }
 steps:
   - id: router
-    show: [Wr.T, logits, s]
-    label: '$\of{s}=\sigma(\of{x}W_r^{\top})$'
-    title: 每个专家一个亲和度
+    show: [Wr.T, logits]
+    label: '$\of{logits}=\of{x}W_r^{\top}$'
+    title: 每个专家一个分数
     text: |
-      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数，HF 把输入和权重都转成 float32 再乘。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度 $\of{s}$，各个专家互不影响；V2 和很多别的 MoE 用的是 softmax。
-      $$\of{s}=\sigma(\of{x}W_r^{\top})={{ s | matrix:3 }}$$
+      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数，HF 把输入和权重都转成 float32 再乘。
+      $$\of{logits}={{ logits | matrix:3 }}$$
     backward:
       label: '$\partial W_r,\ \partial\of{x}$'
       title: 传到 gate 的权重和 $\of{x}$
       text: |
-        只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。
-        $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial\of{logits}}={{ logits.grad | matrix:3 }}$$
   - id: bias
     show: [bias, sc]
     label: '$\of{sc}=\of{s}+\of{bias}$'

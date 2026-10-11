@@ -778,7 +778,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });
@@ -915,11 +915,11 @@ body:
     expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
     expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
     const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
-    const rms = forward[3];
-    expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
-    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');
-    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
+    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
+    const rms = forward[5];
+    expect(rms.label).toBe('$r_{a},\\ r_{b}$');
+    expect(rms.backward?.label).toBe('$\\partial(\\mathrm{ms}+\\epsilon)_{a},\\ \\partial(\\mathrm{ms}+\\epsilon)_{b}$');
+    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.r', 'qb.r']);
     expect(rms.text).toContain('{{qb.r[0]:3}}');
     expect(rms.text).toContain('{{qb.r[1]:3}}');
     await expect(page(`

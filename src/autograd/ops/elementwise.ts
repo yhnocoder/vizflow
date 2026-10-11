@@ -100,6 +100,7 @@ export const rsqrtOp: OpDef<{ eps: number }> = {
   defaults: { eps: 0 },
 };
 export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y);
+export const reciprocalOp = unary('reciprocal', (x) => 1 / x, (_x, y) => -y * y);
 export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y));
 export const SOFTPLUS_THRESHOLD = 20;
 export const softplusOp = unary(
@@ -125,6 +126,7 @@ export const normalCdf = (x: number) => 0.5 * (1 + erf(x / Math.SQRT2));
 export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 
 export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0));
+export const erfOp = unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x));
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x));
 export const identityOp = unary('identity', (x) => x, () => 1);
 

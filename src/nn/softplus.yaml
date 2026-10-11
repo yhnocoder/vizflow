@@ -1,0 +1,63 @@
+module: Softplus
+subtitle: softplus
+formula: '\step{log}{\of{out}=\log\big(\step{add}{1+}\step{exp}{e^{\of{x}}}\big)}'
+params:
+  name: { type: text, default_key: true }
+inputs:
+  x: { shape: [...] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    取 exp、加 1、取 log 收在盒子里，对应一次 <code>F.softplus</code>。逐元素计算。
+    $$\of{out}=\operatorname{softplus}(\of{x})={{ out | matrix:3 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      三段局部导数相乘，合起来是 $\sigma(x)$。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - e:   { op: exp(x), tex: 'e^{\of{x}}' }
+  - d:   { op: e + 1, tex: '1+e^{\of{x}}' }
+  - out: { op: log(d), tex: '\operatorname{softplus}(\of{x})' }
+steps:
+  - id: exp
+    show: e
+    label: '$e^{x}$'
+    title: \of{name}：取 exp
+    text: |
+      softplus 的定义是 $\log(1+e^{x})$，这里按定义拆成三步：取 exp、加 1、取 log。<code>F.softplus</code> 默认 <code>beta=1</code>、<code>threshold=20</code>：kernel 对 $x\le 20$ 算 <code>log1p(exp(x))</code>，也就是这三步；$x>20$ 时直接输出 $x$，因为这时 $\log(1+e^{x})$ 和 $x$ 在浮点数里已经相等。这一页的输入都远小于 20。
+      $$\of{e}={{ e | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: \of{name}：穿过 exp
+      text: |
+        exp 的导数是它自己。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: add
+    show: d
+    label: '$1+e^{x}$'
+    title: \of{name}：加 1
+    text: |
+      $$\of{d}={{ d | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{e}$'
+      title: \of{name}：穿过加 1
+      text: |
+        加常数的局部导数是 1。
+        $$\frac{\partial\ell}{\partial\of{e}}={{ e.grad | matrix:3 }}$$
+  - id: log
+    show: out
+    label: '$\of{out}$'
+    title: \of{name}：取 log
+    text: |
+      结果总是正数，$x$ 很负时接近 0，$x$ 很大时接近 $x$。
+      $$\of{out}=\log\of{d}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{d}$'
+      title: \of{name}：穿过 log
+      text: |
+        log 的局部导数是 $1/\of{d}$。三段乘起来是 $\frac{e^{x}}{1+e^{x}}=\sigma(x)$。
+        $$\frac{\partial\ell}{\partial\of{d}}={{ d.grad | matrix:3 }}$$

@@ -1,0 +1,53 @@
+module: NLLLoss
+subtitle: nll_loss
+formula: '\step{mean}{\of{loss}=\frac{1}{N}\sum_{n}}\step{neg}{-}\step{pick}{\of{logp}_{n,\,y_{n}}}'
+params:
+  name: { type: text, default_key: true }
+inputs:
+  logp: { shape: [N, C] }
+  y:    { shape: [N] }
+outputs: [loss, lt]
+body:
+  - pick: { op: 'gather(logp, -1, view(y, -1, 1))', tex: '\log p_{y}' }
+  - lt:   { op: -pick, tex: '\boldsymbol{\ell}' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: pick
+    show: pick
+    label: '$\of{pick}$'
+    title: \of{name}：按标签取格
+    text: |
+      <code>F.nll_loss(logp, y)</code> 对每一行 $n$ 算 $-\log p_{n,y_n}$，默认 <code>reduction='mean'</code> 再取平均。它是一个 kernel，这里拆成三步：按标签取格、取负、取平均。第一步每一行按自己的标签取出一格，写成 PyTorch 就是 <code>logp.gather(-1, y.view(-1, 1))</code>，每一行只有标签那一格有连线。
+      $$\of{pick}={{ pick | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: \of{name}：穿过取格
+      text: |
+        取格的反向把梯度放回被取到的那一格，同一行的其他格是 0。
+        $$\frac{\partial\ell}{\partial\of{logp}}={{ logp.grad | matrix:3 }}$$
+  - id: neg
+    show: lt
+    label: '$\of{lt}$'
+    title: \of{name}：取负
+    text: |
+      取负号得到每个位置的损失 $\ell_n=-\log p_{n,y_n}$。目标 token 的概率越小，这一项越大。
+      $$\of{lt}={{ lt | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{pick}$'
+      title: \of{name}：穿过取负
+      text: |
+        局部导数是 $-1$。
+        $$\frac{\partial\ell}{\partial\of{pick}}={{ pick.grad | matrix:3 }}$$
+  - id: mean
+    show: loss
+    label: '$\of{loss}$'
+    title: \of{name}：取平均
+    text: |
+      对 $N$ 个位置取平均。<code>F.nll_loss</code> 的平均只算标签不等于 <code>ignore_index</code>（默认 $-100$）的位置，这一页没有被忽略的标签，所以分母就是 $N$。
+      $$\of{loss}=\frac{1}{N}\sum_n\ell_n={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+      text: |
+        平均值把梯度 $1/N$ 分给每个位置。
+        $$\frac{\partial\ell}{\partial\of{lt}}={{ lt.grad | matrix:3 }}$$

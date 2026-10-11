@@ -4,6 +4,7 @@ import:
   ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
   RoPE: vizflow/nn/rope
   GQA: vizflow/nn/gqa
+  Sigmoid: vizflow/nn/sigmoid
 params:
   H:     { type: dim }
   Hkv:   { type: dim }
@@ -121,7 +122,14 @@ body:
       inputs: { q: qr, k: kr, v: v, mask: M }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
-  - sg: { op: sigmoid(gate), tex: '\sigma(\mathbf{g}_{o})' }
+  - gate_sigmoid:
+      use: Sigmoid
+      inputs: { x: gate }
+      outputs: { out: sg }
+      tex: { out: '\sigma(\mathbf{g}_{o})' }
+      steps:
+        neg:
+          append: 这里算的是输出门 <code>torch.sigmoid(gate)</code>，它决定注意力输出的每个分量放行多少。
   - og: { op: o * sg, tex: '\tilde{\mathbf{o}}' }
   - att: { op: og @ Wo.T, tex: '\mathbf{att}' }
 steps:
@@ -149,7 +157,7 @@ steps:
       label: '$\partial[\mathbf{q}\,|\,\mathbf{g}_{o}]$'
       title: 两半拼回去
   - id: output_gate
-    show: [sg, og]
+    show: og
     label: '$\of{og}$'
     title: 输出门
     text: |
@@ -159,8 +167,8 @@ steps:
       label: '$\partial\mathbf{o},\ \partial\mathbf{g}_{o}$'
       title: 传到注意力输出和门
       text: |
-        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{g}_{o})$，门关上的地方，注意力几乎收不到梯度；$\partial\ell/\partial\,\mathbf{g}_{o}$ 再乘上 sigmoid 的导数 $\sigma(1-\sigma)$。
-        $$\frac{\partial\ell}{\partial\,\mathbf{g}_{o}}={{ gate.grad | matrix:3 }}$$
+        $\partial\ell/\partial\mathbf{o}=\partial\ell/\partial\tilde{\mathbf{o}}\odot\sigma(\mathbf{g}_{o})$，门关上的地方，注意力几乎收不到梯度；$\sigma(\mathbf{g}_{o})$ 收到 $\partial\ell/\partial\tilde{\mathbf{o}}\odot\mathbf{o}$，再穿过 sigmoid 的四步传到 $\mathbf{g}_{o}$。
+        $$\frac{\partial\ell}{\partial\,\sigma(\mathbf{g}_{o})}={{ sg.grad | matrix:3 }}$$
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]

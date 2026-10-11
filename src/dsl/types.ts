@@ -13,6 +13,7 @@ export type ParamDecl =
   | { type: 'int' | 'float'; default?: number }
   | { type: 'dim'; default?: number }
   | { type: 'op'; values?: Name[]; default?: Name }
+  | { type: 'module'; values?: Name[]; default?: Name }
   | { type: 'tex' | 'text'; default?: string };
 
 export interface InputDecl {
