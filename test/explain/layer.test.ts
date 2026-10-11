@@ -72,7 +72,7 @@ describe('explain for buffers', () => {
     expect(ex.outEdges({ node: M, index: [0] })).toEqual([]);
     const card = ex.nodeCard(M, 'backward');
     expect(card.tex).toEqual(['\\frac{\\partial\\ell}{\\partial \\mathbf{M}}=0']);
-    expect(card.rows.at(-1)).toEqual({ label: '当前梯度', value: '无' });
+    expect(card.rows.at(-1)).toEqual({ label: '当前梯度', kind: 'grad', value: '无' });
   });
 });
 

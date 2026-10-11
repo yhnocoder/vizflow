@@ -296,6 +296,11 @@ function texOf(label: Label, tex: string): void {
   label.setContent(tex, () => render(tex));
 }
 
+function valueOf(label: Label, v: number): void {
+  if (Number.isFinite(v)) label.setText(formatNumber(v));
+  else texOf(label, formatNumber(v, { tex: true }));
+}
+
 function chip(text: string): HTMLButtonElement {
   const button = document.createElement('button');
   button.className = 'vf-chip';
@@ -936,7 +941,7 @@ class SceneController implements EditHost {
         title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
         renderable.values.forEach((label, i) => {
           const element = block.elements[i];
-          label.setText(formatNumber(values[i]));
+          valueOf(label, values[i]);
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
           const rowShown = !this.follow || element.z === front || zoom >= VALUE_ALL_ROWS_ZOOM;
@@ -951,7 +956,7 @@ class SceneController implements EditHost {
         title.anchor = 'above-right';
         renderable.values.forEach((label, i) => {
           const element = block.elements[i];
-          label.setText(formatNumber(values[i]));
+          valueOf(label, values[i]);
           label.el.dataset.node = node.name;
           label.el.dataset.index = element.index.join(',');
           label.pos = [element.x + NODE_VALUE_OFFSET, element.y + mesh.height / 2, element.z];

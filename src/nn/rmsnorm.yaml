@@ -1,5 +1,5 @@
 module: RMSNorm
-subtitle: LlamaRMSNorm / Qwen3RMSNorm
+subtitle: RMSNorm
 params:
   eps:      { type: float, default: 1e-6 }
   name:     { type: text, default: RMSNorm }

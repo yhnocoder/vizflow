@@ -10,7 +10,13 @@ export interface NodeCard {
   title: string;
   tex: string[];
   note?: string;
-  rows: { label: string; value: string }[];
+  rows: CardRow[];
+}
+
+export interface CardRow {
+  label: string;
+  value: string;
+  kind?: 'value' | 'grad' | 'jacobian';
 }
 
 export interface EdgeCard {
@@ -43,7 +49,7 @@ function consumersOf(g: Graph, node: Node, reachesLoss: (node: Node) => boolean)
   });
 }
 
-function realRow(g: Graph, node: Node): { label: string; value: string }[] {
+function realRow(g: Graph, node: Node): CardRow[] {
   if (g.real === undefined) return [];
   const name = g.real.name;
   const shape = formatShape(node.realShape);
@@ -70,21 +76,22 @@ function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
 
 export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', reachesLoss: (node: Node) => boolean): NodeCard {
   const override = node.card?.[dir] ?? {};
-  const rows: { label: string; value: string }[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node)];
+  const rows: CardRow[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node)];
   let card: NodeCard;
   if (dir === 'forward') {
-    rows.push({ label: '当前值', value: valueText(node.value) });
+    rows.push({ label: '当前值', kind: 'value', value: valueText(node.value) });
     card = { title: `$${node.tex}$`, tex: forwardTex(node), rows };
   } else {
     const consumers = consumersOf(g, node, reachesLoss);
     for (const y of consumers) {
       rows.push({
         label: 'Jacobian',
+        kind: 'jacobian',
         value: `$\\partial ${y.tex}/\\partial ${node.tex}$：${formatShape([...squeeze(y.shape), ...squeeze(node.shape)])}`,
       });
     }
     const grad = node.grad;
-    rows.push({ label: '当前梯度', value: grad === null ? '无' : valueText(grad) });
+    rows.push({ label: '当前梯度', kind: 'grad', value: grad === null ? '无' : valueText(grad) });
     card = { title: `$\\frac{\\partial\\ell}{\\partial ${node.tex}}$`, tex: chainTex(g, node, consumers), rows };
   }
   if (override.title !== undefined) card.title = override.title;

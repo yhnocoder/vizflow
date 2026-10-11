@@ -71,9 +71,14 @@ export interface SelectMatmulAttrs {
   index: number;
 }
 
-function selectMatmulShape(a: readonly number[], b: readonly number[], index: number): number[] {
+function headIndex(a: readonly number[], index: number): number {
+  return index < 0 && a.length === 3 ? index + a[1] : index;
+}
+
+function selectMatmulShape(a: readonly number[], b: readonly number[], requested: number): number[] {
+  const index = headIndex(a, requested);
   if (a.length !== 3 || b.length !== 2 || a[2] !== b[0] || !Number.isInteger(index) || index < 0 || index >= a[1]) {
-    throw new Error(`select_matmul: cannot multiply ${formatShape(a)}[:, ${index}, :] by ${formatShape(b)}`);
+    throw new Error(`select_matmul: cannot multiply ${formatShape(a)}[:, ${requested}, :] by ${formatShape(b)}`);
   }
   return [a[0], b[1]];
 }
@@ -90,8 +95,9 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
   args: ['input', 'other', 'index'],
   tensors: ['input', 'other'],
   shape: ([a, b], { index }) => selectMatmulShape(a, b, index),
-  forward: ([a, b], { index }) => multiply(slice(a, index), b, selectMatmulShape(a.shape, b.shape, index)),
-  backward: (gradOut, [a, b], _out, { index }) => {
+  forward: ([a, b], { index }) => multiply(slice(a, headIndex(a.shape, index)), b, selectMatmulShape(a.shape, b.shape, index)),
+  backward: (gradOut, [a, b], _out, attrs) => {
+    const index = headIndex(a.shape, attrs.index);
     const [rows, heads, width] = a.shape;
     const gSlice = multiply(gradOut, transposed2d(b, 'right'), [rows, width]);
     const gA = new Tensor(a.shape);

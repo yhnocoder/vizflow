@@ -18,6 +18,7 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     checkOp(opDef('select')!, [filled([3, 2, 4], 3)], { dim: 1, index: 1 });
     checkOp(opDef('select')!, [filled([3, 2, 4], 4)], { dim: -1, index: -1 });
     checkOp(opDef('select_matmul')!, [filled([3, 2, 4], 5), filled([4, 3], 6)], { index: 1 });
+    checkOp(opDef('select_matmul')!, [filled([3, 2, 4], 5), filled([4, 3], 6)], { index: -2 });
     checkOp(opDef('rotate_half')!, [filled([3, 2, 4], 7)], {});
     checkOp(opDef('rsqrt')!, [new Tensor([2, 3], filled([2, 3], 8).data.map((x) => x * x))], { eps: 0.5 });
   });
@@ -58,6 +59,7 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     expect(g.rsqrt(x, { eps: 1 }).value.data[2]).toBeCloseTo(0.5, 15);
     const k = g.input('k', [4, 1], [[1], [1], [1], [1]]);
     expect(Array.from(g.select_matmul(heads, k, 1).value.data)).toEqual([26]);
+    expect(Array.from(g.select_matmul(heads, k, -1).value.data)).toEqual([26]);
     expect(() => g.view(x, 3, 3)).toThrow(/view: shape \(3, 3\) is invalid for input \(1, 8\)/);
     expect(() => g.select(heads, 1, 2)).toThrow(/select: index 2 is out of range/);
     expect(() => g.select_matmul(heads, k, 2)).toThrow(/select_matmul: cannot multiply/);

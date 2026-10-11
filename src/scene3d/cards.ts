@@ -11,7 +11,6 @@ export const GRID_BLANK_COLUMNS = 10;
 export const GRID_DIGITS = 2;
 export const SHADE_MIN = 8;
 export const SHADE_RANGE = 62;
-const HIDDEN_ROWS = new Set(['当前值', '当前梯度', 'Jacobian']);
 
 export interface ValueGrid {
   label: string;
@@ -84,7 +83,7 @@ export function nodeCardElement(card: NodeCard, grid?: ValueGrid): DocumentFragm
   if (card.note !== undefined) fragment.appendChild(note(card.note));
   const dl = element('dl', 'vf-rows');
   for (const row of card.rows) {
-    if (grid !== undefined && HIDDEN_ROWS.has(row.label)) continue;
+    if (grid !== undefined && row.kind !== undefined) continue;
     dl.appendChild(element('dt', '', row.label));
     const value = element('dd', '');
     renderText(row.value, value);
