@@ -1,4 +1,6 @@
 import type { Graph } from '../autograd';
+import type { CompiledPage } from '../dsl';
+import { renderText } from '../formula';
 import type { SceneOptions } from '../scene3d';
 import { createSteps, type Steps, type StepsSpec } from '../steps';
 import { mountPanels, mountSteps, type Mounted, type PanelItem } from '../ui';
@@ -34,6 +36,10 @@ export class VizflowPage extends HTMLElement {
   #layout: HTMLElement | undefined;
   #generation = 0;
   #pending = false;
+  #compiled: CompiledPage | undefined;
+  #loading = 0;
+
+  static readonly observedAttributes = ['src'];
 
   constructor() {
     super();
@@ -90,6 +96,47 @@ export class VizflowPage extends HTMLElement {
     this.#schedule();
   }
 
+  get src(): string | null {
+    return this.getAttribute('src');
+  }
+
+  set src(value: string | null) {
+    if (value === null) this.removeAttribute('src');
+    else this.setAttribute('src', value);
+  }
+
+  get compiled(): CompiledPage | undefined {
+    return this.#compiled;
+  }
+
+  attributeChangedCallback(name: string, previous: string | null, value: string | null): void {
+    if (name === 'src' && previous !== value && value !== null) void this.#load(value);
+  }
+
+  async #load(src: string): Promise<void> {
+    const loading = ++this.#loading;
+    try {
+      const [{ loadPage }, { autoLayout }] = await Promise.all([import('../dsl'), import('../scene3d')]);
+      const compiled = await loadPage(new URL(src, document.baseURI).href);
+      if (loading !== this.#loading) return;
+      const { layout, modules } = autoLayout(compiled.tree);
+      this.#compiled = compiled;
+      this.#graph = compiled.graph;
+      this.#steps = compiled.steps;
+      this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
+      this.#scene = { layout, modules, hint: compiled.page.hint, camera: compiled.page.camera };
+      this.#schedule();
+      this.#flush();
+      this.dispatchEvent(new Event('load'));
+    } catch (error) {
+      if (loading !== this.#loading) return;
+      const message = element('p', 'vf-load-error');
+      message.textContent = `${src}: ${(error as Error).message}`;
+      this.replaceChildren(message);
+      reportError(error);
+    }
+  }
+
   get createdSteps(): Steps | undefined {
     this.#flush();
     return this.#created;
@@ -139,10 +186,26 @@ export class VizflowPage extends HTMLElement {
     layout.append(main);
     if (panels !== undefined) layout.append(side);
     this.#layout = layout;
-    this.replaceChildren(layout);
+    const header = this.#header();
+    this.replaceChildren(...(header === undefined ? [] : [header]), layout);
     this.#mounted.push(mountSteps(stepsBox, steps));
     if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps }));
     if (this.#scene !== undefined) void this.#mountScene(stage, g, { ...this.#scene, steps, edit: this.#edit });
+  }
+
+  #header(): HTMLElement | undefined {
+    const page = this.#compiled?.page;
+    if (page === undefined || this.#graph !== this.#compiled?.graph) return undefined;
+    const header = element('header', 'vf-header');
+    const title = element('h1', 'vf-title');
+    title.textContent = page.title;
+    header.append(title);
+    if (page.lede !== undefined) {
+      const lede = element('p', 'vf-lede');
+      renderText(page.lede, lede);
+      header.append(lede);
+    }
+    return header;
   }
 
   async #mountScene(stage: HTMLElement, g: Graph, options: SceneOptions): Promise<void> {
@@ -164,6 +227,7 @@ export class VizflowPage extends HTMLElement {
     this.#created = undefined;
     this.#layout?.remove();
     this.#layout = undefined;
+    this.querySelector(':scope > .vf-header')?.remove();
   }
 }
 

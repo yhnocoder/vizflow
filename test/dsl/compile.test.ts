@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { type CompiledPage, type PageFile, compilePage, loadPage, parseYaml } from '../../src/dsl';
+import type { Node } from '../../src/core';
 import type { LayoutEntry, LayoutTree } from '../../src/scene3d/auto';
 
 const BASE = 'mem:/pages/page.yaml';
@@ -337,9 +338,9 @@ steps:
 `, files);
     const forward = result.steps.forward;
     expect(forward.map((s) => s.title)).toEqual(['a', 'rms of $\\mathbf{a}$', 'new', 'b', 'last']);
-    expect(forward[0].show.map((n) => n.name)).toEqual(['W', 'W.T', 'a']);
+    expect((forward[0].show as Node[]).map((n) => n.name)).toEqual(['W', 'W.T', 'a']);
     expect(forward[1].text).toBe('from $\\mathbf{a}$');
-    expect(forward[1].show.map((n) => n.name)).toEqual(['n.ms/1', 'n.ms']);
+    expect((forward[1].show as Node[]).map((n) => n.name)).toEqual(['n.ms/1', 'n.ms']);
     expect(forward[2].text).toBe('out = \\begin{pmatrix} {{n.out[0, 0]:2}} & {{n.out[0, 1]:2}} \\\\ {{n.out[1, 0]:2}} & {{n.out[1, 1]:2}} \\end{pmatrix}');
   });
 

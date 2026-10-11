@@ -9,6 +9,7 @@ const libraries = {
   three: ['__THREE__', 'WebGLRenderer'],
   solid: ['solid-track', 'solid-js/web'],
   katex: ['katex-html', 'KaTeX parse error'],
+  yaml: ['Nested mappings are not allowed in compact mappings'],
 };
 
 type Library = keyof typeof libraries;
@@ -104,10 +105,18 @@ describe('build output', () => {
       expect(code, directory).not.toContain('vf-scene3d-style');
       expect(staticGraph('element.js', directory), directory).not.toContain('scene3d.js');
       expect(readFileSync(join(directory, 'element.js'), 'utf8'), directory).toContain('import("./scene3d.js")');
+      expect(staticGraph('element.js', directory), directory).not.toContain('dsl.js');
+      expect(readFileSync(join(directory, 'element.js'), 'utf8'), directory).toContain('import("./dsl.js")');
     }
     expect(bundledLibraries('element.js')).toEqual(['solid', 'katex']);
     expect(packageImports('element.js').filter((specifier) => specifier.startsWith('three'))).toEqual([]);
     expect(readFileSync(join(workspace, exportsMap['./element'].types), 'utf8')).toContain("'vizflow-page': VizflowPage");
+  });
+
+  test('dsl bundles the YAML parser and the core module files, and no other entry loads them', () => {
+    expect(bundledLibraries('dsl.js')).toEqual(['yaml']);
+    expect(graphCode('dsl.js')).toContain('module: RMSNorm');
+    for (const entry of ['core.js', 'steps.js', 'ui.js', 'element.js']) expect(bundledLibraries(entry), entry).not.toContain('yaml');
   });
 
   test('the KaTeX symbol leftthreetimes is not taken for three.js', () => {
@@ -116,7 +125,7 @@ describe('build output', () => {
   });
 
   test('every package entry has its module build file, standalone file and type declarations', () => {
-    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './element', './explain', './formula', './scene3d', './steps', './theme', './ui']);
+    expect(Object.keys(exportsMap).sort()).toEqual(['./core', './dsl', './element', './explain', './formula', './scene3d', './steps', './theme', './ui']);
     for (const [entry, { types, import: module }] of Object.entries(exportsMap)) {
       expect(module, entry).toBe(`./dist/module/${entry.slice(2)}.js`);
       expect(existsSync(join(workspace, module)), `${entry} module`).toBe(true);
@@ -152,7 +161,7 @@ function packageImports(entry: string): string[] {
 
 describe('module build output', () => {
   test('no entry bundles three.js, Solid or KaTeX', () => {
-    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js']) {
+    for (const entry of ['core.js', 'explain.js', 'steps.js', 'ui.js', 'scene3d.js', 'formula.js', 'theme.js', 'element.js', 'dsl.js']) {
       expect(bundledLibraries(entry, moduleDirectory()), entry).toEqual([]);
     }
   });
@@ -160,6 +169,7 @@ describe('module build output', () => {
   test('third-party libraries and their CSS stay as import specifiers', () => {
     expect(packageImports('core.js')).toEqual([]);
     expect(packageImports('steps.js')).toEqual([]);
+    expect(packageImports('dsl.js')).toEqual(['yaml']);
     expect(packageImports('formula.js')).toEqual(['katex', 'katex/dist/katex.min.css']);
     expect(packageImports('ui.js')).toEqual(expect.arrayContaining(['solid-js', 'solid-js/web', 'katex', 'katex/dist/katex.min.css', '@fontsource/geist/400.css']));
     expect(packageImports('ui.js').filter((specifier) => specifier.startsWith('three'))).toEqual([]);

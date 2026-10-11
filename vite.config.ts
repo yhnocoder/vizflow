@@ -17,6 +17,7 @@ const entries = {
   formula: src('formula/index.ts'),
   theme: src('theme/index.ts'),
   element: src('element/index.ts'),
+  dsl: src('dsl/index.ts'),
 };
 
 const fontCssId = /[\\/]node_modules[\\/](?:katex[\\/]dist|@fontsource[\\/][^\\/]+)[\\/][^\\/?]+\.css\?raw$/;
@@ -55,7 +56,7 @@ function bundledFonts(): Plugin {
   };
 }
 
-const externalPackages = /^(?:three|solid-js|katex|@fontsource\/[^/]+)(?:\/|$)/;
+const externalPackages = /^(?:three|solid-js|katex|yaml|@fontsource\/[^/]+)(?:\/|$)/;
 
 function moduleVariants(): Plugin {
   return {

@@ -25,7 +25,7 @@ body:
   - v: x @ Wv.T
   - for: g
     in: 1..Hkv
-    brace: kv head $\of{g}$
+    brace: kv head \of{g}
     body:
       - k[g]: narrow(k, 1, (g-1)*dh, dh)
       - v[g]: narrow(v, 1, (g-1)*dh, dh)
@@ -44,7 +44,7 @@ body:
           tex: { out: "\\mathbf{k}'^{(\\of{g})}" }
   - for: h
     in: 1..H
-    brace: head $\of{h}$
+    brace: head \of{h}
     body:
       - q[h]: narrow(q, 1, (h-1)*dh, dh)
       - q_norm[h]:

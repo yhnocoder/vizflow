@@ -100,7 +100,7 @@ backward:
       $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
 panels:
   - loss: { sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }, reset: true, text: '位置 {{b+1}}：输入 {{ids[b]:token}}，标签 {{y[b]:token}}' }
-  - { tokens: y, columns: [{ node: z, title: z }, logp, { node: z, grad: true, title: '∂ℓ/∂z' }], title: 当前位置的 logits 与标签 }
+  - { tokens: y, columns: [{ node: z, title: z }, { node: logp, title: log p }, { node: z, grad: true, title: '∂ℓ/∂z' }], title: 当前位置的 logits 与标签 }
   - { matrix: 'layer.self_attn.P[1]', title: 注意力权重 P⁽¹⁾, note: 行是 query 的位置，列是 key 的位置。右上角被 causal mask 挡住，是 0。 }
   - { matrix: 'layer.self_attn.P[2]', title: 注意力权重 P⁽²⁾ }
   - { matrix: head.W.T, highlight: y, title: 'lm_head 权重 Wᵀ，(d, V) = (4, 5)' }

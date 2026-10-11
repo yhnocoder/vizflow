@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen3 一层（YAML 页面描述）</title>
+<link rel="icon" href="data:,">
+</head>
+<body>
+<main class="vf-page">
+  <vizflow-page src="qwen3-dsl.yaml"></vizflow-page>
+</main>
+<script type="module">
+import '@yhnocoder/vizflow/element';
+
+const page = document.querySelector('vizflow-page');
+page.addEventListener('load', () => {
+  window.vizflow = { page, g: page.compiled.graph, nodes: page.compiled.nodes, steps: page.createdSteps };
+  document.body.dataset.ready = 'true';
+});
+</script>
+</body>
+</html>

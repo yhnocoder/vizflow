@@ -12,4 +12,5 @@ if (!document.getElementById(styleId)) {
 
 export { mountScene, type SceneOptions, type SceneHandle, type CameraOptions } from './scene';
 export type { SceneModule } from './modules';
+export { autoLayout, type LayoutTree, type LayoutEntry } from './auto';
 export { board, stack, node, type LayoutItem, type StackOptions, type TemplateOptions, type Scales } from './layout';
