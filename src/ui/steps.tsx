@@ -1,4 +1,4 @@
-import { For, Show, createMemo, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
 import { Rich, plain } from './rich';
@@ -134,6 +134,8 @@ interface Segment {
   folded: boolean;
 }
 
+export const SEGMENT_PREVIEW_STEPS = 5;
+
 const DIRECTIONS = [
   { dir: 'forward', name: '前向' },
   { dir: 'backward', name: '反向' },
@@ -176,6 +178,14 @@ function Timeline(props: {
     return { dir, segments, all, active, directions, showName, items, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
+  const [peek, setPeek] = createSignal<{ segment: Segment; center: number } | undefined>();
+  let bar!: HTMLDivElement;
+  const openPeek = (segment: Segment, el: HTMLElement) => {
+    const box = bar.getBoundingClientRect();
+    const own = el.getBoundingClientRect();
+    setPeek({ segment, center: own.left + own.width / 2 - box.left });
+  };
+  const closePeek = () => setPeek(undefined);
 
   return (
     <div class="vf-track">
@@ -197,7 +207,7 @@ function Timeline(props: {
             )}
           </For>
         </div>
-        <div class="vf-tl-bar">
+        <div class="vf-tl-bar" ref={(el) => (bar = el)} onPointerLeave={closePeek}>
           <For each={view().segments}>
             {(segment) => {
               const on = () => segment === view().active;
@@ -208,14 +218,17 @@ function Timeline(props: {
                   type="button"
                   class="vf-tb"
                   classList={{ 'vf-on': on(), 'vf-done': done() }}
-                  title={plain(segment.name)}
                   aria-label={plain(segment.name)}
                   style={{ flex: `${segment.positions.length} 1 0`, ...(on() ? { '--vf-fr': `${fraction().toFixed(0)}%` } : {}) }}
                   onClick={() => steps.go(segment.positions[0])}
+                  onPointerEnter={(ev) => openPeek(segment, ev.currentTarget)}
+                  onFocus={(ev) => openPeek(segment, ev.currentTarget)}
+                  onBlur={closePeek}
                 />
               );
             }}
           </For>
+          <Show when={peek()}>{(p) => <SegmentPeek steps={steps} segment={p().segment} center={p().center} current={props.current()} bar={bar} />}</Show>
         </div>
         <span class="vf-tl-pos" title={`${dirName()}第 ${view().position} 步，共 ${view().all.length} 步`}>
           {view().position}
@@ -244,6 +257,59 @@ function Timeline(props: {
           )}
         </For>
       </div>
+    </div>
+  );
+}
+
+function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; current: number; bar: HTMLElement }) {
+  const list = props.steps.list as readonly TimelineInfo[];
+  const positions = () => props.segment.positions;
+  const index = () => positions().indexOf(props.current);
+  const start = () => Math.max(0, Math.min(index() - Math.floor(SEGMENT_PREVIEW_STEPS / 2), positions().length - SEGMENT_PREVIEW_STEPS));
+  const shown = () => positions().slice(start(), start() + SEGMENT_PREVIEW_STEPS);
+  const rest = () => positions().length - start() - shown().length;
+  const state = () => {
+    const count = positions().length;
+    if (index() >= 0) return `第 ${index() + 1} / ${count} 步`;
+    return positions()[0] > props.current ? `${count} 步` : `${count} 步 · 已完成`;
+  };
+  const name = () => (props.segment.name === '' ? '步骤' : props.segment.name) + (props.segment.folded ? '（已折叠）' : '');
+  const single = () => positions().length === 1 && list[positions()[0]].label === props.segment.name;
+  let el!: HTMLDivElement;
+  createEffect(
+    on([() => props.center, () => props.segment], ([center]) => {
+      const width = el.offsetWidth;
+      const max = props.bar.clientWidth;
+      const left = Math.min(Math.max(center - width / 2, 0), Math.max(max - width, 0));
+      el.style.left = `${left}px`;
+      el.style.setProperty('--vf-peek-arrow', `${center - left}px`);
+    }),
+  );
+  return (
+    <div class="vf-peek" role="tooltip" ref={(e) => (el = e)}>
+      <div class="vf-peek-head">
+        <Rich class="vf-peek-name" text={name()} />
+        <span class="vf-peek-count" classList={{ 'vf-on': index() >= 0 }}>
+          {state()}
+        </span>
+      </div>
+      <Show when={!single()}>
+        <ol class="vf-peek-steps">
+          <Show when={start() > 0}>
+            <li class="vf-peek-more">前 {start()} 步</li>
+          </Show>
+          <For each={shown()}>
+            {(position) => (
+              <li classList={{ 'vf-on': position === props.current, 'vf-done': position < props.current }}>
+                <Rich text={list[position].label} />
+              </li>
+            )}
+          </For>
+          <Show when={rest() > 0}>
+            <li class="vf-peek-more">后 {rest()} 步</li>
+          </Show>
+        </ol>
+      </Show>
     </div>
   );
 }
