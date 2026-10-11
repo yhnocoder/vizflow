@@ -59,7 +59,7 @@ steps:
     label: '$\of{expert_mask}=\operatorname{one\_hot}(\of{idx})$'
     title: 专家掩码
     text: |
-      <code>expert_mask = one_hot(top_k_index, num_classes=num_experts + 1)</code>。$\of{idx}$ 的每个元素是一个专家编号，从 0 开始；one_hot 把它变成一个长 $E+1=\of{E}+1$ 的向量，只有那个编号的位置是 1。结果的形状是 $(T, K, E+1)$，第 $t$ 行第 $k$ 块对应第 $t$ 个位置选的第 $k$ 个专家。
+      <code>expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts + 1)</code>。$\of{idx}$ 的每个元素是一个专家编号，从 0 开始；one_hot 把它变成一个长 $E+1=\of{E}+1$ 的向量，只有那个编号的位置是 1。结果的形状是 $(T, K, E+1)$，第 $t$ 行第 $k$ 块对应第 $t$ 个位置选的第 $k$ 个专家。
       多出来的第 $E+1$ 类（编号 $E$）是给填充用的：别的实现里没选专家的槽位可以填编号 $E$，这一类在后面的循环里直接跳过。top-k 选出的编号都在 $0$ 到 $E-1$ 之间，所以这一列在这里全是 0。整段在 <code>torch.no_grad()</code> 里，编号没有梯度。
       $$\of{idx}={{ idx | matrix }}$$
   - id: permute
@@ -67,7 +67,7 @@ steps:
     label: '$\of{expert_mask_p}$'
     title: 换成按专家排的顺序
     text: |
-      <code>expert_mask = expert_mask.permute(2, 1, 0)</code>，形状从 $(T, K, E+1)$ 变成 $(E+1, K, T)$：第一维是专家，第二维是 top-k 的槽位，第三维是位置。数值没有变，只是换了下标的顺序。之后按专家取一块 <code>expert_mask[e]</code>，就是 $(K, T)$ 的表，标出这个专家在哪些位置、哪个槽位被选中。
+      <code>expert_mask = expert_mask.permute(2, 1, 0)</code>，形状从 $(T, K, E+1)$ 变成 $(E+1, K, T)$：第一维是专家，第二维是 top-k 的槽位，第三维是位置。数值没有变，只是换了下标的顺序。之后按专家取一块 <code>expert_mask[expert_idx]</code>，就是 $(K, T)$ 的表，标出这个专家在哪些位置、哪个槽位被选中。
   - id: hit
     show: [count, expert_hit]
     label: '$\of{count},\ \of{expert_hit}$'
@@ -81,8 +81,8 @@ steps:
     label: '$\of{nz}$'
     title: 列出每个专家的 (槽位, 位置)
     text: |
-      HF 对每个被选中的专家 $e$ 调 <code>top_k_pos, token_idx = torch.where(expert_mask[e])</code>，按行优先的顺序列出 $(K, T)$ 表里为 1 的位置，先按槽位、再按位置排序。专家按编号从小到大处理。
-      图上的计算图形状是固定的，每个专家分到几个 token 却随数据变化，所以图上不能给每个专家单独画一块。这里把 HF 循环里各个专家的结果按循环的顺序首尾相接，排成一个 $TK$ 行的表：<code>torch.nonzero_static(expert_mask, size=T*K)</code> 对 $(E+1, K, T)$ 的掩码按行优先列出所有为 1 的下标 (专家, 槽位, 位置)，先按专家、再按槽位、再按位置排序，正好是 HF 循环和 <code>torch.where</code> 给出的顺序。为 1 的元素恰好有 $TK$ 个，所以不需要填充。
+      HF 对每个被选中的专家 <code>expert_idx</code> 调 <code>top_k_pos, token_idx = torch.where(expert_mask[expert_idx])</code>，按行优先的顺序列出 $(K, T)$ 表里为 1 的位置，先按槽位、再按位置排序。专家按编号从小到大处理。
+      图上的计算图形状是固定的，每个专家分到几个 token 却随数据变化，所以图上不能给每个专家单独画一块。这里把 HF 循环里各个专家的结果按循环的顺序首尾相接，排成一个 $TK$ 行的表：PyTorch 的 <code>torch.nonzero_static</code>（HF 没有调用它）对 $(E+1, K, T)$ 的掩码按行优先列出所有为 1 的下标 (专家, 槽位, 位置)，先按专家、再按槽位、再按位置排序，正好是 HF 循环和 <code>torch.where</code> 给出的顺序。为 1 的元素恰好有 $TK$ 个，所以不需要填充。
       $$\of{nz}={{ nz | matrix }}$$
       同一个专家的行连在一起，次数为 0 的专家没有行。grouped GEMM 的 MoE 内核也是这样把 token 按专家排好再算。
   - id: split
@@ -110,7 +110,7 @@ steps:
     label: '$\of{gate_up}$'
     title: 每个专家的 gate_up_proj
     text: |
-      <code>F.linear(current_state, gate_up_proj[expert_idx])</code>。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $(E, 2m_f, d)$，$\of{Wgu}[e]$ 是第 $e$ 个专家的一块 $(2m_f, d)$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 $\of{Wgu}[\of{expert_idx}_r]^{\top}$，和逐个专家算的结果相同。悬停 $\of{gate_up}$ 的名字可以看到每一行用了哪一块。
+      <code>gate, up = nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)</code> 里的矩阵乘法。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $(E, 2m_f, d)$，$\of{Wgu}[e]$ 是第 $e$ 个专家的一块 $(2m_f, d)$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 $\of{Wgu}[\of{expert_idx}_r]^{\top}$，和逐个专家算的结果相同。悬停 $\of{gate_up}$ 的名字可以看到每一行用了哪一块。
       $$\of{gate_up}={{ gate_up | matrix:2 }}$$
     backward:
       label: '$\partial W_{gu},\ \partial\of{current_state}$'
@@ -123,7 +123,7 @@ steps:
     label: '$\of{gate},\ \of{up}$'
     title: 切成 gate 和 up
     text: |
-      <code>gate, up = (...).chunk(2, dim=-1)</code>：最后一维前一半是 gate，后一半是 up，各 $m_f=\of{mf}$ 列。chunk 返回两个张量，图上写成两个 narrow，取的列相同。
+      同一行里的 <code>.chunk(2, dim=-1)</code>：最后一维前一半是 gate，后一半是 up，各 $m_f=\of{mf}$ 列。chunk 返回两个张量，图上写成两个 narrow，取的列相同。
     backward:
       label: '$\partial\of{gate_up}$'
       title: 梯度拼回 gate_up
@@ -148,7 +148,7 @@ steps:
     label: '$\of{down}$'
     title: 每个专家的 down_proj
     text: |
-      <code>F.linear(current_hidden_states, down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $(E, d, m_f)$。第 $r$ 行乘 $\of{Wd}[\of{expert_idx}_r]^{\top}$，回到 $d$ 维。
+      <code>current_hidden_states = nn.functional.linear(current_hidden_states, self.down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $(E, d, m_f)$。第 $r$ 行乘 $\of{Wd}[\of{expert_idx}_r]^{\top}$，回到 $d$ 维。
       $$\of{down}={{ down | matrix:2 }}$$
     backward:
       label: '$\partial W_{d},\ \partial\of{hidden}$'
@@ -187,7 +187,7 @@ steps:
     label: '$\of{out}$'
     title: 加回各个位置
     text: |
-      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states)</code>：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
+      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))</code>：第 $r$ 行加到第 $\of{token_idx}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
       $$\of{out}={{ out | matrix:3 }}$$
     backward:
       label: '$\partial\of{scaled}$'

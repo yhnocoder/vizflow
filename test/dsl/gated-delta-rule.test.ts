@@ -35,11 +35,23 @@ function close(a: Float64Array, b: Float64Array): void {
 describe('torch_chunk_gated_delta_rule and torch_recurrent_gated_delta_rule', () => {
   it.each([1, 2, 3, 5, 8])('give the same output and gradients with chunk %i', async (chunk) => {
     const recurrent = await run('use: Recurrent');
-    const chunked = await run(`use: Chunk, params: { chunk: ${chunk} }`);
+    const chunked = await run(`use: Chunk, params: { chunk: ${chunk}, use_qk_l2norm_in_kernel: true }`);
     close(chunked.nodes.get('o')!.value.data, recurrent.nodes.get('o')!.value.data);
     for (const name of ['q', 'k', 'v', 'g', 'beta']) close(chunked.nodes.get(name)!.grad!.data, recurrent.nodes.get(name)!.grad!.data);
+    expect(chunked.nodes.get('rule.qn')).toBeDefined();
     const padded = Math.ceil(5 / chunk) * chunk;
     expect(chunked.nodes.get('rule.qp')!.shape).toEqual([2, padded, 2]);
     expect(chunked.nodes.get(`rule.S[2][${padded / chunk}]`)!.shape).toEqual([2, 2]);
+  });
+
+  it('scales q and k without the l2norm when use_qk_l2norm_in_kernel keeps its default', async () => {
+    const plain = await run('use: Chunk, params: { chunk: 2 }');
+    expect(plain.nodes.get('rule.qn')).toBeUndefined();
+    const q = plain.nodes.get('q')!.value.data;
+    const scaled = plain.nodes.get('rule.qs')!.value.data;
+    scaled.forEach((x, i) => {
+      const [h, t, d] = [Math.floor(i / 10), Math.floor(i / 2) % 5, i % 2];
+      expect(x).toBeCloseTo(q[t * 4 + h * 2 + d] / Math.SQRT2, 12);
+    });
   });
 });

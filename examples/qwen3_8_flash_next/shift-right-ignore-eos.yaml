@@ -30,7 +30,7 @@ steps:
     label: '$\of{is_eos}$'
     title: $\mathrm{shift}=\of{shift}$：哪些位置是 eos
     text: |
-      <code>eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)</code> 里先算 <code>token_ids == self.eos_token_id</code>：历史里是 eos 的位置为 1，其余为 0。历史开头补上的 eos 也算在内。<code>positions = torch.arange(seq_len)</code> 是每个位置的下标。
+      <code>eos_positions = torch.where(token_ids == self.eos_token_id, positions, -1)</code> 里先算 <code>token_ids == self.eos_token_id</code>：历史里是 eos 的位置为 1，其余为 0。历史开头补上的 eos 也算在内。<code>positions = torch.arange(seq_len, device=token_ids.device, dtype=torch.long)</code> 是每个位置的下标。
       $$\of{is_eos}={{ is_eos | matrix:0 }}$$
     backward:
       label: 无梯度
@@ -70,7 +70,7 @@ steps:
     label: '$\of{prev_eos}$'
     title: $\mathrm{shift}=\of{shift}$：每个位置之前最近的 eos
     text: |
-      <code>torch.cat([eos_positions.new_full((B, 1), -1), previous_eos_inclusive[:, :-1]], dim=1)</code>：开头补 $-1$，整体右移一位，得到当前位置之前（不含当前位置）最近的 eos。
+      <code>previous_eos = torch.cat([eos_positions.new_full((batch_size, 1), -1), previous_eos_inclusive[:, :-1]], dim=1)</code>：开头补 $-1$，整体右移一位，得到当前位置之前（不含当前位置）最近的 eos。
       $$\of{prev_eos}={{ prev_eos | matrix:0 }}$$
     backward:
       label: 无梯度

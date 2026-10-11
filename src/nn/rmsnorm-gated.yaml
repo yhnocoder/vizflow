@@ -30,11 +30,12 @@ body:
   - r:  { op: rsqrt(mse), tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
   - xw: { op: xh * weight, tex: '\of{weight}\odot\hat{\of{x}}' }
+  - gf: { op: identity(gate), tex: '{\of{gate}}_{\mathrm{fp32}}', dtype: fp32 }
   - act_fn:
       use: act
-      inputs: { x: gate }
+      inputs: { x: gf }
       outputs: { out: s }
-      tex: { out: '\of{act}(\of{gate})' }
+      tex: { out: '\of{act}(\of{gf})' }
   - out: { op: xw * s, dtype: x }
 steps:
   - id: square
@@ -110,12 +111,25 @@ steps:
       title: 传到 $\of{weight}$ 和 $\of{xh}$
       text: |
         $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: cast_gate
+    show: gf
+    label: '$\of{gf}$'
+    title: 门转成 float32
+    text: |
+      <code>gate.to(torch.float32)</code>：门先转成 float32，再送进激活函数，所以激活和后面的乘法都按 float32 计算。转换不改变数值，图上只换了 dtype。
+      $$\of{gf}={{ gf | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gate}$'
+      title: 穿过类型转换
+      text: |
+        类型转换的局部导数是 1，梯度转回门的 dtype 原样传下去。
+        $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
   - id: gate
     show: out
     label: '$\of{out}$'
     title: 门控相乘
     text: |
-      门 $\of{gate}$ 先转成 float32 再经过 $\of{act}$，它和归一化的结果形状相同，逐元素对应。归一化后的结果逐元素乘上门，再转回输入的 dtype。门接近 0 的分量被关掉。
+      <code>hidden_states = hidden_states * ACT2FN[self.activation](gate.to(torch.float32))</code>，然后 <code>return hidden_states.to(input_dtype)</code>。激活后的门 $\of{s}$ 和归一化的结果形状相同，逐元素对应；归一化后的结果逐元素乘上门，再转回输入的 dtype。门接近 0 的分量被关掉。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{xw},\ \partial\of{s}$'

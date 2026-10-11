@@ -9,6 +9,7 @@ params:
   K:  { type: dim }
   mf: { type: dim }
   sf: { type: dim }
+  mlp_class: { type: text, default: Qwen3_5MoeMLP }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -28,7 +29,7 @@ fold:
 body:
   - shared_expert:
       use: GLU
-      subtitle: Qwen3_5MoeMLP，共享专家
+      subtitle: \of{mlp_class}，共享专家
       suffix: s
       params: { act: SiLU, f: sf, name: shared_expert }
       inputs: { x: x }
@@ -37,10 +38,14 @@ body:
   - routed:
       use: SparseMoE
       inline: true
-      params: { E: E, K: K, mf: mf }
+      params: { E: E, K: K, mf: mf, norm_topk_prob: true }
       inputs: { x: x }
       outputs: { out: yr }
       tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      steps:
+        topsum:
+          append: |
+            <code>Qwen3_5MoeTopKRouter</code> 没有 norm_topk_prob 这个开关，总是执行 <code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>，所以这里传 true。
   - gl: { op: x @ Wsg.T, tex: '\mathbf{g}^{\mathrm{s}}' }
   - gate_sigmoid:
       use: Sigmoid
@@ -49,7 +54,7 @@ body:
       tex: { out: '\sigma(\mathbf{g}^{\mathrm{s}})' }
       steps:
         neg:
-          append: 这里算的是共享专家的门 <code>F.sigmoid(self.shared_expert_gate(hidden_states))</code>：每个位置一个 0 到 1 之间的系数，决定这个位置用多少共享专家的输出。
+          append: 这里算的是共享专家的门 <code>shared_expert_output = F.sigmoid(self.shared_expert_gate(hidden_states_reshaped)) * shared_expert_output</code> 里的 <code>F.sigmoid(self.shared_expert_gate(hidden_states_reshaped))</code>：每个位置一个 0 到 1 之间的系数，决定这个位置用多少共享专家的输出。
   - shared: { op: gs * ys, tex: '\sigma(\mathbf{g}^{\mathrm{s}})\odot\mathbf{y}^{\mathrm{s}}' }
   - out: { op: yr + shared, tex: '\mathbf{moe}' }
 steps:

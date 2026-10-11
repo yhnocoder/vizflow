@@ -51,13 +51,14 @@ body:
   - iqr:     { op: 'cat([iq_emb, iq_pass], dim=2)', tex: "\\mathbf{q}'^{I}" }
   - visible: { op: 'eq(M, 0)', tex: '\mathbf{vis}' }
   - kg: { op: 'view(rk, T // c, c, DI)', tex: '\mathbf{k}^{I}_{\mathrm{blk}}' }
-  - pk: { op: 'mean(kg, 1)', tex: '\bar{\mathbf{k}}^{I}', dtype: fp32 }
+  - pk: { op: 'mean(kg, 1)', tex: '\bar{\mathbf{k}}^{I}_{\mathrm{fp32}}', dtype: fp32 }
+  - pkc: { op: identity(pk), tex: '\bar{\mathbf{k}}^{I}', dtype: rk }
   - k_layernorm:
       use: ZeroCenteredRMSNorm
       subtitle: Qwen4ExpTextRMSNorm
       suffix: ik
       params: { intro: '每个块的平均 key 做一次 RMSNorm，范围是 indexer_head_dim。' }
-      inputs: { x: pk }
+      inputs: { x: pkc }
       outputs: { out: pkn }
       steps:
         square: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
@@ -120,7 +121,7 @@ steps:
     label: '$\of{iq},\ \of{rk}$'
     title: 拆出 query 和 key
     text: |
-      <code>torch.split(qk, [n_heads * head_dim, kv_heads * head_dim], dim=-1)</code>，query reshape 成 $(T, \of{HI}, \of{DI})$，key reshape 后 <code>squeeze(2)</code> 去掉只有 1 个 head 的那一维，得到 $(T, \of{DI})$ 的 raw_keys。
+      <code>q, token_k = torch.split(qk, [self.index_n_heads * self.index_head_dim, self.index_kv_heads * self.index_head_dim], dim=-1)</code>，然后 <code>q, raw_keys = q.reshape(*hidden_shape), token_k.reshape(*hidden_shape).squeeze(2)</code>：query reshape 成 $(T, \of{HI}, \of{DI})$，key reshape 后 <code>squeeze(2)</code> 去掉只有 1 个 head 的那一维，得到 $(T, \of{DI})$ 的 raw_keys。
       $$\mathbf{k}^{I}={{ rk | matrix:2 }}$$
     backward:
       label: 无梯度
@@ -209,7 +210,7 @@ steps:
     label: '$\of{visible}$'
     title: 能看到的位置
     text: |
-      <code>visible_token_indices = attention_mask == 0</code>：indexer 拿到的是 causal mask，等于 0 的格子是这个 query 能看到的 key。HF 在 eager 实现里用 <code>torch.finfo(dtype).min</code> 表示不可见，图里写成 $-\infty$，两者在 softmax 之后都是 0。
+      <code>visible_token_indices = attention_mask if attention_mask.dtype == torch.bool else attention_mask == 0</code>：indexer 拿到的是 causal mask，eager 实现里它是加性的浮点 mask，等于 0 的格子是这个 query 能看到的 key。HF 的加性 mask 用 dtype 的最小值表示不可见，图里写成 $-\infty$，两者在 softmax 之后都是 0。
       $$\mathbf{vis}={{ visible | matrix:0 }}$$
     backward:
       label: 无梯度
@@ -219,8 +220,18 @@ steps:
     label: '$\of{pk}$'
     title: 每 $\of{c}$ 个 token 的 key 取平均
     text: |
-      <code>key_groups = raw_keys.index_select(0, block_token_indices.flatten())</code>，<code>pooled_keys = key_groups.float().mean(dim=1)</code>：能看到的 token 从头开始每 indexer_compress_ratio $=\of{c}$ 个分成一块，块里的 key 取平均。HF 对每个 query 单独找能看到的 token 再分块；没有 padding 时每个 query 能看到的都是从位置 0 开始的一段，块的边界对所有 query 相同，所以图里对整段序列分一次块，再按 query 标出哪些块完整可见，结果和逐个 query 计算相同。这一页的 $c=\of{c}$，每块只有一个 token，平均就是它自己；真实模型的 $c=4$。这里要求 $T$ 是 $c$ 的倍数。
-      $$\bar{\mathbf{k}}^{I}={{ pk | matrix:2 }}$$
+      <code>key_groups = raw_keys[batch_idx].index_select(0, block_token_indices.flatten())</code>，然后 <code>pooled_keys = key_groups.float().mean(dim=1).to(raw_keys.dtype)</code> 的前半段 <code>key_groups.float().mean(dim=1)</code>：key 先转成 float32 再平均。能看到的 token 从头开始每 indexer_compress_ratio $=\of{c}$ 个分成一块，块里的 key 取平均。HF 对每个 query 单独找能看到的 token 再分块；没有 padding 时每个 query 能看到的都是从位置 0 开始的一段，块的边界对所有 query 相同，所以图里对整段序列分一次块，再按 query 标出哪些块完整可见，结果和逐个 query 计算相同。这一页的 $c=\of{c}$，每块只有一个 token，平均就是它自己；真实模型的 $c=4$。这里要求 $T$ 是 $c$ 的倍数。
+      $$\of{pk}={{ pk | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: pool_cast
+    show: pkc
+    label: '$\of{pkc}$'
+    title: 平均转回 key 的 dtype
+    text: |
+      <code>pooled_keys = key_groups.float().mean(dim=1).to(raw_keys.dtype)</code> 的最后一段 <code>.to(raw_keys.dtype)</code>：float32 的平均转回 key 原来的 dtype，再送进 k_layernorm。之后算分数时 HF 再用 <code>block_key_states.float()</code> 转成 float32。
+      $$\of{pkc}={{ pkc | matrix:2 }}$$
     backward:
       label: 无梯度
       title: 没有梯度
@@ -229,7 +240,7 @@ steps:
     label: '$\cos_{\mathrm{blk}},\ \sin_{\mathrm{blk}}$'
     title: 取每块起点位置的 cos 和 sin
     text: |
-      <code>full_cos.index_select(0, group_starts)</code>：块的 key 按这一块第一个 token 的位置旋转，第 $b$ 块的位置是 $b\cdot\of{c}$。图里把 cos 表按 $\of{c}$ 行一组 reshape，取每组的第一行。
+      <code>full_cos[batch_idx].index_select(0, group_starts)</code>：块的 key 按这一块第一个 token 的位置旋转，第 $b$ 块的位置是 $b\cdot\of{c}$。图里把 cos 表按 $\of{c}$ 行一组 reshape，取每组的第一行。
       $$\cos_{\mathrm{blk}}={{ bcos | matrix:3 }}$$
     backward:
       label: 无梯度
@@ -364,7 +375,7 @@ steps:
     label: '$\operatorname{top}_{k}$'
     title: 每个 query 选分数最高的块
     text: |
-      <code>scores.topk(min(self.block_topk, num_complete_blocks), dim=0)</code>：block_topk $=$ indexer_budget $/$ indexer_compress_ratio $=\of{B}/\of{c}=\of{B//c}$。真实模型的 budget 是 2048、$c=4$，每个 query 选 512 块，也就是最多 2048 个 token。图里每行都选 $\min(\of{B//c}, \of{T//c})$ 个，可见块不够时会选到 $-\infty$ 的块，下一步再去掉，和 HF 按行取 $\min(\text{block\_topk}, \text{完整块数})$ 结果相同。
+      <code>scores.topk(min(self.block_topk, num_complete_blocks), dim=0)</code>：block_topk $=$ indexer_budget $/$ indexer_compress_ratio $=\of{B}/\of{c}=\of{B//c}$。真实模型的 budget 是 2048、$c=4$，每个 query 选 512 块，完整块最多 2048 个 token；不满一块的尾部（最多 $c-1=3$ 个 token）不参与打分，全部保留，所以 HF 给每个 query 的下标表留的宽度是 <code>self.token_budget + self.compress_ratio - 1</code>。图里每行都选 $\min(\of{B//c}, \of{T//c})$ 个，可见块不够时会选到 $-\infty$ 的块，下一步再去掉，和 HF 按行取 $\min(\text{block\_topk}, \text{完整块数})$ 结果相同。
       $$\operatorname{top}_{k}={{ top | matrix:0 }}$$
     backward:
       label: 无梯度
@@ -394,7 +405,7 @@ steps:
     label: '$\of{sel_tok}$'
     title: 选中的 token
     text: |
-      <code>tail = local_visible_indices[num_complete_blocks * self.compress_ratio:]</code>，<code>torch.cat([selected_tokens, tail])</code>：选中块里的 token，加上最后一块不完整的、总是保留的 token。也就是可见的 token 去掉没被选中的块。$c=1$ 时没有不完整的块。
+      <code>tail = local_visible_indices[num_complete_blocks * self.compress_ratio :]</code>，<code>selected_tokens = torch.cat([selected_tokens, tail]).to(torch.int32)</code>：选中块里的 token，加上最后一块不完整的、总是保留的 token。也就是可见的 token 去掉没被选中的块。$c=1$ 时没有不完整的块。
       $$\mathbf{sel}={{ sel_tok | matrix:0 }}$$
     backward:
       label: 无梯度
