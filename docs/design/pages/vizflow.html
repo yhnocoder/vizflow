@@ -446,7 +446,7 @@ defineOp(def: OpDef): void</code></pre>
 
 <h3>PyTorch 对拍</h3>
 <p>有限差分只能说明反向和前向自洽，不能说明前向符合 torch 的语义。仓库里的 Python 脚本用 PyTorch CPU 版计算每个运算和两个示例页面完整计算图的若干组输入、前向值与梯度，导出成 JSON 提交进仓库，JSON 里记录生成时的 torch 版本。测试读取这些 JSON 与 vizflow 的结果逐元素比较，通过条件为 $|a - b| \le 10^{-9} + 10^{-9}\,|b|$，其中 $b$ 是 torch 的值；torch 为 NaN 时 vizflow 也必须是 NaN。PyTorch 只用于生成测试数据，不进入库本身，运行测试也不需要安装 torch。</p>
-<p>块缩放量化的三个运算另有一份数据：E4M3、E5M2 的舍入与 torch 的 <code>float8_e4m3fn</code>、<code>float8_e5m2</code> 转换对拍（超出范围的值 torch 的行为随版本变化，只在 vizflow 的单测里检查饱和），E2M1 按枚举的可表示值对拍；缩放因子和码字按 DeepSeek 官方 <code>act_quant</code> 的 fp32 公式在 CPU 上重写后对拍。这几项是精确值，容差为 0。反量化值、FP8 Linear 的损失与梯度仍用上面的容差。</p>
+<p>块缩放量化的三个运算另有一份数据：E4M3、E5M2 的舍入与 torch 的 <code>float8_e4m3fn</code>、<code>float8_e5m2</code> 转换对拍（超出范围的值 torch 的行为随版本变化，只在 vizflow 的单测里检查饱和），E2M1 按枚举的可表示值对拍；缩放因子和码字按 DeepSeek 官方 <code>act_quant</code> 的 fp32 公式在 CPU 上重写后对拍。这几项是精确值，容差为 0；块缩放用例的反量化值用上面的容差。最后一个用例是开启 <code>rounding</code> 的 FP8 Linear：torch 一侧每个运算在 float64 里算完后舍入到输出节点的 dtype（bf16 经过 fp32），反量化值、$\mathbf{z}$、不量化的对照、$\log\mathbf{p}$ 和损失都精确相同，梯度不舍入，用上面的容差。</p>
 
 <h3>边求和</h3>
 <p>悬停卡片上的局部导数和传回的量来自 <code>explain</code>，与 <code>backward</code> 是两份独立的代码。第三道检查把两者绑定：随机输入与随机上游梯度下，每个可微输入元素所有出边的「局部导数 × 上游梯度」之和，应当等于 <code>backward</code> 的结果，通过条件同样为 $|a - b| \le 10^{-9} + 10^{-9}\,|b|$。矩阵乘的边经过乘积格子，按「输入到格子的局部导数 × 格子到输出的局部导数 × 输出的上游梯度」计算。</p>

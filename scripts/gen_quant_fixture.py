@@ -129,45 +129,54 @@ def block_cases():
     ]
 
 
-class QuantizeSTE(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, x, s):
-        scaled = (x / s).to(torch.float32)
-        ctx.save_for_backward(s, scaled.abs() <= E4M3_MAX)
-        return scaled.to(torch.float8_e4m3fn).to(torch.float64)
+def bf16(t):
+    return t.to(torch.bfloat16).to(torch.float64)
 
-    @staticmethod
-    def backward(ctx, grad):
-        s, keep = ctx.saved_tensors
-        return grad / s * keep, None
+
+def fp32(t):
+    return t.to(torch.float32).to(torch.float64)
 
 
 def amax_scale(x, br, bc):
-    amax = block_amax(x.detach(), br, bc).to(torch.float32).clamp(min=AMAX_FLOOR)
+    amax = block_amax(x, br, bc).to(torch.float32).clamp(min=AMAX_FLOOR)
     return (amax / E4M3_MAX).to(torch.float64)
 
 
 def fake_quant(x, br, bc):
     s = amax_scale(x, br, bc)
     full = expand(s, br, bc, x.shape)
-    q = QuantizeSTE.apply(x, full)
-    return s, q, q * full
+    scaled = (x / full).to(torch.float32)
+    q = scaled.to(torch.float8_e4m3fn).to(torch.float64)
+    keep = (scaled.abs() <= E4M3_MAX).to(torch.float64)
+    return s, full, q, keep, bf16(q * full)
+
+
+def straight_through(grad, full, keep):
+    return grad * full / full * keep
 
 
 def linear_case():
-    x = torch.tensor(LINEAR_X, dtype=torch.float64, requires_grad=True)
-    W = (torch.rand(4, 4, generator=generator, dtype=torch.float64) * 2 - 1).requires_grad_(True)
+    x = bf16(torch.tensor(LINEAR_X, dtype=torch.float64))
+    W_given = torch.rand(4, 4, generator=generator, dtype=torch.float64) * 2 - 1
+    W = bf16(W_given)
     y = torch.tensor(LINEAR_Y)
-    sx, qx, xq = fake_quant(x, 1, LINEAR_B)
-    sw, qw, Wq = fake_quant(W, LINEAR_B, LINEAR_B)
-    z = xq @ Wq.T
-    zr = x.detach() @ W.detach().T
-    loss = F.nll_loss(F.log_softmax(z, -1), y)
-    loss.backward()
+    rows = torch.arange(len(LINEAR_Y))
+    sx, fx, qx, kx, xq = fake_quant(x, 1, LINEAR_B)
+    sw, fw, qw, kw, Wq = fake_quant(W, LINEAR_B, LINEAR_B)
+    z = bf16(xq @ Wq.T)
+    zr = bf16(x @ W.T)
+    logp = fp32(F.log_softmax(z, -1))
+    loss = fp32(-logp[rows, y].mean())
+    g_logp = torch.zeros_like(logp)
+    g_logp[rows, y] = -1.0 / len(LINEAR_Y)
+    g_z = g_logp - torch.exp(logp) * g_logp.sum(-1, keepdim=True)
+    g_x = straight_through(g_z @ Wq, fx, kx)
+    g_W = straight_through(g_z.T @ xq, fw, kw)
     return {
         "b": LINEAR_B,
-        "x": encode(x),
-        "W": encode(W),
+        "rounding": "each op is computed in float64 and its output rounded to the node dtype (bf16 through fp32, fp32), inputs and weights too; fp32 scales and fp8 codes are already representable; gradients are not rounded",
+        "x": encode(torch.tensor(LINEAR_X, dtype=torch.float64)),
+        "W": encode(W_given),
         "y": LINEAR_Y,
         "sx": encode(sx),
         "qx": encode(qx),
@@ -177,8 +186,9 @@ def linear_case():
         "Wq": encode(Wq),
         "z": encode(z),
         "zr": encode(zr),
+        "logp": encode(logp),
         "loss": loss.item(),
-        "grads": {"x": encode(x.grad), "W": encode(W.grad)},
+        "grads": {"x": encode(g_x), "W": encode(g_W)},
     }
 
 

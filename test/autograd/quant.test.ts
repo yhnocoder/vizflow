@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { graph } from '../../src/core';
-import { quantMax, roundTo, scaleOf } from '../../src/autograd/quant';
+import { QUANT_FORMATS, type QuantFormat, SCALE_RULES, type ScaleRule, quantMax, roundTo, scaleOf } from '../../src/autograd/quant';
 
 describe('quantization formats', () => {
   it('saturates out-of-range values and rounds integers half to even', () => {
@@ -51,6 +51,27 @@ describe('block quantization ops', () => {
     const e8 = g.block_scale(x, 1, 2, 'fp4_e2m1', 'mx');
     const q4 = g.quantize(x, e8, 1, 2, 'fp4_e2m1');
     expect(() => g.dequantize(q4, e8, 1, 2, { name: 'mix' })).toThrow("dequantize 'mix': cannot promote fp4_e2m1 with e8m0, give the dtype explicitly");
+  });
+
+  it('keeps scales and codes unchanged when the graph rounds every value to its dtype', () => {
+    const X = [
+      [0.37, -1.9, 6.1, 1e-6, 0.0021, -3.3],
+      [250, -0.004, 0, 0, 13.7, -0.61],
+      [0.9, 0.2, -0.6, 1.3, 777, -1e-3],
+    ];
+    const combos: [QuantFormat, ScaleRule][] = [];
+    for (const fmt of QUANT_FORMATS) for (const rule of SCALE_RULES) if (rule !== 'mx' || !fmt.startsWith('int')) combos.push([fmt, rule]);
+    for (const [fmt, rule] of combos) {
+      const values = (rounding: boolean) => {
+        const g = graph({ dtype: 'bf16', rounding });
+        const x = g.input('x', [3, 6], X, { dtype: 'fp64' });
+        const s = g.block_scale(x, 2, 4, fmt, rule);
+        const q = g.quantize(x, s, 2, 4, fmt);
+        return { s: [...s.value.data], q: [...q.value.data], dtypes: [s.dtype, q.dtype] };
+      };
+      expect(values(true), `${fmt} ${rule}`).toEqual(values(false));
+    }
+    expect(combos).toHaveLength(18);
   });
 
   it('passes the gradient straight through except where the value was clipped', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type QuantFormat, type ScaleRule, graph } from '../../src/core';
 import { roundTo } from '../../src/autograd/quant';
-import { ABS_TOLERANCE, type EncodedTensor, decode, expectTensor, loadFixture } from './fixtures';
+import { type EncodedTensor, decode, expectTensor, loadFixture } from './fixtures';
 
 interface Rounding {
   x: number[];
@@ -38,6 +38,7 @@ interface QuantFixture {
     Wq: EncodedTensor;
     z: EncodedTensor;
     zr: EncodedTensor;
+    logp: EncodedTensor;
     loss: number;
     grads: { x: EncodedTensor; W: EncodedTensor };
   };
@@ -73,28 +74,34 @@ describe(`PyTorch ${fixture.torch} reference for block quantization`, () => {
     });
   }
 
-  it('matches an FP8 linear with a straight-through estimator in float64', () => {
+  it('matches an FP8 linear whose op outputs are rounded to their dtypes, with a straight-through estimator', () => {
     const { linear } = fixture;
-    const g = graph({ dims: { b: linear.b } });
+    const g = graph({ dims: { b: linear.b }, dtype: 'bf16', rounding: true });
     const x = g.input('x', linear.x.shape, decode(linear.x.values));
     const W = g.param('W', linear.W.shape, decode(linear.W.values));
     const y = g.label('y', linear.y, { classes: linear.W.shape[0] });
     const sx = g.block_scale(x, 1, 'b', { name: 'sx' });
     const qx = g.quantize(x, sx, 1, 'b', { name: 'qx' });
-    const xq = g.dequantize(qx, sx, 1, 'b', { name: 'xq' });
+    const xq = g.dequantize(qx, sx, 1, 'b', { name: 'xq', dtype: 'bf16' });
     const sw = g.block_scale(W, 'b', 'b', { name: 'sw' });
     const qw = g.quantize(W, sw, 'b', 'b', { name: 'qw' });
-    const Wq = g.dequantize(qw, sw, 'b', 'b', { name: 'Wq' });
-    const z = g.matmul(xq, Wq.T, { name: 'z' });
-    const loss = g.nll_loss(g.log_softmax(z, -1), y, { name: 'loss' });
+    const Wq = g.dequantize(qw, sw, 'b', 'b', { name: 'Wq', dtype: 'bf16' });
+    const z = g.matmul(xq, Wq.T, { name: 'z', dtype: 'bf16' });
+    const zr = g.matmul(x, W.T, { name: 'zr' });
+    const logp = g.log_softmax(z, -1, { name: 'logp', dtype: 'fp32' });
+    const loss = g.nll_loss(logp, y, { name: 'loss' });
+    g.loss(loss);
     exact(sx.value.data, linear.sx, 'sx');
     exact(qx.value.data, linear.qx, 'qx');
     exact(sw.value.data, linear.sw, 'sw');
     exact(qw.value.data, linear.qw, 'qw');
-    expectTensor(xq.value, linear.xq, 'xq');
-    expectTensor(Wq.value, linear.Wq, 'Wq');
-    expectTensor(z.value, linear.z, 'z');
-    expect(Math.abs(loss.value.data[0] - linear.loss)).toBeLessThanOrEqual(ABS_TOLERANCE);
+    exact(xq.value.data, linear.xq, 'xq');
+    exact(Wq.value.data, linear.Wq, 'Wq');
+    exact(z.value.data, linear.z, 'z');
+    exact(zr.value.data, linear.zr, 'zr');
+    exact(logp.value.data, linear.logp, 'logp');
+    expect(loss.dtype).toBe('fp32');
+    expect(loss.value.data[0]).toBe(linear.loss);
     expectTensor(x.grad, linear.grads.x, 'grad of x');
     expectTensor(W.grad, linear.grads.W, 'grad of W');
   });
