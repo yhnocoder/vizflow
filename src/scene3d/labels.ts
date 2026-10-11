@@ -51,6 +51,9 @@ export class Label {
   base: [number, number] = [0, 0];
   placed: [number, number] = [0, 0];
   private content = '';
+  private off = false;
+  private transform = '';
+  private readonly data: Partial<Record<'node' | 'index', string>> = {};
   private alternate: { key: string; build: () => Node } | undefined = undefined;
   private alternateSize: [number, number] | undefined = undefined;
 
@@ -109,6 +112,25 @@ export class Label {
     this.alternateSize = undefined;
   }
 
+  setData(name: 'node' | 'index', value: string): void {
+    if (this.data[name] === value) return;
+    this.data[name] = value;
+    this.el.dataset[name] = value;
+  }
+
+  setOff(off: boolean): void {
+    if (this.off === off) return;
+    this.off = off;
+    this.el.classList.toggle('vf-off', off);
+  }
+
+  moveTo(x: number, y: number): void {
+    const transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    if (transform === this.transform) return;
+    this.transform = transform;
+    this.el.style.transform = transform;
+  }
+
   setFlag(className: string, on: boolean): void {
     if (this.el.classList.contains(className) === on) return;
     this.el.classList.toggle(className, on);
@@ -147,9 +169,10 @@ export class LabelLayer {
         projected.set(...label.pos!).project(camera);
         off = Math.abs(projected.x) > LABEL_CLIP || Math.abs(projected.y) > LABEL_CLIP;
       }
-      label.el.classList.toggle('vf-off', off);
-      if (!off) shown.push(label);
+      if (off) label.setOff(true);
+      else shown.push(label);
     }
+    for (const label of shown) label.setOff(false);
     for (const label of shown) label.measure();
     const bounds = { x: LABEL_SAFE_MARGIN, y: LABEL_SAFE_MARGIN, w: width - 2 * LABEL_SAFE_MARGIN, h: height - 2 * LABEL_SAFE_MARGIN };
     const placements: Placement[] = shown.map((label) => {
@@ -186,9 +209,9 @@ export class LabelLayer {
     shown.forEach((label, i) => {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];
-      label.el.classList.toggle('vf-off', hidden);
       label.placed = [box.x + dx, box.y + dy];
-      label.el.style.transform = `translate(${(box.x + dx).toFixed(1)}px, ${(box.y + dy).toFixed(1)}px)`;
+      label.moveTo(box.x + dx, box.y + dy);
+      label.setOff(hidden);
     });
   }
 

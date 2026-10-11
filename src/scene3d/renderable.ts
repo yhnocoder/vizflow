@@ -78,13 +78,33 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
   return renderable;
 }
 
+interface RenderableIndex {
+  byKey: Map<Node | string, Renderable>;
+  bySource: Map<Node, Renderable>;
+}
+
+const indexes = new WeakMap<readonly Renderable[], RenderableIndex>();
+
+function indexOfRenderables(renderables: readonly Renderable[]): RenderableIndex {
+  const known = indexes.get(renderables);
+  if (known !== undefined) return known;
+  const index: RenderableIndex = { byKey: new Map(), bySource: new Map() };
+  for (const r of renderables) {
+    const key = r.block.key ?? r.block.node;
+    if (!index.byKey.has(key)) index.byKey.set(key, r);
+    if (r.block.copyOf === undefined && !index.bySource.has(r.block.node)) index.bySource.set(r.block.node, r);
+  }
+  indexes.set(renderables, index);
+  return index;
+}
+
 export function renderableOf(c: SceneController, node: Node): Renderable | undefined {
   const source = c.levelLayout?.sourceOf.get(node) ?? node;
-  return c.renderables.find((r) => r.block.node === source && r.block.copyOf === undefined);
+  return indexOfRenderables(c.renderables).bySource.get(source);
 }
 
 export function renderableFor(c: SceneController, block: Block): Renderable | undefined {
-  return c.renderables.find((r) => (r.block.key ?? r.block.node) === (block.key ?? block.node));
+  return indexOfRenderables(c.renderables).byKey.get(block.key ?? block.node);
 }
 
 export function elementOf(block: Block, node: Node, index: readonly number[]): Element {

@@ -208,9 +208,10 @@ class GraphImpl {
 
   findLoss(): Node | undefined {
     if (this.lossNode !== undefined) return this.lossNode;
-    for (let i = this.nodes.length - 1; i >= 0; i--) {
-      const node = this.nodes[i];
-      if (node.kind === 'op' && this.states[i].value.size === 1) return node;
+    const { nodes, states } = this;
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const node = nodes[i];
+      if (node.kind === 'op' && states[i].value.size === 1) return node;
     }
     return undefined;
   }
