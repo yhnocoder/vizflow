@@ -265,6 +265,29 @@ const cases: Case[] = [
       return { out: g.index_add(src, index, 4), inputs: [src] };
     },
   },
+  {
+    op: 'ge',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.ge(x, 0), inputs: [x] };
+    },
+  },
+  {
+    op: 'index_copy',
+    build: (g, r) => {
+      const x = g.input('x', [5, 3], randomValues(r, [5, 3]));
+      const slots = g.label('slots', [3, 0]);
+      const src = g.input('src', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.index_copy(x, 0, slots, src), inputs: [x, src] };
+    },
+  },
+  {
+    op: 'topk_indices',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.topk_indices(x, 2, -1), inputs: [x] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {
