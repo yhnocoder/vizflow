@@ -288,6 +288,30 @@ const cases: Case[] = [
       return { out: g.topk_indices(x, 2, -1), inputs: [x] };
     },
   },
+  {
+    op: 'block_scale',
+    build: (g, r) => {
+      const x = g.input('x', [3, 5], randomValues(r, [3, 5]));
+      const s = g.block_scale(x, 2, 2);
+      return { out: g.mul(s, s), inputs: [x] };
+    },
+  },
+  {
+    op: 'quantize',
+    build: (g, r) => {
+      const x = g.input('x', [3, 5], randomValues(r, [3, 5]));
+      const s = g.input('s', [2, 3], [[0.001, 0.01, 0.1], [0.002, 0.02, 0.2]]);
+      return { out: g.quantize(x, s, 2, 2), inputs: [x, s] };
+    },
+  },
+  {
+    op: 'dequantize',
+    build: (g, r) => {
+      const q = g.input('q', [5], randomValues(r, [5]));
+      const s = g.input('s', [2], [0.5, 2]);
+      return { out: g.dequantize(q, s, 1, 3), inputs: [q, s] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

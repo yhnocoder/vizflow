@@ -42,6 +42,7 @@ import {
 import { nllLossExplain } from './loss';
 import { groupedMmExplain, matmulExplain, scaledMmExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
+import { blockScaleExplain, dequantizeExplain, quantizeExplain } from './quant';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
@@ -90,6 +91,9 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   ge: geExplain,
   index_copy: indexCopyExplain,
   topk_indices: topkIndicesExplain,
+  block_scale: blockScaleExplain,
+  quantize: quantizeExplain,
+  dequantize: dequantizeExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

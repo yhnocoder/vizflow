@@ -29,9 +29,11 @@ import { catOp, causalConv1dOp, embeddingOp, gatherOp, indexAddOp, indexCopyOp, 
 import { type Reduction, nllLossOp } from './loss';
 import { type ScaledMmAccum, groupedMmOp, matmulOp, scaledMmOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
+import { blockScaleOp, dequantizeOp, quantizeOp } from './quant';
 import { logSoftmaxOp, softmaxOp } from './softmax';
+import type { QuantFormat, ScaleRule } from '../quant';
 
-export type { Dim, Reduction, ScaledMmAccum };
+export type { Dim, Reduction, ScaledMmAccum, QuantFormat, ScaleRule };
 
 export interface ReduceOptions extends OpOptions {
   keepdim?: boolean;
@@ -59,6 +61,15 @@ export interface ScaledMmOptions extends OpOptions {
   block_k?: number | string;
   block_n?: number | string;
   accum?: ScaledMmAccum;
+}
+
+export interface BlockScaleOptions extends OpOptions {
+  fmt?: QuantFormat;
+  rule?: ScaleRule;
+}
+
+export interface QuantizeOptions extends OpOptions {
+  fmt?: QuantFormat;
 }
 
 export interface BuiltinOps {
@@ -112,6 +123,11 @@ export interface BuiltinOps {
   ge(input: Node, other: number, options?: OpOptions): Node;
   index_copy(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
   topk_indices(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
+  block_scale(input: Node, br: number | string, bc: number | string, options?: BlockScaleOptions): Node;
+  block_scale(input: Node, br: number | string, bc: number | string, fmt: QuantFormat, rule?: ScaleRule, options?: OpOptions): Node;
+  quantize(input: Node, scale: Node, br: number | string, bc: number | string, options?: QuantizeOptions): Node;
+  quantize(input: Node, scale: Node, br: number | string, bc: number | string, fmt: QuantFormat, options?: OpOptions): Node;
+  dequantize(input: Node, scale: Node, br: number | string, bc: number | string, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -160,6 +176,9 @@ export const builtinOps: readonly AnyOpDef[] = [
   geOp,
   indexCopyOp,
   topkIndicesOp,
+  blockScaleOp,
+  quantizeOp,
+  dequantizeOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

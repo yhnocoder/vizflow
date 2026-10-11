@@ -35,4 +35,8 @@ export {
   type CatOptions,
   type ScaledMmAccum,
   type ScaledMmOptions,
+  type BlockScaleOptions,
+  type QuantizeOptions,
+  type QuantFormat,
+  type ScaleRule,
 } from './ops';

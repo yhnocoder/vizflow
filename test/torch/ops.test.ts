@@ -38,8 +38,9 @@ function run(c: OpCase) {
 }
 
 describe(`PyTorch ${fixture.torch} reference for each op`, () => {
-  it('covers every builtin op', () => {
-    expect(new Set(fixture.cases.map((c) => c.op))).toEqual(new Set(builtinOps.map((def) => def.name)));
+  it('covers every builtin op together with the quantization fixture', () => {
+    const quantOps = (loadFixture<never>('quant.json') as unknown as { ops: string[] }).ops;
+    expect(new Set([...fixture.cases.map((c) => c.op), ...quantOps])).toEqual(new Set(builtinOps.map((def) => def.name)));
   });
 
   for (const c of fixture.cases) {

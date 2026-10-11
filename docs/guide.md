@@ -367,6 +367,9 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `causal_conv1d` | `g.causal_conv1d(x, w)` | 因果深度卷积：`x` 是 `(T, C)`，`w` 是 `(C, K)`，每个通道用自己的 $K$ 个系数加权当前和之前 $K-1$ 个位置，序列开头之前按 0 计 |
 | `topk_mask` | `g.topk_mask(a, k, dim)` | 沿 `dim`（默认 -1）每个切片里最大的 `k` 个为 1、其余为 0；输出没有梯度，用来表示 top-k 选中了哪些位置；`k` 可以是维度名 |
 | `where` | `g.where(condition, a, -Infinity)` | 与 `torch.where` 相同，第三个参数是数；`condition` 不求梯度。DSL 里写 `where(m, x, -inf)` |
+| `block_scale` | `g.block_scale(a, br, bc, fmt?, rule?)` | 最后两维按 `br` 行 `bc` 列分块，每块一个缩放因子，块数向上取整；1 维输入只按 `bc` 分块，`br` 必须为 1。`br`、`bc` 可以是维度名。`fmt` 默认 `'fp8_e4m3'`，可选 `'fp8_e5m2'`、`'fp4_e2m1'`、`'int8'`、`'int4'`；`rule` 默认 `'amax'`（$\max\lvert x\rvert/q_{\max}$，下限 $10^{-4}$），可选 `'ue8m0'`（再向上取到 2 的整数次幂）、`'mx'`（OCP Microscaling，只能配浮点格式）、`'e4m3'`（NVFP4）。输出 dtype 由 `rule` 决定，输入不求梯度 |
+| `quantize` | `g.quantize(a, scale, br, bc, fmt?)` | 每个元素除以所在块的缩放因子，按 fp32 算出商再舍入到 `fmt`：浮点格式逐位模拟、平局取偶、超出范围饱和到 $\pm q_{\max}$，整数格式截到 $[-q_{\max}, q_{\max}]$。输出 dtype 是 `fmt`。反向用直通估计器，梯度是 $g/s$，被截断的位置为 0；`scale` 不求梯度 |
+| `dequantize` | `g.dequantize(q, scale, br, bc)` | 每个元素乘回所在块的缩放因子；对 `q` 的梯度是 $g\,s$，`scale` 不求梯度。dtype 按类型提升推导，通常用 `dtype` 选项转回原来的 dtype |
 | `nll_loss` | `g.nll_loss(input, target, { reduction, ignore_index })` | `reduction` 默认 `'mean'`，可选 `'sum'`、`'none'`；`ignore_index` 默认 `-100` |
 
 选项对象里可以写的键：该运算的 torch 关键字参数（例如 `keepdim`、`reduction`），以及 `name`、`tex`、`elem`、`card`。写了其他键会抛错 `<运算名>: unknown option '<键>'`。`dim` 可以用负数。shape 不匹配在建图时就抛错，例如 `matmul: cannot multiply (1, 4) by (5, 4)`。

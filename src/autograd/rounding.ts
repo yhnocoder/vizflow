@@ -35,7 +35,7 @@ export function exponentOf(a: number): number {
   return e;
 }
 
-function roundHalfEven(x: number): number {
+export function roundHalfEven(x: number): number {
   const r = Math.round(x);
   return r - x === 0.5 && r % 2 !== 0 ? r - 1 : r;
 }
