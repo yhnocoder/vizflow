@@ -32,10 +32,11 @@ describe('rounding', () => {
     expect(roundToDtype(-65520, 'fp16')).toBe(-Infinity);
   });
 
-  it('rounds fp8_e4m3 like float8_e4m3fn: max 448, NaN on overflow, subnormal step 2^-9', () => {
+  it('rounds fp8_e4m3 like float8_e4m3fn: max 448, saturating on overflow, subnormal step 2^-9', () => {
     expect(roundToDtype(464, 'fp8_e4m3')).toBe(448);
-    expect(roundToDtype(465, 'fp8_e4m3')).toBeNaN();
-    expect(roundToDtype(-1000, 'fp8_e4m3')).toBeNaN();
+    expect(roundToDtype(465, 'fp8_e4m3')).toBe(448);
+    expect(roundToDtype(-1000, 'fp8_e4m3')).toBe(-448);
+    expect(roundToDtype(NaN, 'fp8_e4m3')).toBeNaN();
     expect(roundToDtype(0.3, 'fp8_e4m3')).toBe(0.3125);
     expect(roundToDtype(2 ** -9, 'fp8_e4m3')).toBe(2 ** -9);
     expect(roundToDtype(1.5 * 2 ** -10, 'fp8_e4m3')).toBe(2 ** -9);

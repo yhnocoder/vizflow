@@ -1,6 +1,6 @@
 import type { Dtype } from './dtype';
 
-export type Overflow = 'inf' | 'nan' | 'saturate';
+export type Overflow = 'inf' | 'saturate';
 
 export interface FloatFormat {
   name: string;
@@ -22,7 +22,7 @@ export const FLOAT_FORMATS = {
   bf16: format('bf16', 8, 7, 'inf'),
   fp16: format('fp16', 5, 10, 'inf'),
   fp8_e5m2: format('fp8_e5m2', 5, 2, 'inf'),
-  fp8_e4m3: format('fp8_e4m3', 4, 3, 'nan', 6),
+  fp8_e4m3: format('fp8_e4m3', 4, 3, 'saturate', 6),
   fp4_e2m1: format('fp4_e2m1', 2, 1, 'saturate'),
 } as const satisfies Record<string, FloatFormat>;
 
@@ -42,15 +42,14 @@ function roundHalfEven(x: number): number {
 
 export function roundToFormat(x: number, f: FloatFormat): number {
   if (Number.isNaN(x) || x === 0 || !Number.isFinite(x)) {
-    if (!Number.isFinite(x) && !Number.isNaN(x) && f.overflow !== 'inf') return f.overflow === 'nan' ? NaN : Math.sign(x) * f.max;
+    if (!Number.isFinite(x) && !Number.isNaN(x) && f.overflow === 'saturate') return Math.sign(x) * f.max;
     return x;
   }
   const a = Math.abs(x);
   const quantum = 2 ** (Math.max(exponentOf(a), f.minExponent) - f.mantissa);
   const r = roundHalfEven(a / quantum) * quantum;
   if (r > f.max) {
-    if (f.overflow === 'saturate') return Math.sign(x) * f.max;
-    return f.overflow === 'nan' ? NaN : Math.sign(x) * Infinity;
+    return Math.sign(x) * (f.overflow === 'saturate' ? f.max : Infinity);
   }
   return r === 0 ? Math.sign(x) * 0 : Math.sign(x) * r;
 }
