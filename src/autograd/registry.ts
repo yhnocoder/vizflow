@@ -3,6 +3,7 @@ import type { AnyOpDef, OpDef } from './op';
 export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'dims',
   'real',
+  'dtype',
   'nodes',
   'version',
   'self',
