@@ -51,7 +51,7 @@ describe('forward and backward', () => {
     expect(x.grad!.get([])).toBeCloseTo(6 + Math.exp(3), 10);
   });
 
-  it('leaves nodes created after the loss and nodes off the path with zero gradient', () => {
+  it('gives op nodes off the path to the loss no gradient and leaves off the path zero gradient', () => {
     const g = graph();
     const x = g.input('x', [2], [1, 2]);
     const unused = g.exp(x);
@@ -59,10 +59,22 @@ describe('forward and backward', () => {
     const after = g.neg(l);
     expect(g.loss()).toBe(after);
     g.loss(l);
-    expect(unused.grad!.toNested()).toEqual([0, 0]);
-    expect(after.grad!.toNested()).toBe(0);
+    expect(unused.grad).toBeNull();
+    expect(after.grad).toBeNull();
     expect(l.grad!.toNested()).toBe(1);
     expect(x.grad!.toNested()).toEqual([0, 0]);
+  });
+
+  it('gives no gradient to ops behind a non-differentiable argument', () => {
+    const g = graph();
+    const x = g.input('x', [3], [0.5, -1, 2]);
+    const mask = g.topk_mask(x, 1, 0);
+    const scores = g.mul(x, 2);
+    const l = g.sum(g.mul(x, g.topk_mask(scores, 2, 0)));
+    g.loss(l);
+    expect(mask.grad).toBeNull();
+    expect(scores.grad).toBeNull();
+    expect(x.grad!.toNested()).toEqual([1, 0, 1]);
   });
 
   it('picks the last single-element op node as the loss', () => {
@@ -73,7 +85,7 @@ describe('forward and backward', () => {
     expect(g.loss()).toBe(scalar);
     const later = g.neg(scalar);
     expect(g.loss()).toBe(later);
-    expect(s.grad!.toNested()).toEqual([0, 0]);
+    expect(s.grad).toBeNull();
     expect(() => graph().loss()).toThrow('graph has no loss node');
   });
 

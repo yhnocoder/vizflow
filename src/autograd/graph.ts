@@ -109,6 +109,8 @@ class GraphImpl {
   private batchDepth = 0;
   private pending = false;
   private readonly touched = new Map<number, Tensor>();
+  private detachedKey = '';
+  private detached = new Set<number>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -392,7 +394,7 @@ class GraphImpl {
   }
 
   private gradOf(id: number): Tensor | null {
-    if (CONSTANT_KINDS.has(this.nodes[id].kind)) return null;
+    if (CONSTANT_KINDS.has(this.nodes[id].kind) || this.isDetached(id)) return null;
     this.ensureBackward();
     return this.states[id].grad;
   }
@@ -463,6 +465,34 @@ class GraphImpl {
     this.pending = false;
     this.version++;
     [...this.subscribers].forEach((fn) => fn());
+  }
+
+  private isDetached(id: number): boolean {
+    const loss = this.findLoss();
+    const key = `${this.nodes.length}:${loss?.id ?? -1}`;
+    if (key !== this.detachedKey) {
+      this.detached = this.detachedOps(loss);
+      this.detachedKey = key;
+    }
+    return this.detached.has(id);
+  }
+
+  private detachedOps(loss: Node | undefined): Set<number> {
+    const differentiableInputs = (node: Node): Node[] => {
+      const flags = node.kind === 'op' ? opDef(node.op as string)?.differentiable : undefined;
+      return node.inputs.filter((_, k) => flags === undefined || flags[k]);
+    };
+    const tracked = this.nodes.map((node) => node.kind === 'param' || node.kind === 'input');
+    for (const node of this.nodes) {
+      if (node.kind === 'op') tracked[node.id] = differentiableInputs(node).some((input) => tracked[input.id]);
+    }
+    const reached = this.nodes.map((node) => loss === undefined || node === loss);
+    if (loss !== undefined) {
+      for (let i = loss.id; i >= 0; i--) {
+        if (reached[i]) for (const input of differentiableInputs(this.nodes[i])) reached[input.id] = true;
+      }
+    }
+    return new Set(this.nodes.filter((node) => node.kind === 'op' && !(tracked[node.id] && reached[node.id])).map((node) => node.id));
   }
 
   private ensureBackward(): void {

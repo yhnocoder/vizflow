@@ -146,3 +146,12 @@ export const causalConv1dExplain: OpExplain = {
     ]);
   },
 };
+
+export const topkMaskExplain: OpExplain = {
+  pattern: 'dense',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{topk\\_mask}(${s.in[0]},${(s.attrs as { k: number }).k})`,
+    local: () => '0',
+  },
+};

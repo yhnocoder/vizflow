@@ -21,8 +21,9 @@ import {
   sqrtOp,
   subOp,
   transposeOp,
+  whereOp,
 } from './elementwise';
-import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, viewOp } from './index_ops';
+import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, topkMaskOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
@@ -89,6 +90,8 @@ export interface BuiltinOps {
   select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
   causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
+  topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
+  where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -127,6 +130,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   selectMatmulOp,
   repeatInterleaveOp,
   causalConv1dOp,
+  topkMaskOp,
+  whereOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

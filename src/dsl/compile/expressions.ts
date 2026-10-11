@@ -45,7 +45,7 @@ export class ExpressionCompiler extends CompilerState {
 
   resolve(ast: Ast, env: Env, make: Make | undefined, offset: number, top = false): Resolved {
     if (ast.k === 'name') {
-      const found = this.lookupFirst(ast.name, env);
+      const found = this.lookupFirst(ast.name, env) ?? (ast.name === 'inf' ? num(Infinity) : undefined);
       if (found === undefined) this.fail(env, `name '${ast.name}' is not defined in ${this.scopeLabel(env.scope)}`, offset + ast.pos);
       return found;
     }

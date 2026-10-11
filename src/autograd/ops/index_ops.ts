@@ -1,4 +1,4 @@
-import { Tensor, forEachIndex, formatShape, normDim, offsetOf } from '../../tensor';
+import { Tensor, forEachIndex, formatShape, normDim, offsetOf, reduceMap } from '../../tensor';
 import type { OpDef } from '../op';
 
 export interface GatherAttrs {
@@ -366,4 +366,47 @@ export const causalConv1dOp: OpDef<Record<string, never>> = {
     }
     return [gx, gw];
   },
+};
+
+export interface TopkMaskAttrs {
+  k: number;
+  dim: number;
+}
+
+function topkDim(shape: readonly number[], attrs: TopkMaskAttrs): number {
+  if (shape.length === 0) throw new Error('topk_mask: input must have at least one dimension');
+  const dim = normDim(attrs.dim, shape.length);
+  if (!Number.isInteger(attrs.k) || attrs.k < 1 || attrs.k > shape[dim]) {
+    throw new Error(`topk_mask: k ${attrs.k} is out of range for input ${formatShape(shape)} along dim ${dim}`);
+  }
+  return dim;
+}
+
+export const topkMaskOp: OpDef<TopkMaskAttrs> = {
+  name: 'topk_mask',
+  args: ['input', 'k', 'dim'],
+  tensors: ['input'],
+  sizes: ['k'],
+  defaults: { dim: -1 },
+  differentiable: [false],
+  shape: ([input], attrs) => {
+    topkDim(input, attrs);
+    return [...input];
+  },
+  forward: ([input], attrs) => {
+    const { map } = reduceMap(input.shape, [topkDim(input.shape, attrs)], false);
+    const groups = new Map<number, number[]>();
+    map.forEach((group, offset) => {
+      const members = groups.get(group);
+      if (members === undefined) groups.set(group, [offset]);
+      else members.push(offset);
+    });
+    const out = new Tensor(input.shape);
+    for (const members of groups.values()) {
+      const ranked = [...members].sort((a, b) => input.data[b] - input.data[a] || a - b);
+      for (const offset of ranked.slice(0, attrs.k)) out.data[offset] = 1;
+    }
+    return out;
+  },
+  backward: () => [null],
 };

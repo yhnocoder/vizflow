@@ -4,7 +4,7 @@ formula: '\step{concat}{\of{o}=\operatorname{concat}_h\big(}\step{exp,sum,div}{\
 inputs:
   q:    { shape: [T, H, dh] }
   k:    { shape: [T, Hkv, dh] }
-  v:    { shape: [T, Hkv, dh] }
+  v:    { shape: [T, Hkv, dv] }
   mask: { shape: [T, T] }
 outputs: [o]
 fold:
@@ -142,7 +142,7 @@ steps:
   - id: concat
     show: o
     label: 拼接
-    title: 拼回 $T\times\of{H*dh}$
+    title: 拼回 $T\times\of{H*dv}$
     text: |
       把 \of{H} 个 head 的输出并排拼回去，对应 <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code>。只是换轴和重排，局部导数是 1。
       $$\of{o}={{ o | matrix:2 }}$$

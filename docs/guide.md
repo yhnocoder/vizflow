@@ -215,11 +215,11 @@ panels:
 
 写法要点：
 
-- `body` 按顺序建图。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`view(x @ Wq.T, T, H, dh)`、`select(k, 1, h-1)`、`cat(o[1..H], dim=1)`。`view` 的形状逐个写在后面，可以写维度名，其中一个可以写 `-1`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
+- `body` 按顺序建图。表达式里 `inf` 是正无穷，`-inf` 是负无穷。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`view(x @ Wq.T, T, H, dh)`、`select(k, 1, h-1)`、`cat(o[1..H], dim=1)`。`view` 的形状逐个写在后面，可以写维度名，其中一个可以写 `-1`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`lm-head-nll`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{silu}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k` 和 `v: (T, H_kv, d_h)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_h)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
+- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`gated-delta-rule`、`glu`、`rope`、`gqa`、`mla`、`lm-head-nll`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{silu}(\mathit{gate})$；`gated-delta-rule` 是 Gated DeltaNet 的递推核心，用法见 `examples/qwen3_5/gated-deltanet.yaml`。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T)`，每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
 - 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
 - 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta)`、`rope_sin(T, dh, theta)` 或 `causal_mask(T)`；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
 - 实例写 `inline: true` 时不单独成为一个模块：没有自己的大括号、折叠和步骤分组，节点和步骤算作外层模块的，路径仍然带实例名。它不能写 `title`、`subtitle`、`fixed`、`folded`、`split`、`fold`。
@@ -238,7 +238,7 @@ panels:
 
   两个实例的平方、均方根、归一化、乘权重各合成一步，例如均方根那一步的标签是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。不是 inline 的并排实例各有一个大括号，同一位置的大括号合并成一个。并排的项不能用同一组里前面一项算出的值，否则编译报错；名字不是前一项、写在单个节点上时也报错。
 - 全页的路径是实例名逐层拼接，例如 `layer.self_attn.eager_attention_forward.P[1]`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
-- 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
+- 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。buffer 也可以这样给数值，例如 MoE 路由的偏置写成 `bias: { value: zeros(E) }`，页面里再写 `values: { moe_layer.mlp.bias: [...] }`。
 - tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。`\hat{\of{x}}` 这类重音写法在 `x` 的 tex 带下标时把下标移到重音外面，例如 $\hat{\mathbf{x}}_0$。text 类型的参数在模块里展开，参数值里的 `\of{name}` 按模块内的名字查找。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
 - 标签、标题和正文里的数学符号一律写成 LaTeX，例如 `label: '$\partial\of{x}$'`，不用 unicode 的数学字符。模块的步骤标签和反向标签用 `\of{...}` 引用节点，这样实例自动加的下标会出现在标签里。
 - 模块可以在顶层写 `fold: { label, title, text, backward: { label, title, text } }`，作为这个模块折叠后那一步的默认文字；实例的 `fold` 只需写不同的字段，没写的字段用模块的默认值。模块步骤的 `backward: { label, title, text }` 是对应反向步骤的默认文字，实例的步骤补丁可以只改其中几项。
@@ -365,6 +365,8 @@ const loss = g.nll_loss(logp, t, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `cat` | `g.cat([a, b, c], dim)`、`g.cat(heads, 1, { pieces: 'H' })` | 节点数组，个数任意，至少一个；`dim` 默认 0。`pieces` 说明真实模型里有几块：各块在 `dim` 上一样长，真实 shape 的这一维是一块的真实长度乘 `pieces` 的真实值；按 `dims` 取的值必须等于实际给出的块数 |
 | `repeat_interleave` | `g.repeat_interleave(a, 2, 1)` | 与 `torch.repeat_interleave` 相同，沿 `dim` 把每个切片连续复制 `repeats` 份；`repeats` 可以是维度名 |
 | `causal_conv1d` | `g.causal_conv1d(x, w)` | 因果深度卷积：`x` 是 `(T, C)`，`w` 是 `(C, K)`，每个通道用自己的 $K$ 个系数加权当前和之前 $K-1$ 个位置，序列开头之前按 0 计 |
+| `topk_mask` | `g.topk_mask(a, k, dim)` | 沿 `dim`（默认 -1）每个切片里最大的 `k` 个为 1、其余为 0；输出没有梯度，用来表示 top-k 选中了哪些位置；`k` 可以是维度名 |
+| `where` | `g.where(condition, a, -Infinity)` | 与 `torch.where` 相同，第三个参数是数；`condition` 不求梯度。DSL 里写 `where(m, x, -inf)` |
 | `nll_loss` | `g.nll_loss(input, target, { reduction, ignore_index })` | `reduction` 默认 `'mean'`，可选 `'sum'`、`'none'`；`ignore_index` 默认 `-100` |
 
 选项对象里可以写的键：该运算的 torch 关键字参数（例如 `keepdim`、`reduction`），以及 `name`、`tex`、`elem`、`card`。写了其他键会抛错 `<运算名>: unknown option '<键>'`。`dim` 可以用负数。shape 不匹配在建图时就抛错，例如 `matmul: cannot multiply (1, 4) by (5, 4)`。

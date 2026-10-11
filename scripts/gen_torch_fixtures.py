@@ -79,7 +79,8 @@ def op_case(op, title, fn, tensors, args, options=None):
             leaves.append(value.clone().requires_grad_(True))
     out = fn(*leaves)
     upstream = randn(*out.shape)
-    out.backward(upstream)
+    if out.requires_grad:
+        out.backward(upstream)
     return {
         "op": op,
         "title": title,
@@ -537,6 +538,23 @@ def transformer_op_fixtures():
     cases += rotate_half_cases()
     cases += head_cases()
     cases += linear_attention_cases()
+    cases += routing_cases()
+    return cases
+
+
+def topk_mask(x, k, dim):
+    return torch.zeros_like(x).scatter(dim, x.topk(k, dim)[1], 1.0)
+
+
+def routing_cases():
+    cases = []
+    for shape, k, dim in [((3, 6), 2, -1), ((3, 2, 3), 2, -1), ((4, 3), 1, 0)]:
+        cases.append(op_case("topk_mask", f"{shape} k {k} dim {dim}", lambda x, k=k, dim=dim: topk_mask(x, k, dim), [("label", distinct(*shape))], [tensor_arg(0), k, dim]))
+    for condition, shape, other in [((3, 4), (3, 4), -2.5), ((3, 1), (3, 4), 0.0), ((4,), (2, 4), -1e9)]:
+        keep = (randn(*condition) > 0).to(torch.float64)
+        cases.append(
+            op_case("where", f"condition {condition} input {shape} other {other}", lambda c, x, other=other: torch.where(c != 0, x, other), [("label", keep), ("input", randn(*shape))], [tensor_arg(0), tensor_arg(1), other])
+        )
     return cases
 
 
