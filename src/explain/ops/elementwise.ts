@@ -152,3 +152,12 @@ export const transposeExplain: OpExplain = {
     return [{ arg: 0, index }];
   },
 };
+
+export const whereExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, arg) => (arg === 1 && operand(ctx, 0, out) !== 0 ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${scalarTex(s.attrs)})`,
+    local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
+  },
+};

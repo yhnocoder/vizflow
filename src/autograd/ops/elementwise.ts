@@ -49,6 +49,16 @@ function binary(
   };
 }
 
+export const whereOp: OpDef<{ other: number }> = {
+  name: 'where',
+  args: ['condition', 'input', 'other'],
+  tensors: ['condition', 'input'],
+  differentiable: [false, true],
+  shape: ([condition, input]) => broadcastShapes(condition, input),
+  forward: ([condition, input], { other }) => zipWith(condition, input, (keep, x) => (keep !== 0 ? x : other)),
+  backward: (gradOut, [condition, input]) => [null, unbroadcast(zipWith(condition, gradOut, (keep, g) => (keep !== 0 ? g : 0)), input.shape)],
+};
+
 function unary<A extends object = NoAttrs>(
   name: string,
   forward: (x: number, attrs: A) => number,

@@ -209,6 +209,21 @@ const cases: Case[] = [
       return { out: g.causal_conv1d(x, w), inputs: [x, w] };
     },
   },
+  {
+    op: 'topk_mask',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.topk_mask(x, 2, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'where',
+    build: (g, r) => {
+      const keep = g.label('keep', [[1], [0], [1]]);
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.where(keep, x, -1e9), inputs: [x] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

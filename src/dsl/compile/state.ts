@@ -79,7 +79,7 @@ export class CompilerState {
 
   checkValuesUsed(): void {
     for (const key of Object.keys(this.values)) {
-      if (!this.usedValues.has(key)) fail(child(this.pageWhere, this.values, key), `values: '${key}' is not a weight or input of this page`);
+      if (!this.usedValues.has(key)) fail(child(this.pageWhere, this.values, key), `values: '${key}' is not a weight, buffer or input of this page`);
     }
   }
 

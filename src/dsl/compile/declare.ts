@@ -105,7 +105,7 @@ export function declareWeights(c: Compiler, scope: Scope, decl: Record<string, u
     if (typeof init !== 'string' || !INITS.has(init)) fail(child(at, weightDecl, 'init'), `init must be one of ${[...INITS].join(', ')}`);
     const path = join(scope.path, name);
     const declared = typeof weightDecl.tex === 'string' ? c.ofText(weightDecl.tex, { ...env, where: child(at, weightDecl, 'tex') }) : undefined;
-    const tex = scope.texOverride.get(name) ?? marked(declared ?? defaultTex(name), scope, typeof weightDecl.tex === 'string' && weightDecl.tex.includes('\\of{'));
+    const tex = scope.texOverride.get(name) ?? marked(declared ?? defaultTex(name), scope, typeof weightDecl.tex === 'string' && c.ofRefersToNode(weightDecl.tex, { ...env, where: child(at, weightDecl, 'tex') }));
     const values = c.takeValue(path) ?? c.initValues(init, shape.map((d) => d.toy));
     let node: Node;
     try {
@@ -140,11 +140,14 @@ export function declareBuffers(c: Compiler, scope: Scope, decl: Record<string, u
       }
       buffer = { buffer: true, shape, values: reshapeNested(buffer.values, shape.map((d) => d.toy)) };
     }
-    const key = `${scope.def.file}#${scope.def.name}.${name}=${String(bufferDecl.value)}(${buffer.shape.map((d) => `${d.toy}:${d.real}`).join(',')};${JSON.stringify(buffer.values)})`;
+    const path = join(scope.path, name);
+    const given = c.takeValue(path);
+    if (given !== undefined) buffer = { ...buffer, values: given };
+    const key = given !== undefined ? `${path}=values` : `${scope.def.file}#${scope.def.name}.${name}=${String(bufferDecl.value)}(${buffer.shape.map((d) => `${d.toy}:${d.real}`).join(',')};${JSON.stringify(buffer.values)})`;
     const tex = typeof bufferDecl.tex === 'string' ? c.ofText(bufferDecl.tex, { ...env, where: child(at, bufferDecl, 'tex') }) : defaultTex(name);
     const node = c.bufferNode(key, () => {
       try {
-        const created = c.g.buffer(join(scope.path, name), leafSpec(c, buffer.shape), buffer.values, { tex, elem: elemOf(tex), ...bufferDtype });
+        const created = c.g.buffer(path, leafSpec(c, buffer.shape), buffer.values, { tex, elem: elemOf(tex), ...bufferDtype });
         c.setOwner(created, entries);
         return created;
       } catch (error) {

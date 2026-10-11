@@ -48,6 +48,14 @@ export class Compiler extends ExpressionCompiler {
     });
   }
 
+  ofRefersToNode(text: string, env: Env): boolean {
+    return [...text.matchAll(/\\of\{([^{}]+)\}/g)].some(([, raw]) => {
+      const ref = raw.trim();
+      if (ref.endsWith('.def') || env.loops.has(ref) || env.scope.params.has(ref)) return false;
+      return env.scope.inputTex.has(ref) || this.reference(ref, env) instanceof Node;
+    });
+  }
+
   ofValue(ref: string, env: Env): string {
     if (ref.endsWith('.def')) {
       const base = ref.slice(0, -4);

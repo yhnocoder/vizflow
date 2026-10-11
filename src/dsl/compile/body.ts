@@ -234,7 +234,7 @@ function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, 
   const override = scope.texOverride.get(name) ?? scope.texOverride.get(base);
   let tex: string;
   if (override !== undefined) tex = override;
-  else if (declared !== undefined) tex = marked(c.ofText(declared, env), scope, declared.includes('\\of{'));
+  else if (declared !== undefined) tex = marked(c.ofText(declared, env), scope, c.ofRefersToNode(declared, env));
   else if (scope.outputTex.has(name)) tex = scope.outputTex.get(name) as string;
   else tex = marked(c.loopTex(base, indices), scope, false);
   const make: Make = { path: join(scope.path, name), tex, anon: [], counter: 0, dtype };

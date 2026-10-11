@@ -167,7 +167,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
           fromNode: pair.input,
           toNode: pair.output,
           contract: true,
-          endpoints: (): [Vec3, Vec3] => [anchorOut(c, pair.input, fromElement.index, inR)!, anchorIn(c, pair.output, toElement.index, outR)!],
+          endpoints: (): [Vec3, Vec3] => [anchorOut(c, inR.block.node, fromElement.index, inR)!, anchorIn(c, outR.block.node, toElement.index, outR)!],
           flat: false,
           bow: pair.split ? SPLIT_JACOBIAN_BOW : 0,
           jac: { module: pair.module, value },

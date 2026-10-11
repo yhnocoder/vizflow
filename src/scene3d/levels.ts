@@ -847,7 +847,7 @@ class Plan implements LevelPlan {
       if (range === undefined || m.fixed || (isFolded(m) && this.split(m))) continue;
       const direct = (input: Node) => this.consumers(input).some((u) => m.nodes.includes(u) && !this.copies.some((c) => c.node === input && c.consumers.includes(u)));
       const inputLevels = this.levels.filter((l) => flags(l).visible && l.y < range[0] && l.entries.some((e) => e.copy === undefined && !hiddenOf(e) && m.inputs.includes(e.node) && direct(e.node)));
-      const covered = (y: number) => [...ranges].some(([id, r]) => id !== m.id && sideOf.get(id) === sideOf.get(m.id) && r[0] <= y && y <= r[1]);
+      const covered = (y: number) => [...ranges].some(([id, r]) => id !== m.id && sideOf.get(id) === sideOf.get(m.id) && r[0] <= range[0] && y <= r[1] && r[1] < range[1]);
       const lows = inputLevels.filter((l) => !covered(l.y)).map((l) => l.y - BRACE_PAD.below);
       if (lows.length > 0) ranges.set(m.id, [Math.min(range[0], ...lows), range[1]]);
     }
