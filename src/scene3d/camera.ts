@@ -169,8 +169,8 @@ export class CameraRig {
 
   private levelRange(): { lo: number; top: number } {
     const levels = this.c.levelLayout;
-    if (levels !== undefined) return { lo: levels.lo, top: levels.top };
-    const ys = this.c.renderables.map((r) => r.block.elements[0].y);
+    if (levels !== undefined && this.c.platforms === undefined) return { lo: levels.lo, top: levels.top };
+    const ys = this.c.renderables.filter((r) => r.block.hidden !== true && r.block.elements.length > 0).map((r) => r.block.elements[0].y);
     return { lo: Math.min(...ys), top: Math.max(...ys) + FOLLOW_TOP_ROOM };
   }
 
@@ -179,7 +179,7 @@ export class CameraRig {
     return Math.min(Math.max(y, lo + half * FOLLOW_EDGE_FILL - FOLLOW_BOTTOM_SLACK), top - half * FOLLOW_EDGE_FILL + FOLLOW_TOP_SLACK);
   }
 
-  private followGoal(): FollowGoal {
+  private followGoal(base: Vector3 = this.controls.target): FollowGoal {
     const c = this.c;
     const hh = this.halfHeight();
     const { lo, top } = this.levelRange();
@@ -188,6 +188,7 @@ export class CameraRig {
       const zoom = Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN));
       return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys), zoom };
     }
+    if (c.platforms !== undefined) return this.platformGoal(keys, hh, base);
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
@@ -195,11 +196,34 @@ export class CameraRig {
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys), zoom };
   }
 
+  private platformGoal(keys: Renderable[], hh: number, base: Vector3): FollowGoal {
+    const up = new Vector3().copy(UP).addScaledVector(this.direction, -this.direction.y).normalize();
+    const side = this.sideAxis();
+    const drawn = this.c.renderables.filter((r) => r.block.hidden !== true);
+    const points = [...framingPoints(drawn.length > 0 ? drawn : keys), ...(this.c.platforms?.framePoints() ?? [])];
+    let lo = Infinity;
+    let hi = -Infinity;
+    let left = Infinity;
+    let right = -Infinity;
+    for (const [x, y, z] of points) {
+      const s = x * up.x + y * up.y + z * up.z;
+      const t = x * side.x + z * side.z;
+      lo = Math.min(lo, s);
+      hi = Math.max(hi, s);
+      left = Math.min(left, t);
+      right = Math.max(right, t);
+    }
+    const width = 2 * (this.halfWidth() - FOLLOW_SIDE_ROOM);
+    const zoom = Math.min(1, (2 * hh) / (hi - lo + FOLLOW_STEP_MARGIN), width / (right - left));
+    const y = ((lo + hi) / 2 + FOLLOW_STEP_LIFT - base.x * up.x - base.z * up.z) / up.y;
+    return { y, side: (left + right) / 2, zoom };
+  }
+
   placeCamera(): void {
     const middle = center(allPoints(this.c));
     let zoom = 1;
     if (this.c.follow) {
-      const goal = this.followGoal();
+      const goal = this.followGoal(middle);
       middle.y = goal.y;
       middle.addScaledVector(this.sideAxis(), goal.side - middle.dot(this.sideAxis()));
       zoom = goal.zoom;

@@ -70,6 +70,7 @@ export interface BarUpdate {
   seeThrough: boolean;
   parts?: (readonly number[] | undefined)[];
   partColors?: LinearRgb[][];
+  dashed?: boolean;
 }
 
 export class BarMesh {
@@ -146,7 +147,7 @@ export class BarMesh {
         this.parts?.setMatrixAt(i * this.ranks + k, matrix);
         this.parts?.setColorAt(i * this.ranks + k, color.setRGB(...(data.partColors?.[i]?.[k] ?? data.colors[i])));
       }
-      if (parts !== undefined) for (const points of boxEdges(x, y, z, w, h, d).flatMap(dashed)) lines.push({ points, opacity });
+      if (parts !== undefined || (shown && data.dashed === true)) for (const points of boxEdges(x, y, z, w, h, d).flatMap(dashed)) lines.push({ points, opacity });
       else if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity });
     }
     if (this.parts !== undefined) {
@@ -184,7 +185,7 @@ function boxEdges(x: number, y: number, z: number, w: number, h: number, d: numb
   return [ring(y), ring(y1), [x0, y, z0, x0, y1, z0], [x1, y, z0, x1, y1, z0], [x1, y, z1, x1, y1, z1], [x0, y, z1, x0, y1, z1]];
 }
 
-function dashed(points: number[]): number[][] {
+export function dashed(points: number[]): number[][] {
   const out: number[][] = [];
   for (let i = 0; i + 5 < points.length; i += 3) {
     const [x0, y0, z0, x1, y1, z1] = points.slice(i, i + 6);

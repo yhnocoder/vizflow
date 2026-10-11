@@ -11,6 +11,7 @@ import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
 import { rowsCols, tokenText } from './layout';
 import { elementRank, parallelRows, partialParts } from './parallel';
+import { blockValues } from './platforms';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
@@ -82,7 +83,8 @@ export class ScenePopups {
     const element = block.elements[index];
     const backward = c.state.dir === 'backward';
     const elemTex = c.explainer.elemTex({ node, index: element.index });
-    const value = valuesOf(c, node)[index];
+    const piece = blockValues(c, block);
+    const value = piece.values[index];
     const label = c.aligned.get(node);
     const token = label?.tokens?.[element.col];
     const fragment = document.createDocumentFragment();
@@ -95,7 +97,7 @@ export class ScenePopups {
     line.className = 'vf-m';
     line.appendChild(render(`= ${value === -Infinity ? '-\\infty' : formatNumber(value, { digits: TIP_DIGITS, tex: true })}`));
     fragment.appendChild(line);
-    const parts = partialParts(c, node);
+    const parts = block.platform === undefined ? partialParts(c, node) : undefined;
     if (parts !== undefined) {
       const offset = offsetOf(node.shape, element.index);
       const values = parts.map((t) => t.data[offset]);
@@ -112,7 +114,13 @@ export class ScenePopups {
       total.appendChild(render(`\\text{和}:\\ ${terms}=${number(values.reduce((a, b) => a + b, 0))}`));
       fragment.appendChild(total);
     }
-    const rank = elementRank(c, node, element.index);
+    if (block.platform !== undefined) {
+      const local = document.createElement('div');
+      local.className = 'vf-s';
+      local.textContent = `rank ${block.platform} 上的${piece.partial ? '部分和' : '值'}`;
+      fragment.appendChild(local);
+    }
+    const rank = block.platform === undefined ? elementRank(c, node, element.index) : undefined;
     if (rank !== undefined) {
       const owner = document.createElement('div');
       owner.className = 'vf-s';
@@ -219,6 +227,15 @@ export class ScenePopups {
   showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
     this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;
+    const rect = this.c.root.getBoundingClientRect();
+    placePop(this.c.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
+  }
+
+  showFragment(fragment: DocumentFragment, ev: PointerEvent): void {
+    this.pinned = undefined;
+    this.pop.replaceChildren(fragment);
+    this.pop.hidden = false;
+    this.tip.hidden = true;
     const rect = this.c.root.getBoundingClientRect();
     placePop(this.c.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
   }

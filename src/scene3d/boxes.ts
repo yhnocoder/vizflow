@@ -31,13 +31,17 @@ export class FoldBoxes {
   update(): void {
     const theme = this.c.theme;
     const shown = new Set<string>();
-    for (const box of this.c.levelLayout?.boxes ?? []) {
-      const id = box.module.id;
+    const platforms = this.c.platforms;
+    const shifts = platforms?.shifts() ?? [[0, 0]];
+    const fold = platforms?.foldStep();
+    const boxes = (this.c.levelLayout?.boxes ?? []).filter((box) => platforms === undefined || platforms.involved() === undefined || box.module.id === fold);
+    for (const box of boxes) for (const [k, [dx, dy]] of shifts.entries()) {
+      const id = k === 0 ? box.module.id : `${k}:${box.module.id}`;
       shown.add(id);
-      const entry = this.boxes.get(id) ?? this.create(box);
+      const entry = this.boxes.get(id) ?? this.create(box, id);
       entry.box = box;
-      const [x0, x1] = box.x;
-      const [y0, y1] = box.y;
+      const [x0, x1] = [box.x[0] + dx, box.x[1] + dx];
+      const [y0, y1] = [box.y[0] + dy, box.y[1] + dy];
       const [z0, z1] = box.z;
       entry.mesh.scale.set(x1 - x0, Math.max(BOX_MIN_HEIGHT, y1 - y0), z1 - z0);
       entry.mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
@@ -45,7 +49,7 @@ export class FoldBoxes {
       entry.material.color.setRGB(...theme.bg);
       entry.edgeMaterial.color.setRGB(...theme.ink);
       entry.label.pos = [x0 + BOX_LABEL_OFFSET[0], y0 + BOX_LABEL_OFFSET[1], z1];
-      entry.label.visible = true;
+      entry.label.visible = k === 0;
     }
     for (const [id, entry] of this.boxes) {
       if (shown.has(id)) continue;
@@ -54,7 +58,7 @@ export class FoldBoxes {
     }
   }
 
-  private create(box: FoldBox): SceneBox {
+  private create(box: FoldBox, id: string): SceneBox {
     const c = this.c;
     const material = new MeshBasicMaterial({ transparent: true, opacity: BOX_OPACITY, depthWrite: false });
     const edgeMaterial = new LineBasicMaterial({ transparent: true, opacity: BOX_EDGE_OPACITY });
@@ -80,7 +84,7 @@ export class FoldBoxes {
     label.el.addEventListener('pointerenter', () => c.popups.showBoxCard(entry));
     label.el.addEventListener('pointerleave', () => c.popups.hideNodeCard());
     if (!module.fixed) label.el.addEventListener('click', () => c.steps?.setFolded(module.id, false));
-    this.boxes.set(module.id, entry);
+    this.boxes.set(id, entry);
     return entry;
   }
 }

@@ -72,13 +72,17 @@ export function bindPointer(c: SceneController): () => void {
       popups.hideTip();
       const edge = edgeLines.edgeAt(ev.clientX - rect.left, ev.clientY - rect.top);
       edgeLines.setHover(edge);
-      canvas.classList.toggle('vf-cursor-help', edge !== undefined);
+      const link = edge === undefined ? c.platforms?.linkAt(ev.clientX - rect.left, ev.clientY - rect.top) : undefined;
+      c.platforms?.setHover(link);
+      canvas.classList.toggle('vf-cursor-help', edge !== undefined || link !== undefined);
       canvas.classList.remove('vf-cursor-pointer');
       if (edge !== undefined) popups.showEdgeCard(edge, ev);
+      else if (link !== undefined) popups.showFragment(c.platforms!.card(link), ev);
       else popups.hideUnpinned();
       return;
     }
     edgeLines.setHover(undefined);
+    c.platforms?.setHover(undefined);
     popups.hideUnpinned();
     const clickable = c.aligned.has(found.renderable.block.node) && c.state.dir === 'forward';
     canvas.classList.toggle('vf-cursor-pointer', clickable);
@@ -89,6 +93,7 @@ export function bindPointer(c: SceneController): () => void {
     popups.hideTip();
     edgeLines.setBar(undefined);
     edgeLines.setHover(undefined);
+    c.platforms?.setHover(undefined);
     popups.hideUnpinned();
   };
   const onDown = (ev: PointerEvent) => {

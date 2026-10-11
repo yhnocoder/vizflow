@@ -72,6 +72,11 @@ export class ModuleBraces {
     const c = this.c;
     const modules = c.options.modules ?? [];
     if (modules.length === 0) return;
+    if (c.platforms !== undefined) {
+      this.braces = [];
+      for (const label of this.labels) label.visible = false;
+      return;
+    }
     const levels = c.levelLayout;
     if (levels !== undefined) {
       const xs = c.renderables.flatMap((r) => r.block.elements.map((e) => e.x));

@@ -191,6 +191,32 @@
   border-color: var(--ink);
 }
 
+.vf-lb.vf-boxlb.vf-plat {
+  pointer-events: none;
+  cursor: default;
+  font-family: var(--mono);
+  font-size: 12px;
+  border-style: solid;
+  border-color: var(--line-strong);
+}
+
+.vf-lb.vf-boxlb.vf-plat-node {
+  font-family: var(--serif);
+  font-size: 14px;
+  font-weight: 500;
+  border-color: var(--ink);
+}
+
+.vf-lb.vf-boxlb.vf-plat-hidden {
+  border-style: dashed;
+  color: var(--muted);
+  text-align: center;
+}
+
+.vf-lb.vf-boxlb.vf-plat-hidden small {
+  margin-left: 0;
+}
+
 .vf-lb.vf-arrow-tag {
   color: var(--muted);
 }

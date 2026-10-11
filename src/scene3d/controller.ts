@@ -22,6 +22,7 @@ import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
 import { parallelNotes } from './parallel';
+import { PlatformLayer } from './platforms';
 import { ScenePopups } from './popups';
 import { type Renderable, createRenderable, renderableFor } from './renderable';
 import type { SceneOptions } from './scene';
@@ -53,6 +54,7 @@ export class SceneController implements EditHost {
   private readonly nav: OverviewNav | undefined;
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
+  readonly platforms: PlatformLayer | undefined;
   private readonly resizeObserver: ResizeObserver;
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
@@ -83,6 +85,7 @@ export class SceneController implements EditHost {
     readonly g: Graph,
     readonly options: SceneOptions,
     renderer: WebGLRenderer,
+    readonly togglePlatforms?: () => void,
   ) {
     this.renderer = renderer;
     this.theme = readTheme();
@@ -99,7 +102,7 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
       this.requestFrame();
     });
-    buildChrome(root, options.hint, options.parallel !== undefined);
+    buildChrome(root, options.hint, options.parallel === undefined ? undefined : options.platforms === undefined ? 'ranks' : 'platforms');
     this.popups = new ScenePopups(this);
     this.rig = new CameraRig(this);
 
@@ -112,6 +115,7 @@ export class SceneController implements EditHost {
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
     this.chips = new TokenChips(this);
+    this.platforms = options.platforms === undefined ? undefined : new PlatformLayer(this);
 
     this.buildBlocks();
     const modules = options.modules ?? [];
@@ -213,13 +217,14 @@ export class SceneController implements EditHost {
     });
     this.boards = resolved.boards;
     this.levelLayout = resolved.levels;
+    const blocks = this.platforms?.expand(resolved.blocks) ?? resolved.blocks;
     if (this.renderables.length === 0) {
-      this.renderables = resolved.blocks.map((block) => createRenderable(this, block));
+      this.renderables = blocks.map((block) => createRenderable(this, block));
     } else {
-      for (const block of resolved.blocks) {
+      for (const block of blocks) {
         const renderable = renderableFor(this, block);
         if (renderable === undefined) continue;
-        const moved = renderable.block.plate?.y !== block.plate?.y;
+        const moved = renderable.block.plate?.y !== block.plate?.y || renderable.block.plate?.x !== block.plate?.x;
         renderable.block = block;
         if (moved && renderable.plate !== undefined) {
           this.scene.remove(renderable.plate.group);
@@ -260,7 +265,8 @@ export class SceneController implements EditHost {
     this.moduleBraces.update();
     this.boxes.update();
     this.chips.update();
-    this.edgeLines.edges = buildEdges(this);
+    this.edgeLines.edges = this.platforms === undefined ? buildEdges(this) : [];
+    this.platforms?.update();
     if (this.nav !== undefined) updateNav(this, this.nav);
     this.formula?.update();
     this.notes.update([...(info?.notes ?? []), ...parallelNotes(this, info)], info?.id ?? 'all');
@@ -382,6 +388,7 @@ export class SceneController implements EditHost {
       renderable.plate?.setTheme(this.theme);
     }
     this.edgeLines.setTheme(this.theme);
+    this.platforms?.setTheme(this.theme);
     this.moduleBraces.setTheme(this.theme);
     this.refresh();
   }
@@ -400,6 +407,7 @@ export class SceneController implements EditHost {
       renderable.plate?.dispose();
     }
     this.edgeLines.dispose();
+    this.platforms?.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();
     this.notes.dispose();

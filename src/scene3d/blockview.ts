@@ -10,7 +10,8 @@ import type { SceneController } from './controller';
 import type { Label } from './labels';
 import type { Block, Vec3 } from './layout';
 import { elementRank, partialParts, rankColor } from './parallel';
-import { type Renderable, targetOf, valuesOf } from './renderable';
+import { blockValues } from './platforms';
+import { type Renderable, targetOf } from './renderable';
 import { barHeight } from './scales';
 
 export const FAR_LEVELS = 2;
@@ -146,12 +147,13 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const active = c.state.active(node);
   const far = renderable.far;
   const clear = !renderable.seeThrough;
-  const values = valuesOf(c, node);
+  const piece = blockValues(c, block);
+  const values = piece.values;
   const scale = renderable.scale[dir];
   for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
   const heights = new Float64Array(block.elements.length);
   const rows = rowStates(c, block);
-  const shownAt = (i: number) => revealed && rows[i] !== 'hidden';
+  const shownAt = (i: number) => revealed && rows[i] !== 'hidden' && piece.held?.[i] !== false;
   for (let i = 0; i < heights.length; i++) {
     const { height, clipped } = barHeight(values[i], scale, shownAt(i), renderable.cap);
     heights[i] = height;
@@ -243,20 +245,21 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   const node = block.node;
   const revealed = c.state.revealed(node);
   const active = c.state.active(node);
-  const values = valuesOf(c, node);
+  const piece = blockValues(c, block);
+  const values = piece.values;
   const heights = renderable.transition.current;
   const colors: LinearRgb[] = [];
   const outline: number[] = [];
   const far = renderable.far;
   const rows = rowStates(c, block);
-  const ranks = partialParts(c, node);
+  const ranks = block.platform === undefined ? partialParts(c, node) : undefined;
   const parts: (number[] | undefined)[] = [];
   const partColors: LinearRgb[][] = [];
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
     const on = revealed && active && rows[i] !== 'inactive';
     const state = { active: on, far, focused };
-    const rank = elementRank(c, node, element.index);
+    const rank = block.platform === undefined ? elementRank(c, node, element.index) : undefined;
     colors.push(rank === undefined ? barColor(values[i], c.theme, state) : stateColor(rankColor(c.theme, rank), c.theme, state));
     outline.push(outlineOpacity({ active: on, far, tile: block.shape === 'tile' }));
     if (ranks !== undefined) {
@@ -272,7 +275,7 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
       label.pos = [element.x, element.y + (h >= 0 ? h + VALUE_LABEL_GAP : h - VALUE_LABEL_GAP), element.z];
     }
   });
-  bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough, ...(ranks === undefined ? {} : { parts, partColors }) });
+  bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough, dashed: piece.partial, ...(ranks === undefined ? {} : { parts, partColors }) });
 }
 
 export function rowStates(c: SceneController, block: Block): (RowState | undefined)[] {

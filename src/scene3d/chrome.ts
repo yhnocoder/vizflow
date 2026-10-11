@@ -1,6 +1,6 @@
 import { renderText } from '../formula';
 import type { SceneController } from './controller';
-import { parallelLegend } from './parallel';
+import { parallelLegend, platformLegend } from './parallel';
 
 export const KEY_FRAME_TEXT = '墨线框 = 被取用的行或标签';
 export const JUMP_PLACEHOLDER = '跳到模块…';
@@ -19,15 +19,17 @@ function chip(text: string): HTMLButtonElement {
   return button;
 }
 
-export function buildChrome(root: HTMLDivElement, hint: string | undefined, parallel = false): void {
+export const PLATFORMS_TEXT = '按卡分开';
+
+export function buildChrome(root: HTMLDivElement, hint: string | undefined, parallel?: 'ranks' | 'platforms'): void {
   const key = document.createElement('div');
   key.className = 'vf-key';
   key.innerHTML = `<span><i class="vf-sw" style="background:var(--pos)"></i>正</span><span><i class="vf-sw" style="background:var(--neg)"></i>负</span><span>${KEY_FRAME_TEXT}</span>`;
   root.appendChild(key);
-  if (parallel) {
+  if (parallel !== undefined) {
     const ranks = document.createElement('div');
     ranks.className = 'vf-key vf-ranks';
-    ranks.innerHTML = parallelLegend();
+    ranks.innerHTML = parallel === 'ranks' ? parallelLegend() : platformLegend();
     root.appendChild(ranks);
   }
   if (hint !== undefined) {
@@ -116,6 +118,13 @@ export function buildTools(c: SceneController): OverviewNav | undefined {
     const unfoldAll = chip('全部展开');
     unfoldAll.addEventListener('click', () => c.steps?.setAllFolded?.(false));
     tools.append(foldAll, unfoldAll);
+  }
+  const togglePlatforms = c.togglePlatforms;
+  if (togglePlatforms !== undefined) {
+    const platforms = chip(PLATFORMS_TEXT);
+    platforms.setAttribute('aria-pressed', String(c.platforms !== undefined));
+    platforms.addEventListener('click', () => togglePlatforms());
+    tools.appendChild(platforms);
   }
   const reset = chip('复位视角');
   reset.addEventListener('click', () => c.resetView());

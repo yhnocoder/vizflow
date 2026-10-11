@@ -136,6 +136,7 @@ export interface Block {
   quiet?: boolean;
   untitled?: boolean;
   table?: { label: Node; half: [number, number] };
+  platform?: number;
 }
 
 export interface BoardGeometry {

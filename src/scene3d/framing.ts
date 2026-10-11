@@ -82,7 +82,8 @@ export function framingPoints(renderables: Renderable[]): Vec3[] {
 }
 
 export function allPoints(c: SceneController): Vec3[] {
-  const points = framingPoints(c.renderables);
+  const points = framingPoints(c.renderables.filter((r) => c.platforms === undefined || r.block.hidden !== true));
+  points.push(...(c.platforms?.framePoints() ?? []));
   for (const brace of c.moduleBraces.braces) points.push([brace.x, brace.y0, brace.z], [brace.x, brace.y1, brace.z], braceTip(brace));
   return points;
 }

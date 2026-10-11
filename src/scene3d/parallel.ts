@@ -33,7 +33,7 @@ export function partialParts(c: SceneController, node: Node): Tensor[] | undefin
   return c.stepNodes.has(node) ? placements.gradRanks(node) : undefined;
 }
 
-function bytesText(bytes: number): string {
+export function bytesText(bytes: number): string {
   const { value, unit } = byteSize(bytes);
   return `${value}\\,\\mathrm{${unit}}`;
 }
@@ -105,6 +105,12 @@ export function parallelNotes(c: SceneController, info: StepInfo | undefined): S
     if (c.g.nodes.some((use) => use.op === 'all_reduce' && use.inputs[0] === node)) notes.push({ nodes: [node], text: NO_COMM_NOTE });
   }
   return notes;
+}
+
+export const PLATFORM_PARTIAL_TEXT = '虚线框 = 这张卡的部分和';
+
+export function platformLegend(): string {
+  return `<span><i class="vf-sw" style="background:var(--nvlink)"></i>NVLink</span><span><i class="vf-sw" style="background:var(--rdma)"></i>RDMA</span><span>${PLATFORM_PARTIAL_TEXT}</span>`;
 }
 
 export function parallelLegend(): string {

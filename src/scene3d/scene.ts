@@ -27,6 +27,7 @@ export interface SceneOptions {
   levels?: LevelPlan;
   sequence?: { get(): number[]; set(ids: number[]): void };
   parallel?: SceneParallel;
+  platforms?: string;
 }
 
 export interface SceneHandle {
@@ -39,6 +40,21 @@ export const NO_WEBGL_TEXT = '这个浏览器启用不了 WebGL，立体图显�
 export function mountScene(el: string | HTMLElement, g: Graph, options: SceneOptions): SceneHandle {
   const container = typeof el === 'string' ? document.querySelector<HTMLElement>(el) : el;
   if (container === null) throw new Error(`mountScene: container '${el}' not found`);
+  let platforms = options.platforms;
+  let handle: SceneHandle | undefined;
+  const toggle =
+    options.parallel === undefined
+      ? undefined
+      : () => {
+          handle?.dispose();
+          platforms = platforms === undefined ? options.parallel!.placements.mesh.axis : undefined;
+          handle = build(container, g, { ...options, platforms }, toggle);
+        };
+  handle = build(container, g, { ...options, platforms }, toggle);
+  return { resetView: () => handle?.resetView(), dispose: () => handle?.dispose() };
+}
+
+function build(container: HTMLElement, g: Graph, options: SceneOptions, togglePlatforms: (() => void) | undefined): SceneHandle {
   const root = document.createElement('div');
   root.className = 'vf-scene';
   container.appendChild(root);
@@ -56,6 +72,6 @@ export function mountScene(el: string | HTMLElement, g: Graph, options: SceneOpt
     return { resetView() {}, dispose: () => root.remove() };
   }
   const sceneOptions = options.edit === true ? { ...options, layout: editableLayout(options.layout), camera: { ...options.camera }, labels: { ...options.labels } } : options;
-  const controller = new SceneController(root, g, sceneOptions, renderer);
+  const controller = new SceneController(root, g, sceneOptions, renderer, togglePlatforms);
   return { resetView: () => controller.resetView(), dispose: () => controller.dispose() };
 }

@@ -42,7 +42,7 @@ function sampleCurve(a: Vec3, b: Vec3, flat: boolean, bow?: number): number[] {
   return points;
 }
 
-function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+export function segmentDistance(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
   const dx = bx - ax;
   const dy = by - ay;
   const len = dx * dx + dy * dy;
