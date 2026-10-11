@@ -99,6 +99,23 @@ export interface ModuleFile {
 
 export type PanelSpec = 'loss' | Record<string, unknown>;
 
+export type SectionBlockSpec =
+  | { text: Text }
+  | { lead: Text }
+  | { buttons: { label: Text; go: Path }[] }
+  | 'rope_dial'
+  | 'rope_curve'
+  | { rope_compare: { scores: Path | Path[]; weights: Path | Path[]; ids: Path } };
+
+export type SectionRowSpec = SectionBlockSpec[] | { columns?: (number | string)[]; cells: SectionBlockSpec[][] };
+
+export interface SectionSpec {
+  title?: Text;
+  rope?: { q: Path | Path[]; k: Path | Path[]; rows?: [number, number]; head?: number; theta: number; dh: number; positions?: number };
+  src?: string;
+  rows?: SectionRowSpec[];
+}
+
 export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'outputs'> {
   title: Text;
   lede?: Text;
@@ -113,4 +130,5 @@ export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'output
   inputs: Record<Name, { tokens: string[] } | { value: Nested }>;
   values?: Record<Path, Nested>;
   panels?: PanelSpec[];
+  sections?: SectionSpec[];
 }

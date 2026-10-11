@@ -142,6 +142,7 @@ export const narrowOp: OpDef<NarrowAttrs> = {
 
 export interface CatAttrs {
   dim: number;
+  pieces: number | null;
 }
 
 function catShape(shapes: readonly (readonly number[])[], attrs: CatAttrs): number[] {
@@ -156,6 +157,11 @@ function catShape(shapes: readonly (readonly number[])[], attrs: CatAttrs): numb
     }
     out[dim] += shape[dim];
   }
+  if (attrs.pieces === null) return out;
+  if (!Number.isInteger(attrs.pieces) || attrs.pieces < 1 || shapes.some((shape) => shape[dim] !== first[dim])) {
+    throw new Error(`cat: pieces ${attrs.pieces} needs a positive integer and tensors of the same size along dim ${dim}`);
+  }
+  out[dim] = first[dim] * attrs.pieces;
   return out;
 }
 
@@ -177,9 +183,11 @@ export const catOp: OpDef<CatAttrs> = {
   args: ['tensors', 'dim'],
   tensors: ['tensors'],
   list: 'tensors',
-  defaults: { dim: 0 },
+  sizes: ['pieces'],
+  defaults: { dim: 0, pieces: null },
   shape: (shapes, attrs) => catShape(shapes, attrs),
   forward: (inputs, attrs) => {
+    if (attrs.pieces !== null && attrs.pieces !== inputs.length) throw new Error(`cat: pieces is ${attrs.pieces}, but ${inputs.length} tensors are given`);
     const shapes = inputs.map((t) => t.shape);
     const out = new Tensor(catShape(shapes, attrs));
     forEachIndex(out.shape, (index, offset) => {
@@ -196,5 +204,71 @@ export const catOp: OpDef<CatAttrs> = {
       grads[source.arg].set(source.index, gradOut.data[offset]);
     });
     return grads;
+  },
+};
+
+export interface ViewAttrs {
+  shape: number[];
+}
+
+export function viewShape(input: readonly number[], attrs: ViewAttrs): number[] {
+  const size = input.reduce((a, b) => a * b, 1);
+  const free = attrs.shape.filter((d) => d === -1).length;
+  const known = attrs.shape.filter((d) => d !== -1).reduce((a, b) => a * b, 1);
+  const fail = () => new Error(`view: shape (${attrs.shape.join(', ')}) is invalid for input ${formatShape(input)} of size ${size}`);
+  if (free > 1 || attrs.shape.some((d) => !Number.isInteger(d) || (d < 0 && d !== -1))) throw fail();
+  if (free === 0 ? known !== size : known === 0 || size % known !== 0) throw fail();
+  return attrs.shape.map((d) => (d === -1 ? size / known : d));
+}
+
+export const viewOp: OpDef<ViewAttrs> = {
+  name: 'view',
+  args: ['input', 'shape'],
+  tensors: ['input'],
+  rest: 'shape',
+  sizes: ['shape'],
+  shape: ([input], attrs) => viewShape(input, attrs),
+  forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice()),
+  backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+};
+
+export interface SelectAttrs {
+  dim: number;
+  index: number;
+}
+
+function selected(shape: readonly number[], attrs: SelectAttrs): { dim: number; index: number; shape: number[] } {
+  if (shape.length === 0) throw new Error('select: input must have at least one dimension');
+  const dim = normDim(attrs.dim, shape.length);
+  const index = attrs.index < 0 ? attrs.index + shape[dim] : attrs.index;
+  if (!Number.isInteger(index) || index < 0 || index >= shape[dim]) {
+    throw new Error(`select: index ${attrs.index} is out of range for input ${formatShape(shape)} along dim ${dim}`);
+  }
+  return { dim, index, shape: shape.filter((_, d) => d !== dim) };
+}
+
+export function selectSource(inputShape: readonly number[], attrs: SelectAttrs, out: readonly number[]): number[] {
+  const { dim, index } = selected(inputShape, attrs);
+  return [...out.slice(0, dim), index, ...out.slice(dim)];
+}
+
+export const selectOp: OpDef<SelectAttrs> = {
+  name: 'select',
+  args: ['input', 'dim', 'index'],
+  tensors: ['input'],
+  shape: ([input], attrs) => selected(input, attrs).shape,
+  forward: ([input], attrs) => {
+    const out = new Tensor(selected(input.shape, attrs).shape);
+    forEachIndex(out.shape, (index, offset) => {
+      out.data[offset] = input.get(selectSource(input.shape, attrs, index));
+    });
+    return out;
+  },
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (index, offset) => {
+      grad.data[offsetOf(input.shape, selectSource(input.shape, attrs, index))] = gradOut.data[offset];
+    });
+    return [grad];
   },
 };

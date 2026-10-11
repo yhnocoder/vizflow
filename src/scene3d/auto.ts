@@ -14,6 +14,8 @@ import {
   rowsCols,
   stack,
 } from './layout';
+import type { StepsSpec } from '../steps';
+import { type LevelPlan, levelPlan } from './levels';
 import type { SceneModule } from './modules';
 
 export type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
@@ -74,7 +76,7 @@ function treeNodes(entries: readonly LayoutEntry[]): Node[] {
 }
 
 function boardOperands(n: Node): [Node, Node] | undefined {
-  if (n.kind !== 'op' || n.op !== 'matmul' || n.inputs.length !== 2) return undefined;
+  if (n.kind !== 'op' || (n.op !== 'matmul' && n.op !== 'select_matmul') || n.inputs.length !== 2) return undefined;
   const [a, b] = n.inputs;
   return b.shape.length === 2 && n.shape.length <= 2 ? [a, b] : undefined;
 }
@@ -86,7 +88,11 @@ function boardReach(b: Node, aPlaced: boolean): [number, number] {
   return [aPlaced ? left : Math.max(left, aLeft), rightReach(cols)];
 }
 
-export function autoLayout(tree: LayoutTree): { layout: LayoutItem[]; modules: SceneModule[] } {
+export function autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan } {
+  if (steps !== undefined && (steps.modules?.length ?? 0) > 0 && steps.backward === 'reverse') {
+    const levels = levelPlan(steps);
+    return { layout: [], modules: levels.modules, levels };
+  }
   const all = treeNodes(tree.children);
   const boardB = new Set(all.flatMap((n) => boardOperands(n)?.[1] ?? []));
   const direct = new Set(all.filter((n) => !boardB.has(n)).flatMap((n) => n.inputs));

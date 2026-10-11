@@ -1,37 +1,48 @@
 import type { Node } from '../autograd';
 import { BOX_HEIGHT, type Block, DISC_HEIGHT, type Vec3 } from './layout';
-import { HEIGHT_CAP } from './scales';
+import { capFor } from './scales';
 
 export interface SceneModule {
+  id?: string;
+  fixed?: boolean;
   title: string;
   subtitle?: string;
   nodes: Node[];
-  side?: 'left' | 'right';
+  side?: 'left' | 'right' | 'outer';
+  inner?: boolean;
 }
 
 export const MODULE_GAP = 1.6;
 export const MODULE_STEP = 2.2;
 export const MODULE_PAD = 0.4;
-export const BRACE_RADIUS = 0.35;
-export const BRACE_ACTIVE_OPACITY = 0.55;
-const ARC_SEGMENTS = 6;
+export const BRACE_WIDTH = 0.42;
+export const BRACE_RADIUS = 0.45;
+export const BRACE_MIN_RADIUS = 0.05;
+export const BRACE_OPACITY = 0.55;
+export const BRACE_LABEL_GAP = 0.6;
+export const BRACE_MIN_SLOPE = 0.2;
+const BRACE_SEGMENTS = 14;
 
 export interface BlockSpan {
   node: Node;
   bottom: number;
   top: number;
+  x: number;
   z: number;
 }
 
 export interface Brace {
   module: SceneModule;
   side: 'left' | 'right';
+  thick?: boolean;
   nodes: Node[];
   column: number;
   x: number;
   y0: number;
   y1: number;
   z: number;
+  cx: number;
+  cz: number;
 }
 
 export interface SceneBounds {
@@ -42,9 +53,16 @@ export interface SceneBounds {
 export function blockSpan(block: Block): BlockSpan {
   const base = Math.min(...block.elements.map((e) => e.y));
   const high = Math.max(...block.elements.map((e) => e.y));
-  const rise = block.shape === 'disc' ? DISC_HEIGHT : block.shape === 'box' ? BOX_HEIGHT : HEIGHT_CAP;
+  const rise = block.shape === 'disc' ? DISC_HEIGHT : block.shape === 'box' ? BOX_HEIGHT : capFor(block.shape, block.node.shape.length);
+  const xs = block.elements.map((e) => e.x);
   const zs = block.elements.map((e) => e.z);
-  return { node: block.node, bottom: block.plate === undefined ? base : Math.min(base, block.plate.y), top: high + rise, z: (Math.min(...zs) + Math.max(...zs)) / 2 };
+  return {
+    node: block.node,
+    bottom: block.plate === undefined ? base : Math.min(base, block.plate.y),
+    top: high + rise,
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    z: (Math.min(...zs) + Math.max(...zs)) / 2,
+  };
 }
 
 export function checkModules(modules: readonly SceneModule[], placed: readonly Node[]): void {
@@ -64,13 +82,15 @@ export function layoutBraces(modules: readonly SceneModule[], spans: readonly Bl
     const own = spans.filter((s) => module.nodes.includes(s.node));
     return {
       module,
-      side: module.side ?? 'left',
+      side: module.side === 'right' ? 'right' : 'left',
       nodes: own.map((s) => s.node),
       column: 0,
       x: 0,
       y0: Math.min(...own.map((s) => s.bottom)) - MODULE_PAD,
       y1: Math.max(...own.map((s) => s.top)) + MODULE_PAD,
       z: (Math.min(...own.map((s) => s.z)) + Math.max(...own.map((s) => s.z))) / 2,
+      cx: (Math.min(...own.map((s) => s.x)) + Math.max(...own.map((s) => s.x))) / 2,
+      cz: (Math.min(...own.map((s) => s.z)) + Math.max(...own.map((s) => s.z))) / 2,
     };
   });
   const order = braces.map((_, i) => i).sort((a, b) => new Set(modules[a].nodes).size - new Set(modules[b].nodes).size || a - b);
@@ -89,30 +109,54 @@ export function layoutBraces(modules: readonly SceneModule[], spans: readonly Bl
   return braces;
 }
 
-function braceRadius(brace: Brace): number {
-  return Math.min(BRACE_RADIUS, (brace.y1 - brace.y0) / 4);
+export const BRACE_THICK_OFFSET = 0.016;
+
+export function levelBraces(
+  modules: readonly SceneModule[],
+  ranges: ReadonlyMap<string, [number, number]>,
+  bounds: SceneBounds & { z: number; cx: number; cz: number },
+  gaps: { left: number; right: number; outer: number },
+): Brace[] {
+  return modules.flatMap((module): Brace[] => {
+    const range = module.id === undefined ? undefined : ranges.get(module.id);
+    if (range === undefined) return [];
+    const side = module.side ?? 'left';
+    const x = side === 'left' ? bounds.xMin - gaps.left : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
+    return [{ module, side: side === 'left' ? 'left' : 'right', thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz }];
+  });
 }
 
-export function braceTip(brace: Brace): Vec3 {
-  const toward = brace.side === 'left' ? 1 : -1;
-  return [brace.x - toward * braceRadius(brace), (brace.y0 + brace.y1) / 2, brace.z];
+function outward(brace: Brace): number {
+  return brace.side === 'left' ? -1 : 1;
 }
 
-export function bracePoints(brace: Brace): number[] {
-  const toward = brace.side === 'left' ? 1 : -1;
-  const r = braceRadius(brace);
-  const middle = (brace.y0 + brace.y1) / 2;
+export function braceOffset(brace: Brace, view: Vec3): number {
+  const [bx, by, bz] = view;
+  return (bx * by * (brace.x - brace.cx) + bz * by * (brace.z - brace.cz)) / Math.max(BRACE_MIN_SLOPE, 1 - by * by);
+}
+
+export function braceTip(brace: Brace, offset = 0): Vec3 {
+  return [brace.x + BRACE_LABEL_GAP * outward(brace), (brace.y0 + brace.y1) / 2 + offset, brace.z];
+}
+
+export function bracePoints(brace: Brace, offset = 0): number[] {
+  const w = BRACE_WIDTH * outward(brace);
+  const y0 = brace.y0 + offset;
+  const y1 = brace.y1 + offset;
+  const ym = (y0 + y1) / 2;
+  const r = Math.min(BRACE_RADIUS, Math.max(BRACE_MIN_RADIUS, (y1 - y0) / 4));
   const points: number[] = [];
-  const arc = (cu: number, cy: number, from: number, to: number) => {
-    for (let s = 0; s <= ARC_SEGMENTS; s++) {
-      const angle = from + ((to - from) * s) / ARC_SEGMENTS;
-      points.push(brace.x + toward * (cu + r * Math.cos(angle)), cy + r * Math.sin(angle), brace.z);
+  const segment = (p0: [number, number], c1: [number, number], c2: [number, number], p1: [number, number]) => {
+    for (let s = 0; s <= BRACE_SEGMENTS; s++) {
+      const u = s / BRACE_SEGMENTS;
+      const v = 1 - u;
+      const at = (k: 0 | 1) => v * v * v * p0[k] + 3 * v * v * u * c1[k] + 3 * v * u * u * c2[k] + u * u * u * p1[k];
+      points.push(brace.x + at(0), at(1), brace.z);
     }
   };
-  const quarter = Math.PI / 2;
-  arc(r, brace.y1 - r, quarter, 2 * quarter);
-  arc(-r, middle + r, 0, -quarter);
-  arc(-r, middle - r, quarter, 0);
-  arc(r, brace.y0 + r, 2 * quarter, 3 * quarter);
+  segment([0, y0], [w / 2, y0], [w / 2, y0], [w / 2, y0 + r]);
+  segment([w / 2, ym - r], [w / 2, ym], [w / 2, ym], [w, ym]);
+  segment([w, ym], [w / 2, ym], [w / 2, ym], [w / 2, ym + r]);
+  segment([w / 2, y1 - r], [w / 2, y1], [w / 2, y1], [0, y1]);
   return points;
 }

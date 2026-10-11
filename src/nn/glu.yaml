@@ -1,8 +1,9 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
 params:
-  act: { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
-  f:   { type: dim }
+  act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
+  f:    { type: dim }
+  name: { type: text, default_key: true }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -10,6 +11,16 @@ weights:
   Wg: { shape: [f, d] }
   Wu: { shape: [f, d] }
   Wd: { shape: [d, f] }
+fold:
+  label: '$\of{down}=\mathrm{\of{name}}(\of{x})$'
+  title: \of{name}（已折叠）
+  text: |
+    $$\of{down}=\mathrm{\of{name}}(\of{x})={{ down | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
   - up:   x @ Wu.T
@@ -22,6 +33,8 @@ steps:
     label: '$\mathbf{gate},\ \mathbf{up}$'
     title: gate_proj 和 up_proj
     text: 两个投影的输入都是 $\of{x}$，维度从 $d$ 扩大到 $f$。两个 Linear 都没有 bias。
+    backward:
+      label: '$\partial W,\ \partial\of{x}$'
   - id: act
     show: a
     label: '$\of{act}$'
@@ -29,11 +42,15 @@ steps:
     text: |
       gate 逐元素经过 $\of{act}$：
       $$\of{act.def}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
   - id: gate
     show: m
     label: '$\of{a}\odot\mathbf{up}$'
     title: 门控相乘
     text: 激活后的 gate 和 up 逐元素相乘，决定 up 的每个分量放行多少。
+    backward:
+      label: '$\partial\of{a},\ \partial\mathbf{up}$'
   - id: down
     show: [Wd.T, down]
     label: '$\of{down}$'
@@ -41,3 +58,5 @@ steps:
     text: |
       再投影回 $d$ 维。
       $$\of{down} = \of{m}W_d^{\top} = {{ down | matrix }}$$
+    backward:
+      label: '$\partial W_d,\ \partial\of{m}$'

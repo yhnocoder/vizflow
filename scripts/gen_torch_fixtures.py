@@ -535,6 +535,24 @@ def transformer_op_fixtures():
     cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
+    cases += head_cases()
+    return cases
+
+
+def select_matmul(a, b, index):
+    return a[:, index, :] @ b
+
+
+def head_cases():
+    cases = []
+    for shape, view in [((3, 8), (3, 2, 4)), ((3, 2, 4), (3, -1)), ((6,), (2, 3))]:
+        cases.append(op_case("view", f"{shape} as {view}", lambda x, view=view: x.view(*view), [("input", randn(*shape))], [tensor_arg(0), *view]))
+    for shape, dim, index in [((3, 2, 4), 1, 1), ((3, 2, 4), -1, -1), ((4,), 0, 2)]:
+        cases.append(op_case("select", f"{shape} dim {dim} index {index}", lambda x, dim=dim, index=index: torch.select(x, dim, index), [("input", randn(*shape))], [tensor_arg(0), dim, index]))
+    for a, b, index in [((3, 2, 4), (4, 3), 1), ((3, 2, 4), (4, 3), 0), ((2, 3, 2), (2, 4), 2)]:
+        cases.append(
+            op_case("select_matmul", f"{a} head {index} by {b}", lambda x, y, index=index: select_matmul(x, y, index), [("input", randn(*a)), ("input", randn(*b))], [tensor_arg(0), tensor_arg(1), index])
+        )
     return cases
 
 
@@ -546,7 +564,7 @@ def rotate_half(x):
 def rotate_half_cases():
     return [
         op_case("rotate_half", f"shape {shape}", rotate_half, [("input", randn(*shape))], [tensor_arg(0)])
-        for shape in [(4,), (3, 4), (2, 2, 6)]
+        for shape in [(4,), (3, 4), (2, 2, 6), (3, 2, 4)]
     ]
 
 

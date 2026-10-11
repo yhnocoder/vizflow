@@ -3,7 +3,6 @@ import { type Page, expect, test } from '@playwright/test';
 import { intersects, labelRects, stageRect } from './labels';
 
 const FORWARD_2 = 2;
-const BACKWARD_2 = 7;
 const BACKWARD_3 = 8;
 const SETTLE_MS = 400;
 
@@ -61,16 +60,16 @@ for (const gap of [0.7, 1.2]) {
   });
 }
 
-test('hovering a z → LSE edge in a backward step shows the edge card with explain values', async ({ page }) => {
+test('hovering a z → LSE edge once z has its gradient shows the edge card with explain values', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 860 });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await openScene(page);
-  await goStep(page, BACKWARD_2);
-  const lse = page.locator('.vf-lb.vf-node[data-node="LSE"]');
+  await goStep(page, BACKWARD_3);
+  const lse = page.locator('.vf-lb.vf-ntl[data-node="LSE"]');
   const box = (await lse.boundingBox())!;
   const pop = page.locator('.vf-pop');
   let edgeId: string | null = null;
-  for (let dx = -36; dx <= 0 && edgeId === null; dx += 4) {
+  for (let dx = -80; dx <= 0 && edgeId === null; dx += 4) {
     for (let dy = 8; dy <= 220 && edgeId === null; dy += 4) {
       await page.mouse.move(box.x + box.width / 2 + dx, box.y + box.height + dy);
       const id = await pop.evaluate((el) => ((el as HTMLElement).hidden ? null : el.querySelector('[data-edge-id]')?.getAttribute('data-edge-id') ?? null));
@@ -130,7 +129,7 @@ test('movable labels do not overlap at 375px width', async ({ page }) => {
   const errors = await openScene(page);
   for (const step of [0, 5, BACKWARD_3]) {
     await goStep(page, step);
-    const rects = await labelRects(page, '.vf-lb.vf-ttl, .vf-lb.vf-node');
+    const rects = await labelRects(page, '.vf-lb.vf-ttl, .vf-lb.vf-ntl');
     expect(rects.length).toBeGreaterThan(1);
     for (let i = 0; i < rects.length; i++) {
       for (let j = i + 1; j < rects.length; j++) {

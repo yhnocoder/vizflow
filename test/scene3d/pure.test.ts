@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AVOID_STEP, avoidOverlaps, intersects } from '../../src/scene3d/avoid';
 import { barColor, mix, nodeColor, outlineOpacity } from '../../src/scene3d/colors';
-import { HEIGHT_CAP, MIN_HEIGHT, barHeight, niceTicks, scaleFor } from '../../src/scene3d/scales';
+import { HEIGHT_CAP, MIN_HEIGHT, barHeight, capFor, niceTicks, scaleFor } from '../../src/scene3d/scales';
 import { edgeStyle } from '../../src/scene3d/style';
 import { TRANSITION_MS, Transition, easeOut } from '../../src/scene3d/transition';
 import type { ThemeColors } from '../../src/theme';
@@ -19,9 +19,16 @@ const theme: ThemeColors = {
 };
 
 describe('scales', () => {
-  it('maps the initial maximum to 1.6 units', () => {
-    expect(scaleFor([0.5, -2, 1])).toBeCloseTo(0.8, 12);
-    expect(scaleFor([])).toBe(1.6 / 1e-6);
+  it('maps the initial maximum to 0.8 of the cap', () => {
+    expect(scaleFor([0.5, -2, 1])).toBeCloseTo(0.48, 12);
+    expect(scaleFor([0.5, -2, 1], 0.85)).toBeCloseTo(0.34, 12);
+    expect(scaleFor([])).toBe(1);
+  });
+
+  it('picks the cap by shape', () => {
+    expect(capFor('bar', 2)).toBe(1.2);
+    expect(capFor('bar', 1)).toBe(1.0);
+    expect(capFor('tile', 2)).toBe(0.85);
   });
 
   it('clips at the cap and keeps a minimum height', () => {
@@ -47,7 +54,7 @@ describe('scales', () => {
 
   it('ignores infinite values such as a causal mask', () => {
     const masked = [0.5, -Infinity, -2, -Infinity];
-    expect(scaleFor(masked)).toBeCloseTo(0.8, 12);
+    expect(scaleFor(masked)).toBeCloseTo(0.48, 12);
     expect(niceTicks(masked, scaleFor(masked))).toEqual(niceTicks([0.5, -2], scaleFor([0.5, -2])));
     expect(barHeight(-Infinity, 0.8, true)).toEqual({ height: -HEIGHT_CAP, clipped: true });
   });
@@ -59,24 +66,30 @@ describe('colors', () => {
   });
 
   it('picks pos, neg or line-strong and dims inactive and unfocused bars', () => {
-    expect(barColor(1, theme, { active: true, focused: true })).toEqual(theme.pos);
-    expect(barColor(-1, theme, { active: true, focused: true })).toEqual(theme.neg);
-    expect(barColor(1e-12, theme, { active: true, focused: true })).toEqual(theme.lineStrong);
-    expect(barColor(1, theme, { active: false, focused: true })).toEqual(mix(theme.pos, theme.surface, 0.55));
-    expect(barColor(1, theme, { active: false, focused: false })).toEqual(mix(mix(theme.pos, theme.surface, 0.55), theme.surface, 0.45));
+    expect(barColor(1, theme, { active: true, far: false, focused: true })).toEqual(theme.pos);
+    expect(barColor(-1, theme, { active: true, far: false, focused: true })).toEqual(theme.neg);
+    expect(barColor(1e-12, theme, { active: true, far: false, focused: true })).toEqual(theme.lineStrong);
+    expect(barColor(1, theme, { active: false, far: false, focused: true })).toEqual(mix(theme.pos, theme.surface, 0.55));
+    expect(barColor(1, theme, { active: false, far: true, focused: true })).toEqual(mix(theme.pos, theme.surface, 0.88));
+    expect(barColor(1, theme, { active: false, far: false, focused: false })).toEqual(mix(mix(theme.pos, theme.surface, 0.55), theme.surface, 0.45));
   });
 
   it('colors nodes by direction and sign of the gradient', () => {
-    expect(nodeColor(1, theme, { dir: 'forward', revealed: true, active: true, focused: true })).toEqual(theme.bg);
-    expect(nodeColor(-2, theme, { dir: 'backward', revealed: true, active: true, focused: true })).toEqual(theme.neg);
-    expect(nodeColor(2, theme, { dir: 'backward', revealed: true, active: false, focused: true })).toEqual(mix(theme.pos, theme.surface, 0.55));
-    expect(nodeColor(2, theme, { dir: 'backward', revealed: false, active: true, focused: true })).toEqual(mix(theme.bg, theme.surface, 0.5));
+    const node = { far: false, focused: true };
+    expect(nodeColor(1, theme, { ...node, dir: 'forward', revealed: true, active: true })).toEqual(theme.bg);
+    expect(nodeColor(1, theme, { ...node, dir: 'forward', revealed: true, active: false })).toEqual(mix(theme.bg, theme.surface, 0.6));
+    expect(nodeColor(-2, theme, { ...node, dir: 'backward', revealed: true, active: true })).toEqual(theme.neg);
+    expect(nodeColor(0, theme, { ...node, dir: 'backward', revealed: true, active: true })).toEqual(theme.lineStrong);
+    expect(nodeColor(2, theme, { ...node, dir: 'backward', revealed: true, active: false })).toEqual(mix(theme.pos, theme.surface, 0.55));
+    expect(nodeColor(2, theme, { ...node, dir: 'backward', revealed: false, active: true })).toEqual(mix(theme.bg, theme.surface, 0.5));
+    expect(nodeColor(2, theme, { ...node, far: true, dir: 'backward', revealed: true, active: false })).toEqual(mix(theme.bg, theme.surface, 0.85));
   });
 
-  it('uses 0.9 for active outlines and 0.2 otherwise', () => {
-    expect(outlineOpacity(true, true)).toBe(0.9);
-    expect(outlineOpacity(true, false)).toBe(0.2);
-    expect(outlineOpacity(false, false)).toBe(0.2);
+  it('uses 0.85 for active outlines, 0.32 for idle and 0.08 far away', () => {
+    expect(outlineOpacity({ active: true, far: false, tile: false })).toBe(0.85);
+    expect(outlineOpacity({ active: false, far: false, tile: false })).toBe(0.32);
+    expect(outlineOpacity({ active: false, far: true, tile: false })).toBe(0.08);
+    expect(outlineOpacity({ active: true, far: false, tile: true })).toBeCloseTo(0.85 * 0.85, 12);
   });
 });
 
@@ -207,35 +220,35 @@ describe('edge style', () => {
     dir: 'forward' as const,
     overview: false,
     contract: false,
-    toLoss: false,
     zeroGrad: false,
     focused: true,
+    far: false,
+    current: false,
     revealedFrom: true,
     revealedTo: true,
-    activeFrom: false,
-    activeTo: false,
   };
 
   it('follows the forward rules', () => {
-    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.1, dashed: true });
-    expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.42, dashed: false });
-    expect(edgeStyle({ ...base, overview: true, toLoss: true })).toEqual({ opacity: 0.9, dashed: false });
-    expect(edgeStyle({ ...base, activeTo: true })).toEqual({ opacity: 0.95, dashed: false });
-    expect(edgeStyle({ ...base, activeTo: true, contract: true })).toEqual({ opacity: 0.75, dashed: false });
-    expect(edgeStyle(base)).toEqual({ opacity: 0.3, dashed: false });
+    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.06, dashed: true });
+    expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.35, dashed: false });
+    expect(edgeStyle({ ...base, overview: true, contract: true })).toEqual({ opacity: 0.2, dashed: false });
+    expect(edgeStyle({ ...base, current: true })).toEqual({ opacity: 0.85, dashed: false });
+    expect(edgeStyle({ ...base, current: true, contract: true })).toEqual({ opacity: 0.6, dashed: false });
+    expect(edgeStyle(base)).toEqual({ opacity: 0.13, dashed: false });
+    expect(edgeStyle({ ...base, far: true })).toBeNull();
   });
 
   it('follows the backward rules', () => {
     const backward = { ...base, dir: 'backward' as const };
-    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.1, dashed: false });
-    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.1, dashed: true });
-    expect(edgeStyle({ ...backward, zeroGrad: true, activeFrom: true })).toEqual({ opacity: 0.3, dashed: true });
-    expect(edgeStyle({ ...backward, activeFrom: true })).toEqual({ opacity: 0.95, dashed: false });
-    expect(edgeStyle({ ...backward, activeFrom: true, contract: true })).toEqual({ opacity: 0.8, dashed: false });
-    expect(edgeStyle(backward)).toEqual({ opacity: 0.3, dashed: false });
+    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.06, dashed: false });
+    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.06, dashed: true });
+    expect(edgeStyle({ ...backward, zeroGrad: true, current: true })).toEqual({ opacity: 0.35, dashed: true });
+    expect(edgeStyle({ ...backward, current: true })).toEqual({ opacity: 0.9, dashed: false });
+    expect(edgeStyle({ ...backward, current: true, contract: true })).toEqual({ opacity: 0.65, dashed: false });
+    expect(edgeStyle(backward)).toEqual({ opacity: 0.13, dashed: false });
   });
 
   it('dims rows that are not in focus', () => {
-    expect(edgeStyle({ ...base, activeTo: true, focused: false }).opacity).toBeCloseTo(0.95 * 0.4, 12);
+    expect(edgeStyle({ ...base, current: true, focused: false })!.opacity).toBeCloseTo(0.85 * 0.4, 12);
   });
 });

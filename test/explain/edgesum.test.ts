@@ -101,6 +101,13 @@ const cases: Case[] = [
     },
   },
   { op: 'rsqrt', build: (g, r) => unary(g, r, 'rsqrt', [2, 3], true) },
+  {
+    op: 'rsqrt',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3], true));
+      return { out: g.rsqrt(x, { eps: 0.25 }), inputs: [x] };
+    },
+  },
   { op: 'sqrt', build: (g, r) => unary(g, r, 'sqrt', [2, 3], true) },
   { op: 'sigmoid', build: (g, r) => unary(g, r, 'sigmoid', [2, 3]) },
   { op: 'silu', build: (g, r) => unary(g, r, 'silu', [2, 3]) },
@@ -109,6 +116,31 @@ const cases: Case[] = [
   { op: 'identity', build: (g, r) => unary(g, r, 'identity', [2, 3]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
+  { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
+  { op: 'mul', build: (g, r) => binary(g, r, 'mul', [3, 2, 4], [3, 1, 4]) },
+  { op: 'mean', build: (g, r) => reduce(g, r, 'mean', [3, 2, 4], -1, true) },
+  {
+    op: 'view',
+    build: (g, r) => {
+      const x = g.input('x', [3, 8], randomValues(r, [3, 8]));
+      return { out: g.view(x, 3, 2, 4), inputs: [x] };
+    },
+  },
+  {
+    op: 'select',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2, 4], randomValues(r, [3, 2, 4]));
+      return { out: g.select(x, 1, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'select_matmul',
+    build: (g, r) => {
+      const A = g.input('A', [3, 2, 4], randomValues(r, [3, 2, 4]));
+      const B = g.input('B', [4, 3], randomValues(r, [4, 3]));
+      return { out: g.select_matmul(A, B, 1), inputs: [A, B] };
+    },
+  },
   {
     op: 'embedding',
     build: (g, r) => {

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { graph } from '../../src/autograd';
-import { katexAdapter, renderText, setAdapter } from '../../src/formula';
+import { katexAdapter, renderMarkdown, renderText, setAdapter } from '../../src/formula';
 import { compileTemplate } from '../../src/steps';
 
 const rendered: { tex: string; display: boolean }[] = [];
@@ -37,7 +37,7 @@ describe('renderText with several lines', () => {
       模型输出经过 RMSNorm 得到 $\mathbf{h}$，
       lm_head 把它投影到词表大小。
     `;
-    expect(markup(text)).toBe('<p>模型输出经过 RMSNorm 得到 (\\mathbf{h})，lm_head 把它投影到词表大小。</p>');
+    expect(markup(text)).toBe('<p>模型输出经过 RMSNorm 得到 <span style="white-space:nowrap">(\\mathbf{h})，</span>lm_head 把它投影到词表大小。</p>');
   });
 
   it('joins English lines with one space and drops trailing spaces', () => {
@@ -56,7 +56,7 @@ describe('renderText with several lines', () => {
 
   it('puts a space between a line and a formula or tag on the next line', () => {
     expect(markup('\n  得到\n  $x$\n  的值\n')).toBe('<p>得到 (x) 的值</p>');
-    expect(markup('\n  得到 $x$，\n  其中\n')).toBe('<p>得到 (x)，其中</p>');
+    expect(markup('\n  得到 $x$，\n  其中\n')).toBe('<p>得到 <span style="white-space:nowrap">(x)，</span>其中</p>');
   });
 
   it('splits blocks on blank lines and leaves a display formula block outside paragraphs', () => {
@@ -122,5 +122,23 @@ describe('templates over several lines', () => {
     `);
     expect(evaluate(0)).toContain('第一个是 0.50，');
     expect(evaluate(0)).toContain('$x_2 = -1.25$');
+  });
+});
+
+describe('renderMarkdown', () => {
+  function md(text: string): string {
+    const target = document.createElement('div');
+    renderMarkdown(text, target);
+    for (const formula of target.querySelectorAll('.vf-tex')) formula.replaceWith(formula.textContent ?? '');
+    return target.innerHTML;
+  }
+
+  it('turns headings, paragraphs, inline code and bold into HTML and keeps display formulas as blocks', () => {
+    const text = ['### 一、问题', '', '第一段 $\\mathbf{q}$，', '**加粗** 和 `rotate_half`。', '', '$$a_{**b**}$$'].join('\n');
+    expect(md(text)).toBe('<h3>一、问题</h3><p>第一段 <span style="white-space:nowrap">(\\mathbf{q})，</span><b>加粗</b> 和 <code>rotate_half</code>。</p>[a_{**b**}]');
+  });
+
+  it('renders a single line as one paragraph', () => {
+    expect(md('只有一行 $x$')).toBe('<p>只有一行 (x)</p>');
   });
 });

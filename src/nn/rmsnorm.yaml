@@ -1,40 +1,82 @@
 module: RMSNorm
-subtitle: LlamaRMSNorm / Qwen3RMSNorm
+subtitle: RMSNorm
 params:
-  eps: { type: float, default: 1e-6 }
+  eps:      { type: float, default: 1e-6 }
+  name:     { type: text, default_key: true }
+  intro:    { type: text, default: '' }
+  out_note: { type: text, default: '' }
+  in_note:  { type: text, default: '' }
 inputs:
-  x: { shape: [T, n] }
+  x: { shape: [..., n] }
 outputs: [out]
 weights:
   weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{weight},\ \partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
 body:
-  - sq: { op: x ** 2, tex: '{\of{x}}^{2}' }
+  - sq: { op: x ** 2, tex: '\of{x}^{2}' }
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - r:  { op: rsqrt(ms + eps), tex: r }
+  - r:  { op: 'rsqrt(ms, eps=eps)', tex: r }
   - xh: { op: x * r, tex: '\hat{\of{x}}' }
   - out: xh * weight
 steps:
   - id: square
     show: sq
-    label: '${\of{x}}^2$'
-    title: 逐元素平方
-    text: RMSNorm 先对输入逐元素平方。HF 的实现先把输入转成 float32 再平方。
+    label: '$\of{sq}$'
+    title: \of{name}：逐元素平方
+    text: |
+      \of{intro}HF 的实现先把输入转成 float32 再平方。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 传到输入
+      text: |
+        平方这一路的局部导数是 $2x$。两条路相加以后，RMSNorm 交给输入的那部分梯度和这一行的输入垂直，因为 RMSNorm 对整行的缩放不敏感。\of{in_note}
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: rms
     show: [ms, r]
-    label: '$\mathrm{ms},\ r$'
+    label: '$\of{ms},\ \of{r}$'
     title: 均方根的倒数
     text: |
-      每一行对平方取平均得到 $\mathrm{ms}$，加上 $\epsilon=\of{eps}$ 再取平方根的倒数。每一行各有一个 $r$，不同的行之间互不影响。
-      $$\of{r} = {{ r | matrix:3 }}$$
+      每一行对平方取平均得到 ms，加上 $\epsilon=\of{eps}$ 再取平方根的倒数，得到这一行的 $r$。$T$ 个位置各算各的，互不影响，所以 ms 和 $r$ 都是每行一个。
+      $$\mathrm{ms}={{ ms | matrix:3 }},\qquad r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms},\ \partial\of{sq}$'
+      title: 传到 ms 和平方
+      text: |
+        $\partial r/\partial\,\mathrm{ms}=-r^3/2$。平均值再把梯度均分给这一行的每个平方。
+        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
   - id: normalize
     show: xh
-    label: '$\hat{\of{x}}$'
+    label: '$\of{xh}$'
     title: 归一化
-    text: 每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素。这里不减均值，也没有 bias。
+    text: |
+      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。
+      $$\of{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial\of{x}$'
+      title: 传到 r，以及输入的直连那条
+      text: |
+        $r_t$ 有 $d$ 条出边，局部导数各是这一行的输入分量，相加得到 $\partial\ell/\partial r_t=\mathbf{x}_t\cdot\mathbf{u}_t$。输入沿直连那条边拿到 $r_t u_{t,k}$。
+        $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$
   - id: scale
     show: [weight, out]
     label: '$\of{out}$'
     title: 乘上权重 $\of{weight}$
     text: |
-      $\of{weight}$ 是长度为 $n$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。
-      $$\of{out} = \of{weight} \odot \hat{\of{x}} = {{ out | matrix }}$$
+      $\of{weight}$ 是长度为 $d$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。\of{out_note}
+      $$\of{out}=\of{weight}\odot\of{xh}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weight},\ \partial\of{xh}$'
+      title: 传到 $\of{weight}$ 和 $\of{xh}$
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。$\of{weight}$ 被所有位置共用，所以它的梯度要把 $T$ 行加起来。
+        $$\frac{\partial\ell}{\partial\of{weight}}=\sum_t\frac{\partial\ell}{\partial{\of{out}}_t}\odot{\of{xh}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial\of{out}}\odot\of{weight}={{ xh.grad | matrix:3 }}$$

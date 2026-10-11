@@ -176,6 +176,35 @@ body:
     expect(ok.nodes.get('y')).toBe(ok.nodes.get('s.out'));
   });
 
+  it('defaults a default_key text parameter to the instance key', async () => {
+    const named = (decl: string) => `
+module: Named
+params:
+  ${decl}
+inputs:
+  x: { shape: [n] }
+outputs: [out]
+body:
+  - out: x * 2
+steps:
+  - { id: double, show: out, title: '\\of{name}：翻倍' }
+`;
+    const use = (decl: string, params: string) => page(`
+title: t
+import: { Named: ./named.yaml }
+dims: {}
+inputs:
+  x: { value: [1, 2] }
+body:
+  - first: { use: Named, ${params}inputs: { x: x }, outputs: { out: y } }
+`, { 'mem:/pages/named.yaml': named(decl) });
+    const keyed = await use('name: { type: text, default_key: true }', '');
+    expect(keyed.steps.forward.map((s) => s.title)).toEqual(['first：翻倍']);
+    const given = await use('name: { type: text, default_key: true }', 'params: { name: other }, ');
+    expect(given.steps.forward.map((s) => s.title)).toEqual(['other：翻倍']);
+    await expect(use('name: { type: int, default_key: true }', '')).rejects.toThrow(/default_key must be true and needs type text/);
+  });
+
   it('shares weights through bindings and creates its own otherwise', async () => {
     const result = await page(`
 title: t
@@ -213,21 +242,36 @@ title: t
 import: { RoPE: vizflow/nn/rope }
 dims: {}
 inputs:
-  a: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-  b: { value: [[1, 0, 1, 0], [0, 1, 0, 1]] }
-  c: { value: [[1, 2], [3, 4]] }
+  a: { value: [[[1, 2, 3, 4], [9, 9, 9, 9]], [[5, 6, 7, 8], [1, 1, 1, 1]]] }
+  b: { value: [[[1, 0, 1, 0]], [[0, 1, 0, 1]]] }
+  c: { value: [[[1, 2]], [[3, 4]]] }
 body:
-  - ra: { use: RoPE, inputs: { x: a }, outputs: { out: a2 } }
-  - rb: { use: RoPE, inputs: { x: b }, outputs: { out: b2 } }
-  - rc: { use: RoPE, params: { theta: 100 }, inputs: { x: b }, outputs: { out: b3 } }
-  - rd: { use: RoPE, inputs: { x: c }, outputs: { out: c2 } }
+  - ra: { use: RoPE, inputs: { q: a, k: b }, outputs: { q_embed: a2, k_embed: b2 } }
+  - rb: { use: RoPE, inputs: { q: b, k: a }, outputs: { q_embed: b3, k_embed: a3 } }
+  - rc: { use: RoPE, params: { theta: 100 }, inputs: { q: b, k: b }, outputs: { q_embed: b4, k_embed: b5 } }
+  - rd: { use: RoPE, inputs: { q: c, k: c }, outputs: { q_embed: c2, k_embed: c3 } }
 `);
     const buffers = rope.graph.nodes.filter((n) => n.kind === 'buffer').map((n) => n.name);
     expect(buffers).toEqual(['ra.cos', 'ra.sin', 'rc.cos', 'rc.sin', 'rd.cos', 'rd.sin']);
     expect(rope.nodes.get('rb.cos')).toBe(rope.nodes.get('ra.cos'));
     const cos = rope.nodes.get('ra.cos')!;
-    expect(cos.value.get([1, 1])).toBeCloseTo(Math.cos(1 / 100), 15);
-    expect(rope.nodes.get('rc.cos')!.value.get([1, 1])).toBeCloseTo(Math.cos(1 / 10), 15);
+    expect(cos.shape).toEqual([2, 1, 4]);
+    expect(cos.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 100), 15);
+    expect(rope.nodes.get('rc.cos')!.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 10), 15);
+    const a2 = rope.nodes.get('a2')!.value;
+    const c1 = Math.cos(1);
+    const s1 = Math.sin(1);
+    expect(a2.get([1, 0, 0])).toBeCloseTo(5 * c1 - 7 * s1, 12);
+    expect(a2.get([1, 1, 2])).toBeCloseTo(c1 + s1, 12);
+    await expect(page(`
+title: t
+import: { RoPE: vizflow/nn/rope }
+dims: {}
+inputs:
+  a: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - r: { use: RoPE, inputs: { q: a, k: a } }
+`)).rejects.toThrow(/input has shape \(2, 4\), but RoPE expects \(T, Hq, dh\)/);
   });
 
   it('detects circular imports', async () => {
@@ -458,8 +502,9 @@ panels:
   - { matrix: E.T, highlight: ids }
 `, files);
     expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('{{n.ms[0]:3}} {{ n.out[b, 1] }} {{ids[b]:token}} {{ n.out.grad[0, 0] }} {{l}}');
-    const override = (result.steps.backward as { override: Record<number, { title?: string; text?: string }> }).override;
-    const entry = Object.values(override)[0];
+    expect(result.steps.backward).toBe('reverse');
+    const h = result.nodes.get('h')!;
+    const entry = result.steps.forward.find((s) => (Array.isArray(s.show) ? s.show : [s.show]).includes(h))!.backward!;
     expect(entry.title).toBe('back to h');
     expect(entry.text).toContain('{{n.out.grad[1, 1]:2}}');
     const [loss, tokens, matrix] = result.panels as [{ loss: { sgd: { params: unknown[] } } }, { tokens: unknown; columns: unknown[] }, { matrix: unknown; highlight: unknown }];
@@ -467,6 +512,178 @@ panels:
     expect(tokens.tokens).toBe(result.nodes.get('ids'));
     expect(tokens.columns).toEqual([result.nodes.get('h'), { node: result.nodes.get('e'), grad: true }]);
     expect(matrix.matrix).toBe(result.nodes.get('E')!.T);
+  });
+});
+
+describe('panels and sections', () => {
+  it('resolves nodes in the new panel fields and in sections', async () => {
+    const result = await page(`
+title: t
+dims: { T: 2, d: 4 }
+vocab: [a, b, c]
+inputs:
+  ids: { tokens: [a, c] }
+weights:
+  q: { shape: [T, d], init: ones }
+  k: { shape: [T, d], init: ones }
+  W: { shape: [3, d], init: ones }
+body:
+  - S: q @ k.T
+  - z: q @ W.T
+  - l: mean(z)
+panels:
+  - loss: { parts: S, hint: 走几步 }
+  - { sequence: true, labels: [x1, x2], sgd: { params: all, lr: 0.5 }, random: true }
+  - { attention: [S, S], ids: ids, title: P }
+  - title: W
+    matrices:
+      - { matrix: W.T, caption: 'Wᵀ $d$', limit: 1.2 }
+      - { matrix: W.T, grad: true, limit: 0.3 }
+    highlight: { node: ids, all: true }
+    rows: h
+sections:
+  - title: RoPE
+    rope: { q: q, k: k, theta: 10, dh: d }
+    rows:
+      - columns: [300, 1fr]
+        cells:
+          - [rope_dial]
+          - [{ lead: 开头 }, { text: '### 标题' }]
+      - [rope_curve, { buttons: [{ label: 去, go: S }] }, { rope_compare: { scores: [S], weights: S, ids: ids } }]
+`);
+    const [loss, sequence, attention, matrices] = result.panels as unknown as Record<string, any>[];
+    expect(loss.loss.parts).toBe(result.nodes.get('S'));
+    expect(loss.loss.hint).toBe('走几步');
+    expect(sequence.sequence).toBe(true);
+    expect(sequence.sgd.params).toEqual([result.nodes.get('q'), result.nodes.get('k'), result.nodes.get('W')]);
+    expect(attention.attention).toEqual([result.nodes.get('S'), result.nodes.get('S')]);
+    expect(attention.ids).toBe(result.nodes.get('ids'));
+    expect(matrices.matrices[0].matrix).toBe(result.nodes.get('W')!.T);
+    expect(matrices.matrices[1]).toMatchObject({ grad: true, limit: 0.3 });
+    expect(matrices.highlight).toEqual({ node: result.nodes.get('ids'), all: true });
+    const [section] = result.sections;
+    expect(section.rope).toEqual({ q: [result.nodes.get('q')], k: [result.nodes.get('k')], rows: [-1, 1], head: 1, theta: 10, dh: 4, positions: 24 });
+    expect(section.rows[0]).toEqual({ columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头' }, { text: '### 标题' }]] });
+    expect(section.rows[1].cells[0][1]).toEqual({ buttons: [{ label: '去', go: result.nodes.get('S') }] });
+    expect(section.rows[1].cells[0][2]).toEqual({ rope_compare: { scores: [result.nodes.get('S')], weights: [result.nodes.get('S')], ids: result.nodes.get('ids') } });
+  });
+
+  it('reports unknown section blocks and an odd head size with their location', async () => {
+    const base = `
+title: t
+dims: { T: 2, d: 3 }
+inputs: {}
+weights:
+  q: { shape: [T, d], init: ones }
+body:
+  - l: mean(q)
+sections:
+`;
+    await expect(page(`${base}  - rows: [[{ chart: q }]]\n`)).rejects.toThrow(/sections\[0\]\.rows\[0\]\[0\]\.chart: unknown block 'chart'/);
+    await expect(page(`${base}  - { rope: { q: q, k: q, theta: 10, dh: d }, rows: [] }\n`)).rejects.toThrow(/sections\[0\]\.rope\.dh: dh must be an even integer/);
+  });
+
+  const MD_PAGE = `
+title: t
+dims: { T: 2, d: 4 }
+inputs: {}
+weights:
+  q: { shape: [T, d], init: ones }
+  k: { shape: [T, d], init: ones }
+body:
+  - S: q @ k.T
+  - l: mean(S)
+sections:
+  - { title: RoPE, src: text/rope.md, rope: { q: q, k: k, theta: 10, dh: d } }
+`;
+  const MD = [
+    ':::: columns 300 1fr',
+    '::: column',
+    '::: rope_dial',
+    ':::',
+    ':::',
+    '',
+    '::: column',
+    '::: lead',
+    '开头 $x$',
+    ':::',
+    '',
+    '### 一',
+    '',
+    '正文 $d = {{d}}$',
+    ':::',
+    '::::',
+    '',
+    '第二行',
+    '',
+    '```',
+    '::: not_a_block',
+    '```',
+    '',
+    '---',
+    '',
+    '::: buttons',
+    '- { label: 去, go: S }',
+    ':::',
+    '',
+    '::: rope_compare',
+    'scores: [S]',
+    'weights: S',
+    'ids: q',
+    ':::',
+    '',
+  ].join('\n');
+
+  it('loads a section from a Markdown file next to the page', async () => {
+    const result = await page(MD_PAGE, { 'mem:/pages/text/rope.md': MD });
+    const S = result.nodes.get('S');
+    const [section] = result.sections;
+    expect(section.title).toBe('RoPE');
+    expect(section.rows).toEqual([
+      { columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头 $x$' }, { text: '### 一\n\n正文 $d = {{d}}$' }]] },
+      { cells: [[{ text: '第二行\n\n```\n::: not_a_block\n```' }]] },
+      { cells: [[{ buttons: [{ label: '去', go: S }] }, { rope_compare: { scores: [S], weights: [S], ids: result.nodes.get('q') } }]] },
+    ]);
+  });
+
+  it('reports Markdown section errors at their line in the Markdown file', async () => {
+    const at = (md: string) => page(MD_PAGE, { 'mem:/pages/text/rope.md': md });
+    await expect(at('::: buttons\n- { label: 去, go: nope }\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:2:.*nope/);
+    await expect(at('文字\n\n::: chart\n- 1\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:4:1 rows\[0\]\[1\]\.chart: unknown block 'chart'/);
+    await expect(at('::: lead\n开头\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: '::: lead' is not closed");
+    await expect(at(':::\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: ':::' closes nothing");
+    await expect(at('::: column\n:::\n')).rejects.toThrow("'::: column' can only be used inside '::: columns'");
+    await expect(at(':::: columns 1fr\n文字\n::::\n')).rejects.toThrow("mem:/pages/text/rope.md:2:1: only '::: column' blocks can go inside '::: columns'");
+    await expect(at('::: rope_dial big\n:::\n')).rejects.toThrow("'::: rope_dial' takes no arguments");
+    await expect(page(MD_PAGE, {})).rejects.toThrow('no file mem:/pages/text/rope.md');
+    await expect(page(MD_PAGE.replace('src: text/rope.md', 'src: text/rope.md, rows: []'), { 'mem:/pages/text/rope.md': MD })).rejects.toThrow('a section takes either src or rows');
+  });
+});
+
+describe('figure filters in step text', () => {
+  const base = (text: string) => `
+title: t
+dims: { T: 3, d: 4 }
+inputs: {}
+buffers:
+  cos: { value: 'rope_cos(T, d, 10)' }
+weights:
+  x: { shape: [T, d], init: ones }
+body:
+  - y: x * cos
+  - l: mean(y)
+steps:
+  - { id: s, show: y, title: s, text: '${text}' }
+`;
+
+  it('expands a figure filter into a vf-figure tag with the graph name', async () => {
+    const result = await page(base('a {{ cos | rope_wave:cos:12 }} b'));
+    expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('a <vf-figure name="rope_wave" node="cos" args="cos:12"></vf-figure> b');
+  });
+
+  it('reports a bad figure argument where it is written', async () => {
+    await expect(page(base('{{ cos | rope_wave:tan }}'))).rejects.toThrow(/rope_wave needs cos or sin as its first argument, got 'tan' in '\{\{ cos \| rope_wave:tan \}\}'/);
+    await expect(page(base('{{ cos | chart }}'))).rejects.toThrow(/unknown template filter 'chart'/);
   });
 });
 
@@ -508,12 +725,16 @@ body:
       { title: 'g', children: ['s'] },
     ]);
     expect(result.modules.map((m) => [m.title, m.subtitle, m.nodes.length])).toEqual([
-      ['n', undefined, 7],
-      ['head $1$', undefined, 8],
-      ['n', undefined, 7],
-      ['head $2$', undefined, 8],
+      ['head $1$', '', 7],
+      ['n', '', 6],
+      ['head $2$', '', 7],
+      ['n', '', 6],
       ['g', 'grouped', 1],
     ]);
+    expect(result.modules.map((m) => [m.id, m.parent])).toEqual([['h[1]', null], ['n[1]', 'h[1]'], ['h[2]', null], ['n[2]', 'h[2]'], ['g', null]]);
+    expect(result.modules[1].inputs.map((n) => n.name)).toEqual(['p[1]']);
+    expect(result.modules[1].outputs.map((n) => n.name)).toEqual(['n[1].out']);
+    expect(result.modules[1].params.map((n) => n.name)).toEqual(['n[1].W']);
     expect(result.nodes.get('Wq')!.realShape).toEqual([128, 64]);
     expect(result.nodes.get('n[1].W')!.realShape).toEqual([64]);
     expect(result.graph.dims['4:128']).toBe(4);
@@ -531,7 +752,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });
@@ -615,5 +836,126 @@ body:
     await expect(page(uses.replace('      body:', '      beside: na\n      body:'), files)).rejects.toThrow(
       /page\.yaml:14:48 body\[2\]\.nb\.beside: 'nb' is beside 'grp' but uses 'na\.out', which 'na' in the same beside group computes; .* Put it after the beside group/,
     );
+  });
+});
+
+describe('heads', () => {
+  const values = (shape: number[], seed: number): unknown => {
+    let i = 0;
+    const nest = (dims: number[]): unknown => (dims.length === 0 ? Math.round(Math.sin(seed + i++ * 1.3) * 100) / 100 : Array.from({ length: dims[0] }, () => nest(dims.slice(1))));
+    return nest(shape);
+  };
+
+  function attention(q: number[][][], k: number[][][], v: number[][][]): number[][] {
+    const [T, H, dh] = [q.length, q[0].length, q[0][0].length];
+    const group = H / k[0].length;
+    return Array.from({ length: T }, (_, t) => Array.from({ length: H }, (_, h) => {
+      const kv = Math.floor(h / group);
+      const scores = Array.from({ length: t + 1 }, (_, s) => q[t][h].reduce((a, x, c) => a + x * k[s][kv][c], 0) / Math.sqrt(dh));
+      const z = scores.reduce((a, x) => a + Math.exp(x), 0);
+      return Array.from({ length: dh }, (_, c) => scores.reduce((a, x, s) => a + (Math.exp(x) / z) * v[s][kv][c], 0));
+    }).flat());
+  }
+
+  it('reshapes with view, matches a leading ... pattern and merges the steps of beside instances', async () => {
+    const result = await page(`
+title: t
+import: { RMSNorm: vizflow/nn/rmsnorm }
+dims: { T: 2, H: 2, dh: 2 }
+inputs:
+  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - q: 'view(x, T, H, dh)'
+  - f: 'view(q * 2, T, -1)'
+  - norms:
+      body:
+        - qa:
+            use: RMSNorm
+            inline: true
+            suffix: a
+            inputs: { x: q }
+            outputs: { out: na }
+            steps: { rms: { text: '$$r={{ qb.r | matrix:3 }}$$' } }
+        - qb: { use: RMSNorm, inline: true, suffix: b, beside: qa, inputs: { x: f }, outputs: { out: nb } }
+`);
+    expect(result.nodes.get('q')!.shape).toEqual([2, 2, 2]);
+    expect(Array.from(result.nodes.get('q')!.value.data)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(result.nodes.get('f')!.shape).toEqual([2, 4]);
+    expect(result.nodes.get('qa.r')!.shape).toEqual([2, 2, 1]);
+    expect(result.nodes.get('qb.r')!.shape).toEqual([2, 1]);
+    expect(result.modules.map((m) => m.id)).toEqual(['norms']);
+    const lanes = names(result.tree.children).slice(-1)[0] as { title: string; children: { parallel: { title: unknown; children: string[] }[] }[] };
+    expect(lanes.title).toBe('norms');
+    expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
+    expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
+    const forward = result.steps.forward;
+    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
+    const rms = forward[3];
+    expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
+    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');
+    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
+    expect(rms.text).toContain('{{qb.r[0]:3}}');
+    expect(rms.text).toContain('{{qb.r[1]:3}}');
+    await expect(page(`
+title: t
+import: { RMSNorm: vizflow/nn/rmsnorm }
+dims: {}
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - n: { use: RMSNorm, inline: true, title: norm, inputs: { x: x } }
+`)).rejects.toThrow(/body\[0\]\.n\.title: an inline instance has no box of its own, so it cannot have 'title'/);
+  });
+
+  it('writes a rank-3 matrix as one matrix per head, side by side', async () => {
+    const result = await page(`
+title: t
+dims: { T: 2, H: 2, dh: 2 }
+inputs:
+  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - q: 'view(x, T, H, dh)'
+  - k: 'view(x, T, 4, 1)'
+  - c: 'view(x, T, 1, 4)'
+steps:
+  - { id: s, show: [q, k, c], title: s, text: 'q={{ q | matrix:2 }} c={{ c | matrix }}' }
+`);
+    const cell = (i: string) => ` {{q[${i}]:2}} `;
+    const head = (h: number) => `\\begin{pmatrix}${cell(`0, ${h}, 0`)}&${cell(`0, ${h}, 1`)}\\\\${cell(`1, ${h}, 0`)}&${cell(`1, ${h}, 1`)}\\end{pmatrix}_{h=${h + 1}}`;
+    expect(result.steps.forward[0].text).toContain(`q=\\left[\\,${head(0)}\\;\\;${head(1)}\\,\\right]`);
+    expect(result.steps.forward[0].text).toContain('c=\\begin{pmatrix} {{c[0, 0, 0]}} & {{c[0, 0, 1]}} & {{c[0, 0, 2]}} & {{c[0, 0, 3]}} \\\\ {{c[1, 0, 0]}} ');
+  });
+
+  it.each([
+    [2, 1],
+    [2, 2],
+    [4, 2],
+  ])('computes grouped-query attention with %i query heads and %i kv heads', async (H, Hkv) => {
+    const q = values([3, H, 2], 1);
+    const k = values([3, Hkv, 2], 2);
+    const v = values([3, Hkv, 2], 3);
+    const result = await page(`
+title: t
+import: { GQA: vizflow/nn/gqa }
+dims: { T: 3 }
+inputs:
+  q: { value: ${JSON.stringify(q)} }
+  k: { value: ${JSON.stringify(k)} }
+  v: { value: ${JSON.stringify(v)} }
+buffers:
+  M: { value: causal_mask(T) }
+body:
+  - attn: { use: GQA, inputs: { q: q, k: k, v: v, mask: M }, outputs: { o: o } }
+`);
+    const o = result.nodes.get('o')!;
+    expect(o.shape).toEqual([3, H * 2]);
+    const want = attention(q as number[][][], k as number[][][], v as number[][][]).flat();
+    want.forEach((x, i) => expect(o.value.data[i]).toBeCloseTo(x, 12));
+    expect(result.nodes.get(`attn.S[${H}]`)!.shape).toEqual([3, 3]);
+    expect(result.nodes.get(`attn.S[${H + 1}]`)).toBeUndefined();
+    expect(result.steps.forward.map((s) => s.title)).toEqual([
+      'repeat_kv：复制 k', 'repeat_kv：复制 v', '转置', '打分：$\\mathbf{q}\\mathbf{k}^{\\top}$', '缩放', 'causal mask', 'softmax：取 exp', '按行求和', '注意力权重', 'P v', `拼回 $T\\times${H * 2}$`,
+    ]);
+    expect(result.modules.map((m) => m.id)).toEqual(['attn']);
   });
 });

@@ -1,3 +1,4 @@
+import '../autograd/ops';
 import { type CompiledPage, compileSpec } from './compile';
 import { defaultRead } from './load';
 import { parseYaml } from './source';

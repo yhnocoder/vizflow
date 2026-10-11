@@ -21,9 +21,9 @@ import {
   subOp,
   transposeOp,
 } from './elementwise';
-import { catOp, embeddingOp, gatherOp, narrowOp } from './index_ops';
+import { catOp, embeddingOp, gatherOp, narrowOp, selectOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { matmulOp } from './matmul';
+import { matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -42,8 +42,13 @@ export interface NllLossOptions extends OpOptions {
   ignore_index?: number;
 }
 
+export interface RsqrtOptions extends OpOptions {
+  eps?: number;
+}
+
 export interface CatOptions extends OpOptions {
   dim?: number;
+  pieces?: number | string | null;
 }
 
 export interface BuiltinOps {
@@ -55,7 +60,7 @@ export interface BuiltinOps {
   exp(input: Node, options?: OpOptions): Node;
   log(input: Node, options?: OpOptions): Node;
   pow(input: Node, exponent: number, options?: OpOptions): Node;
-  rsqrt(input: Node, options?: OpOptions): Node;
+  rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
   sigmoid(input: Node, options?: OpOptions): Node;
   silu(input: Node, options?: OpOptions): Node;
@@ -76,6 +81,10 @@ export interface BuiltinOps {
   narrow(input: Node, dim: number, start: number, length: number | string, options?: OpOptions): Node;
   cat(tensors: Node[], dim?: number | CatOptions, options?: CatOptions): Node;
   nll_loss(input: Node, target: Node, options?: NllLossOptions): Node;
+  view(input: Node, shape: (number | string)[], options?: OpOptions): Node;
+  view(input: Node, ...shape: (number | string)[]): Node;
+  select(input: Node, dim: number, index: number, options?: OpOptions): Node;
+  select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -108,6 +117,9 @@ export const builtinOps: readonly AnyOpDef[] = [
   narrowOp,
   catOp,
   nllLossOp,
+  viewOp,
+  selectOp,
+  selectMatmulOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

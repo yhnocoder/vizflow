@@ -60,8 +60,9 @@ describe('automatic backward steps', () => {
     const backward = steps.list.filter((s) => s.dir === 'backward');
     expect(backward.map((s) => s.nodes)).toEqual([[loss, logp], [L], [z], [Wn.T], [h]]);
     expect(backward.map((s) => s.index)).toEqual([1, 2, 3, 4, 5]);
-    expect(backward.map((s) => s.title)).toEqual(['∂ℓ/∂log p', '∂ℓ/∂LSE', '∂ℓ/∂z', '∂ℓ/∂W.T', '∂ℓ/∂h']);
-    expect(backward.map((s) => s.label)).toEqual(['∂log p', '∂LSE', '∂z', '∂W.T', '∂h']);
+    const subjects = [logp, L, z, Wn.T, h];
+    expect(backward.map((s) => s.title)).toEqual(subjects.map((n) => `$\\partial\\ell/\\partial ${n.tex}$`));
+    expect(backward.map((s) => s.label)).toEqual(subjects.map((n) => `$\\partial ${n.tex}$`));
     expect(backward[2].text).toBe(
       '$$\\frac{\\partial\\ell}{\\partial \\mathbf{z}}=\\Big(\\frac{\\partial \\mathrm{LSE}}{\\partial \\mathbf{z}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\mathrm{LSE}}+\\Big(\\frac{\\partial \\log\\mathbf{p}}{\\partial \\mathbf{z}}\\Big)^{\\top}\\frac{\\partial\\ell}{\\partial \\log\\mathbf{p}}$$',
     );
@@ -85,8 +86,8 @@ describe('automatic backward steps', () => {
     });
     const backward = steps.list.filter((st) => st.dir === 'backward');
     expect(backward.map((st) => st.nodes)).toEqual([[loss, lb, y], [P], [s], [U], [x]]);
-    expect(backward[0]).toMatchObject({ title: '∂ℓ/∂lb', label: '∂y', text: '第一步。' });
-    expect(backward[4]).toMatchObject({ title: '到 logits', label: '∂X' });
+    expect(backward[0]).toMatchObject({ title: `$\\partial\\ell/\\partial ${lb.tex}$`, label: '∂y', text: '第一步。' });
+    expect(backward[4]).toMatchObject({ title: '到 logits', label: `$\\partial ${x.tex}$` });
     const plain = createSteps(g, {
       forward: [{ show: [x, U, s, P, y, lb, loss], title: '全部', text: '' }],
     });

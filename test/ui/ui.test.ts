@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { graph } from '../../src/core';
 import { compileTemplate, createSteps } from '../../src/steps';
 import { mountPanels, mountSteps, type Mounted } from '../../src/ui';
+import { shown } from './shown';
 
 const X = [2.0, 1.0, 0.2, -0.6, -1.4];
 const TOKENS = [' mat', ' floor', ' sofa', ' dog', ' sat'];
@@ -56,7 +57,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const text = (el: Element | null) => el?.textContent ?? '';
+const text = (el: Element | null) => (el === null ? '' : shown(el));
 
 function slide(input: HTMLInputElement, value: number) {
   input.value = String(value);
@@ -64,7 +65,7 @@ function slide(input: HTMLInputElement, value: number) {
 }
 
 function button(el: HTMLElement, name: string | RegExp): HTMLButtonElement {
-  const found = [...el.querySelectorAll('button')].find((b) => (typeof name === 'string' ? b.textContent === name : name.test(b.textContent ?? '')));
+  const found = [...el.querySelectorAll('button')].find((b) => (typeof name === 'string' ? shown(b) === name : name.test(shown(b))));
   if (found === undefined) throw new Error(`no button ${name}`);
   return found;
 }
@@ -94,7 +95,7 @@ describe('loss panel', () => {
   it('shows the loss, the text line and the empty curve hint', () => {
     const { g } = softmaxGraph();
     const el = panels(container(), g, [{ loss: { text: '目标 "{{t:token}}"，p = {{p[t]:3}}' } }]);
-    expect(text(el.querySelector('.vf-big'))).toBe('ℓ =0.495');
+    expect(text(el.querySelector('.vf-big'))).toBe('$\\ell$ =0.495');
     expect(text(el.querySelector('.vf-sub'))).toBe('目标 " mat"，p = 0.609');
     expect(el.querySelector('.vf-spark')).toBeNull();
     expect(el.querySelector('.vf-btns')).toBeNull();
@@ -119,7 +120,7 @@ describe('loss panel', () => {
       { loss: { sgd: { params: [x], lr: 1 }, random: { nodes: [x], range: [-3, 3] }, reset: true } },
       { sliders: x },
     ]);
-    const sgd = button(el, '更新一步 x（η = 1）');
+    const sgd = button(el, '更新一步 $\\mathbf{x}$（$\\eta = 1$）');
     expect(sgd.classList.contains('vf-pri')).toBe(true);
     const grad = Array.from(x.grad!.data);
     sgd.click();
@@ -134,7 +135,7 @@ describe('loss panel', () => {
     expect(el.querySelector('.vf-spark')).toBeNull();
 
     vi.spyOn(Math, 'random').mockReturnValue(0.123456);
-    button(el, '随机 x').click();
+    button(el, '随机 $\\mathbf{x}$').click();
     vi.restoreAllMocks();
     expect(Array.from(x.value.data)).toEqual(X.map(() => -2.26));
 
@@ -146,7 +147,7 @@ describe('loss panel', () => {
   it('uses the given button labels', () => {
     const { g, x } = softmaxGraph();
     const el = panels(container(), g, [{ loss: { sgd: { params: [x], lr: 0.5, label: '走一步' }, random: { nodes: [x], range: [0, 1], label: '换一组' } } }]);
-    button(el, '走一步（η = 0.5）');
+    button(el, '走一步（$\\eta = 0.5$）');
     button(el, '换一组');
   });
 });
@@ -155,8 +156,8 @@ describe('sliders panel', () => {
   it('gives one slider per element with subscripted names', () => {
     const { g, x } = softmaxGraph();
     const el = panels(container(), g, [{ sliders: x }]);
-    expect(text(el.querySelector('h2'))).toBe('x，(5,)');
-    expect([...el.querySelectorAll('.vf-hrow b')].map(text)).toEqual(['x₁', 'x₂', 'x₃', 'x₄', 'x₅']);
+    expect(text(el.querySelector('h2'))).toBe('$\\mathbf{x}$，(5,)');
+    expect([...el.querySelectorAll('.vf-hrow b')].map(text)).toEqual([1, 2, 3, 4, 5].map((i) => `$\\mathbf{x}_{${i}}$`));
     const input = el.querySelector<HTMLInputElement>('input[type="range"]')!;
     expect([input.min, input.max, input.step]).toEqual(['-2.5', '2.5', '0.01']);
     expect(input.style.getPropertyValue('--vf-fill')).toBe('90.0%');
@@ -186,7 +187,7 @@ describe('tokens panel', () => {
     const { g, x, t, p } = softmaxGraph();
     const el = panels(container(), g, [{ tokens: t, sliders: x, min: -6, max: 6, columns: [p, { node: x, grad: true }] }]);
     expect(text(el.querySelector('h2'))).toBe('词表与目标 token');
-    expect([...el.querySelectorAll('th')].map(text)).toEqual(['目标', 'x', 'p', '∂ℓ/∂x']);
+    expect([...el.querySelectorAll('th')].map(text)).toEqual(['目标', '$\\mathbf{x}$', '$\\mathbf{p}$', '$\\partial\\ell/\\partial \\mathbf{x}$']);
     const rows = [...el.querySelectorAll('tbody tr')];
     expect(rows.map((r) => text(r.querySelector('.vf-tok-id')))).toEqual(['1', '2', '3', '4', '5']);
     expect(rows.map((r) => text(r.querySelector('.vf-tok')))).toEqual(['␣mat', '␣floor', '␣sofa', '␣dog', '␣sat']);
@@ -232,7 +233,7 @@ describe('matrix panel', () => {
     const t = g.label('t', [1], { tokens: ['a', ' b', 'c'] });
     g.nll_loss(g.log_softmax(g.sum(W, 0, { keepdim: true }), -1), t);
     const el = panels(container(), g, [{ matrix: W, highlight: t, note: '目标列 {{t+1}}' }]);
-    expect(text(el.querySelector('h2'))).toBe('W，(2, 3)');
+    expect(text(el.querySelector('h2'))).toBe('$\\mathbf{W}$，(2, 3)');
     const grid = el.querySelector<HTMLElement>('.vf-wmat')!;
     expect(grid.style.gridTemplateColumns).toBe('26px repeat(3, minmax(0, 1fr))');
     const headers = [...grid.querySelectorAll('.vf-h')].map(text);
@@ -375,7 +376,7 @@ describe('mountSteps', () => {
     const groups = [...el.querySelectorAll('.vf-grp')].map(text);
     expect(groups).toEqual(['前向', '反向']);
     const pills = [...el.querySelectorAll<HTMLButtonElement>('.vf-st')];
-    expect(pills.map(text)).toEqual(steps.list.map((s) => s.label));
+    expect(pills.map((p, i) => (steps.list[i].label.includes('$') ? p.querySelector('.katex') !== null : text(p) === steps.list[i].label))).toEqual(steps.list.map(() => true));
     expect(pills[0].getAttribute('aria-current')).toBe('step');
     const prev = el.querySelector<HTMLButtonElement>('[aria-label="上一步"]')!;
     const next = el.querySelector<HTMLButtonElement>('[aria-label="下一步"]')!;

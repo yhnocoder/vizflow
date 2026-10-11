@@ -77,10 +77,13 @@ function resolveShape(spec: readonly (number | string)[], table: Readonly<Record
 function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Readonly<Record<string, number>>): Record<string, unknown> {
   const resolved = { ...attrs };
   for (const key of def.sizes ?? []) {
+    const lookup = (value: unknown) => {
+      if (typeof value !== 'string') return value;
+      if (table[value] === undefined) throw new Error(`${def.name}: dimension '${value}' is not defined`);
+      return table[value];
+    };
     const value = attrs[key];
-    if (typeof value !== 'string') continue;
-    if (table[value] === undefined) throw new Error(`${def.name}: dimension '${value}' is not defined`);
-    resolved[key] = table[value];
+    resolved[key] = Array.isArray(value) ? value.map(lookup) : lookup(value);
   }
   return resolved;
 }
@@ -230,6 +233,10 @@ class GraphImpl {
     const positional = [...args];
     const last = positional[positional.length - 1];
     const options: Record<string, unknown> = isPlainObject(last) ? (positional.pop() as Record<string, unknown>) : {};
+    const restAt = def.rest === undefined ? -1 : def.args.indexOf(def.rest);
+    if (restAt >= 0 && positional.length > restAt && !(positional.length === restAt + 1 && Array.isArray(positional[restAt]))) {
+      positional.splice(restAt, positional.length - restAt, positional.slice(restAt));
+    }
     if (positional.length > def.args.length) {
       throw new Error(`${def.name}: takes at most ${def.args.length} positional arguments, got ${positional.length}`);
     }

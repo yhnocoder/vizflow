@@ -46,7 +46,7 @@ it('loads a page description from src and mounts it with a header', async () => 
   expect(el.querySelector(':scope > .vf-header .vf-title')?.textContent).toBe('一个小页面');
   expect(el.querySelector(':scope > .vf-header .vf-lede .katex')).not.toBeNull();
   expect(el.querySelector(':scope > .vf-split > .vf-side')).not.toBeNull();
-  expect(el.createdSteps?.list.map((s) => s.title)).toEqual(['总览', 'y', 'l', '∂ℓ/∂y']);
+  expect(el.createdSteps?.list.map((s) => s.title)).toEqual(['总览', 'y', 'l', '$\\partial\\ell/\\partial \\mathbf{y}$']);
 });
 
 it('shows the compile error in the element and reports it', async () => {

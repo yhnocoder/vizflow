@@ -1,0 +1,151 @@
+module: GQA
+subtitle: grouped-query attention
+inputs:
+  q:    { shape: [T, H, dh] }
+  k:    { shape: [T, Hkv, dh] }
+  v:    { shape: [T, Hkv, dh] }
+  mask: { shape: [T, T] }
+outputs: [o]
+fold:
+  label: '$\of{o}$'
+  title: 注意力（已折叠）
+  text: |
+    \of{H} 个 query head 共用 \of{Hkv} 个 kv head，每个 head 各算一次因果注意力，再并排拼回去。
+    $$\of{o}={{ o | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{q},\ \partial\of{k},\ \partial\of{v}$'
+    title: 穿过注意力（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{q}}={{ q.grad | matrix:3 }}$$
+body:
+  - for: h
+    in: 1..H
+    body:
+      - kp[h]: { op: 'select(k, 1, (h-1)//(H//Hkv))', tex: '\of{k}^{(\of{h})}' }
+      - V[h]:  { op: 'select(v, 1, (h-1)//(H//Hkv))', tex: '\of{v}^{(\of{h})}' }
+      - kT[h]: { op: 'kp[h].T', tex: '\of{k}^{(\of{h})\top}' }
+      - S[h]:  { op: 'select_matmul(q, kT[h], h-1)', tex: 'S^{(\of{h})}' }
+      - Ss[h]: { op: 'S[h] * dh ** -0.5', tex: '\tilde{S}^{(\of{h})}' }
+      - Sm[h]: { op: 'Ss[h] + mask', tex: '\bar{S}^{(\of{h})}' }
+      - ex[h]: { op: 'exp(Sm[h])', tex: '\mathrm{ex}^{(\of{h})}' }
+      - Z[h]:  { op: 'sum(ex[h], -1, keepdim=true)', tex: 'Z^{(\of{h})}' }
+      - P[h]:  { op: 'ex[h] / Z[h]', tex: 'P^{(\of{h})}' }
+      - o[h]:  { op: 'P[h] @ V[h]', tex: '\mathbf{o}^{(\of{h})}' }
+  - o: 'cat(o[1..H], dim=1)'
+steps:
+  - id: krep
+    show: 'kp[1..H]'
+    label: '$\mathrm{repeat\_kv}(\mathbf{k})$'
+    title: repeat_kv：复制 k
+    text: |
+      \of{H} 个 query head 共用 \of{Hkv} 个 kv head。<code>repeat_kv</code> 把每个 kv head 的 k 复制 $n_\text{rep}=\of{H//Hkv}$ 份，每个 query head 拿到一份。复制的局部导数是 1。
+    backward:
+      label: '$\partial\of{k}$'
+      title: repeat_kv 反向：几份加回一份
+      text: |
+        复制给几个 query head 的 k，反向时梯度在这里相加，回到各自的 kv head。
+        $$\frac{\partial\ell}{\partial\of{k}}={{ k.grad | matrix:3 }}$$
+  - id: vrep
+    show: 'V[1..H]'
+    label: '$\mathrm{repeat\_kv}(\of{v})$'
+    title: repeat_kv：复制 v
+    text: v 也按同样的方式复制，每个 query head 拿到一份。
+    backward:
+      label: '$\partial\of{v}$'
+      title: v 的几份加回一份
+      text: |
+        $$\frac{\partial\ell}{\partial\of{v}}={{ v.grad | matrix:3 }}$$
+  - id: kT
+    show: 'kT[1..H]'
+    label: '$\mathbf{k}^{\top}$'
+    title: 转置
+    text: 把 $d_h$ 换到行、位置换到列。转置只是换轴，局部导数是 1。
+    backward:
+      label: '$\partial\of{k}^{(h)}$'
+      title: 转置回去
+      text: 把梯度转置回 $T\times d_h$。
+  - id: S
+    show: 'S[1..H]'
+    label: '$\mathbf{q}\mathbf{k}^{\top}$'
+    title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
+    text: |
+      每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。
+      $$S^{(1)}={{ S[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{q},\ \partial\mathbf{k}^{\top}$'
+      title: 传到 $\of{q}$ 和 $\mathbf{k}^{\top}$
+      text: |
+        $$\frac{\partial\ell}{\partial\of{q}}={{ q.grad | matrix:3 }}$$
+  - id: Ssc
+    show: 'Ss[1..H]'
+    label: '$\div\sqrt{d_h}$'
+    title: 缩放
+    text: 乘上 $1/\sqrt{d_h}$。点积的方差随 $d_h$ 增长，缩放让 softmax 的输入不至于太大。
+    backward:
+      label: '$\partial S$'
+      title: 穿过缩放
+      text: 局部导数是 $1/\sqrt{d_h}$。
+  - id: mask
+    show: 'Sm[1..H]'
+    label: '$+\,\mathrm{mask}$'
+    title: causal mask
+    text: |
+      加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。
+      $$\of{mask}={{ mask | matrix:2 }}$$
+    backward:
+      label: '$\partial\tilde{S}$'
+      title: 穿过 mask
+      text: 加常量，梯度原样传下去。
+  - id: exp
+    show: 'ex[1..H]'
+    label: '$\exp$'
+    title: softmax：取 exp
+    text: softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。
+    backward:
+      label: '$\partial\bar{S}$'
+      title: 穿过 exp
+      text: exp 的导数是它自己。
+  - id: sum
+    show: 'Z[1..H]'
+    label: '$Z$'
+    title: 按行求和
+    text: |
+      每个 head、每一行各有一个 $Z$。
+      $$Z^{(1)}={{ Z[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial\,\mathrm{ex}$'
+      title: 传回 ex
+      text: 求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
+  - id: div
+    show: 'P[1..H]'
+    label: '$P$'
+    title: 注意力权重
+    text: |
+      每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。
+      $$P^{(1)}={{ P[1] | matrix:3 }}$$
+    backward:
+      label: '$\partial\,\mathrm{ex},\ \partial Z$'
+      title: softmax 反向：穿过相除
+      text: $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$；同时 $Z_t$ 连到这一行每个 $P$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$。
+  - id: pv
+    show: 'o[1..H]'
+    label: '$P\of{v}$'
+    title: P v
+    text: |
+      每个 head 用注意力权重对 $\of{v}$ 的各行做加权平均。
+      $$\mathbf{o}^{(1)}=P^{(1)}\of{v}^{(1)}={{ o[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial P,\ \partial\of{v}^{(h)}$'
+      title: 传到 P 和 v
+      text: $\partial\ell/\partial P=\frac{\partial\ell}{\partial\mathbf{o}}\mathbf{v}^{\top}$，$\partial\ell/\partial\mathbf{v}=P^{\top}\frac{\partial\ell}{\partial\mathbf{o}}$。
+  - id: concat
+    show: o
+    label: 拼接
+    title: 拼回 $T\times\of{H*dh}$
+    text: |
+      把 \of{H} 个 head 的输出并排拼回去，对应 <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code>。只是换轴和重排，局部导数是 1。
+      $$\of{o}={{ o | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o}^{(h)}$'
+      title: 拆回各个 head
+      text: 拼接的反向是把梯度按列切回去。

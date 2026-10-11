@@ -1,6 +1,7 @@
 import type { Node } from '../autograd';
 import { explainOf } from '../explain';
 import { formatShape, indexOf } from '../tensor';
+import type { LevelLayout, LevelPlan } from './levels';
 
 export type Vec3 = [number, number, number];
 
@@ -72,12 +73,11 @@ export const FOOTPRINTS = {
   bar: [0.62, 0.62],
   a: [0.6, 0.6],
   tile: [0.58, 0.4],
-  disc: [1.1, 1.1],
-  box: [1.2, 0.8],
+  disc: [0.54, 0.54],
+  box: [1.1, 0.8],
 } as const;
-export const DISC_RADIUS = 0.55;
-export const BATCH_DISC_RADIUS = 0.32;
-export const DISC_HEIGHT = 0.3;
+export const DISC_RADIUS = 0.27;
+export const DISC_HEIGHT = 0.17;
 export const BOX_HEIGHT = 0.5;
 
 export type BlockShape = 'bar' | 'tile' | 'disc' | 'box';
@@ -130,6 +130,12 @@ export interface Block {
   frameRows: { z: number; y: number }[];
   scales: Scales;
   extent: Vec3[];
+  key?: string;
+  copyOf?: Node;
+  hidden?: boolean;
+  quiet?: boolean;
+  untitled?: boolean;
+  table?: { label: Node; half: [number, number] };
 }
 
 export interface BoardGeometry {
@@ -139,11 +145,13 @@ export interface BoardGeometry {
   b: Block;
   out: Block;
   y: number;
+  previous?: Block;
 }
 
 export interface ResolvedLayout {
   blocks: Block[];
   boards: BoardGeometry[];
+  levels?: LevelLayout;
 }
 
 export interface LayoutContext {
@@ -151,22 +159,26 @@ export interface LayoutContext {
   aligned: Map<Node, Node>;
   targetOf(label: Node, row: number): number;
   focus: number;
+  folded?: (id: string) => boolean;
+  plan?: LevelPlan;
 }
 
 export function rowsCols(shape: readonly number[]): [number, number] {
   if (shape.length === 0) return [1, 1];
   if (shape.length === 1) return [1, shape[0]];
+  if (shape.length === 3) return [shape[0], shape[1] * shape[2]];
   return [shape[0], shape[1]];
 }
 
-function rowCol(shape: readonly number[], index: number[]): [number, number] {
+export function rowCol(shape: readonly number[], index: readonly number[]): [number, number] {
   if (shape.length === 0) return [0, 0];
   if (shape.length === 1) return [0, index[0]];
+  if (shape.length === 3) return [index[0], index[1] * shape[2] + index[2]];
   return [index[0], index[1]];
 }
 
 function checkDims(n: Node): void {
-  if (n.shape.length > 2) throw new Error(`scene3d: node '${n.name}' with shape ${formatShape(n.shape)} has more than two dimensions`);
+  if (n.shape.length > 3) throw new Error(`scene3d: node '${n.name}' with shape ${formatShape(n.shape)} has more than three dimensions`);
 }
 
 function elementsOf(n: Node, position: (row: number, col: number) => Vec3): Element[] {
@@ -509,6 +521,11 @@ export function resolveLayout(items: LayoutItem[], ctx: LayoutContext): Resolved
   const placed = new Map<Node, Block>();
   const blocks: Block[] = [];
   const boards: BoardGeometry[] = [];
+  const levels = ctx.plan?.resolve({ folded: ctx.folded ?? (() => false), aligned: ctx.aligned });
+  if (levels !== undefined) {
+    blocks.push(...levels.blocks);
+    boards.push(...levels.boards);
+  }
   for (const item of items) {
     if (item.template === 'board') {
       const geometry = layoutBoard(item, ctx, placed);
@@ -525,10 +542,9 @@ export function resolveLayout(items: LayoutItem[], ctx: LayoutContext): Resolved
       blocks.push(block);
     }
   }
-  return { blocks: blocks.filter((block) => ctx.visible.includes(block.node)), boards };
+  return { blocks: blocks.filter((block) => ctx.visible.includes(block.node)), boards, levels };
 }
 
 export function elementAt(block: Block, index: readonly number[]): Element {
-  const [row, col] = rowCol(block.node.shape, [...index]);
-  return block.elements.find((e) => e.row === row && e.col === col)!;
+  return block.elements.find((e) => e.index.length === index.length && e.index.every((v, d) => v === index[d]))!;
 }

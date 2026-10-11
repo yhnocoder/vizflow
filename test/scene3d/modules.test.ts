@@ -3,17 +3,19 @@ import { graph } from '../../src/core';
 import '../../src/explain';
 import { classAlignment, resolveLayout, stack, targetColumn } from '../../src/scene3d/layout';
 import {
-  BRACE_RADIUS,
+  BRACE_LABEL_GAP,
+  BRACE_WIDTH,
   MODULE_GAP,
   MODULE_PAD,
   MODULE_STEP,
   blockSpan,
+  braceOffset,
   bracePoints,
   braceTip,
   checkModules,
   layoutBraces,
 } from '../../src/scene3d/modules';
-import { HEIGHT_CAP } from '../../src/scene3d/scales';
+import { VECTOR_CAP } from '../../src/scene3d/scales';
 
 function nodes(count: number) {
   const g = graph();
@@ -31,9 +33,9 @@ describe('blockSpan', () => {
     const { blocks } = resolveLayout([stack(x, s, { at: [0, 2, 0] })], ctx);
     const bar = blockSpan(blocks[0]);
     expect(bar.bottom).toBeCloseTo(2);
-    expect(bar.top).toBeCloseTo(2 + HEIGHT_CAP);
+    expect(bar.top).toBeCloseTo(2 + VECTOR_CAP);
     const disc = blockSpan(blocks[1]);
-    expect(disc.top - disc.bottom).toBeCloseTo(0.3);
+    expect(disc.top - disc.bottom).toBeCloseTo(0.17);
   });
 });
 
@@ -41,8 +43,8 @@ describe('layoutBraces', () => {
   it('covers the y range of the placed nodes with the padding', () => {
     const [a, b, c] = nodes(3);
     const spans = [
-      { node: a, bottom: 0, top: 2, z: -1 },
-      { node: b, bottom: 5, top: 7, z: -3 },
+      { node: a, bottom: 0, top: 2, x: 0, z: -1 },
+      { node: b, bottom: 5, top: 7, x: 0, z: -3 },
     ];
     const [brace] = layoutBraces([{ title: 'M', nodes: [a, b, c] }], spans, bounds);
     expect(brace.y0).toBeCloseTo(-MODULE_PAD);
@@ -55,13 +57,13 @@ describe('layoutBraces', () => {
 
   it('puts right braces outside the right edge', () => {
     const [a] = nodes(1);
-    const [brace] = layoutBraces([{ title: 'M', nodes: [a], side: 'right' }], [{ node: a, bottom: 0, top: 1, z: -1 }], bounds);
+    const [brace] = layoutBraces([{ title: 'M', nodes: [a], side: 'right' }], [{ node: a, bottom: 0, top: 1, x: 0, z: -1 }], bounds);
     expect(brace.x).toBeCloseTo(bounds.xMax + MODULE_GAP);
   });
 
   it('moves an outer module one step further out than the modules it contains', () => {
     const [a, b, c] = nodes(3);
-    const spans = [a, b, c].map((node, i) => ({ node, bottom: i * 3, top: i * 3 + 2, z: -1 }));
+    const spans = [a, b, c].map((node, i) => ({ node, bottom: i * 3, top: i * 3 + 2, x: 0, z: -1 }));
     const braces = layoutBraces(
       [
         { title: 'outer', nodes: [a, b, c] },
@@ -79,10 +81,10 @@ describe('layoutBraces', () => {
   it('separates overlapping modules on the same side and keeps disjoint ones in one column', () => {
     const [a, b, c, d] = nodes(4);
     const spans = [
-      { node: a, bottom: 0, top: 2, z: -1 },
-      { node: b, bottom: 1, top: 3, z: -1 },
-      { node: c, bottom: 10, top: 12, z: -1 },
-      { node: d, bottom: 1, top: 3, z: -1 },
+      { node: a, bottom: 0, top: 2, x: 0, z: -1 },
+      { node: b, bottom: 1, top: 3, x: 0, z: -1 },
+      { node: c, bottom: 10, top: 12, x: 0, z: -1 },
+      { node: d, bottom: 1, top: 3, x: 0, z: -1 },
     ];
     const braces = layoutBraces(
       [
@@ -100,8 +102,8 @@ describe('layoutBraces', () => {
   it('treats equal node sets as overlapping modules, not nested ones', () => {
     const [a, b] = nodes(2);
     const spans = [
-      { node: a, bottom: 0, top: 2, z: -1 },
-      { node: b, bottom: 3, top: 5, z: -1 },
+      { node: a, bottom: 0, top: 2, x: 0, z: -1 },
+      { node: b, bottom: 3, top: 5, x: 0, z: -1 },
     ];
     const braces = layoutBraces(
       [
@@ -116,33 +118,33 @@ describe('layoutBraces', () => {
 });
 
 describe('brace shape', () => {
-  it('bends the ends toward the graph and points the tip outward', () => {
+  it('starts and ends at the hooks and points the tip outward', () => {
     const [a] = nodes(1);
     for (const side of ['left', 'right'] as const) {
-      const [brace] = layoutBraces([{ title: 'M', nodes: [a], side }], [{ node: a, bottom: 0, top: 4, z: -1 }], bounds);
-      const toward = side === 'left' ? 1 : -1;
+      const [brace] = layoutBraces([{ title: 'M', nodes: [a], side }], [{ node: a, bottom: 0, top: 4, x: 0, z: -1 }], bounds);
+      const outward = side === 'left' ? -1 : 1;
       const points = bracePoints(brace);
-      const first = points.slice(0, 3);
-      const last = points.slice(-3);
-      expect(first[0]).toBeCloseTo(brace.x + toward * BRACE_RADIUS);
-      expect(first[1]).toBeCloseTo(brace.y1);
-      expect(last[0]).toBeCloseTo(brace.x + toward * BRACE_RADIUS);
-      expect(last[1]).toBeCloseTo(brace.y0);
+      expect(points.slice(0, 2)).toEqual([brace.x, brace.y0]);
+      expect(points[points.length - 3]).toBeCloseTo(brace.x);
+      expect(points[points.length - 2]).toBeCloseTo(brace.y1);
+      const xs = points.filter((_, i) => i % 3 === 0);
+      expect(Math.max(...xs.map((x) => outward * (x - brace.x)))).toBeCloseTo(BRACE_WIDTH);
       const tip = braceTip(brace);
-      expect(tip[0]).toBeCloseTo(brace.x - toward * BRACE_RADIUS);
+      expect(tip[0]).toBeCloseTo(brace.x + outward * BRACE_LABEL_GAP);
       expect(tip[1]).toBeCloseTo((brace.y0 + brace.y1) / 2);
-      for (let i = 0; i < points.length; i += 3) {
-        expect(points[i + 2]).toBe(brace.z);
-        expect(toward * (points[i] - tip[0])).toBeGreaterThanOrEqual(-1e-9);
-      }
+      for (let i = 0; i < points.length; i += 3) expect(points[i + 2]).toBe(brace.z);
     }
   });
 
-  it('shrinks the curves for short modules', () => {
+  it('moves the brace so it lines up with its blocks on screen', () => {
     const [a] = nodes(1);
-    const [brace] = layoutBraces([{ title: 'M', nodes: [a] }], [{ node: a, bottom: 0, top: 0, z: -1 }], bounds);
-    const tip = braceTip(brace);
-    expect(brace.x - tip[0]).toBeCloseTo((brace.y1 - brace.y0) / 4);
+    const [brace] = layoutBraces([{ title: 'M', nodes: [a] }], [{ node: a, bottom: 0, top: 4, x: 0, z: -1 }], bounds);
+    const length = Math.hypot(0.3, 0.5, 0.8);
+    const view: [number, number, number] = [0.3 / length, 0.5 / length, 0.8 / length];
+    const offset = braceOffset(brace, view);
+    const up = [-view[0] * view[1], 1 - view[1] * view[1], -view[2] * view[1]];
+    const screenY = (p: number[]) => p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
+    expect(screenY([brace.x, 2 + offset, brace.z])).toBeCloseTo(screenY([brace.cx, 2, brace.cz]));
   });
 });
 

@@ -7,6 +7,10 @@ export function defaultDigits(v: number): number {
 }
 
 export function formatNumber(v: number, options: { digits?: number; tex?: boolean } = {}): string {
+  if (v === Infinity || v === -Infinity) {
+    const sign = v < 0 ? (options.tex ? '-' : '−') : '';
+    return `${sign}${options.tex ? '\\infty' : '∞'}`;
+  }
   let s = v.toFixed(options.digits ?? defaultDigits(v));
   if (/^-0\.?0*$/.test(s)) s = s.slice(1);
   return options.tex ? s : s.replace('-', '−');
