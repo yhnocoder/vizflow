@@ -1,0 +1,80 @@
+module: Qwen3_5MoeSparseMoeBlock
+subtitle: Qwen3_5MoeSparseMoeBlock
+import:
+  SparseMoE: vizflow/nn/moe
+  GLU: vizflow/nn/glu
+params:
+  E:  { type: dim }
+  K:  { type: dim }
+  mf: { type: dim }
+  sf: { type: dim }
+inputs:
+  x: { shape: [T, d] }
+outputs: [out]
+weights:
+  Wsg: { shape: [1, d], tex: 'W_{sg}' }
+fold:
+  label: '$\of{out}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    路由、\of{E} 个路由专家、共享专家和它的门都收进了盒子，对应 HF 里 <code>self.mlp(hidden_states)</code>。每个位置只经过 $K=\of{K}$ 个路由专家和 1 个共享专家，位置之间互不影响。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 mlp（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - routed:
+      use: SparseMoE
+      inline: true
+      params: { E: E, K: K, mf: mf }
+      inputs: { x: x }
+      outputs: { out: yr }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+  - shared_expert:
+      use: GLU
+      subtitle: Qwen3_5MoeMLP，共享专家
+      suffix: s
+      folded: true
+      params: { act: silu, f: sf, name: shared_expert }
+      inputs: { x: x }
+      outputs: { down: ys }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+  - gl: { op: x @ Wsg.T, tex: '\mathbf{g}^{\mathrm{s}}' }
+  - gs: { op: sigmoid(gl), tex: '\sigma(\mathbf{g}^{\mathrm{s}})' }
+  - shared: { op: gs * ys, tex: '\sigma(\mathbf{g}^{\mathrm{s}})\odot\mathbf{y}^{\mathrm{s}}' }
+  - out: { op: yr + shared, tex: '\mathbf{moe}' }
+steps:
+  - id: shared_gate
+    show: [Wsg.T, gl, gs]
+    label: '$\sigma(\of{x}W_{sg}^{\top})$'
+    title: 共享专家的门
+    text: |
+      <code>shared_expert_gate</code> 是一个输出只有 1 维的 Linear，每个位置得到一个分数，经过 sigmoid 变成 0 到 1 之间的系数，决定这个位置用多少共享专家的输出。
+      $$\sigma(\of{x}W_{sg}^{\top})={{ gs | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{sg},\ \partial\of{x}$'
+      title: 传到共享专家的门
+      text: |
+        $$\frac{\partial\ell}{\partial\of{gl}}={{ gl.grad | matrix:3 }}$$
+  - id: shared_scale
+    show: shared
+    label: '$\of{shared}$'
+    title: 共享专家乘上门
+    text: |
+      共享专家每个位置都要经过，它的输出按位置乘上门的系数。路由专家的权重在 top-k 里归一化，共享专家的系数单独由 sigmoid 给出，两者互不影响。
+      $$\of{shared}={{ shared | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gs},\ \partial\of{ys}$'
+      title: 梯度分给门和共享专家
+  - id: add
+    show: out
+    label: '$\of{out}=\of{yr}+\of{shared}$'
+    title: 加上共享专家
+    text: |
+      路由专家的加权和加上带门的共享专家，得到 MoE 的输出。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{yr},\ \partial\of{shared}$'
+      title: 梯度分给路由专家和共享专家

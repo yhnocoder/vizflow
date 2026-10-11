@@ -1,0 +1,358 @@
+title: Qwen3.5 MoE 最后两层：从 token 到损失
+lede: Qwen3.5 MoE 的 decoder 层和 Qwen3.5 dense 一样有两种：每 4 层里前 3 层用 Gated DeltaNet 做线性注意力，第 4 层用带输出门的 softmax 注意力；两种层的 MLP 都换成稀疏 MoE，加一个带门的共享专家。这一页从 token id 开始，经过占位的前 $N-2$ 层、第 $N-1$ 层（linear_attention）、第 $N$ 层（full_attention）、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。序列长度 $T=3$，词表只画 5 个 token。点两侧的大括号可以折叠或展开一个模块。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
+  GLU:                 vizflow/nn/glu
+  GatedDeltaNet:       ./qwen3_5/gated-deltanet.yaml
+  GatedAttention:      ./qwen3_5/attention.yaml
+  Qwen3_5MoE:          ./qwen3_5_moe/moe.yaml
+dims: { T: 3, d: 4, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4, Ne: 4, Nk: 2, mf: 2, sf: 2 }
+dtype: bf16
+real: { name: Qwen3.5-397B-A17B, d: 4096, V: 248320, H: 32, Hkv: 2, dh: 256, rd: 64, Hk: 16, Hv: 64, dk: 128, dv: 128, K: 4, Ne: 512, Nk: 10, mf: 1024, sf: 1024 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
+inputs: {}
+weights:
+  E: { shape: [V, d] }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失。Qwen3.5-397B-A17B 有 $N=60$ 层，layer_types 按「linear、linear、linear、full」循环 15 次，最后两层正好是一个 linear_attention 层和一个 full_attention 层，这里把它们完整展开，前 $N-2$ 层收成一个占位盒子。两种层的外壳相同：以 0 为中心的 RMSNorm、token mixer、残差、RMSNorm、MoE、残差，只有 token mixer 不同。MoE 里每个位置从 \of{Ne} 个路由专家里选 $\of{Nk}$ 个，再加上一个乘了 sigmoid 门的共享专家。输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span>，标签右移一位，是 <span class="ctx">{{y[0]:token}}</span> <span class="ctx">{{y[1]:token}}</span> <span class="ctx">{{y[2]:token}}</span>。尺寸用 $d=4$、$V=5$；softmax 注意力有 2 个 query head、1 个 kv head，$d_h=8$；Gated DeltaNet 有 1 个 key head、2 个 value head，$d_k=d_v=2$；MoE 有 4 个路由专家，路由专家和共享专家的中间维度都是 2。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 3 个位置。MoE 里每个位置的梯度只进入选中它的那几个路由专家和共享专家。
+      $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id，其余都是参数和常量。三处 RMSNorm 和 q_norm、k_norm 的权重以 0 为中心，乘的是 $1+\boldsymbol{\gamma}$。Gated DeltaNet 除了几个投影，还有短卷积的核 $W_{\mathrm{conv}}$、每个 value head 一个的 $\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$，以及门控 RMSNorm 的权重。每个 MoE 有 router 的 $W_r$、每个路由专家和共享专家各三块权重，以及共享专家的门 $W_{sg}$。HF 把所有路由专家的 gate_proj 和 up_proj 存在一个张量 <code>experts.gate_up_proj</code> 里，形状是 $(E, 2m_f, d)$，down_proj 存在 <code>experts.down_proj</code> 里；图里把它们拆成每个专家的 $W_g$、$W_u$、$W_d$，数值相同。RoPE 的 cos/sin 表、causal mask 和状态的初值 $S_0=0$ 由形状决定，不需要梯度。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
+
+modules:
+  LinearDecoderLayer:
+    subtitle: Qwen3_5MoeDecoderLayer
+    params: { Hk: { type: dim }, Hv: { type: dim }, dk: { type: dim }, dv: { type: dim }, K: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: linear_attention 层（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，对应 <code>model.layers[-2](hidden_states)</code>。
+        $$\of{x_out}={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 linear_attention 层（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: ZeroCenteredRMSNorm
+          subtitle: Qwen3_5MoeRMSNorm
+          suffix: '1'
+          params: { intro: 'token mixer 之前先做一次 RMSNorm，也就是 input_layernorm。' }
+          inputs: { x: x }
+          outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{1}' }
+          folded: true
+      - linear_attn:
+          use: GatedDeltaNet
+          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K }
+          inputs: { x: n1 }
+          outputs: { out: att }
+          tex: { out: '\mathbf{att}_{1}' }
+      - a: { op: x + att, tex: '\mathbf{a}_{1}' }
+      - post_attention_layernorm:
+          use: ZeroCenteredRMSNorm
+          subtitle: Qwen3_5MoeRMSNorm
+          suffix: '2'
+          inputs: { x: a }
+          outputs: { out: n }
+          tex: { out: '\mathbf{n}_{2}' }
+          folded: true
+      - mlp:
+          use: Qwen3_5MoE
+          params: { E: Ne, K: Nk, mf: mf, sf: sf }
+          inputs: { x: n }
+          outputs: { out: moe }
+          tex: { out: '\mathbf{moe}_{1}' }
+      - x_out: { op: a + moe, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          linear_attn 的输出加回 residual stream。
+          $$\of{a}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 linear_attn 的残差
+          text: |
+            梯度复制成两份，一份进入 linear_attn，一份沿残差直接交给 $\of{x}$。
+            $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{moe}$' }
+        label: '$\of{x_out}=\of{a}+\of{moe}$'
+        title: 残差相加
+        text: |
+          MoE 的输出加回 residual stream，得到这一层的输出，它是下一层（full_attention）的输入。
+          $$\of{x_out}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{moe}$'
+          title: 穿过 MoE 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+  FullDecoderLayer:
+    subtitle: Qwen3_5MoeDecoderLayer
+    params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, rd: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim }, theta: { type: float, default: 1e7 } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    fold:
+      label: '$\of{x_out}=\mathrm{layer}(\of{x})$'
+      title: full_attention 层（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，对应 <code>model.layers[-1](hidden_states)</code>。
+        $$\of{x_out}={{ x_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{x}$'
+        title: 穿过 full_attention 层（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+    body:
+      - input_layernorm:
+          use: ZeroCenteredRMSNorm
+          subtitle: Qwen3_5MoeRMSNorm
+          suffix: '3'
+          inputs: { x: x }
+          outputs: { out: n1 }
+          tex: { out: '\mathbf{n}_{3}' }
+          folded: true
+      - self_attn:
+          use: GatedAttention
+          params: { H: H, Hkv: Hkv, dh: dh, rd: rd, theta: theta }
+          inputs: { x: n1 }
+          outputs: { att: att }
+          tex: { att: '\mathbf{att}_{2}' }
+      - a: { op: x + att, tex: '\mathbf{a}_{2}' }
+      - post_attention_layernorm:
+          use: ZeroCenteredRMSNorm
+          subtitle: Qwen3_5MoeRMSNorm
+          suffix: '4'
+          inputs: { x: a }
+          outputs: { out: n }
+          tex: { out: '\mathbf{n}_{4}' }
+          folded: true
+      - mlp:
+          use: Qwen3_5MoE
+          params: { E: Ne, K: Nk, mf: mf, sf: sf }
+          inputs: { x: n }
+          outputs: { out: moe }
+          tex: { out: '\mathbf{moe}_{2}' }
+      - x_out: { op: a + moe, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{x}+\of{att}$' }
+        label: '$\of{a}=\of{x}+\of{att}$'
+        title: 残差相加
+        text: |
+          self_attn 的输出加回 residual stream。
+          $$\of{a}={{ a | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{x},\ \partial\of{att}$'
+          title: 穿过 self_attn 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{a}}={{ a.grad | matrix:3 }}$$
+      - id: res2
+        show: x_out
+        segment: 残差
+        brace: { title: 残差相加, subtitle: '$\of{a}+\of{moe}$' }
+        label: '$\of{x_out}=\of{a}+\of{moe}$'
+        title: 残差相加
+        text: |
+          $$\of{x_out}={{ x_out | matrix:2 }}$$
+        backward:
+          label: '$\partial\of{a},\ \partial\of{moe}$'
+          title: 穿过 MoE 的残差
+          text: |
+            $$\frac{\partial\ell}{\partial\of{x_out}}={{ x_out.grad | matrix:3 }}$$
+
+body:
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - layers:
+      title: $\cdots$ 第 1 到 $N-2$ 层
+      subtitle: Qwen3_5MoeDecoderLayer $\times$ ($N-2$)
+      fixed: true
+      fold:
+        label: '$\of{x0}$'
+        title: $\cdots$ 第 1 到 $N-2$ 层（占位）
+        text: |
+          真实模型在 embedding 和最后两层之间还有 $N-2=58$ 个 decoder 层，按「3 个 linear_attention、1 个 full_attention」交替。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，数值按恒等映射处理。这个盒子不能展开。
+          $$\of{x0}=\mathrm{layers}_{1..N-2}(\of{e})\;\approx\;\of{e}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{e}$'
+          title: 穿过占位的 $N-2$ 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{e}}={{ e.grad | matrix:3 }}$$
+      body:
+        - x0: { op: identity(e), tex: '\mathbf{x}_0' }
+  - linear_layer:
+      use: LinearDecoderLayer
+      title: Qwen3_5MoeDecoderLayer
+      subtitle: 第 $N-1$ 层，linear_attention
+      split: true
+      params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, Ne: Ne, Nk: Nk, mf: mf, sf: sf }
+      inputs: { x: x0 }
+      outputs: { x_out: x1 }
+      tex: { x_out: '\mathbf{x}_{1}' }
+  - full_layer:
+      use: FullDecoderLayer
+      title: Qwen3_5MoeDecoderLayer
+      subtitle: 第 $N$ 层，full_attention
+      split: true
+      params: { H: H, Hkv: Hkv, dh: dh, rd: rd, Ne: Ne, Nk: Nk, mf: mf, sf: sf }
+      inputs: { x: x1 }
+      outputs: { x_out: x }
+  - norm:
+      use: ZeroCenteredRMSNorm
+      title: model.norm
+      subtitle: Qwen3_5MoeRMSNorm
+      params:
+        name: final norm
+        intro: 从这里开始是 final norm（<code>model.norm</code>），在所有 decoder 层之后、lm_head 之前。
+        out_note: $\of{out}$ 是 lm_head 的输入。
+      inputs: { x: x }
+      outputs: { out: h }
+      folded: true
+  - z:    h @ W.T
+  - LSE:  { op: 'logsumexp(z, -1, keepdim=true)', dtype: fp32 }
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\ell_t' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。Qwen3.5-397B-A17B 的词表有 248320 个 token，hidden size 是 4096。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每个位置的 $\mathbf{h}_t$ 乘同一块 $W^{\top}$，得到下一个 token 的 logits。Qwen3.5-397B-A17B 的 lm_head 不和 embedding 共享权重。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
+  - id: lse
+    show: LSE
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{LSE}$'
+    title: log-sum-exp
+    text: |
+      $$\mathrm{LSE}_t=\log\sum_i e^{z_{t,i}}={{ LSE | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过 LSE
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+  - id: logp
+    show: logp
+    segment: log_softmax
+    brace: { title: log_softmax, subtitle: '$\mathbf{z}-\mathrm{LSE}$' }
+    label: '$\of{logp}$'
+    title: log_softmax
+    text: |
+      $$\log\mathbf{p}={{ logp | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{z},\ \partial\of{LSE}$'
+      title: 传到 logits 和 LSE
+  - id: nll
+    show: lt
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{lt}$'
+    title: nll_loss（逐位置）
+    text: |
+      每个位置按标签取出目标 token 的 log p，取负号。
+      $$\ell_t=-\log p_{t,y_t}:\quad \begin{pmatrix}{{lt[0]:3}}\\{{lt[1]:3}}\\{{lt[2]:3}}\end{pmatrix}$$
+    backward:
+      label: '$\partial\of{logp}$'
+      title: 穿过 nll
+  - id: mean
+    show: loss
+    segment: nll_loss
+    brace: { title: nll_loss, subtitle: "reduction='mean'" }
+    label: '$\of{loss}$'
+    title: 取平均
+    text: |
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$
+    backward:
+      label: '$\partial\of{lt}$'
+      title: 从损失出发
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - sequence: true
+    title: 序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']
+    note: 前三个是输入，后三个是标签。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    random: true
+    reset: true
+  - attention: 'full_layer.self_attn.eager_attention_forward.P[1..H]'
+    ids: ids
+    title: full_attention 层的注意力权重 P
+    note: 行是 query 的位置，列是 key 的位置。
+  - title: 对应的 PyTorch
+    code: |-
+      # transformers Qwen3_5Moe 的文本部分，layer_types[-2:] = linear, full
+      x0 = layers[:-2](model.embed_tokens(input_ids))   # 图里是占位盒子
+      lin, full = model.layers[-2], model.layers[-1]
+      a = x0 + lin.linear_attn(lin.input_layernorm(x0))  # Qwen3_5MoeGatedDeltaNet
+      x1 = a + lin.mlp(lin.post_attention_layernorm(a))   # Qwen3_5MoeSparseMoeBlock
+      a = x1 + full.self_attn(full.input_layernorm(x1))  # Qwen3_5MoeAttention
+      x = a + full.mlp(full.post_attention_layernorm(a))
+      logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
+      loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
+    note: Qwen3.5-397B-A17B：d = 4096，60 层，每 4 层一个 full_attention；softmax 注意力 32 个 query head、2 个 kv head，head_dim = 256，只有前 64 维做 RoPE，rope_theta = $10^7$；Gated DeltaNet 16 个 key head、64 个 value head，$d_k=d_v=128$，卷积核长 4；512 个路由专家，每个 token 选 10 个，moe_intermediate_size = shared_expert_intermediate_size = 1024；V = 248320。
+values:
+  linear_layer.input_layernorm.weight: [0.03, -0.04, 0.02, 0.05]
+  linear_layer.post_attention_layernorm.weight: [-0.02, 0.04, 0.01, -0.03]
+  full_layer.input_layernorm.weight: [0.04, 0.01, -0.03, 0.02]
+  full_layer.post_attention_layernorm.weight: [0.02, -0.05, 0.03, 0.01]
+  full_layer.self_attn.q_norm.weight: [0.02, -0.01, 0.03, 0, -0.02, 0.01, 0.04, -0.03]
+  full_layer.self_attn.k_norm.weight: [-0.01, 0.03, 0, 0.02, 0.01, -0.02, 0.03, 0.01]
+  norm.weight: [-0.04, 0.03, 0.04, 0.01]
+  linear_layer.linear_attn.A_log: [0.3, -0.9]
+  linear_layer.linear_attn.dt_bias: [0.2, -0.3]
