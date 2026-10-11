@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分页 KV cache 的一步 decode</title>
+<link rel="icon" href="data:,">
+<style>
+header { margin-bottom: 20px; max-width: 780px; }
+h1 { font-family: var(--serif); font-weight: 400; font-size: clamp(28px, 3.6vw, 40px); line-height: 1.15; margin: 0 0 8px; letter-spacing: -0.01em; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); max-width: 66ch; }
+.main-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+#stage { height: var(--vf-stage-height); min-height: 420px; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--surface); }
+.pool { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pool h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.pool .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.blk { border: 1px solid var(--line); border-radius: 8px; padding: 6px; display: flex; flex-direction: column; gap: 4px; font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.blk .slots { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.slot { height: 22px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10.5px; color: var(--surface); }
+.slot.free { background: color-mix(in srgb, var(--ink) 8%, var(--surface)); color: var(--muted); }
+.slot.shared { background: #7a5bbf; } .slot.r1 { background: #2c6fd1; } .slot.r2 { background: #d0731a; } .slot.other { background: color-mix(in srgb, var(--ink) 35%, var(--surface)); }
+.slot.on { outline: 2px solid var(--ink); outline-offset: 1px; }
+.slot.write { background: transparent; color: var(--ink); border: 1.5px dashed var(--ink); }
+.tables { font-family: var(--mono); font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+.pool .note { font-size: 12.5px; color: var(--muted); margin: 0; }
+@media (max-width: 980px) { #stage { min-height: 380px; } }
+</style>
+</head>
+<body>
+<main class="vf-page">
+  <header>
+    <h1>分页 KV cache 的一步 decode</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+  <div class="vf-split">
+    <div class="main-col">
+      <div id="stage"></div>
+      <div id="steps"></div>
+    </div>
+    <aside id="side">
+      <section class="pool" aria-label="块池">
+        <h3>物理块池（块大小 2，槽号 = 块号 × 2 + 偏移）</h3>
+        <div class="grid" id="pool"></div>
+        <div class="tables" id="tables"></div>
+        <div class="legend"><span><i style="background:#7a5bbf"></i>两个请求共享</span><span><i style="background:#2c6fd1"></i>请求 1</span><span><i style="background:#d0731a"></i>请求 2</span><span><i style="background:color-mix(in srgb, var(--ink) 35%, var(--surface))"></i>其他请求</span><span><i style="border:1.5px dashed var(--ink)"></i>本步写入</span></div>
+        <p class="note" id="poolNote"></p>
+      </section>
+    </aside>
+  </div>
+</main>
+<script type="module">
+import { graph } from '@yhnocoder/vizflow/core';
+import { createSteps } from '@yhnocoder/vizflow/steps';
+import { mountScene, board, stack } from '@yhnocoder/vizflow/scene3d';
+import { mountSteps } from '@yhnocoder/vizflow/ui';
+import { renderText } from '@yhnocoder/vizflow/formula';
+
+const BLOCK = 2;
+const TABLES = { 1: [3, 0, 6], 2: [3, 0, 5] };
+const OTHER = [2, 4];
+const LEN = 5;
+const slotsOf = (r) => [...Array(LEN).keys()].map((j) => TABLES[r][Math.floor(j / BLOCK)] * BLOCK + (j % BLOCK));
+const WRITE = { 1: TABLES[1][Math.floor(LEN / BLOCK)] * BLOCK + (LEN % BLOCK), 2: TABLES[2][Math.floor(LEN / BLOCK)] * BLOCK + (LEN % BLOCK) };
+
+const g = graph({ dims: { R: 2, L: LEN, S: 16, d: 4, dh: 4 }, real: { d: 4096, dh: 128, name: 'Qwen3-8B' }, dtype: 'bf16' });
+const x = g.input('x', ['R', 'd'], [[0.6, -0.4, 0.9, 0.2], [-0.3, 0.8, 0.1, -0.7]], { tex: '\\mathbf{x}', elem: 'x' });
+const Wq = g.param('Wq', ['dh', 'd'], [[0.5, -0.3, 0.8, 0.1], [-0.6, 0.4, 0.2, 0.7], [0.3, 0.9, -0.5, -0.2], [0.1, -0.7, 0.4, 0.6]], { tex: 'W_q', elem: 'W_q' });
+const Wk = g.param('Wk', ['dh', 'd'], [[0.7, 0.2, -0.4, 0.3], [-0.2, 0.6, 0.5, -0.8], [0.4, -0.5, 0.3, 0.6], [-0.3, 0.1, 0.9, 0.2]], { tex: 'W_k', elem: 'W_k' });
+const Wv = g.param('Wv', ['dh', 'd'], [[-0.4, 0.6, 0.2, 0.5], [0.8, -0.1, 0.3, -0.6], [0.2, 0.4, -0.7, 0.1], [0.5, 0.3, 0.6, -0.4]], { tex: 'W_v', elem: 'W_v' });
+const Kp = g.input('K pool', ['S', 'dh'], [
+  [-0.1,  0.1,  0.8, -0.1],
+  [ 0.0,  0.2, -0.6,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.3,  0.6, -0.8, -0.4],
+  [-0.8,  0.6,  0.4, -0.9],
+  [ 1.0,  0.9,  0.3,  0.2],
+  [-0.7, -1.0,  0.1, -0.9],
+  [-0.6, -0.5, -0.9, -0.1],
+  [-0.1,  0.7,  0.0,  0.3],
+  [-0.0,  0.3, -0.1, -0.4],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 1.0,  1.0,  0.7,  0.4],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0]
+], { tex: '\\mathcal{K}', elem: '\\mathcal{K}' });
+const Vp = g.input('V pool', ['S', 'dh'], [
+  [-0.4, -0.5, -0.4, -0.9],
+  [ 0.5, -0.2,  0.7, -0.2],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.9,  0.7, -1.0, -0.6],
+  [ 0.8, -0.1,  1.0, -0.2],
+  [-0.9,  0.3,  0.6, -0.5],
+  [-0.8, -0.3,  0.9,  0.5],
+  [-0.8, -0.5, -0.8, -0.9],
+  [ 0.6, -0.6,  0.1, -0.1],
+  [-0.6,  0.5, -0.7,  0.3],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [-0.8, -0.2, -0.6, -0.5],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0],
+  [ 0.0,  0.0,  0.0,  0.0]
+], { tex: '\\mathcal{V}', elem: '\\mathcal{V}' });
+const slots = g.label('slots', [...slotsOf(1), ...slotsOf(2)], { classes: 16, tex: '\\mathrm{slots}' });
+
+const q = g.matmul(x, Wq.T, { name: 'q', tex: '\\mathbf{q}', elem: 'q' });
+const kn = g.matmul(x, Wk.T, { name: 'k new', tex: '\\mathbf{k}_{\\mathrm{new}}', elem: 'k^{\\mathrm{new}}' });
+const vn = g.matmul(x, Wv.T, { name: 'v new', tex: '\\mathbf{v}_{\\mathrm{new}}', elem: 'v^{\\mathrm{new}}' });
+const Kh = g.embedding(slots, Kp, { name: 'K past', tex: 'K_{\\mathrm{past}}', elem: 'K^{\\mathrm{past}}' });
+const Vh = g.embedding(slots, Vp, { name: 'V past', tex: 'V_{\\mathrm{past}}', elem: 'V^{\\mathrm{past}}' });
+const req = [1, 2].map((r) => {
+  const sup = `^{(${r})}`;
+  const Khr = g.narrow(Kh, 0, (r - 1) * LEN, 'L', { name: `K past ${r}`, tex: `K${sup}_{\\mathrm{past}}`, elem: `K${sup}` });
+  const Vhr = g.narrow(Vh, 0, (r - 1) * LEN, 'L', { name: `V past ${r}`, tex: `V${sup}_{\\mathrm{past}}`, elem: `V${sup}` });
+  const kr = g.narrow(kn, 0, r - 1, 1, { name: `k new ${r}`, tex: `\\mathbf{k}${sup}_{\\mathrm{new}}`, elem: `k${sup}` });
+  const vr = g.narrow(vn, 0, r - 1, 1, { name: `v new ${r}`, tex: `\\mathbf{v}${sup}_{\\mathrm{new}}`, elem: `v${sup}` });
+  const K = g.cat([Khr, kr], 0, { name: `K${r}`, tex: `K${sup}`, elem: `K${sup}` });
+  const V = g.cat([Vhr, vr], 0, { name: `V${r}`, tex: `V${sup}`, elem: `V${sup}` });
+  const qr = g.narrow(q, 0, r - 1, 1, { name: `q${r}`, tex: `\\mathbf{q}${sup}`, elem: `q${sup}` });
+  const S0 = g.matmul(qr, K.T, { name: `qK${r}`, tex: `\\mathbf{q}${sup}K${sup}^{\\top}`, elem: `(qK^{\\top})${sup}` });
+  const S = g.mul(S0, 0.5, { name: `s${r}`, tex: `s${sup}`, elem: `s${sup}` });
+  const P = g.softmax(S, -1, { name: `p${r}`, tex: `p${sup}`, elem: `p${sup}` });
+  const o = g.matmul(P, V, { name: `o${r}`, tex: `\\mathbf{o}${sup}`, elem: `o${sup}` });
+  return { Khr, Vhr, kr, vr, K, V, qr, S0, S, P, o };
+});
+const o = g.cat(req.map((r) => r.o), 0, { name: 'o', tex: '\\mathbf{o}', elem: 'o' });
+const all = (k) => req.map((r) => r[k]);
+const mat = (name, rows, cols, digits) => `\\begin{pmatrix}${[...Array(rows).keys()].map((i) => [...Array(cols).keys()].map((j) => `{{${name}[${i},${j}]:${digits}}}`).join('&')).join('\\\\')}\\end{pmatrix}`;
+
+const steps = createSteps(g, {
+  overview: { label: '总览', title: '一步 decode 的整张图', text: String.raw`左边两块高的张量是物理块池 $\mathcal{K}$ 与 $\mathcal{V}$，每行是一个槽，16 个槽分成 8 块。中间是本步两个新 token 的投影。右边两条竖道各是一个请求：从块池取出的历史行接上本步的新行，再做一次单行注意力。
+
+请求 1 的块表是 $[3, 0, 6]$，请求 2 的是 $[3, 0, 5]$，前两块相同，这是前缀缓存共享的系统提示词。右侧块池面板显示每个槽属于谁。` },
+  forward: [
+    { show: [x, Kp, Vp, Wq.T, Wk.T, Wv.T], kind: 'inputs', label: '输入', title: '块池与本步的输入', text: String.raw`$\mathcal{K}$、$\mathcal{V}$ 是之前各步写入的结果，形状 (槽数, $d_h$)。真实引擎里每层一个块池，形状是 (块数, kv head 数, 块大小, 每格字节数)，这里把块与块内偏移合成一维槽号。空闲槽的值是 0。$\mathbf{x}$ 是本步两个新 token 的隐状态，每行一个请求。` },
+    { show: [q, kn, vn], label: String.raw`$\mathbf{q},\ \mathbf{k}_{\mathrm{new}},\ \mathbf{v}_{\mathrm{new}}$`, title: '本步的新 token 做投影', text: String.raw`decode 每步每个请求只有 1 个新 token，所以三个投影都只有 2 行。两个请求拼成一批，共用一次矩阵乘。$$\mathbf{k}_{\mathrm{new}}=${mat('k new', 2, 4, 2)}$$` },
+    { show: [Kh, Vh], label: String.raw`$\mathcal{K}[\mathrm{slots}]$`, title: '按槽号从块池取出历史 K、V', text: String.raw`槽号由块表展开：$$\mathrm{slot}(r,j)=\mathrm{table}_r\!\left[\lfloor j/b\rfloor\right]\cdot b+(j \bmod b)$$ 两个请求的槽号首尾相接（与 FlashAttention varlen 接口的打包方式相同）：前 5 个是 $(${slotsOf(1).join(', ')})$，后 5 个是 $(${slotsOf(2).join(', ')})$。连线从块池的槽连到取出的行。槽 6、7、0、1 各连出两条线：这几行在显存里只存一份，两个请求共享，引用计数是 2。` },
+    { show: [...all('Khr'), ...all('Vhr'), ...all('kr'), ...all('vr'), ...all('K'), ...all('V')], label: String.raw`$[K_{\mathrm{past}};\mathbf{k}_{\mathrm{new}}]$`, title: '每个请求接上本步的新行', text: String.raw`每个请求取出自己的 5 行历史，接上本步的新行，得到 6 行。真实引擎同时把新行按 slot mapping 写回块池：请求 1 写到槽 ${WRITE[1]}（块 6 随之写满，可以算出前缀哈希），请求 2 写到槽 ${WRITE[2]}。写入是按槽号的 scatter，VizFlow 还没有这个运算，这里用拼接表示。` },
+    { show: [...all('qr'), ...all('S0'), ...all('S')], label: String.raw`$\mathbf{q}K^{\top}/\sqrt{d_h}$`, title: '单行打分', text: String.raw`decode 的 query 只有 1 行，它是当前最后一个位置，前面的位置全部可见，所以不需要 causal mask。$$s^{(1)}=${mat('s1', 1, 6, 2)},\qquad s^{(2)}=${mat('s2', 1, 6, 2)}$$` },
+    { show: all('P'), label: 'softmax', title: '注意力权重', text: String.raw`$$p^{(1)}=${mat('p1', 1, 6, 2)},\qquad p^{(2)}=${mat('p2', 1, 6, 2)}$$ 两个请求读的是同一批共享槽，但 query 不同，权重也不同。` },
+    { show: all('o'), label: String.raw`$pV$`, title: '加权求和', text: String.raw`$$\mathbf{o}^{(1)}=${mat('o1', 1, 4, 2)},\qquad \mathbf{o}^{(2)}=${mat('o2', 1, 4, 2)}$$` },
+    { show: o, label: '拼回一批', title: '拼回一批', text: String.raw`两个请求的长度可以不同，分页 kernel 用每个请求的长度与块表一次算完整批，不需要补齐。$$\mathbf{o}=${mat('o', 2, 4, 2)}$$` },
+  ],
+});
+
+renderText(String.raw`推理时两个请求同时做一步 decode。它们的 K、V 分散在一个共用的物理块池里，每个请求靠自己的块表找到它们。请求 1 与请求 2 的前 4 个位置是同一段系统提示词，由前缀缓存共享同一批物理块。块大小 $b=2$，块池 8 块共 16 个槽，单个注意力 head，$d_h=4$。推理没有反向，这一页只有前向步骤。`, document.getElementById('lede'));
+
+mountSteps('#steps', steps);
+const lane = (r) => 30 + (r - 1) * 20;
+const scene = mountScene('#stage', g, {
+  steps,
+  layout: [
+    stack(Kp, Kh, { at: [-34, 0, 0] }),
+    stack(Vp, Vh, { at: [-20, 0, 0] }),
+    board(x, Wq.T, q, { at: [2, 0, 0] }),
+    board(x, Wk.T, kn, { at: [10, 0, 0] }),
+    board(x, Wv.T, vn, { at: [18, 0, 0] }),
+    ...req.flatMap((r, i) => [
+      stack(r.Khr, r.kr, r.K, { at: [lane(i + 1), 10.4, 0] }),
+      stack(r.Vhr, r.vr, { at: [lane(i + 1) + 8, 10.4, 0] }),
+      board(r.qr, r.K.T, r.S0, { at: [lane(i + 1), 26, 0] }),
+      stack(r.S0, r.S, r.P),
+      board(r.P, r.V, r.o, { at: [lane(i + 1), 44, 0] }),
+    ]),
+    stack(req[0].o, o, { at: [lane(1) + 10, 49.2, 0] }),
+  ],
+  hint: '拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 悬停连线看每个槽连到哪里',
+});
+
+const poolEl = document.getElementById('pool');
+const tablesEl = document.getElementById('tables');
+const noteEl = document.getElementById('poolNote');
+function owner(s) {
+  const in1 = slotsOf(1).includes(s), in2 = slotsOf(2).includes(s);
+  if (in1 && in2) return 'shared';
+  if (in1) return 'r1';
+  if (in2) return 'r2';
+  if (OTHER.includes(Math.floor(s / BLOCK))) return 'other';
+  return 'free';
+}
+function drawPool() {
+  const info = steps.list[steps.current];
+  const reading = info.nodes.includes(Kh);
+  const writing = info.nodes.includes(req[0].K);
+  poolEl.innerHTML = '';
+  for (let b = 0; b < 8; b++) {
+    const ref = [1, 2].filter((r) => TABLES[r].includes(b)).length + (OTHER.includes(b) ? 1 : 0);
+    const div = document.createElement('div');
+    div.className = 'blk';
+    div.innerHTML = `<span>#${b} ref=${ref}</span>`;
+    const row = document.createElement('div');
+    row.className = 'slots';
+    for (let k = 0; k < BLOCK; k++) {
+      const s = b * BLOCK + k;
+      const cell = document.createElement('div');
+      const isWrite = writing && (s === WRITE[1] || s === WRITE[2]);
+      cell.className = `slot ${isWrite ? 'write' : owner(s)}${reading && owner(s) !== 'free' && owner(s) !== 'other' ? ' on' : ''}`;
+      cell.textContent = s;
+      row.appendChild(cell);
+    }
+    div.appendChild(row);
+    poolEl.appendChild(div);
+  }
+  tablesEl.innerHTML = [1, 2].map((r) => `请求 ${r} 块表 [${TABLES[r].join(', ')}] → 槽 ${slotsOf(r).join(', ')}`).join('<br>');
+  noteEl.textContent = reading ? '本步读取的槽加了外框：共享的 4 个槽被两个请求同时读取。' : writing ? `虚线框是本步写入的槽：请求 1 写槽 ${WRITE[1]}，请求 2 写槽 ${WRITE[2]}。` : '紫色的块 3、0 被两个请求的块表同时引用，引用计数是 2。块 1、7 空闲。';
+}
+steps.subscribe(drawPool);
+drawPool();
+
+window.vizflow = { g, steps, scene, nodes: { x, Kp, Vp, slots, Kh, Vh, req, o } };
+document.body.dataset.ready = 'true';
+</script>
+</body>
+</html>
