@@ -12,6 +12,8 @@ export interface ThemeColors {
   neg: LinearRgb;
   rank0: LinearRgb;
   rank1: LinearRgb;
+  nvlink: LinearRgb;
+  rdma: LinearRgb;
 }
 
 const variables: Record<keyof ThemeColors, string> = {
@@ -26,6 +28,8 @@ const variables: Record<keyof ThemeColors, string> = {
   neg: '--neg',
   rank0: '--rank0',
   rank1: '--rank1',
+  nvlink: '--nvlink',
+  rdma: '--rdma',
 };
 
 function srgbToLinear(channel: number): number {

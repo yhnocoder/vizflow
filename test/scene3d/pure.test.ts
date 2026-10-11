@@ -18,6 +18,8 @@ const theme: ThemeColors = {
   neg: [0.2, 0.5, 1],
   rank0: [0.6, 0.4, 0.7],
   rank1: [0.2, 0.6, 0.4],
+  nvlink: [0.5, 0.4, 0.1],
+  rdma: [0.6, 0.1, 0.3],
 };
 
 describe('scales', () => {

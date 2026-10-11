@@ -11,6 +11,8 @@
   --neg: #6a9bcc;
   --rank0: #9a62b8;
   --rank1: #3f9a6b;
+  --nvlink: #b0882a;
+  --rdma: #c23b6e;
   --note: #2e7a55;
   --serif: "Source Serif 4", "Songti SC", "Noto Serif SC", Georgia, serif;
   --sans: "Geist", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
@@ -31,6 +33,8 @@
     --neg: #7eaad6;
     --rank0: #b98ad4;
     --rank1: #62bd8c;
+    --nvlink: #d9b25a;
+    --rdma: #e46a98;
     --note: #84cfa4;
   }
 }
@@ -48,6 +52,8 @@
   --neg: #7eaad6;
   --rank0: #b98ad4;
   --rank1: #62bd8c;
+  --nvlink: #d9b25a;
+  --rdma: #e46a98;
   --note: #84cfa4;
 }
 
