@@ -1,29 +1,52 @@
 import { padTo, vllmCaptureSizes } from './graphs';
-import { BLOCK_SIZE, blockKey, sequenceOf, type Sequence } from './tokens';
-import type { BatchRow, EngineEvent, EngineRun, EngineStep, RequestStatus, ServingConfig } from './types';
+import { chainBlockHashes, type Token } from './hash';
+import { KvCacheManager, type KvRequest } from './kv-cache-manager';
+import { BLOCK_SIZE, tokenIds } from './tokens';
+import type { BatchRow, EngineEvent, EngineRun, EngineStep, RequestStatus, ServingConfig, ServingRequest } from './types';
 
-interface Block {
-  id: number;
-  ref: number;
-  key: string | null;
-}
+class Req implements KvRequest {
+  readonly id: string;
+  readonly arrive: number;
+  readonly prompt: number;
+  readonly out: number;
+  readonly tokens: Token[];
+  outputs = 0;
+  placeholders = 0;
+  computed = 0;
+  hit = 0;
+  status: RequestStatus = 'pending';
+  firstToken: number | null = null;
+  finished: number | null = null;
+  prefillTokens = 0;
+  decodeTokens = 0;
+  evictions = 0;
+  readonly sharedPrefixBoundary = 0;
+  private hashes: string[] = [];
 
-interface Req {
-  seq: Sequence;
-  arrive: number;
-  prompt: number;
-  out: number;
-  outputs: number;
-  placeholders: number;
-  computed: number;
-  hit: number;
-  blocks: number[];
-  status: RequestStatus;
-  firstToken: number | null;
-  finished: number | null;
-  prefillTokens: number;
-  decodeTokens: number;
-  evictions: number;
+  constructor(r: ServingRequest, index: number) {
+    this.id = r.id;
+    this.arrive = r.arrive;
+    this.prompt = r.prompt;
+    this.out = Math.max(1, r.out);
+    this.tokens = tokenIds(r, index, this.prompt + this.out);
+  }
+
+  get numTokens(): number {
+    return this.prompt + this.outputs;
+  }
+
+  get numPromptTokens(): number {
+    return this.prompt;
+  }
+
+  get numComputedTokens(): number {
+    return this.computed;
+  }
+
+  blockHashes(): readonly string[] {
+    this.hashes = chainBlockHashes(this.tokens.slice(0, this.numTokens), BLOCK_SIZE, undefined, this.hashes);
+    return this.hashes;
+  }
 }
 
 interface Batch {
@@ -34,65 +57,30 @@ interface Batch {
 export function simulateVllm(config: ServingConfig): EngineRun {
   const maxSeqs = config.maxSeqs ?? 256;
   const blockCount = Math.max(1, Math.floor(config.kvTokens / BLOCK_SIZE));
-  const blocks: Block[] = Array.from({ length: blockCount + 1 }, (_, id) => ({ id, ref: 0, key: null }));
-  const freeQueue: number[] = Array.from({ length: blockCount }, (_, i) => i + 1);
-  const cached = new Map<string, number>();
+  const kv = new KvCacheManager({
+    numGpuBlocks: blockCount + 1, groups: [{ kind: 'full', blockSize: BLOCK_SIZE }],
+    maxModelLen: Infinity, maxInFlightTokens: config.budget, enablePrefixCaching: true,
+  }, () => {});
   const capture = vllmCaptureSizes(maxSeqs, config.budget);
-  const reqs: Req[] = config.requests.map((r, i) => ({
-    seq: sequenceOf(r, i), arrive: r.arrive, prompt: r.prompt, out: Math.max(1, r.out),
-    outputs: 0, placeholders: 0, computed: 0, hit: 0, blocks: [], status: 'pending',
-    firstToken: null, finished: null, prefillTokens: 0, decodeTokens: 0, evictions: 0,
-  }));
-  const byId = new Map(reqs.map((r) => [r.seq.id, r]));
+  const reqs = config.requests.map((r, i) => new Req(r, i));
+  const byId = new Map(reqs.map((r) => [r.id, r]));
   const waiting: Req[] = [];
   const running: Req[] = [];
   const steps: EngineStep[] = [];
   let inflight: Batch | null = null;
 
   const total = (r: Req) => r.prompt + r.outputs + r.placeholders;
-  const known = (r: Req) => r.prompt + r.outputs;
-
-  function allocate(r: Req, count: number) {
-    for (let i = 0; i < count; i++) {
-      const block = blocks[freeQueue.shift()!];
-      if (block.key !== null && cached.get(block.key) === block.id) cached.delete(block.key);
-      block.key = null;
-      block.ref = 1;
-      r.blocks.push(block.id);
-    }
-  }
-
-  function release(r: Req) {
-    for (const id of [...r.blocks].reverse()) {
-      const block = blocks[id];
-      block.ref -= 1;
-      if (block.ref === 0) freeQueue.push(id);
-    }
-    r.blocks = [];
-  }
-
-  function cacheBlocks(r: Req, upto: number) {
-    const full = Math.floor(Math.min(upto, known(r)) / BLOCK_SIZE);
-    for (let i = 0; i < full && i < r.blocks.length; i++) {
-      const block = blocks[r.blocks[i]];
-      if (block.key !== null) continue;
-      const key = blockKey(r.seq, i);
-      if (cached.has(key)) continue;
-      block.key = key;
-      cached.set(key, block.id);
-    }
-  }
 
   function preempt(victim: Req, events: EngineEvent[]) {
     running.splice(running.indexOf(victim), 1);
-    release(victim);
+    kv.free(victim.id, 'preempt');
     victim.computed = 0;
     victim.placeholders = 0;
     victim.hit = 0;
     victim.status = 'preempted';
     victim.evictions += 1;
     waiting.unshift(victim);
-    events.push({ kind: 'preempt', ids: [victim.seq.id] });
+    events.push({ kind: 'preempt', ids: [victim.id] });
   }
 
   function schedule(events: EngineEvent[]): BatchRow[] {
@@ -105,10 +93,7 @@ export function simulateVllm(config: ServingConfig): EngineRun {
       if (r.outputs + r.placeholders >= r.out) continue;
       let n = Math.min(total(r) - r.computed, budget);
       if (n <= 0) continue;
-      let need = 0;
-      for (;;) {
-        need = Math.ceil((r.computed + n) / BLOCK_SIZE) - r.blocks.length;
-        if (need <= freeQueue.length) break;
+      while (kv.allocateSlots(r, n, null, false) === null) {
         const victim = running[running.length - 1];
         preempt(victim, events);
         preempted = true;
@@ -124,44 +109,27 @@ export function simulateVllm(config: ServingConfig): EngineRun {
         }
       }
       if (n === 0) break;
-      allocate(r, need);
-      cacheBlocks(r, r.computed + n);
-      const row: BatchRow = { id: r.seq.id, from: r.computed, n, duplicate: [], sampled: false };
+      const row: BatchRow = { id: r.id, from: r.computed, n, duplicate: [], sampled: false };
       rows.push(row);
       rowOf.set(r, row);
       budget -= n;
     }
     while (!preempted && waiting.length > 0 && budget > 0 && running.length < maxSeqs) {
       const r = waiting[0];
-      const hits: number[] = [];
-      if (r.computed === 0) {
-        for (let i = 0; (i + 1) * BLOCK_SIZE <= total(r) - 1; i++) {
-          const id = cached.get(blockKey(r.seq, i));
-          if (id === undefined) break;
-          hits.push(id);
-        }
-      }
-      const hitTokens = hits.length * BLOCK_SIZE;
-      const freeAfterTouch = freeQueue.length - hits.filter((id) => blocks[id].ref === 0).length;
-      if (Math.ceil(total(r) / BLOCK_SIZE) - hits.length > freeAfterTouch) {
-        events.push({ kind: 'blocked', ids: [r.seq.id] });
+      const hit = kv.getComputedBlocks(r);
+      const n = Math.min(total(r) - hit.numTokens, budget);
+      if (kv.allocateSlots(r, n, hit, true) === null) {
+        events.push({ kind: 'blocked', ids: [r.id] });
         break;
       }
-      const n = Math.min(total(r) - hitTokens, budget);
-      for (const id of hits) {
-        if (blocks[id].ref === 0) freeQueue.splice(freeQueue.indexOf(id), 1);
-        blocks[id].ref += 1;
-      }
-      r.blocks = [...hits];
+      const hitTokens = hit.numTokens;
       r.computed = hitTokens;
       r.hit = hitTokens;
-      allocate(r, Math.ceil((hitTokens + n) / BLOCK_SIZE) - r.blocks.length);
-      cacheBlocks(r, hitTokens + n);
       waiting.shift();
       running.push(r);
-      if (r.status === 'preempted') events.push({ kind: 'resume', ids: [r.seq.id], hit: hitTokens });
+      if (r.status === 'preempted') events.push({ kind: 'resume', ids: [r.id], hit: hitTokens });
       r.status = 'running';
-      const row: BatchRow = { id: r.seq.id, from: hitTokens, n, duplicate: [], sampled: false };
+      const row: BatchRow = { id: r.id, from: hitTokens, n, duplicate: [], sampled: false };
       rows.push(row);
       rowOf.set(r, row);
       budget -= n;
@@ -187,15 +155,15 @@ export function simulateVllm(config: ServingConfig): EngineRun {
       r.outputs += 1;
       if (r.placeholders > 0) r.placeholders -= 1;
       r.firstToken ??= batch.step;
-      cacheBlocks(r, r.computed - r.placeholders);
-      got.push(r.seq.id);
+      kv.cacheBlocks(r, r.computed - r.placeholders);
+      got.push(r.id);
       if (r.outputs >= r.out) {
         const at = running.indexOf(r);
         if (at >= 0) running.splice(at, 1);
-        release(r);
+        kv.free(r.id, 'finish');
         r.status = 'finished';
         r.finished = step;
-        done.push(r.seq.id);
+        done.push(r.id);
       }
     }
     events.push({ kind: 'process', ids: got, batch: batch.step });
@@ -218,10 +186,10 @@ export function simulateVllm(config: ServingConfig): EngineRun {
     const uniform = rows.length > 0 && rows.every((r) => r.n === 1);
     const size = tokens > 0 ? padTo(capture, tokens) : null;
     const views = reqs.map((r) => ({
-      id: r.seq.id, status: r.status, prompt: r.prompt, outputs: r.outputs, inflight: r.placeholders,
+      id: r.id, status: r.status, prompt: r.prompt, outputs: r.outputs, inflight: r.placeholders,
       computed: r.computed, hit: r.hit,
     }));
-    const kvUsed = (blockCount - freeQueue.length) * BLOCK_SIZE;
+    const kvUsed = (blockCount - kv.pool.numFreeBlocks) * BLOCK_SIZE;
     if (rows.length > 0) events.unshift({ kind: 'launch', ids: rows.map((r) => r.id), batch: step });
     if (config.overlap) {
       if (inflight !== null) processOutputs(inflight, step, events);
@@ -241,7 +209,7 @@ export function simulateVllm(config: ServingConfig): EngineRun {
     kvCapacity: blockCount * BLOCK_SIZE,
     steps,
     requests: reqs.map((r) => ({
-      id: r.seq.id, firstToken: r.firstToken, finished: r.finished, prefillTokens: r.prefillTokens,
+      id: r.id, firstToken: r.firstToken, finished: r.finished, prefillTokens: r.prefillTokens,
       decodeTokens: r.decodeTokens, duplicateTokens: 0, evictions: r.evictions,
     })),
   };
