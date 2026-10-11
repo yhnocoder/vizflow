@@ -12,7 +12,7 @@ export const FLOP_RULES: readonly FlopRule[] = [
   { ops: ['mul'], forward: '|y|', backward: '|y|' },
   { ops: ['div'], forward: '|y|', backward: '\\text{被除数 }|y|\\text{，除数 }3|y|' },
   { ops: ['neg', 'rotate_half'], forward: '|y|', backward: '|y|' },
-  { ops: ['exp', 'log', 'pow', 'rsqrt', 'sqrt', 'sigmoid', 'silu', 'softplus', 'relu', 'gelu'], forward: '|y|', backward: '2|y|' },
+  { ops: ['exp', 'log', 'pow', 'rsqrt', 'sqrt', 'reciprocal', 'erf', 'sigmoid', 'silu', 'softplus', 'relu', 'gelu'], forward: '|y|', backward: '2|y|' },
   { ops: ['sum', 'max'], forward: '|x|', backward: '0' },
   { ops: ['mean'], forward: '|x|', backward: '|x|' },
   { ops: ['logsumexp'], forward: '4|x|', backward: '3|x|' },

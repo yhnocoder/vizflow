@@ -172,20 +172,28 @@ function rope(inputs, cos, sin) {
   return module('apply_rotary_pos_emb', 'q·cos + rotate_half(q)·sin', 'right', () => {
     const parts = inputs.map(({ node, label, tex, outTex, outElem }) => {
       const c = g.mul(node, cos, { name: `${label}·cos`, tex: `${tex}\\odot\\cos`, elem: `(${tex}\\cos)` });
-      const rh = g.rotate_half(node, { name: `rh(${label})`, tex: `\\mathrm{rh}(${tex})`, elem: `\\mathrm{rh}(${tex})` });
+      const half = node.shape[node.shape.length - 1] / 2;
+      const x1 = g.narrow(node, -1, 0, half, { name: `${label}₁`, tex: `${tex}_{1}`, elem: `${tex}_{1}` });
+      const x2 = g.narrow(node, -1, half, half, { name: `${label}₂`, tex: `${tex}_{2}`, elem: `${tex}_{2}` });
+      const n2 = g.neg(x2, { name: `−${label}₂`, tex: `(-${tex}_{2})`, elem: `(-${tex}_{2})` });
+      const rh = g.cat([n2, x1], -1, { name: `rh(${label})`, tex: `\\mathrm{rh}(${tex})`, elem: `\\mathrm{rh}(${tex})` });
       const s = g.mul(rh, sin, { name: `rh(${label})·sin`, tex: `\\mathrm{rh}(${tex})\\odot\\sin`, elem: `(\\mathrm{rh}\\sin)` });
       const out = g.add(c, s, { name: `${label}′`, tex: outTex, elem: outElem });
-      page.layout.push(stack(node, c, rh, s, out, flow));
-      return { c, rh, s, out };
+      page.layout.push(stack(node, c, x1, x2, n2, rh, s, out, flow));
+      return { c, x1, x2, n2, rh, s, out };
     });
     const steps = [
       { show: [cos, ...parts.map((p) => p.c)], label: '$\\odot\\cos$', title: 'RoPE：乘 cos', text: String.raw`
-        RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。
+        RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。
         cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以连线只在前向画出。
 
         $$\cos=${mx('cos', T, HD, ':3')}$$` },
-      { show: parts.map((p) => p.rh), label: 'rotate_half', title: 'rotate_half', text: String.raw`
-        把每个 head 的后半段取负号放到前面，前半段放到后面。它只是重新排列加取负号，所以局部导数是 $\pm1$，每个元素只连一条线。
+      { show: parts.flatMap((p) => [p.x1, p.x2]), label: 'rotate_half：切两半', title: 'rotate_half：切成前后两半', text: String.raw`
+        HF 的 <code>rotate_half</code> 先用切片把每个 head 的最后一维切成前后两半，<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>。切片只是取出一部分，局部导数是 1。` },
+      { show: parts.map((p) => p.n2), label: '$-x_2$', title: 'rotate_half：后半取负', text: String.raw`
+        后半段取负号，局部导数是 $-1$。` },
+      { show: parts.map((p) => p.rh), label: 'rotate_half：拼回', title: 'rotate_half：拼回', text: String.raw`
+        <code>torch.cat((-x2, x1), dim=-1)</code> 把取负的后半段放到前面，前半段放到后面。拼接只是重新排列，每个元素只连一条线。
 
         $$\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$$` },
       { show: [sin, ...parts.map((p) => p.s)], label: '$\\odot\\sin$', title: '乘 sin', text: String.raw`
