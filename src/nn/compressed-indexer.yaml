@@ -3,7 +3,8 @@ subtitle: DeepseekV4Indexer
 import:
   Compressor: vizflow/nn/compressor
   PartialRoPE: vizflow/nn/partial-rope
-formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu}{\big)}\step{scale}{/\sqrt{c_I}}\step{topk}{+M_{\mathrm{c}}\big)}'
+  ReLU: vizflow/nn/relu
+formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu.*}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu.*}{\big)}\step{scale}{/\sqrt{c_I}}\step{topk}{+M_{\mathrm{c}}\big)}'
 params:
   HI:    { type: dim }
   cI:    { type: dim }
@@ -55,16 +56,30 @@ body:
       outputs: { out: qe }
       tex: { out: "{\\mathbf{q}^{I}}'" }
       folded: true
+      fold:
+        text: |
+          计算和 self_attn 里 query 的 RoPE 相同，那里展开画了每一步；这里转的是 indexer 的 query。
+          $${\mathbf{q}^{I}}'={{ qe | matrix:2 }}$$
   - scorer:
       title: scorer
       subtitle: DeepseekV4IndexerScorer
       body:
         - qf: { op: 'view(qe, T * HI, cI)', tex: 'Q^{I}' }
-        - kf: { op: 'view(K, T // m, cI)', tex: '\mathbf{K}^{I}' }
-        - kT: { op: kf.T, tex: '{\mathbf{K}^{I}}^{\top}' }
-        - Sf: { op: qf @ kT, tex: 'Q^{I}{\mathbf{K}^{I}}^{\top}', dtype: fp32 }
+        - kf: { op: 'view(K, T // m, cI)', tex: 'K^{I}' }
+        - kT: { op: kf.T, tex: '{K^{I}}^{\top}' }
+        - Sf: { op: qf @ kT, tex: 'Q^{I}{K^{I}}^{\top}', dtype: fp32 }
         - S:  { op: 'view(Sf, T, HI, T // m)', tex: 'S^{I}' }
-        - R:  { op: relu(S), tex: 'R' }
+        - relu:
+            use: ReLU
+            inputs: { x: S }
+            outputs: { out: R }
+            tex: { out: 'R' }
+            steps:
+              relu:
+                title: ReLU
+                text: |
+                  负的点积变成 0：一个 head 觉得某个条目不相关时，它对这个条目的分数没有贡献。HF 先做 ReLU 再乘缩放。
+                  $$R={{ R | matrix:3 }}$$
         - Rs: { op: R * cI ** -0.5, tex: '\tilde{R}' }
         - wx: { op: x @ Ww.T, tex: '\of{x}{W^{I}_{w}}^{\top}', dtype: fp32 }
         - w:  { op: wx * HI ** -0.5, tex: '\mathbf{w}^{I}' }
@@ -95,10 +110,10 @@ steps:
     text: 所有 head 共用同一组压缩后的 key，所以把 $T H_I$ 个 query 排成一个矩阵，一次乘完。
   - id: k_flat
     show: [kf, kT]
-    label: '${\mathbf{K}^{I}}^{\top}$'
+    label: '${K^{I}}^{\top}$'
     title: 压缩后的 key 转置
     text: |
-      $$\mathbf{K}^{I}={{ kf | matrix:2 }}$$
+      $$K^{I}={{ kf | matrix:2 }}$$
   - id: dot
     show: [Sf, S]
     label: '$\of{S}$'
@@ -106,13 +121,6 @@ steps:
     text: |
       HF 先把 query 和 key 转成 float32 再乘。每个 token 对每个压缩条目都算，因果的限制在后面用 mask 加上。
       $$\of{S}={{ S | matrix:3 }}$$
-  - id: relu
-    show: R
-    label: '$\of{R}$'
-    title: ReLU
-    text: |
-      负的点积变成 0：一个 head 觉得某个条目不相关时，它对这个条目的分数没有贡献。HF 先做 ReLU 再乘缩放。
-      $$\of{R}={{ R | matrix:3 }}$$
   - id: scale
     show: Rs
     label: '$\of{Rs}$'

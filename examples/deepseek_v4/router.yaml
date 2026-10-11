@@ -1,12 +1,15 @@
 module: DeepseekV4Router
 subtitle: DeepseekV4TopKRouter 或 DeepseekV4HashRouter
-formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{mask,sum,eps,normalize}{\dfrac{\mathbf{s}\odot\mathbf{m}}{\sum\mathbf{s}\odot\mathbf{m}+10^{-20}}},\quad\step{logits,softplus,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W_r^{\top})}}\step{bias,topk}{,\quad\mathbf{m}=\operatorname{top}_{K}(\mathbf{s}+\mathbf{b}_{\mathrm{corr}})}\step{hash}{,\quad\mathbf{m}=H[x]}'
+import:
+  Softplus: vizflow/nn/softplus
+formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{mask,sum,eps,normalize}{\dfrac{\mathbf{s}\odot\mathbf{m}}{\sum\mathbf{s}\odot\mathbf{m}+10^{-20}}},\quad\step{logits,softplus.*,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W_r^{\top})}}\step{bias,topk}{,\quad\mathbf{m}=\operatorname{top}_{K}(\mathbf{s}+\mathbf{b}_{\mathrm{corr}})}\step{hash}{,\quad\mathbf{m}=H[x]}'
 params:
   E:    { type: dim }
   V:    { type: dim }
   K:    { type: dim }
   rsf:  { type: float, default: 1.5 }
   hash: { type: bool, default: false }
+  detail: { type: bool, default: true }
 inputs:
   x:   { shape: [T, d] }
   ids: { shape: [T], when: hash }
@@ -27,7 +30,26 @@ fold:
     title: 穿过 gate（已折叠）
 body:
   - logits: { op: x @ Wr.T, tex: '\mathbf{r}' }
-  - sp:     { op: softplus(logits), tex: '\operatorname{softplus}(\mathbf{r})' }
+  - softplus:
+      use: Softplus
+      when: detail
+      inputs: { x: logits }
+      outputs: { out: sp }
+      tex: { out: '\operatorname{softplus}(\mathbf{r})' }
+      steps:
+        exp:
+          append: DeepSeek V4 的打分函数是 <code>sqrtsoftplus</code>，先做 softplus，结果总是正数，分数很低的专家也只是接近 0。V3 用的是 sigmoid，上界是 1；softplus 没有上界。
+  - softplus:
+      use: Softplus
+      when: not detail
+      folded: true
+      inputs: { x: logits }
+      outputs: { out: sp }
+      tex: { out: '\operatorname{softplus}(\mathbf{r})' }
+      fold:
+        text: |
+          计算和第 3 层 gate 的 softplus 相同，那里展开画了每一步。DeepSeek V4 的打分函数是 <code>sqrtsoftplus</code>，先做 softplus，再开平方。
+          $$\operatorname{softplus}(\mathbf{r})={{ sp | matrix:3 }}$$
   - s:      { op: sqrt(sp), tex: '\mathbf{s}' }
   - sc:     { op: s + bias, tex: '\tilde{\mathbf{s}}', when: not hash }
   - sel:    { op: 'topk_mask(sc, K, -1)', tex: '\mathbf{m}', when: not hash }
@@ -48,18 +70,6 @@ steps:
     backward:
       label: '$\partial W_r,\ \partial\of{x}$'
       title: 传到 gate 的权重和 $\of{x}$
-  - id: softplus
-    show: sp
-    label: '$\operatorname{softplus}$'
-    title: softplus
-    text: |
-      DeepSeek V4 的打分函数是 <code>sqrtsoftplus</code>，先做 softplus：
-      $$\operatorname{softplus}(r)=\log(1+e^{r}),\qquad \operatorname{softplus}(\mathbf{r})={{ sp | matrix:3 }}$$
-      结果总是正数，分数很低的专家也只是接近 0。V3 用的是 sigmoid，上界是 1；softplus 没有上界。
-    backward:
-      label: '$\partial\mathbf{r}$'
-      title: 穿过 softplus
-      text: softplus 的导数是 $\sigma(r)$。
   - id: sqrt
     show: s
     label: '$\of{s}=\sqrt{\cdot}$'

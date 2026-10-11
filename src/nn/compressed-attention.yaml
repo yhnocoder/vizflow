@@ -58,6 +58,10 @@ body:
       outputs: { out: cqn }
       tex: { out: '\bar{\mathbf{c}}_{q}' }
       folded: true
+      fold:
+        text: |
+          计算和 decoder 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{c}}_{q}={{ cqn | matrix:2 }}$$
   - qp: { op: cqn @ Wqb.T, tex: '\bar{\mathbf{c}}_{q}W_{qb}^{\top}' }
   - q: { op: 'view(qp, T, H, D)', tex: '\mathbf{q}' }
   - q_b_norm:
@@ -69,6 +73,10 @@ body:
       outputs: { out: qn }
       tex: { out: '\bar{\mathbf{q}}' }
       folded: true
+      fold:
+        text: |
+          计算和 mHC 的 input_norm 相同，是没有权重的 RMSNorm，那里展开画了每一步；这里对每个 head 的 query 各做一次。
+          $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
   - q_rope:
       use: PartialRoPE
       suffix: q
@@ -78,7 +86,6 @@ body:
       inputs: { x: qn }
       outputs: { out: qr }
       tex: { out: "\\mathbf{q}'" }
-      folded: true
   - kvp: { op: x @ Wkv.T, tex: '\of{x}W_{kv}^{\top}' }
   - kv_norm:
       use: RMSNorm
@@ -89,6 +96,10 @@ body:
       outputs: { out: kvn }
       tex: { out: '\bar{\mathbf{kv}}' }
       folded: true
+      fold:
+        text: |
+          计算和 decoder 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{kv}}={{ kvn | matrix:2 }}$$
   - kv1: { op: 'view(kvn, T, 1, D)', tex: '\mathbf{kv}' }
   - kv_rope:
       use: PartialRoPE
@@ -100,6 +111,10 @@ body:
       outputs: { out: kvr }
       tex: { out: "\\mathbf{kv}'" }
       folded: true
+      fold:
+        text: |
+          计算和上面 query 的 RoPE 相同，那里展开画了每一步。
+          $$\mathbf{kv}'={{ kvr | matrix:2 }}$$
   - compressor:
       use: Compressor
       when: compress
@@ -151,6 +166,10 @@ body:
       outputs: { out: ou }
       tex: { out: '\mathbf{o}''' }
       folded: true
+      fold:
+        text: |
+          计算和上面 query 的 RoPE 相同，只是 sin 取负号：最后一步的相加换成相减，每一对分量转回 $-p_n\omega_i$。
+          $$\mathbf{o}'={{ ou | matrix:2 }}$$
   - og: { op: 'view(ou, T, g, H * D // g)', tex: '\mathbf{o}^{\mathrm{grp}}' }
   - for: j
     in: 1..g

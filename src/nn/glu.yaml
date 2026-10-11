@@ -97,12 +97,21 @@ steps:
       title: 穿过截断
       text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
   - id: gate
+    when: not clamped
     show: m
     label: '$\of{a}\odot\mathbf{up}$'
     title: 门控相乘
     text: 激活后的 gate 和 up 逐元素相乘，决定 up 的每个分量放行多少。
     backward:
       label: '$\partial\of{a},\ \partial\mathbf{up}$'
+  - id: gate
+    when: clamped
+    show: m
+    label: '$\of{a}\odot\bar{\mathbf{up}}$'
+    title: 门控相乘
+    text: 激活后的 gate 和截断后的 up 逐元素相乘，决定 up 的每个分量放行多少。
+    backward:
+      label: '$\partial\of{a},\ \partial\bar{\mathbf{up}}$'
   - id: down
     show: [Wd.T, down]
     label: '$\of{down}$'

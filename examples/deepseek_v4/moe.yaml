@@ -11,6 +11,7 @@ params:
   rsf:   { type: float, default: 1.5 }
   limit: { type: float }
   hash:  { type: bool, default: false }
+  detail: { type: bool, default: true }
 inputs:
   x:   { shape: [T, d] }
   ids: { shape: [T], when: hash }
@@ -30,7 +31,7 @@ body:
   - gate:
       use: Router
       title: gate
-      params: { E: E, V: V, K: K, rsf: rsf, hash: hash }
+      params: { E: E, V: V, K: K, rsf: rsf, hash: hash, detail: detail }
       inputs: { x: x, ids: ids }
       outputs: { rw: rw }
   - experts:
@@ -43,10 +44,22 @@ body:
             - expert[e]:
                 use: GLU
                 subtitle: 路由专家，带截断的 SwiGLU
-                folded: true
-                params: { act: silu, f: f, name: expert, clamped: true, limit: limit }
+                when: detail
+                params: { act: SiLU, f: f, name: expert, clamped: true, limit: limit }
                 inputs: { x: x }
                 outputs: { down: 'y[e]' }
+            - expert[e]:
+                use: GLU
+                subtitle: 路由专家，带截断的 SwiGLU
+                when: not detail
+                folded: true
+                params: { act: SiLU, f: f, name: expert, clamped: true, limit: limit }
+                inputs: { x: x }
+                outputs: { down: 'y[e]' }
+                fold:
+                  text: |
+                    计算和第 3 层的路由专家相同，那里展开画了每一步；权重是这一层自己的。
+                    $$\of{y[e]}={{ y[e] | matrix:2 }}$$
             - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
         - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
         - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\mathbf{p}\odot Y' }
@@ -56,10 +69,14 @@ body:
       subtitle: DeepseekV4MLP，共享专家
       suffix: s
       folded: true
-      params: { act: silu, f: f, name: shared, clamped: true, limit: limit }
+      params: { act: SiLU, f: f, name: shared, clamped: true, limit: limit }
       inputs: { x: x }
       outputs: { down: shared }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
+      fold:
+        text: |
+          共享专家的计算和第 3 层的路由专家相同，也是带截断的 SwiGLU，那里展开画了每一步；权重是自己的。对应 HF 里 <code>self.shared_experts(hidden_states)</code>。
+          $$\of{shared}={{ shared | matrix:2 }}$$
   - out: { op: routed + shared, tex: '\mathbf{moe}' }
 steps:
   - id: stack

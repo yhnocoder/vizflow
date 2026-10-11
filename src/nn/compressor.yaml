@@ -63,6 +63,10 @@ body:
       outputs: { out: pn }
       tex: { out: '\bar{\mathbf{c}}' }
       folded: true
+      fold:
+        text: |
+          计算和 decoder 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{c}}={{ pn | matrix:2 }}$$
   - pn3: { op: 'view(pn, T // m, 1, c)', tex: '\bar{\mathbf{c}}_{w}' }
   - rope:
       use: PartialRoPE
@@ -74,6 +78,10 @@ body:
       outputs: { out: C }
       tex: { cos: '\cos_{\of{m}w}', sin: '\sin_{\of{m}w}' }
       folded: true
+      fold:
+        text: |
+          计算和 self_attn 里 query 的 RoPE 相同，那里展开画了每一步；第 $w$ 个条目的位置是 $w\cdot m$。
+          $$\of{C}={{ C | matrix:2 }}$$
 steps:
   - id: proj
     show: [Wkv.T, kv]

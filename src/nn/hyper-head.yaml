@@ -2,7 +2,8 @@ module: HyperHead
 subtitle: 把 \of{N} 条 stream 合成一条
 import:
   UnweightedRMSNorm: vizflow/nn/rmsnorm-unweighted
-formula: '\step{sum}{\of{out}=\textstyle\sum_n}\step{sigmoid,eps}{\big(\sigma(}\step{scale}{\alpha\,}\step{mix}{\tilde{\of{X}}W_{\mathrm{fn}}^{\top}}\step{base}{+\mathbf{b}}\step{sigmoid,eps}{)+\epsilon\big)_n}\step{weight}{\,{\of{X}}_{n}}'
+  Sigmoid:           vizflow/nn/sigmoid
+formula: '\step{sum}{\of{out}=\textstyle\sum_n}\step{sigmoid.*,eps}{\big(\sigma(}\step{scale}{\alpha\,}\step{mix}{\tilde{\of{X}}W_{\mathrm{fn}}^{\top}}\step{base}{+\mathbf{b}}\step{sigmoid.*,eps}{)+\epsilon\big)_n}\step{weight}{\,{\of{X}}_{n}}'
 params:
   hc_eps: { type: float, default: 1e-6 }
   eps:    { type: float, default: 1e-6 }
@@ -35,10 +36,23 @@ body:
       outputs: { out: xn }
       tex: { out: '\tilde{\of{X}}' }
       folded: true
+      fold:
+        text: |
+          计算和 mHC 的 input_norm 相同，那里展开画了每一步。
+          $$\tilde{\of{X}}={{ xn | matrix:2 }}$$
   - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
   - z:   { op: mix * scale, tex: '\alpha\,\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
   - zb:  { op: z + base, tex: '\mathbf{u}' }
-  - sig: { op: sigmoid(zb), tex: '\sigma(\mathbf{u})' }
+  - sigmoid:
+      use: Sigmoid
+      inputs: { x: zb }
+      outputs: { out: sig }
+      tex: { out: '\sigma(\mathbf{u})' }
+      folded: true
+      fold:
+        text: |
+          计算和 mHC 里 pre 的 sigmoid 相同，那里展开画了每一步。
+          $$\sigma(\mathbf{u})={{ sig | matrix:3 }}$$
   - pre: { op: sig + hc_eps, tex: '\mathbf{w}' }
   - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}\odot\of{X}' }
   - out: { op: 'sum(weighted, 1)' }
@@ -80,15 +94,6 @@ steps:
     backward:
       label: '$\partial\mathbf{b}$'
       title: 穿过加偏置
-  - id: sigmoid
-    show: sig
-    label: '$\sigma$'
-    title: sigmoid
-    text: |
-      $$\sigma(\mathbf{u})={{ sig | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{u}$'
-      title: 穿过 sigmoid
   - id: eps
     show: pre
     label: '$+\epsilon$'

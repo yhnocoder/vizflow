@@ -2,7 +2,8 @@ module: HyperConnection
 subtitle: manifold-constrained hyper-connection（mHC）
 import:
   UnweightedRMSNorm: vizflow/nn/rmsnorm-unweighted
-formula: '\step{collapse,collapse_sum}{\of{collapsed}=\textstyle\sum_n}\step{pre_sigmoid,pre_eps}{\big(\sigma(}\step{pre_scale}{\alpha_{\mathrm{pre}}\,}\step{mix}{(\tilde{\of{X}}W_{\mathrm{fn}}^{\top})_{\mathrm{pre}}}\step{pre_base}{+\mathbf{b}_{\mathrm{pre}}}\step{pre_sigmoid,pre_eps}{)+\epsilon\big)_n}\step{collapse}{\,{\of{X}}_{n}}'
+  Sigmoid:           vizflow/nn/sigmoid
+formula: '\step{collapse,collapse_sum}{\of{collapsed}=\textstyle\sum_n}\step{pre_sigmoid.*,pre_eps}{\big(\sigma(}\step{pre_scale}{\alpha_{\mathrm{pre}}\,}\step{mix}{(\tilde{\of{X}}W_{\mathrm{fn}}^{\top})_{\mathrm{pre}}}\step{pre_base}{+\mathbf{b}_{\mathrm{pre}}}\step{pre_sigmoid.*,pre_eps}{)+\epsilon\big)_n}\step{collapse}{\,{\of{X}}_{n}}'
 params:
   iters:  { type: int }
   hc_eps: { type: float, default: 1e-6 }
@@ -35,7 +36,6 @@ body:
       inputs: { x: flat }
       outputs: { out: xn }
       tex: { out: '\tilde{\of{X}}' }
-      folded: true
   - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
   - pre_w:  { op: 'narrow(mix, -1, 0, N)', tex: '\mathbf{m}_{\mathrm{pre}}' }
   - post_w: { op: 'narrow(mix, -1, N, N)', tex: '\mathbf{m}_{\mathrm{post}}' }
@@ -53,7 +53,14 @@ body:
       body:
         - pre_z:   { op: pre_w * s_pre, tex: '\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}' }
         - pre_zb:  { op: pre_z + b_pre, tex: '\mathbf{z}_{\mathrm{pre}}' }
-        - pre_sig: { op: sigmoid(pre_zb), tex: '\sigma(\mathbf{z}_{\mathrm{pre}})' }
+        - pre_sigmoid:
+            use: Sigmoid
+            inputs: { x: pre_zb }
+            outputs: { out: pre_sig }
+            tex: { out: '\sigma(\mathbf{z}_{\mathrm{pre}})' }
+            steps:
+              neg:
+                append: 这里算的是 <code>torch.sigmoid(pre)</code>，sigmoid 让 pre 的系数落在 0 到 1 之间。
         - pre:     { op: pre_sig + hc_eps, tex: '\mathbf{w}_{\mathrm{pre}}' }
   - post_branch:
       title: post
@@ -61,7 +68,16 @@ body:
       body:
         - post_z:   { op: post_w * s_post, tex: '\alpha_{\mathrm{post}}\mathbf{m}_{\mathrm{post}}' }
         - post_zb:  { op: post_z + b_post, tex: '\mathbf{z}_{\mathrm{post}}' }
-        - post_sig: { op: sigmoid(post_zb), tex: '\sigma(\mathbf{z}_{\mathrm{post}})' }
+        - post_sigmoid:
+            use: Sigmoid
+            inputs: { x: post_zb }
+            outputs: { out: post_sig }
+            tex: { out: '\sigma(\mathbf{z}_{\mathrm{post}})' }
+            folded: true
+            fold:
+              text: |
+                计算和 pre 的 sigmoid 相同，那里展开画了每一步。
+                $$\sigma(\mathbf{z}_{\mathrm{post}})={{ post_sig | matrix:3 }}$$
         - post:     { op: post_sig * 2, tex: '\mathbf{w}_{\mathrm{post}}' }
   - comb_branch:
       title: comb
@@ -236,16 +252,6 @@ steps:
     backward:
       label: '$\partial(\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}),\ \partial\mathbf{b}_{\mathrm{pre}}$'
       title: pre：穿过加偏置
-  - id: pre_sigmoid
-    show: pre_sig
-    label: '$\sigma$'
-    title: pre：sigmoid
-    text: |
-      逐元素过 sigmoid，落在 0 到 1 之间。
-      $$\sigma(\mathbf{z}_{\mathrm{pre}})={{ pre_sig | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{z}_{\mathrm{pre}}$'
-      title: pre：穿过 sigmoid
   - id: pre_eps
     show: pre
     label: '$\of{pre}$'
@@ -274,15 +280,6 @@ steps:
     backward:
       label: '$\partial(\alpha_{\mathrm{post}}\mathbf{m}_{\mathrm{post}}),\ \partial\mathbf{b}_{\mathrm{post}}$'
       title: post：穿过加偏置
-  - id: post_sigmoid
-    show: post_sig
-    label: '$\sigma$'
-    title: post：sigmoid
-    text: |
-      $$\sigma(\mathbf{z}_{\mathrm{post}})={{ post_sig | matrix:3 }}$$
-    backward:
-      label: '$\partial\mathbf{z}_{\mathrm{post}}$'
-      title: post：穿过 sigmoid
   - id: post_double
     show: post
     label: '$\of{post}$'
