@@ -376,7 +376,7 @@ describe('mountSteps', () => {
     const groups = [...el.querySelectorAll('.vf-grp')].map(text);
     expect(groups).toEqual(['前向', '反向']);
     const pills = [...el.querySelectorAll<HTMLButtonElement>('.vf-st')];
-    expect(pills.map(text)).toEqual(steps.list.map((s) => s.label));
+    expect(pills.map((p, i) => (steps.list[i].label.includes('$') ? p.querySelector('.katex') !== null : text(p) === steps.list[i].label))).toEqual(steps.list.map(() => true));
     expect(pills[0].getAttribute('aria-current')).toBe('step');
     const prev = el.querySelector<HTMLButtonElement>('[aria-label="上一步"]')!;
     const next = el.querySelector<HTMLButtonElement>('[aria-label="下一步"]')!;

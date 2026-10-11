@@ -154,14 +154,14 @@ function backwardEntries(g: Graph, visible: readonly Node[], spec: Exclude<Backw
     const subject = nodes.find((n) => n !== loss) ?? nodes[0];
     const card = explainer.nodeCard(subject, 'backward');
     const override = resolved.override?.[i + 1] ?? {};
-    const title = override.title ?? `∂ℓ/∂${subject.name}`;
+    const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;
     return {
       dir: 'backward',
       index: i + 1,
       id: `b:${i + 1}`,
       kind: 'op',
       title,
-      label: override.label ?? `∂${subject.name}`,
+      label: override.label ?? `$\\partial ${subject.tex}$`,
       text: override.text ?? card.tex.map((tex) => `$$${tex}$$`).join(''),
       nodes,
       segment: title,
@@ -370,7 +370,7 @@ class StepsImpl implements Steps {
           id: `B:${m.id}`,
           kind: 'module',
           title: m.backward.title ?? `穿过 ${m.title}（已折叠）`,
-          label: m.backward.label ?? `∂${m.title}`,
+          label: m.backward.label ?? `$\\partial$ ${m.title}`,
           text: m.backward.text ?? '',
           nodes: [],
           segment: m.segment,
@@ -385,12 +385,12 @@ class StepsImpl implements Steps {
       if (recv.length === 0 && position > 0) continue;
       const subject = recv[0] ?? unit.prod[0];
       const override = unit.step.backward ?? {};
-      const title = override.title ?? `∂ℓ/∂${subject.name}`;
+      const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;
       const info: Omit<StepInfo, 'index' | 'dir'> = {
         id: `b:${unit.index}`,
         kind: 'op',
         title,
-        label: override.label ?? `∂${subject.name}`,
+        label: override.label ?? `$\\partial ${subject.tex}$`,
         text: override.text ?? (override.title === undefined ? explainer.nodeCard(subject, 'backward').tex.map((tex) => `$$${tex}$$`).join('') : ''),
         nodes: [],
         segment: unit.step.segment ?? unit.step.label ?? unit.step.title,

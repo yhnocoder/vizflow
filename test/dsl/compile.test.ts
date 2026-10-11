@@ -632,7 +632,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 γ']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });

@@ -1,5 +1,5 @@
 import { type Graph, Node, graph, opDef } from '../autograd';
-import { explainOf } from '../explain';
+import { explainOf, trailingSubscript } from '../explain';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../scene3d';
 import { type BackwardOverride, type ForwardStep, type PageModule, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { type Nested, inferShape } from '../tensor';
@@ -42,6 +42,7 @@ interface ModuleRec {
   fold: { forward: BackwardOverride; backward: BackwardOverride };
   decl: Record<string, unknown>;
   env: Env;
+  defaults?: { decl: Record<string, unknown>; env: Env };
 }
 
 interface Num {
@@ -104,7 +105,7 @@ const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold
 const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const GROUP_KEYS = new Set(['body', 'steps', 'beside', ...MODULE_ITEM_KEYS]);
 const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
-const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward']);
+const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward', 'fold']);
 const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
@@ -596,7 +597,15 @@ class Compiler {
   }
 
   ofText(text: string, env: Env): string {
-    return text.replace(/\\of\{([^{}]+)\}/g, (_match, ref: string) => this.ofValue(ref.trim(), env));
+    const accented = text.replace(/\\(hat|bar|tilde|widehat|widetilde|overline|vec|dot)\{\\of\{([^{}]+)\}\}/g, (_match, accent: string, ref: string) => {
+      const value = this.ofValue(ref.trim(), env);
+      const split = trailingSubscript(value);
+      return split === undefined ? `\\${accent}{${value}}` : `\\${accent}{${split.base}}_{${split.inner}}`;
+    });
+    return accented.replace(/\\of\{([^{}]+)\}/g, (_match, ref: string, offset: number, whole: string) => {
+      const value = this.ofValue(ref.trim(), env);
+      return /\\[A-Za-z]+$/.test(whole.slice(0, offset)) && /^[A-Za-z]/.test(value) ? ` ${value}` : value;
+    });
   }
 
   ofValue(ref: string, env: Env): string {
@@ -614,7 +623,8 @@ class Compiler {
       if (param !== undefined) {
         if (param.type === 'op') return opTex((param.value as OpValue).op);
         if (param.type === 'float') return numberTex((param.value as Num).toy);
-        if (param.type === 'tex' || param.type === 'text') return param.value as string;
+        if (param.type === 'tex') return param.value as string;
+        if (param.type === 'text') return this.ofText(param.value as string, env);
         return String((param.value as Num).toy);
       }
       const inputTex = env.scope.inputTex.get(ref);
@@ -962,12 +972,13 @@ class PageCompiler {
   closeModule(rec: ModuleRec, created: Node[]): void {
     this.c.moduleStack.pop();
     rec.nodes = created;
-    const { decl, env } = rec;
-    if (decl.fold === undefined) return;
-    const where = child(env.where, decl, 'fold');
-    const fold = record(decl.fold, where, 'fold');
-    rec.fold.forward = this.texts(fold, { ...env, where }, FOLD_KEYS);
-    if (fold.backward !== undefined) rec.fold.backward = this.texts(fold.backward, { ...env, where: child(where, fold, 'backward') }, TEXT_KEYS);
+    for (const { decl, env } of [rec.defaults, rec].filter((x) => x !== undefined)) {
+      if (decl.fold === undefined) continue;
+      const where = child(env.where, decl, 'fold');
+      const fold = record(decl.fold, where, 'fold');
+      rec.fold.forward = { ...rec.fold.forward, ...this.texts(fold, { ...env, where }, FOLD_KEYS) };
+      if (fold.backward !== undefined) rec.fold.backward = { ...rec.fold.backward, ...this.texts(fold.backward, { ...env, where: child(where, fold, 'backward') }, TEXT_KEYS) };
+    }
   }
 
   pageModules(): StepModule[] {
@@ -1412,6 +1423,7 @@ class PageCompiler {
     else if (typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
     entries.push(tree);
     const rec = this.openModule(scope.path, tree.title as string, tree.subtitle, use, env);
+    rec.defaults = { decl, env: childEnv };
     this.weights(scope, decl, childEnv, use.weights === undefined ? undefined : { map: record(use.weights, child(env.where, use, 'weights'), 'weights'), env: { ...env, where: child(env.where, use, 'weights') } }, tree.children);
     this.buffers(scope, decl, childEnv, tree.children);
     const { slots } = this.body(scope, decl, childEnv, tree.children);

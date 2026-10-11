@@ -250,7 +250,9 @@ panels:
   并排的竖道里同一位置的大括号合并成一个，上例画出 `q_norm · k_norm` 和 `q_rope · k_rope`。并排的项不能用同一组里前面一项算出的值（例如 attention 用到 `qr[h]` 和 `kr[g]`，所以写在这一组之后），否则编译报错；名字不是前一项、写在单个节点上时也报错。
 - 全页的路径是实例名逐层拼接，例如 `layer.self_attn.attn[1].P`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
 - 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。
-- tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
+- tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。`\hat{\of{x}}` 这类重音写法在 `x` 的 tex 带下标时把下标移到重音外面，例如 $\hat{\mathbf{x}}_0$。text 类型的参数在模块里展开，参数值里的 `\of{name}` 按模块内的名字查找。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
+- 标签、标题和正文里的数学符号一律写成 LaTeX，例如 `label: '$\partial\of{x}$'`，不用 unicode 的数学字符。模块的步骤标签和反向标签用 `\of{...}` 引用节点，这样实例自动加的下标会出现在标签里。
+- 模块可以在顶层写 `fold: { label, title, text, backward: { label, title, text } }`，作为这个模块折叠后那一步的默认文字；实例的 `fold` 只需写不同的字段，没写的字段用模块的默认值。模块步骤的 `backward: { label, title, text }` 是对应反向步骤的默认文字，实例的步骤补丁可以只改其中几项。
 - 步骤写在模块和页面的 `steps` 里：`{ id, show, label, title, text }`，放在 `show` 里最早建出的节点之后。没被任何步骤显示的节点自动成一步。使用处的 `steps: { 'q_norm[1].square': { append: ... } }` 改写子模块的步骤。反向步骤自动生成，`backward: { 名字: { title, text } }` 改写某个节点所在的那一步。
 - 正文里 `{{ r | matrix:3 }}`、`{{ a.grad | matrix }}` 展开成整个矩阵，其余 `{{...}}` 与第 4 节的模板相同，名字按作用域查找。
 - 3D 布局由库按 body 的结构自动排布，页面不写布局。
