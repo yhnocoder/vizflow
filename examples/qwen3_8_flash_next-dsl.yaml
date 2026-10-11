@@ -87,7 +87,7 @@ modules:
       - mlp:
           use: Qwen3_5MoE
           subtitle: Qwen4ExpTextSparseMoeBlock
-          params: { E: Ne, K: Nk, mf: mf, sf: sf, mlp_class: Qwen4ExpTextMLP }
+          params: { E: Ne, K: Nk, mf: mf, sf: sf, mlp_class: Qwen4ExpTextMLP, router_note: '<code>Qwen4ExpTextTopKRouter</code> 写的是 <code>if self.norm_topk_prob:</code>，<code>Qwen4ExpTextConfig</code> 里 norm_topk_prob 的默认值是 True，这个模型的配置文件没有写它，所以条件成立，执行这一行。' }
           inputs: { x: m2 }
           outputs: { out: moe }
           tex: { out: '\mathbf{moe}_{1}' }
@@ -176,7 +176,7 @@ modules:
       - mlp:
           use: Qwen3_5MoE
           subtitle: Qwen4ExpTextSparseMoeBlock
-          params: { E: Ne, K: Nk, mf: mf, sf: sf, mlp_class: Qwen4ExpTextMLP }
+          params: { E: Ne, K: Nk, mf: mf, sf: sf, mlp_class: Qwen4ExpTextMLP, router_note: '<code>Qwen4ExpTextTopKRouter</code> 写的是 <code>if self.norm_topk_prob:</code>，<code>Qwen4ExpTextConfig</code> 里 norm_topk_prob 的默认值是 True，这个模型的配置文件没有写它，所以条件成立，执行这一行。' }
           inputs: { x: m2 }
           outputs: { out: moe }
           tex: { out: '\mathbf{moe}_{2}' }

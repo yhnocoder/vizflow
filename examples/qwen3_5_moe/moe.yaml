@@ -10,6 +10,7 @@ params:
   mf: { type: dim }
   sf: { type: dim }
   mlp_class: { type: text, default: Qwen3_5MoeMLP }
+  router_note: { type: text, default: '<code>Qwen3_5MoeTopKRouter</code> 没有 norm_topk_prob 这个开关，总是执行这一行，所以这里传 true。' }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -45,7 +46,7 @@ body:
       steps:
         topsum:
           append: |
-            <code>Qwen3_5MoeTopKRouter</code> 没有 norm_topk_prob 这个开关，总是执行 <code>router_top_value /= router_top_value.sum(dim=-1, keepdim=True)</code>，所以这里传 true。
+            \of{router_note}
   - gl: { op: x @ Wsg.T, tex: '\mathbf{g}^{\mathrm{s}}' }
   - gate_sigmoid:
       use: Sigmoid
