@@ -806,7 +806,7 @@ class Plan implements LevelPlan {
       if (range !== undefined) ranges.set(m.id, range);
     }
     this.segments.forEach((segment, i) => {
-      if (segment.nodes.some(hiddenNode)) return;
+      if (segment.nodes.some((n) => hiddenNode(n) || this.chain(this.innermost(n)?.id).some(isFolded))) return;
       const levels = this.levels.filter((l) => l.entries.some((e) => (segment.nodes.includes(e.node) || (e.copy !== undefined && e.copy.consumers.some((u) => segment.nodes.includes(u)))) && !hiddenOf(e)));
       const range = spanOf(levels);
       if (range !== undefined) ranges.set(`segment:${i}`, range);

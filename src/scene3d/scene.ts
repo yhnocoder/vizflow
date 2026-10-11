@@ -58,6 +58,8 @@ import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockS
 import { TICK_COUNT, barHeight, capFor, niceTicks, scaleFor } from './scales';
 import { type EdgeStyle, edgeStyle } from './style';
 import { Transition } from './transition';
+import { WAVE_INVERSE, checkFigure, figureTag } from '../ui/figure-spec';
+import { renderFigures } from '../ui/figures';
 
 export interface CameraOptions {
   direction?: Vec3;
@@ -162,6 +164,7 @@ export const SPLIT_JACOBIAN_BOW = 1.4;
 const JACOBIAN_EPSILON = 1e-12;
 const LINK_REVEALED = 0.32;
 const LINK_HIDDEN = 0.06;
+const ROPE_TOLERANCE = 1e-6;
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
 export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
@@ -298,6 +301,18 @@ function chip(text: string): HTMLButtonElement {
   button.type = 'button';
   button.textContent = text;
   return button;
+}
+
+function ropeKind(node: Node): string | undefined {
+  if (node.shape.length !== 2) return undefined;
+  const [T, dh] = node.shape;
+  return Object.keys(WAVE_INVERSE).find((kind) => {
+    if (checkFigure('rope_wave', node.shape, [kind]) !== undefined) return false;
+    const f = kind === 'cos' ? Math.cos : Math.sin;
+    const omegas = Array.from({ length: dh }, (_, c) => WAVE_INVERSE[kind](node.value.get([1, c])));
+    for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) if (Math.abs(node.value.get([t, c]) - f(t * omegas[c])) > ROPE_TOLERANCE) return false;
+    return true;
+  });
 }
 
 function texTitle(title: string): string {
@@ -1712,7 +1727,16 @@ class SceneController implements EditHost {
 
   private showNodeCard(node: Node, el: HTMLElement): void {
     this.pinned = { node, el };
-    this.pop.replaceChildren(nodeCardElement(this.explainer.nodeCard(node, this.state.dir), this.gridOf(node)));
+    const card = nodeCardElement(this.explainer.nodeCard(node, this.state.dir), this.gridOf(node));
+    const wave = this.state.dir === 'forward' && node.kind === 'buffer' ? ropeKind(node) : undefined;
+    if (wave !== undefined) {
+      const figure = document.createElement('div');
+      figure.className = 'vf-pop-figure';
+      figure.innerHTML = figureTag('rope_wave', node.name, [wave]);
+      renderFigures(figure, this.g);
+      card.querySelector('.vf-eqs')?.after(figure);
+    }
+    this.pop.replaceChildren(card);
     this.pop.hidden = false;
     this.tip.hidden = true;
     const rect = this.root.getBoundingClientRect();
