@@ -163,7 +163,7 @@ function rope(inputs, cos, sin) {
     const steps = [
       { show: [cos, ...parts.map((p) => p.c)], label: '$\\odot\\cos$', title: 'RoPE：乘 cos', text: String.raw`
         RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序拆成四步。
-        cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以没有连线。
+        cos/sin 表的每一行对应一个位置；$\omega_i=\theta^{-2i/d_h}$，$\theta=10^6$ 是 Qwen3 的 rope_theta，所以 $d_h=4$ 时频率是 $(1,10^{-3},1,10^{-3})$。位置 1 的角度是 0，cos 全是 1。cos 和 sin 是常量，不需要梯度，所以连线只在前向画出。
 
         $$\cos=${mx('cos', T, HD, ':3')}$$` },
       { show: parts.map((p) => p.rh), label: 'rotate_half', title: 'rotate_half', text: String.raw`
@@ -321,7 +321,7 @@ function attention(x0, n1, rotary, level) {
       { show: scored.map((s) => s.scaled), label: '$\\div\\sqrt{d_h}$', title: '缩放', text: String.raw`
         乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。` },
       { show: [M, ...scored.map((s) => s.masked)], label: '$+M$', title: 'causal mask', text: String.raw`
-        加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度，所以没有连线。HF 实现里填的是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
+        加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度，所以连线只在前向画出。HF 实现里填的是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
 
         $$M=\begin{pmatrix}0&-\infty&-\infty\\0&0&-\infty\\0&0&0\end{pmatrix}$$` },
       ...soft.steps,
