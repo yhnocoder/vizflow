@@ -7,15 +7,47 @@ import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
 
+export interface SgdOptions {
+  params: Node[];
+  lr: number;
+  label?: string;
+}
+
 export interface LossOptions {
-  sgd?: { params: Node[]; lr: number; label?: string };
+  sgd?: SgdOptions;
   random?: { nodes: Node[]; range: [number, number]; label?: string };
   reset?: boolean;
   text?: string;
+  parts?: Node;
+  hint?: string;
+}
+
+export interface PageSequence {
+  readonly tokens: string[];
+  readonly length: number;
+  get(): number[];
+  set(ids: number[]): void;
+}
+
+export interface SequenceOptions {
+  sequence: true;
+  labels?: string[];
+  sgd?: SgdOptions;
+  random?: boolean | { label?: string };
+  reset?: boolean;
+  title?: string;
+  note?: string;
+}
+
+export interface MatrixEntry {
+  matrix: MatrixSource;
+  grad?: boolean;
+  caption?: string;
+  limit?: number;
 }
 
 export type MatrixSource = Node | ((g: Graph, state: StepState) => Tensor);
-export type MatrixHighlight = Node | { node: Node; axis: 'row' | 'col' };
+export type MatrixHighlight = Node | { node: Node; axis?: 'row' | 'col'; all?: boolean };
 export type TokenColumn = Node | { node: Node; grad?: boolean; title?: string };
 
 export type PanelItem =
@@ -23,7 +55,10 @@ export type PanelItem =
   | { loss: LossOptions }
   | { sliders: Node; min?: number; max?: number; step?: number; title?: string }
   | { tokens: Node; columns?: TokenColumn[]; title?: string; sliders?: Node; min?: number; max?: number }
-  | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: MatrixHighlight; note?: string }
+  | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: MatrixHighlight; note?: string; caption?: string; limit?: number; rows?: string }
+  | { matrices: MatrixEntry[]; title?: string; highlight?: MatrixHighlight; note?: string; rows?: string }
+  | { attention: Node[]; ids: Node; title?: string; note?: string }
+  | SequenceOptions
   | { code: string; title?: string; note?: string }
   | { note: string; title?: string };
 
@@ -34,12 +69,17 @@ const ZERO_CELL = 1e-4;
 const CELL_DIGITS = 2;
 const MIN_MATRIX_LIMIT = 1e-6;
 const SUBSCRIPT_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
+const TINT_ZERO = 1e-9;
+const ATTENTION_LIMIT = 1;
 
 interface Context {
   g: Graph;
   version: Accessor<number>;
   focus: Accessor<number>;
   state: Accessor<StepState>;
+  history: Accessor<number[]>;
+  sgdStep(sgd: SgdOptions): void;
+  sequence: PageSequence | undefined;
 }
 
 const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGITS[Number(d)]);
@@ -47,6 +87,11 @@ const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGIT
 const display = (v: number, digits: number) => formatNumber(v, { digits });
 
 const signColor = (v: number) => `var(${v >= 0 ? '--pos' : '--neg'})`;
+
+const tint = (v: number, limit: number) => {
+  const percent = Math.abs(v) < TINT_ZERO ? 0 : 8 + Math.min(Math.abs(v) / limit, 1) * 62;
+  return `color-mix(in srgb, ${signColor(v)} ${percent.toFixed(0)}%, transparent)`;
+};
 
 function rowElement(node: Node, focus: number, i: number): number[] {
   const shape = node.shape;
@@ -105,7 +150,7 @@ function TemplateText(props: { ctx: Context; text: string; class: string }) {
   return <div class={props.class} ref={(el) => (target = el)} />;
 }
 
-function Spark(props: { history: number[] }) {
+function Spark(props: { history: number[]; hint?: string }) {
   const points = createMemo(() => {
     const history = props.history;
     const max = Math.max(...history) || 1;
@@ -115,55 +160,51 @@ function Spark(props: { history: number[] }) {
   const lastPoint = () => points()[points().length - 1];
   return (
     <svg class="vf-spark" viewBox="0 0 120 42" aria-label="损失变化">
-      <line x1="4" x2="116" y1="37" y2="37" stroke="var(--line-strong)" />
-      <path d={path()} fill="none" stroke="var(--pos)" stroke-width="1.6" />
-      <circle cx={lastPoint()[0]} cy={lastPoint()[1]} r="2.6" fill="var(--pos)" />
+      <Show
+        when={props.history.length >= 2}
+        fallback={
+          <text x="120" y="26" text-anchor="end" font-size="9.5" fill="var(--muted)">
+            {props.hint}
+          </text>
+        }
+      >
+        <line x1="4" x2="116" y1="37" y2="37" stroke="var(--line-strong)" />
+        <path d={path()} fill="none" stroke="var(--pos)" stroke-width="1.6" />
+        <circle cx={lastPoint()[0]} cy={lastPoint()[1]} r="2.6" fill="var(--pos)" />
+      </Show>
     </svg>
   );
 }
 
+function checkTrainable(nodes: readonly Node[], field: string, panel: string): void {
+  for (const node of nodes) {
+    if (node.kind === 'buffer') throw new Error(`${panel}: buffer '${node.name}' is a constant without gradient and cannot be in ${field}`);
+  }
+}
+
+const names = (nodes: Node[]) => nodes.map((n) => n.name).join('、');
+
+const sgdLabel = (sgd: SgdOptions) => `${sgd.label ?? `更新一步 ${names(sgd.params)}`}（η = ${sgd.lr}）`;
+
 function LossPanel(props: { ctx: Context; options: LossOptions }) {
   const { g, version } = props.ctx;
   const options = props.options;
-  const lossValue = () => g.loss().value.data[0];
   const loss = createMemo(() => {
     version();
-    return lossValue();
+    return g.loss().value.data[0];
   });
-  const [history, setHistory] = createSignal<number[]>([]);
-  let stepping = false;
-  onCleanup(
-    g.subscribe(() => {
-      if (!stepping) setHistory([]);
-    }),
-  );
-
-  const sgdStep = (sgd: NonNullable<LossOptions['sgd']>) => {
-    const before = lossValue();
-    const updates = sgd.params.map((p) => {
-      const grad = gradOf(p);
-      return { p, values: Array.from(p.value.data, (v, i) => v - sgd.lr * grad.data[i]) };
-    });
-    stepping = true;
-    try {
-      g.batch(() => updates.forEach(({ p, values }) => p.set(values)));
-    } finally {
-      stepping = false;
-    }
-    setHistory((h) => [...(h.length > 0 ? h : [before]), lossValue()]);
-  };
+  const parts = createMemo(() => {
+    version();
+    return options.parts === undefined ? [] : Array.from(options.parts.value.data);
+  });
 
   const randomize = (random: NonNullable<LossOptions['random']>) => {
     const [low, high] = random.range;
     g.batch(() => random.nodes.forEach((n) => n.set(Array.from(n.value.data, () => Math.round((low + Math.random() * (high - low)) * 100) / 100))));
   };
 
-  for (const [field, nodes] of [['sgd.params', options.sgd?.params], ['random.nodes', options.random?.nodes]] as const) {
-    for (const node of nodes ?? []) {
-      if (node.kind === 'buffer') throw new Error(`loss panel: buffer '${node.name}' is a constant without gradient and cannot be in ${field}`);
-    }
-  }
-  const names = (nodes: Node[]) => nodes.map((n) => n.name).join('、');
+  checkTrainable(options.sgd?.params ?? [], 'sgd.params', 'loss panel');
+  checkTrainable(options.random?.nodes ?? [], 'random.nodes', 'loss panel');
   const hasButtons = options.sgd !== undefined || options.random !== undefined || options.reset === true;
 
   return (
@@ -174,18 +215,23 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
             <i>ℓ =</i>
             <span class="vf-loss-value">{display(loss(), 3)}</span>
           </div>
+          <Show when={options.parts !== undefined}>
+            <div class="vf-lossrows">
+              <For each={parts()}>{(v, t) => <span>{`ℓ${subscript(t() + 1)} = ${display(v, 3)}`}</span>}</For>
+            </div>
+          </Show>
           <Show when={options.text}>{(text) => <TemplateText ctx={props.ctx} class="vf-sub" text={text()} />}</Show>
         </div>
-        <Show when={history().length >= 2}>
-          <Spark history={history()} />
+        <Show when={options.hint !== undefined || props.ctx.history().length >= 2}>
+          <Spark history={props.ctx.history()} hint={options.hint} />
         </Show>
       </div>
       <Show when={hasButtons}>
         <div class="vf-btns">
           <Show when={options.sgd}>
             {(sgd) => (
-              <button type="button" class="vf-btn vf-pri" onClick={() => sgdStep(sgd())}>
-                {`${sgd().label ?? `更新一步 ${names(sgd().params)}`}（η = ${sgd().lr}）`}
+              <button type="button" class="vf-btn vf-pri" onClick={() => props.ctx.sgdStep(sgd())}>
+                {sgdLabel(sgd())}
               </button>
             )}
           </Show>
@@ -203,6 +249,126 @@ function LossPanel(props: { ctx: Context; options: LossOptions }) {
           </Show>
         </div>
       </Show>
+    </Card>
+  );
+}
+
+function SequencePanel(props: { ctx: Context; item: SequenceOptions }) {
+  const { ctx, item } = props;
+  const sequence = ctx.sequence;
+  if (sequence === undefined) throw new Error('sequence panel: mountPanels needs the sequence option');
+  checkTrainable(item.sgd?.params ?? [], 'sgd.params', 'sequence panel');
+  const initial = sequence.get();
+  const ids = createMemo(() => {
+    ctx.version();
+    return sequence.get();
+  });
+  const positions = Array.from({ length: sequence.length }, (_, p) => p);
+  const choose = (p: number, id: number) => {
+    const next = [...sequence.get()];
+    next[p] = id;
+    sequence.set(next);
+  };
+  const randomLabel = typeof item.random === 'object' ? (item.random.label ?? '随机序列') : '随机序列';
+  return (
+    <Card title={item.title}>
+      <div class="vf-seqrow" style={{ 'grid-template-columns': `repeat(${sequence.length}, minmax(0, 1fr))` }}>
+        <For each={positions}>
+          {(p) => {
+            const label = item.labels?.[p] ?? String(p + 1);
+            return (
+              <label>
+                {label}
+                <select aria-label={label} value={ids()[p]} onChange={(e) => choose(p, Number(e.currentTarget.value))}>
+                  <For each={sequence.tokens}>
+                    {(token, i) => (
+                      <option value={i()} selected={ids()[p] === i()}>
+                        {token}
+                      </option>
+                    )}
+                  </For>
+                </select>
+              </label>
+            );
+          }}
+        </For>
+      </div>
+      <Show when={item.note}>{(note) => <TemplateText ctx={ctx} class="vf-note" text={note()} />}</Show>
+      <div class="vf-btns">
+        <Show when={item.sgd}>
+          {(sgd) => (
+            <button type="button" class="vf-btn vf-pri" onClick={() => ctx.sgdStep(sgd())}>
+              {sgdLabel(sgd())}
+            </button>
+          )}
+        </Show>
+        <Show when={item.random}>
+          <button type="button" class="vf-btn" onClick={() => sequence.set(positions.map(() => Math.floor(Math.random() * sequence.tokens.length)))}>
+            {randomLabel}
+          </button>
+        </Show>
+        <Show when={item.reset}>
+          <button
+            type="button"
+            class="vf-btn"
+            onClick={() => {
+              ctx.g.reset();
+              sequence.set(initial);
+            }}
+          >
+            重置
+          </button>
+        </Show>
+      </div>
+    </Card>
+  );
+}
+
+function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attention: Node[] }> }) {
+  const { ctx, item } = props;
+  for (const node of item.attention) {
+    if (node.shape.length !== 2 || node.shape[0] !== node.shape[1]) {
+      throw new Error(`attention panel: node '${node.name}' must be a square matrix, got shape ${formatShape(node.shape)}`);
+    }
+  }
+  const tokens = createMemo(() => {
+    ctx.version();
+    return Array.from(item.ids.value.data, (id) => item.ids.tokens?.[Math.round(id)] ?? String(Math.round(id)));
+  });
+  return (
+    <Card title={item.title}>
+      <div class="vf-attg" style={{ 'grid-template-columns': `repeat(${item.attention.length}, minmax(0, 1fr))` }}>
+        <For each={item.attention}>
+          {(node, h) => {
+            const size = node.shape[0];
+            const values = createMemo(() => {
+              ctx.version();
+              return node.value;
+            });
+            const indices = Array.from({ length: size }, (_, i) => i);
+            return (
+              <div class="vf-attn" style={{ 'grid-template-columns': `34px repeat(${size}, minmax(0, 1fr))` }}>
+                <div class="vf-h">{`h${h() + 1}`}</div>
+                <For each={indices}>{(c) => <div class="vf-h">{tokens()[c]}</div>}</For>
+                <For each={indices}>
+                  {(r) => (
+                    <>
+                      <div class="vf-h">{tokens()[r]}</div>
+                      <For each={indices}>
+                        {(c) => {
+                          const v = () => values().get([r, c]);
+                          return <div style={{ background: tint(v(), ATTENTION_LIMIT) }}>{c > r ? '·' : display(v(), CELL_DIGITS)}</div>;
+                        }}
+                      </For>
+                    </>
+                  )}
+                </For>
+              </div>
+            );
+          }}
+        </For>
+      </div>
+      <Show when={item.note}>{(note) => <TemplateText ctx={ctx} class="vf-note" text={note()} />}</Show>
     </Card>
   );
 }
@@ -327,11 +493,13 @@ function TokensPanel(props: { ctx: Context; item: Extract<PanelItem, { tokens: N
   );
 }
 
-function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: MatrixSource }> }) {
-  const { ctx, item } = props;
-  const source = item.matrix;
+type MatrixItem = Extract<PanelItem, { matrix: MatrixSource }> | Extract<PanelItem, { matrices: MatrixEntry[] }>;
+
+function MatrixGrid(props: { ctx: Context; entry: MatrixEntry; highlight?: MatrixHighlight; rows?: string }) {
+  const { ctx, entry } = props;
+  const source = entry.matrix;
   const read = (): Tensor => {
-    const tensor = source instanceof Node ? (item.grad ? gradOf(source) : source.value) : source(ctx.g, ctx.state());
+    const tensor = source instanceof Node ? (entry.grad ? gradOf(source) : source.value) : source(ctx.g, ctx.state());
     if (tensor.ndim !== 2) {
       const what = source instanceof Node ? `node '${source.name}'` : 'matrix function result';
       throw new Error(`matrix panel: ${what} must be 2-D, got shape ${formatShape(tensor.shape)}`);
@@ -339,65 +507,99 @@ function MatrixPanel(props: { ctx: Context; item: Extract<PanelItem, { matrix: M
     return tensor;
   };
   const initial = read();
-  const limit = Math.max(MIN_MATRIX_LIMIT, ...Array.from(initial.data, Math.abs));
+  const fixed = entry.limit;
+  const limit = fixed ?? Math.max(MIN_MATRIX_LIMIT, ...Array.from(initial.data, Math.abs));
   const [rows, cols] = initial.shape;
   const tensor = createMemo(() => {
     ctx.version();
     return read();
   });
-  const highlight = item.highlight instanceof Node ? item.highlight : item.highlight?.node;
-  const frameRow = !(item.highlight instanceof Node) && item.highlight?.axis === 'row';
+  const spec = props.highlight;
+  const highlight = spec instanceof Node ? spec : spec?.node;
+  const frameRow = !(spec instanceof Node) && spec?.axis === 'row';
+  const frameAll = !(spec instanceof Node) && spec?.all === true;
   const tokenHeaders = highlight?.tokens !== undefined && classCount(highlight) === cols ? highlight.tokens : undefined;
   const frameArea = (t: number) =>
     frameRow ? { 'grid-row': `${t + 2}`, 'grid-column': `2 / span ${cols}` } : { 'grid-row': `2 / span ${rows}`, 'grid-column': `${t + 2}` };
   const target = createMemo(() => {
     ctx.version();
-    return highlight === undefined ? undefined : Math.round(highlight.value.get(targetIndex(highlight, ctx.focus())));
+    return highlight === undefined || frameAll ? undefined : Math.round(highlight.value.get(targetIndex(highlight, ctx.focus())));
+  });
+  const targets = createMemo(() => {
+    ctx.version();
+    return frameAll && highlight !== undefined ? new Set(Array.from(highlight.value.data, Math.round)) : new Set<number>();
   });
   const shade = (v: number) => {
     if (Math.abs(v) < ZERO_CELL || Number(display(Math.abs(v), CELL_DIGITS)) === 0) return 'transparent';
-    const percent = 8 + Math.min(Math.abs(v) / limit, 1) * 62;
-    return `color-mix(in srgb, ${signColor(v)} ${percent.toFixed(0)}%, transparent)`;
+    return tint(v, limit);
   };
   const rowIds = Array.from({ length: rows }, (_, r) => r);
   const colIds = Array.from({ length: cols }, (_, c) => c);
+  const rowName = (r: number) => (props.rows === undefined ? String(r + 1) : `${props.rows}${subscript(r + 1)}`);
+
+  return (
+    <div class="vf-wmat" style={{ 'grid-template-columns': `26px repeat(${cols}, minmax(0, 1fr))` }}>
+      <div class="vf-h" style={{ 'grid-row': '1', 'grid-column': '1' }} />
+      <For each={colIds}>
+        {(c) => (
+          <div class="vf-h" title={tokenHeaders?.[c]} style={{ 'grid-row': '1', 'grid-column': `${c + 2}` }}>
+            {tokenHeaders === undefined ? c + 1 : tokenHeaders[c].trim()}
+          </div>
+        )}
+      </For>
+      <For each={rowIds}>
+        {(r) => (
+          <>
+            <div class="vf-h vf-rh" style={{ 'grid-row': `${r + 2}`, 'grid-column': '1' }}>
+              {rowName(r)}
+            </div>
+            <For each={colIds}>
+              {(c) => {
+                const value = () => tensor().get([r, c]);
+                return (
+                  <div classList={{ 'vf-ct': targets().has(c) }} style={{ background: shade(value()), 'grid-row': `${r + 2}`, 'grid-column': `${c + 2}` }}>
+                    {display(value(), CELL_DIGITS)}
+                  </div>
+                );
+              }}
+            </For>
+          </>
+        )}
+      </For>
+      <Show when={target() !== undefined}>
+        <div class={frameRow ? 'vf-frame vf-rt' : 'vf-frame vf-ct'} style={frameArea(target() ?? 0)} />
+      </Show>
+    </div>
+  );
+}
+
+function MatrixPanel(props: { ctx: Context; item: MatrixItem }) {
+  const { ctx, item } = props;
+  const entries: MatrixEntry[] = 'matrices' in item ? item.matrices : [item];
+  const first = entries[0];
+  const source = first?.matrix;
   const title =
-    item.title ?? (source instanceof Node ? `${item.grad ? `∂ℓ/∂${source.name}` : source.name}，${formatShape(source.shape)}` : undefined);
+    item.title ??
+    ('matrix' in item && source instanceof Node ? `${first.grad ? `∂ℓ/∂${source.name}` : source.name}，${formatShape(source.shape)}` : undefined);
+  const grid = (entry: MatrixEntry) => <MatrixGrid ctx={ctx} entry={entry} highlight={item.highlight} rows={item.rows} />;
+  const captioned = entries.some((entry) => entry.caption !== undefined) || entries.length > 1;
 
   return (
     <Card title={title}>
-      <div class="vf-wmat" style={{ 'grid-template-columns': `26px repeat(${cols}, minmax(0, 1fr))` }}>
-        <div class="vf-h" style={{ 'grid-row': '1', 'grid-column': '1' }} />
-        <For each={colIds}>
-          {(c) => (
-            <div class="vf-h" title={tokenHeaders?.[c]} style={{ 'grid-row': '1', 'grid-column': `${c + 2}` }}>
-              {tokenHeaders === undefined ? c + 1 : tokenHeaders[c].trim()}
-            </div>
-          )}
-        </For>
-        <For each={rowIds}>
-          {(r) => (
-            <>
-              <div class="vf-h vf-rh" style={{ 'grid-row': `${r + 2}`, 'grid-column': '1' }}>
-                {r + 1}
+      <Show when={captioned} fallback={grid(first)}>
+        <div class="vf-wg">
+          <For each={entries}>
+            {(entry) => (
+              <div>
+                <Show when={entry.caption}>
+                  <div class="vf-wcap">{entry.caption}</div>
+                </Show>
+                {grid(entry)}
               </div>
-              <For each={colIds}>
-                {(c) => {
-                  const value = () => tensor().get([r, c]);
-                  return (
-                    <div style={{ background: shade(value()), 'grid-row': `${r + 2}`, 'grid-column': `${c + 2}` }}>
-                      {display(value(), CELL_DIGITS)}
-                    </div>
-                  );
-                }}
-              </For>
-            </>
-          )}
-        </For>
-        <Show when={target() !== undefined}>
-          <div class={frameRow ? 'vf-frame vf-rt' : 'vf-frame vf-ct'} style={frameArea(target() ?? 0)} />
-        </Show>
-      </div>
+            )}
+          </For>
+        </div>
+      </Show>
       <Show when={item.note}>{(note) => <TemplateText ctx={ctx} class="vf-note" text={note()} />}</Show>
     </Card>
   );
@@ -432,9 +634,11 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
   if ('loss' in item) return <LossPanel ctx={props.ctx} options={item.loss} />;
+  if ('sequence' in item) return <SequencePanel ctx={props.ctx} item={item} />;
+  if ('attention' in item) return <AttentionPanel ctx={props.ctx} item={item} />;
   if ('sliders' in item && !('tokens' in item)) return <SlidersPanel ctx={props.ctx} item={item} />;
   if ('tokens' in item) return <TokensPanel ctx={props.ctx} item={item} />;
-  if ('matrix' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
+  if ('matrix' in item || 'matrices' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
   if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
   return (
     <Card title={item.title}>
@@ -443,10 +647,38 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   );
 }
 
-function PanelsView(props: { g: Graph; items: PanelItem[]; steps: Steps | undefined }) {
-  const { g, steps } = props;
+export interface PanelsOptions {
+  steps?: Steps;
+  sequence?: PageSequence;
+}
+
+function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOptions }) {
+  const { g } = props;
+  const { steps, sequence } = props.options;
   const version = trackGraph(g);
   const stepsVersion = trackSteps(steps);
+  const [history, setHistory] = createSignal<number[]>([]);
+  let stepping = false;
+  onCleanup(
+    g.subscribe(() => {
+      if (!stepping) setHistory([]);
+    }),
+  );
+  const lossValue = () => g.loss().value.data[0];
+  const sgdStep = (sgd: SgdOptions) => {
+    const before = lossValue();
+    const updates = sgd.params.map((p) => {
+      const grad = gradOf(p);
+      return { p, values: Array.from(p.value.data, (v, i) => v - sgd.lr * grad.data[i]) };
+    });
+    stepping = true;
+    try {
+      g.batch(() => updates.forEach(({ p, values }) => p.set(values)));
+    } finally {
+      stepping = false;
+    }
+    setHistory((h) => [...(h.length > 0 ? h : [before]), lossValue()]);
+  };
   const ctx: Context = {
     g,
     version,
@@ -458,6 +690,9 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; steps: Steps | undefi
       stepsVersion();
       return steps?.state() ?? allVisible(g);
     },
+    history,
+    sgdStep,
+    sequence,
   };
   return (
     <div class="vf-panels">
@@ -466,7 +701,7 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; steps: Steps | undefi
   );
 }
 
-export function mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options: { steps?: Steps } = {}): Mounted {
+export function mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options: PanelsOptions = {}): Mounted {
   const target = resolveElement(el, 'mountPanels');
-  return { dispose: render(() => <PanelsView g={g} items={items} steps={options.steps} />, target) };
+  return { dispose: render(() => <PanelsView g={g} items={items} options={options} />, target) };
 }

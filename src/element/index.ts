@@ -3,7 +3,7 @@ import type { CompiledPage } from '../dsl';
 import { renderText } from '../formula';
 import type { SceneOptions } from '../scene3d';
 import { createSteps, type Steps, type StepsSpec } from '../steps';
-import { mountPanels, mountSteps, type Mounted, type PanelItem } from '../ui';
+import { mountPanels, mountSections, mountSteps, type Mounted, type PageSequence, type PanelItem, type SectionItem } from '../ui';
 import elementCss from './element.css?inline';
 
 const styleId = 'vf-element-style';
@@ -17,7 +17,7 @@ if (!document.getElementById(styleId)) {
 
 export type VizflowPageScene = Omit<SceneOptions, 'steps' | 'edit'>;
 
-const propertyNames = ['graph', 'steps', 'panels', 'scene', 'edit'] as const;
+const propertyNames = ['graph', 'steps', 'panels', 'sections', 'sequence', 'scene', 'edit'] as const;
 
 function element(tag: string, className: string): HTMLElement {
   const el = document.createElement(tag);
@@ -29,6 +29,8 @@ export class VizflowPage extends HTMLElement {
   #graph: Graph | undefined;
   #steps: StepsSpec | undefined;
   #panels: PanelItem[] | undefined;
+  #sections: SectionItem[] | undefined;
+  #sequence: PageSequence | undefined;
   #scene: VizflowPageScene | undefined;
   #edit = false;
   #created: Steps | undefined;
@@ -78,6 +80,24 @@ export class VizflowPage extends HTMLElement {
     this.#schedule();
   }
 
+  get sections(): SectionItem[] | undefined {
+    return this.#sections;
+  }
+
+  set sections(value: SectionItem[] | undefined) {
+    this.#sections = value;
+    this.#schedule();
+  }
+
+  get sequence(): PageSequence | undefined {
+    return this.#sequence;
+  }
+
+  set sequence(value: PageSequence | undefined) {
+    this.#sequence = value;
+    this.#schedule();
+  }
+
   get scene(): VizflowPageScene | undefined {
     return this.#scene;
   }
@@ -124,6 +144,8 @@ export class VizflowPage extends HTMLElement {
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
       this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
+      this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
+      this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
       this.#scene = { layout, modules, hint: compiled.page.hint, camera: compiled.page.camera };
       this.#schedule();
       this.#flush();
@@ -180,6 +202,9 @@ export class VizflowPage extends HTMLElement {
     const stepsBox = element('div', 'vf-steps');
     if (this.#scene !== undefined) main.append(stage);
     main.append(stepsBox);
+    const sections = this.#sections;
+    const sectionsBox = element('div', 'vf-article');
+    if (sections !== undefined) main.append(sectionsBox);
     const panels = this.#panels;
     const side = element('aside', 'vf-side');
     const layout = element('div', panels === undefined ? 'vf-stack' : 'vf-split');
@@ -189,7 +214,11 @@ export class VizflowPage extends HTMLElement {
     const header = this.#header();
     this.replaceChildren(...(header === undefined ? [] : [header]), layout);
     this.#mounted.push(mountSteps(stepsBox, steps));
-    if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps }));
+    if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps, sequence: this.#sequence }));
+    if (sections !== undefined) {
+      const onJump = () => stage.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      this.#mounted.push(mountSections(sectionsBox, g, sections, { steps, onJump }));
+    }
     if (this.#scene !== undefined) void this.#mountScene(stage, g, { ...this.#scene, steps, edit: this.#edit });
   }
 

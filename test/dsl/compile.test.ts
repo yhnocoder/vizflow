@@ -470,6 +470,75 @@ panels:
   });
 });
 
+describe('panels and sections', () => {
+  it('resolves nodes in the new panel fields and in sections', async () => {
+    const result = await page(`
+title: t
+dims: { T: 2, d: 4 }
+vocab: [a, b, c]
+inputs:
+  ids: { tokens: [a, c] }
+weights:
+  q: { shape: [T, d], init: ones }
+  k: { shape: [T, d], init: ones }
+  W: { shape: [3, d], init: ones }
+body:
+  - S: q @ k.T
+  - z: q @ W.T
+  - l: mean(z)
+panels:
+  - loss: { parts: S, hint: 走几步 }
+  - { sequence: true, labels: [x1, x2], sgd: { params: all, lr: 0.5 }, random: true }
+  - { attention: [S, S], ids: ids, title: P }
+  - title: W
+    matrices:
+      - { matrix: W.T, caption: 'Wᵀ $d$', limit: 1.2 }
+      - { matrix: W.T, grad: true, limit: 0.3 }
+    highlight: { node: ids, all: true }
+    rows: h
+sections:
+  - title: RoPE
+    rope: { q: q, k: k, theta: 10, dh: d }
+    rows:
+      - columns: [300, 1fr]
+        cells:
+          - [rope_dial]
+          - [{ lead: 开头 }, { text: '### 标题' }]
+      - [rope_curve, { buttons: [{ label: 去, go: S }] }, { rope_compare: { scores: [S], weights: S, ids: ids } }]
+`);
+    const [loss, sequence, attention, matrices] = result.panels as unknown as Record<string, any>[];
+    expect(loss.loss.parts).toBe(result.nodes.get('S'));
+    expect(loss.loss.hint).toBe('走几步');
+    expect(sequence.sequence).toBe(true);
+    expect(sequence.sgd.params).toEqual([result.nodes.get('q'), result.nodes.get('k'), result.nodes.get('W')]);
+    expect(attention.attention).toEqual([result.nodes.get('S'), result.nodes.get('S')]);
+    expect(attention.ids).toBe(result.nodes.get('ids'));
+    expect(matrices.matrices[0].matrix).toBe(result.nodes.get('W')!.T);
+    expect(matrices.matrices[1]).toMatchObject({ grad: true, limit: 0.3 });
+    expect(matrices.highlight).toEqual({ node: result.nodes.get('ids'), all: true });
+    const [section] = result.sections;
+    expect(section.rope).toEqual({ q: [result.nodes.get('q')], k: [result.nodes.get('k')], rows: [-1, 1], head: 1, theta: 10, dh: 4, positions: 24 });
+    expect(section.rows[0]).toEqual({ columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头' }, { text: '### 标题' }]] });
+    expect(section.rows[1].cells[0][1]).toEqual({ buttons: [{ label: '去', go: result.nodes.get('S') }] });
+    expect(section.rows[1].cells[0][2]).toEqual({ rope_compare: { scores: [result.nodes.get('S')], weights: [result.nodes.get('S')], ids: result.nodes.get('ids') } });
+  });
+
+  it('reports unknown section blocks and an odd head size with their location', async () => {
+    const base = `
+title: t
+dims: { T: 2, d: 3 }
+inputs: {}
+weights:
+  q: { shape: [T, d], init: ones }
+body:
+  - l: mean(q)
+sections:
+`;
+    await expect(page(`${base}  - rows: [[{ chart: q }]]\n`)).rejects.toThrow(/sections\[0\]\.rows\[0\]\[0\]\.chart: unknown block 'chart'/);
+    await expect(page(`${base}  - { rope: { q: q, k: q, theta: 10, dh: d }, rows: [] }\n`)).rejects.toThrow(/sections\[0\]\.rope\.dh: dh must be an even integer/);
+  });
+});
+
 describe('page structure', () => {
   it('builds the layout tree, modules and real dimensions', async () => {
     const files = { 'mem:/pages/norm.yaml': NORM };

@@ -3,7 +3,7 @@ import { explainOf } from '../explain';
 import type { CameraOptions, LayoutEntry, LayoutTree, SceneModule } from '../scene3d';
 import { type BackwardOverride, type ForwardStep, type StepsSpec, backwardGroups } from '../steps';
 import { type Nested, inferShape } from '../tensor';
-import type { PanelItem } from '../ui';
+import type { PanelItem, SectionBlock, SectionItem, SectionRow } from '../ui';
 import { type Ast, ParseError, parseExpr, parseRange } from './expr';
 import { type LoadOptions, Loader, type ModuleDef } from './load';
 import { DslError, type Where, child, fail } from './source';
@@ -15,6 +15,7 @@ export interface CompiledPage {
   tree: LayoutTree;
   modules: SceneModule[];
   panels: PanelItem[];
+  sections: SectionItem[];
   nodes: Map<string, Node>;
   page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
 }
@@ -81,7 +82,7 @@ const FOR_KEYS = new Set(['for', 'in', 'name', 'brace', 'beside', 'body']);
 const MODULE_KEYS = new Set(['module', 'import', 'subtitle', 'params', 'inputs', 'outputs', 'weights', 'buffers', 'body', 'steps', 'backward']);
 const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'vocab', 'init', 'inputs', 'weights',
-  'buffers', 'values', 'body', 'steps', 'backward', 'panels',
+  'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections',
 ]);
 const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text']);
 const PATCH_KEYS = new Set(['title', 'label', 'text', 'append']);
@@ -90,6 +91,7 @@ const INITS = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
 const DEFAULT_SEED = 1;
 const INIT_DIGITS = 2;
+const ROPE_POSITIONS = 24;
 
 class NeedDim {
   constructor(
@@ -819,6 +821,7 @@ class PageCompiler {
       tree,
       modules: c.modules,
       panels: this.panels(env),
+      sections: this.sections(env),
       nodes: c.nodes,
       page: {
         title: String(page.title),
@@ -1426,20 +1429,34 @@ class PageCompiler {
     if (!Array.isArray(page.panels)) fail(where, 'panels must be a list');
     const nodeAt = (value: unknown, at: Where) => c.node(value, { ...env, where: at });
     const textAt = (value: unknown, at: Where) => c.text(value, { ...env, where: at });
+    const nodesAt = (value: unknown, at: Where) =>
+      Array.isArray(value) ? value.flatMap((v, k) => c.nodeList(v, { ...env, where: child(at, value, k) })) : c.nodeList(value, { ...env, where: at });
     return page.panels.map((panel, i): PanelItem => {
       const at = child(where, page.panels as unknown[], i);
       if (panel === 'loss') return 'loss';
       if (!isRecord(panel)) fail(at, "a panel must be 'loss' or a mapping");
       const out: Record<string, unknown> = { ...panel };
       const field = (key: string) => child(at, panel, key);
-      for (const key of ['title', 'note']) if (typeof panel[key] === 'string') out[key] = textAt(panel[key], field(key));
-      for (const key of ['tokens', 'matrix', 'sliders']) {
+      for (const key of ['title', 'note', 'caption']) if (typeof panel[key] === 'string') out[key] = textAt(panel[key], field(key));
+      for (const key of ['tokens', 'matrix', 'sliders', 'ids']) {
         if (panel[key] === undefined) continue;
         out[key] = nodeAt(panel[key], field(key));
       }
+      if (panel.attention !== undefined) out.attention = nodesAt(panel.attention, field('attention'));
       if (panel.highlight !== undefined) {
         const highlight = panel.highlight;
         out.highlight = isRecord(highlight) ? { ...highlight, node: nodeAt(highlight.node, child(field('highlight'), highlight, 'node')) } : nodeAt(highlight, field('highlight'));
+      }
+      if (panel.matrices !== undefined) {
+        const matrices = panel.matrices;
+        if (!Array.isArray(matrices)) fail(field('matrices'), 'matrices must be a list');
+        out.matrices = matrices.map((entry, k) => {
+          const entryAt = child(field('matrices'), matrices, k);
+          if (!isRecord(entry)) fail(entryAt, 'a matrices entry must be a mapping');
+          const converted: Record<string, unknown> = { ...entry, matrix: nodeAt(entry.matrix, child(entryAt, entry, 'matrix')) };
+          if (typeof entry.caption === 'string') converted.caption = textAt(entry.caption, child(entryAt, entry, 'caption'));
+          return converted;
+        });
       }
       if (Array.isArray(panel.columns)) {
         const columns = panel.columns;
@@ -1453,6 +1470,10 @@ class PageCompiler {
           return nodeAt(column, columnAt);
         });
       }
+      if (panel.sequence !== undefined) {
+        if (panel.sequence !== true) fail(field('sequence'), 'sequence must be true');
+        Object.assign(out, this.trainable(panel, ['sgd'], env, at));
+      }
       if (isRecord(panel.loss)) out.loss = this.lossPanel(panel.loss, { ...env, where: field('loss') });
       return out as PanelItem;
     });
@@ -1460,22 +1481,128 @@ class PageCompiler {
 
   lossPanel(loss: Record<string, unknown>, env: Env): Record<string, unknown> {
     const c = this.c;
-    const out: Record<string, unknown> = { ...loss };
+    const out: Record<string, unknown> = { ...loss, ...this.trainable(loss, ['sgd', 'random'], env, env.where) };
     const at = (key: string, obj: object = loss) => ({ ...env, where: child(env.where, obj, key) });
     if (typeof loss.text === 'string') out.text = c.text(loss.text, at('text'));
-    for (const key of ['sgd', 'random']) {
-      const spec = loss[key];
-      if (spec === undefined) continue;
-      if (!isRecord(spec)) fail(at(key).where, `${key} must be a mapping`);
+    if (loss.parts !== undefined) out.parts = c.node(loss.parts, at('parts'));
+    return out;
+  }
+
+  trainable(spec: Record<string, unknown>, keys: string[], env: Env, where: Where): Record<string, unknown> {
+    const c = this.c;
+    const out: Record<string, unknown> = {};
+    for (const key of keys) {
+      const value = spec[key];
+      if (value === undefined) continue;
+      const keyWhere = child(where, spec, key);
+      if (!isRecord(value)) fail(keyWhere, `${key} must be a mapping`);
       const nodesKey = key === 'sgd' ? 'params' : 'nodes';
-      const selected = spec[nodesKey];
-      const specEnv = { ...env, where: child(env.where, loss, key) };
+      const selected = value[nodesKey];
+      const nodesWhere = child(keyWhere, value, nodesKey);
       const nodes = selected === 'all'
         ? c.g.nodes.filter((n) => n.kind === 'param')
-        : list(selected as unknown).flatMap((s) => c.nodeList(s, { ...specEnv, where: child(specEnv.where, spec, nodesKey) }));
-      out[key] = { ...spec, [nodesKey]: nodes };
+        : list(selected as unknown).flatMap((s) => c.nodeList(s, { ...env, where: nodesWhere }));
+      out[key] = { ...value, [nodesKey]: nodes };
     }
     return out;
+  }
+
+  sections(env: Env): SectionItem[] {
+    const c = this.c;
+    const page = this.page;
+    if (page.sections === undefined) return [];
+    const where = child(this.where, page, 'sections');
+    if (!Array.isArray(page.sections)) fail(where, 'sections must be a list');
+    const sections = page.sections;
+    const nodesAt = (value: unknown, at: Where) =>
+      Array.isArray(value) ? value.flatMap((v, k) => c.nodeList(v, { ...env, where: child(at, value, k) })) : c.nodeList(value, { ...env, where: at });
+    const textAt = (value: unknown, at: Where) => {
+      if (typeof value !== 'string') fail(at, 'expected text');
+      return c.text(value, { ...env, where: at });
+    };
+    const numberAt = (value: unknown, at: Where) => {
+      if (typeof value === 'number') return value;
+      const found = typeof value === 'string' ? c.expression(value, { ...env, where: at }, undefined) : undefined;
+      if (typeof found !== 'object' || found === null || !('toy' in found)) return fail(at, 'expected a number or a dimension expression');
+      return found.toy;
+    };
+    const block = (value: unknown, at: Where): SectionBlock => {
+      if (value === 'rope_dial' || value === 'rope_curve') return value;
+      if (!isRecord(value)) fail(at, "a block must be 'rope_dial', 'rope_curve' or a mapping");
+      if (Object.keys(value).length !== 1) fail(at, 'a block must have exactly one key');
+      const key = Object.keys(value)[0];
+      const keyAt = child(at, value, key);
+      if (key === 'text') return { text: textAt(value.text, keyAt) };
+      if (key === 'lead') return { lead: textAt(value.lead, keyAt) };
+      if (key === 'buttons') {
+        const buttons = value.buttons;
+        if (!Array.isArray(buttons)) fail(keyAt, 'buttons must be a list');
+        return {
+          buttons: buttons.map((b, k) => {
+            const buttonAt = child(keyAt, buttons, k);
+            if (!isRecord(b)) fail(buttonAt, 'a button must be a mapping with label and go');
+            return { label: textAt(b.label, child(buttonAt, b, 'label')), go: c.node(b.go, { ...env, where: child(buttonAt, b, 'go') }) };
+          }),
+        };
+      }
+      if (key === 'rope_compare') {
+        const spec = value.rope_compare;
+        if (!isRecord(spec)) fail(keyAt, 'rope_compare must be a mapping');
+        const specAt = (k: string) => child(keyAt, spec, k);
+        return {
+          rope_compare: {
+            scores: nodesAt(spec.scores, specAt('scores')),
+            weights: nodesAt(spec.weights, specAt('weights')),
+            ids: c.node(spec.ids, { ...env, where: specAt('ids') }),
+          },
+        };
+      }
+      return fail(keyAt, `unknown block '${key}'`);
+    };
+    return sections.map((section, i): SectionItem => {
+      const at = child(where, sections, i);
+      if (!isRecord(section)) fail(at, 'a section must be a mapping');
+      const field = (key: string) => child(at, section, key);
+      const out: SectionItem = { rows: [] };
+      if (section.title !== undefined) out.title = textAt(section.title, field('title'));
+      if (section.rope !== undefined) {
+        const rope = section.rope;
+        if (!isRecord(rope)) fail(field('rope'), 'rope must be a mapping');
+        const ropeAt = (key: string) => child(field('rope'), rope, key);
+        const rows = rope.rows ?? [-1, 1];
+        if (!Array.isArray(rows) || rows.length !== 2) fail(ropeAt('rows'), 'rows must be [q row, k row]');
+        out.rope = {
+          q: nodesAt(rope.q, ropeAt('q')),
+          k: nodesAt(rope.k, ropeAt('k')),
+          rows: [numberAt(rows[0], ropeAt('rows')), numberAt(rows[1], ropeAt('rows'))],
+          head: rope.head === undefined ? 1 : numberAt(rope.head, ropeAt('head')),
+          theta: numberAt(rope.theta, ropeAt('theta')),
+          dh: numberAt(rope.dh, ropeAt('dh')),
+          positions: rope.positions === undefined ? ROPE_POSITIONS : numberAt(rope.positions, ropeAt('positions')),
+        };
+        if (!Number.isInteger(out.rope.dh) || out.rope.dh < 2 || out.rope.dh % 2 !== 0) fail(ropeAt('dh'), 'dh must be an even integer');
+        if (!Number.isInteger(out.rope.positions) || out.rope.positions < 2) fail(ropeAt('positions'), 'positions must be an integer of at least 2');
+      }
+      const rows = section.rows;
+      if (!Array.isArray(rows)) fail(field('rows'), 'rows must be a list');
+      out.rows = rows.map((row, r): SectionRow => {
+        const rowAt = child(field('rows'), rows, r);
+        if (Array.isArray(row)) return { cells: [row.map((b, k) => block(b, child(rowAt, row, k)))] };
+        if (!isRecord(row) || !Array.isArray(row.cells)) fail(rowAt, 'a row must be a list of blocks or a mapping with cells');
+        const cells = row.cells;
+        const columns = row.columns;
+        if (columns !== undefined && (!Array.isArray(columns) || columns.length !== cells.length)) fail(child(rowAt, row, 'columns'), 'columns must list one width per cell');
+        return {
+          columns: columns as (number | string)[] | undefined,
+          cells: cells.map((cell, k) => {
+            const cellAt = child(child(rowAt, row, 'cells'), cells, k);
+            if (!Array.isArray(cell)) fail(cellAt, 'a cell must be a list of blocks');
+            return cell.map((b, n) => block(b, child(cellAt, cell, n)));
+          }),
+        };
+      });
+      return out;
+    });
   }
 }
 

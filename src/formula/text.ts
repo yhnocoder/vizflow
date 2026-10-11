@@ -103,20 +103,36 @@ function joinLines(block: Segment[]): Segment[] {
   });
 }
 
-function paragraphs(source: string): Segment[] {
+const heading = /^(#{1,6})[ \t]+/;
+
+function inlineMarkdown(block: Segment[]): Segment[] {
+  return block.map((segment) => {
+    if (segment.kind === 'tex') return segment;
+    const html = segment.html.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    return { kind: 'html', html };
+  });
+}
+
+function paragraphs(source: string, markdown: boolean): Segment[] {
   return splitBlocks(splitTex(dedent(source))).flatMap((block) => {
     const first = block[0];
     if (block.length === 1 && first.kind === 'tex' && first.display) return block;
     if (first.kind === 'html' && preTag.test(first.html)) return block;
-    const joined = joinLines(block);
-    if (first.kind === 'html' && blockTag.test(first.html)) return joined;
+    const joined = markdown ? inlineMarkdown(joinLines(block)) : joinLines(block);
+    const head = joined[0];
+    if (head.kind === 'html' && blockTag.test(head.html)) return joined;
+    const level = markdown && head.kind === 'html' ? heading.exec(head.html) : null;
+    if (level !== null && head.kind === 'html') {
+      const tag = `h${level[1].length}`;
+      const rest: Segment[] = [{ kind: 'html', html: head.html.slice(level[0].length) }, ...joined.slice(1)];
+      return [{ kind: 'html', html: `<${tag}>` }, ...rest, { kind: 'html', html: `</${tag}>` }];
+    }
     return [{ kind: 'html', html: '<p>' }, ...joined, { kind: 'html', html: '</p>' }];
   });
 }
 
-export function renderText(html: string, target: HTMLElement): void {
+function fill(segments: Segment[], target: HTMLElement): void {
   const formulas: { tex: string; display: boolean }[] = [];
-  const segments = html.includes('\n') ? paragraphs(html) : splitTex(html);
   const markup = segments
     .map((segment) => {
       if (segment.kind === 'html') return segment.html;
@@ -131,4 +147,12 @@ export function renderText(html: string, target: HTMLElement): void {
     marker.replaceWith(render(formula.tex, { display: formula.display }));
   }
   target.replaceChildren(template.content);
+}
+
+export function renderText(html: string, target: HTMLElement): void {
+  fill(html.includes('\n') ? paragraphs(html, false) : splitTex(html), target);
+}
+
+export function renderMarkdown(source: string, target: HTMLElement): void {
+  fill(paragraphs(source, true), target);
 }

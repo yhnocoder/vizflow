@@ -55,6 +55,23 @@ describe('<vizflow-page>', () => {
     expect(el.createdSteps?.list[0].title).toBe('总览');
   });
 
+  it('mounts sections below the steps and hands the sequence to the panels', async () => {
+    const { g, t, steps } = softmaxPage();
+    const el = attach();
+    const sequence = { tokens: ['a', 'b', 'c'], length: 1, get: () => [Math.round(t.value.data[0])], set: (ids: number[]) => t.set(ids[0]) };
+    el.graph = g;
+    el.steps = steps;
+    el.sequence = sequence;
+    el.panels = [{ sequence: true, labels: ['y'] }];
+    el.sections = [{ title: '段落', rows: [{ cells: [[{ text: '### 标题' }]] }] }];
+    await settle();
+    expect(el.querySelector('.vf-main > .vf-steps + .vf-article .vf-section h2')?.textContent).toBe('段落');
+    const select = el.querySelector<HTMLSelectElement>('.vf-side .vf-seqrow select')!;
+    select.value = '2';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    expect(t.value.data[0]).toBe(2);
+  });
+
   it('lays out steps and panels like the example pages and mounts once for several property sets', async () => {
     const { g, x, t, steps } = softmaxPage();
     const el = attach();
