@@ -36,7 +36,7 @@ export interface ForwardStep {
   marks?: string[];
 }
 
-export type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };
+export type BackwardSpec = 'auto' | 'reverse' | 'none' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };
 
 export interface PageModule {
   id: string;
@@ -173,7 +173,7 @@ interface Entry {
 
 type Template = (focus: number) => string;
 
-export function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto' | 'reverse'>): Node[][] {
+export function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'auto' | 'reverse' | 'none'>): Node[][] {
   const loss = g.findLoss();
   if (loss === undefined) {
     if ((spec.merge?.length ?? 0) > 0 || Object.keys(spec.override ?? {}).length > 0) {
@@ -205,6 +205,7 @@ export function backwardGroups(g: Graph, visible: readonly Node[], spec: Exclude
 }
 
 function backwardEntries(g: Graph, visible: readonly Node[], spec: Exclude<BackwardSpec, 'reverse'>): StepInfo[] {
+  if (spec === 'none') return [];
   const resolved = spec === 'auto' ? { auto: true as const } : spec;
   const loss = g.findLoss();
   const explainer = explain(g);
