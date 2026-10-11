@@ -19,6 +19,7 @@ export interface BlockSpan {
   node: Node;
   bottom: number;
   top: number;
+  z: number;
 }
 
 export interface Brace {
@@ -35,14 +36,14 @@ export interface Brace {
 export interface SceneBounds {
   xMin: number;
   xMax: number;
-  zCenter: number;
 }
 
 export function blockSpan(block: Block): BlockSpan {
   const base = Math.min(...block.elements.map((e) => e.y));
   const high = Math.max(...block.elements.map((e) => e.y));
   const rise = block.shape === 'disc' ? DISC_HEIGHT : block.shape === 'box' ? BOX_HEIGHT : HEIGHT_CAP;
-  return { node: block.node, bottom: block.plate === undefined ? base : Math.min(base, block.plate.y), top: high + rise };
+  const zs = block.elements.map((e) => e.z);
+  return { node: block.node, bottom: block.plate === undefined ? base : Math.min(base, block.plate.y), top: high + rise, z: (Math.min(...zs) + Math.max(...zs)) / 2 };
 }
 
 export function checkModules(modules: readonly SceneModule[], placed: readonly Node[]): void {
@@ -68,7 +69,7 @@ export function layoutBraces(modules: readonly SceneModule[], spans: readonly Bl
       x: 0,
       y0: Math.min(...own.map((s) => s.bottom)) - MODULE_PAD,
       y1: Math.max(...own.map((s) => s.top)) + MODULE_PAD,
-      z: bounds.zCenter,
+      z: (Math.min(...own.map((s) => s.z)) + Math.max(...own.map((s) => s.z))) / 2,
     };
   });
   const order = braces.map((_, i) => i).sort((a, b) => new Set(modules[a].nodes).size - new Set(modules[b].nodes).size || a - b);

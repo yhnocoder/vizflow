@@ -523,7 +523,7 @@ class SceneController implements EditHost {
     this.braces = layoutBraces(
       modules,
       this.renderables.map((r) => blockSpan(r.block)),
-      { xMin: min[0], xMax: max[0], zCenter: (min[2] + max[2]) / 2 },
+      { xMin: min[0], xMax: max[0] },
     );
     const opacity: number[] = [];
     this.braces.forEach((brace, i) => {
@@ -1015,11 +1015,7 @@ class SceneController implements EditHost {
       const [cx, cy, cz] = [0, 1, 2].map((axis) => (min[axis] + max[axis]) / 2);
       if (max[0] - min[0] < FOLLOW_MIN_WIDTH) points.push([cx - FOLLOW_MIN_WIDTH / 2, cy, cz], [cx + FOLLOW_MIN_WIDTH / 2, cy, cz]);
       if (max[1] - min[1] < FOLLOW_MIN_HEIGHT) points.push([cx, cy - FOLLOW_MIN_HEIGHT / 2, cz], [cx, cy + FOLLOW_MIN_HEIGHT / 2, cz]);
-      const nodes = new Set(active.map((r) => r.block.node));
       labels = active.flatMap((r) => this.labelsOf(r));
-      this.braces.forEach((brace, i) => {
-        if (brace.nodes.some((n) => nodes.has(n))) labels.push(this.moduleLabels[i]);
-      });
     }
     const direction = this.viewDirection();
     const center = this.center(points);

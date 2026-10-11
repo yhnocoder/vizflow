@@ -20,7 +20,7 @@ function nodes(count: number) {
   return Array.from({ length: count }, (_, i) => g.input(`n${i}`, [], [i]));
 }
 
-const bounds = { xMin: -5, xMax: 7, zCenter: -1 };
+const bounds = { xMin: -5, xMax: 7 };
 
 describe('blockSpan', () => {
   it('runs from the plate to the capped bar top, and to the node top for scalars', () => {
@@ -41,27 +41,27 @@ describe('layoutBraces', () => {
   it('covers the y range of the placed nodes with the padding', () => {
     const [a, b, c] = nodes(3);
     const spans = [
-      { node: a, bottom: 0, top: 2 },
-      { node: b, bottom: 5, top: 7 },
+      { node: a, bottom: 0, top: 2, z: -1 },
+      { node: b, bottom: 5, top: 7, z: -3 },
     ];
     const [brace] = layoutBraces([{ title: 'M', nodes: [a, b, c] }], spans, bounds);
     expect(brace.y0).toBeCloseTo(-MODULE_PAD);
     expect(brace.y1).toBeCloseTo(7 + MODULE_PAD);
     expect(brace.nodes).toEqual([a, b]);
-    expect(brace.z).toBe(-1);
+    expect(brace.z).toBe(-2);
     expect(brace.side).toBe('left');
     expect(brace.x).toBeCloseTo(bounds.xMin - MODULE_GAP);
   });
 
   it('puts right braces outside the right edge', () => {
     const [a] = nodes(1);
-    const [brace] = layoutBraces([{ title: 'M', nodes: [a], side: 'right' }], [{ node: a, bottom: 0, top: 1 }], bounds);
+    const [brace] = layoutBraces([{ title: 'M', nodes: [a], side: 'right' }], [{ node: a, bottom: 0, top: 1, z: -1 }], bounds);
     expect(brace.x).toBeCloseTo(bounds.xMax + MODULE_GAP);
   });
 
   it('moves an outer module one step further out than the modules it contains', () => {
     const [a, b, c] = nodes(3);
-    const spans = [a, b, c].map((node, i) => ({ node, bottom: i * 3, top: i * 3 + 2 }));
+    const spans = [a, b, c].map((node, i) => ({ node, bottom: i * 3, top: i * 3 + 2, z: -1 }));
     const braces = layoutBraces(
       [
         { title: 'outer', nodes: [a, b, c] },
@@ -79,10 +79,10 @@ describe('layoutBraces', () => {
   it('separates overlapping modules on the same side and keeps disjoint ones in one column', () => {
     const [a, b, c, d] = nodes(4);
     const spans = [
-      { node: a, bottom: 0, top: 2 },
-      { node: b, bottom: 1, top: 3 },
-      { node: c, bottom: 10, top: 12 },
-      { node: d, bottom: 1, top: 3 },
+      { node: a, bottom: 0, top: 2, z: -1 },
+      { node: b, bottom: 1, top: 3, z: -1 },
+      { node: c, bottom: 10, top: 12, z: -1 },
+      { node: d, bottom: 1, top: 3, z: -1 },
     ];
     const braces = layoutBraces(
       [
@@ -100,8 +100,8 @@ describe('layoutBraces', () => {
   it('treats equal node sets as overlapping modules, not nested ones', () => {
     const [a, b] = nodes(2);
     const spans = [
-      { node: a, bottom: 0, top: 2 },
-      { node: b, bottom: 3, top: 5 },
+      { node: a, bottom: 0, top: 2, z: -1 },
+      { node: b, bottom: 3, top: 5, z: -1 },
     ];
     const braces = layoutBraces(
       [
@@ -119,7 +119,7 @@ describe('brace shape', () => {
   it('bends the ends toward the graph and points the tip outward', () => {
     const [a] = nodes(1);
     for (const side of ['left', 'right'] as const) {
-      const [brace] = layoutBraces([{ title: 'M', nodes: [a], side }], [{ node: a, bottom: 0, top: 4 }], bounds);
+      const [brace] = layoutBraces([{ title: 'M', nodes: [a], side }], [{ node: a, bottom: 0, top: 4, z: -1 }], bounds);
       const toward = side === 'left' ? 1 : -1;
       const points = bracePoints(brace);
       const first = points.slice(0, 3);
@@ -140,7 +140,7 @@ describe('brace shape', () => {
 
   it('shrinks the curves for short modules', () => {
     const [a] = nodes(1);
-    const [brace] = layoutBraces([{ title: 'M', nodes: [a] }], [{ node: a, bottom: 0, top: 0 }], bounds);
+    const [brace] = layoutBraces([{ title: 'M', nodes: [a] }], [{ node: a, bottom: 0, top: 0, z: -1 }], bounds);
     const tip = braceTip(brace);
     expect(brace.x - tip[0]).toBeCloseTo((brace.y1 - brace.y0) / 4);
   });
