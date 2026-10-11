@@ -176,6 +176,35 @@ body:
     expect(ok.nodes.get('y')).toBe(ok.nodes.get('s.out'));
   });
 
+  it('defaults a default_key text parameter to the instance key', async () => {
+    const named = (decl: string) => `
+module: Named
+params:
+  ${decl}
+inputs:
+  x: { shape: [n] }
+outputs: [out]
+body:
+  - out: x * 2
+steps:
+  - { id: double, show: out, title: '\\of{name}：翻倍' }
+`;
+    const use = (decl: string, params: string) => page(`
+title: t
+import: { Named: ./named.yaml }
+dims: {}
+inputs:
+  x: { value: [1, 2] }
+body:
+  - first: { use: Named, ${params}inputs: { x: x }, outputs: { out: y } }
+`, { 'mem:/pages/named.yaml': named(decl) });
+    const keyed = await use('name: { type: text, default_key: true }', '');
+    expect(keyed.steps.forward.map((s) => s.title)).toEqual(['first：翻倍']);
+    const given = await use('name: { type: text, default_key: true }', 'params: { name: other }, ');
+    expect(given.steps.forward.map((s) => s.title)).toEqual(['other：翻倍']);
+    await expect(use('name: { type: int, default_key: true }', '')).rejects.toThrow(/default_key must be true and needs type text/);
+  });
+
   it('shares weights through bindings and creates its own otherwise', async () => {
     const result = await page(`
 title: t
@@ -723,7 +752,7 @@ body:
     const result = await compilePage(spec);
     const r = 1 / Math.sqrt(12.5 + 1e-6);
     expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
+    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
     await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
   });
 });
@@ -860,7 +889,7 @@ body:
     expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
     expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
     const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
+    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
     const rms = forward[3];
     expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
     expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');

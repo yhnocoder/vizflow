@@ -57,7 +57,6 @@ modules:
           use: RMSNorm
           subtitle: Qwen3RMSNorm
           params:
-            name: input_layernorm
             intro: attention 之前先做一次 RMSNorm，也就是 input_layernorm。
             out_note: $\of{out}$ 是 q、k、v 三个投影共同的输入。
             in_note: $\of{x}$ 还会沿残差直接收到 $\partial\ell/\partial\mathbf{a}$，图里显示的是相加后的总量。
@@ -81,7 +80,6 @@ modules:
           use: RMSNorm
           subtitle: Qwen3RMSNorm
           params:
-            name: post_attention_layernorm
             intro: MLP 之前再做一次 RMSNorm，计算和 input_layernorm 相同。
             out_note: $\of{out}$ 是 MLP 的输入。
             in_note: $\of{x}$ 还会沿 MLP 的残差直接收到 $\partial\ell/\partial\mathbf{x}$，图里显示的是相加后的总量。

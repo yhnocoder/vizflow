@@ -2,7 +2,7 @@ module: RMSNorm
 subtitle: RMSNorm
 params:
   eps:      { type: float, default: 1e-6 }
-  name:     { type: text, default: RMSNorm }
+  name:     { type: text, default_key: true }
   intro:    { type: text, default: '' }
   out_note: { type: text, default: '' }
   in_note:  { type: text, default: '' }

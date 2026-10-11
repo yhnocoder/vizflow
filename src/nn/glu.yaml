@@ -3,7 +3,7 @@ subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
 params:
   act:  { type: op, values: [sigmoid, relu, gelu, silu], default: silu }
   f:    { type: dim }
-  name: { type: text, default: mlp }
+  name: { type: text, default_key: true }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]

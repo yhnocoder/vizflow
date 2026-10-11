@@ -775,10 +775,12 @@ class Compiler {
     }
   }
 
-  param(decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where): { type: ParamType; value: Num | string | OpValue } {
+  param(decl: Record<string, unknown>, given: unknown, name: string, env: Env, parentEnv: Env | undefined, where: Where, instance?: string): { type: ParamType; value: Num | string | OpValue } {
     const type = decl.type;
     if (typeof type !== 'string' || !PARAM_TYPES.has(type)) fail(where, `parameter '${name}' needs a type: int, float, dim, op, tex or text`);
-    const raw = given !== undefined ? given : decl.default;
+    if (decl.default_key !== undefined && (decl.default_key !== true || type !== 'text')) fail(where, `parameter '${name}': default_key must be true and needs type text`);
+    const keyDefault = decl.default_key === true ? instance : undefined;
+    const raw = given !== undefined ? given : (keyDefault ?? decl.default);
     if (raw === undefined) fail(where, `parameter '${name}' has no value and no default`);
     const sourceEnv = given !== undefined && parentEnv !== undefined ? parentEnv : env;
     const t = type as ParamType;
@@ -1096,7 +1098,7 @@ class PageCompiler {
     this.c.nodes.set(join(scope.path, name), node);
   }
 
-  params(scope: Scope, decl: Record<string, unknown>, env: Env, parentEnv: Env | undefined, given: Record<string, unknown>, where: Where): void {
+  params(scope: Scope, decl: Record<string, unknown>, env: Env, parentEnv: Env | undefined, given: Record<string, unknown>, where: Where, instance?: string): void {
     const paramsWhere = child(where, decl, 'params');
     const params = record(decl.params, paramsWhere, 'params');
     for (const key of Object.keys(given)) {
@@ -1105,7 +1107,7 @@ class PageCompiler {
     for (const [name, paramDecl] of Object.entries(params)) {
       const at = given[name] !== undefined && parentEnv !== undefined ? child(parentEnv.where, given, name) : child(paramsWhere, params, name);
       if (!isRecord(paramDecl)) fail(at, `parameter '${name}' must be a mapping`);
-      const value = this.c.param(paramDecl, given[name], name, env, parentEnv, at);
+      const value = this.c.param(paramDecl, given[name], name, env, parentEnv, at, instance);
       scope.params.set(name, value);
       if (value.type === 'dim') scope.dims.set(name, value.value as Num);
     }
@@ -1442,7 +1444,7 @@ class PageCompiler {
     checkKeys(decl, MODULE_KEYS, where);
     const childEnv: Env = { scope, loops: new Map(), where };
     const given = record(use.params, child(env.where, use, 'params'), 'params');
-    this.params(scope, decl, childEnv, { ...env, where: child(env.where, use, 'params') }, given, where);
+    this.params(scope, decl, childEnv, { ...env, where: child(env.where, use, 'params') }, given, where, name);
     const texWhere = child(env.where, use, 'tex');
     for (const [key, tex] of Object.entries(record(use.tex, texWhere, 'tex'))) {
       if (typeof tex !== 'string') fail(child(texWhere, use.tex as object, key), 'tex must be a string');

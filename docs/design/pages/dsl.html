@@ -27,7 +27,7 @@
 subtitle: RMSNorm
 params:
   eps:  { type: float, default: 1e-6 }
-  name: { type: text, default: RMSNorm }
+  name: { type: text, default_key: true }
 inputs:
   x: { shape: [..., n] }
 outputs: [out]
@@ -65,7 +65,7 @@ steps:
     <tr><td><code>import</code></td><td>两种</td><td>本文件用到的模块，<code>{ 名字: 引用 }</code></td></tr>
     <tr><td><code>modules</code></td><td>页面</td><td>只在本页使用的模块，<code>{ 名字: 模块内容 }</code>，内容与模块文件相同，不写 <code>module</code></td></tr>
     <tr><td><code>subtitle</code></td><td>两种</td><td>大括号上的副标题</td></tr>
-    <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, values? } }</code></td></tr>
+    <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, default_key?, values? } }</code></td></tr>
     <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
     <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
     <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组 } }</code> 建 input 节点</td></tr>
@@ -144,7 +144,7 @@ steps:
   <li>作用域封闭。名字依次在本模块的 body 节点、inputs、weights、buffers、子实例 outputs 绑定的名字、params 里查找，找不到就报错。模块看不到父模块和页面的名字。</li>
   <li>名字唯一。for 里定义的名字和实例名必须带循环变量下标（<code>q[h]</code>），展开后是 <code>q[1]</code>、<code>q[2]</code>。</li>
   <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。模式里可以有一个 <code>...</code>，匹配任意个维度，这些维度不绑定名字；例如 RMSNorm 的 <code>[..., n]</code> 只要求最后一维，输入可以是 $(T, d)$，也可以是按 head 分好的 $(T, H, d_h)$。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
-  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>，没有 <code>default</code> 时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
+  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>op</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>。<code>text</code> 类型的参数可以写 <code>default_key: true</code>，没给时取实例的键，例如 <code>input_layernorm</code>；这样实例名就是显示的模块名，不用在实例里再写一遍。两者都没有时报错。<code>op</code> 类型的值必须在 <code>values</code> 里列出。</li>
   <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
   <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta)</code>、<code>rope_sin(T, dh, theta)</code> 与 <code>causal_mask(T)</code>，数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
   <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块见下表。</li>
