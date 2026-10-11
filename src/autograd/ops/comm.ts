@@ -107,3 +107,5 @@ export const combineOp: OpDef<CombineAttrs> = {
     return [gy, null, gw];
   },
 };
+
+export const COMM_OPS: ReadonlySet<string> = new Set([allReduceOp, dispatchOp, combineOp].map((op) => op.name));
