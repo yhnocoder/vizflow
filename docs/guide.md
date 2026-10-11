@@ -165,7 +165,7 @@ page.createdSteps.go(1);
 | `steps` | `createSteps` 的第二个参数（第 3 节），必填 |
 | `panels` | `mountPanels` 的面板列表（第 5 节），不设置时没有面板，布局改为单列 |
 | `scene` | `mountScene` 的选项（第 6 节），不写 `steps` 和 `edit`；不设置时没有 3D 场景 |
-| `edit` | `true` 时打开场景的编辑模式（6.6），默认 `false` |
+| `edit` | `true` 时打开场景的编辑模式（6.7），默认 `false` |
 | `createdSteps` | 只读，元素创建的 `Steps`，用来调用 `go`、`next`、`setFocus`、`subscribe` |
 
 - 表里的属性都是 JavaScript 属性，要在脚本里赋值。元素不读取 HTML 属性，写成 `<vizflow-page edit>` 不起作用，要写 `page.edit = true`。
@@ -604,8 +604,8 @@ scene.dispose();
 - `camera`：相机。`direction` 是从观察点指向相机的方向，默认 `[0.42, 0.78, 1]`；`azimuth` 是相对初始方向的水平旋转范围（弧度），默认 `[-0.8, 0.7]`；`polar` 是极角范围，默认 `[0.3, 1.45]`；`zoom` 是缩放范围，默认 `[0.6, 3]`。取景按所有元素和标签的范围自动计算，内容尽量填满画布，标签离画布边缘至少 12px，不需要调。
 - `camera.follow`：相机跟随当前步骤，默认 `false`。块很多的图（例如一整个 decoder 层）全部放进一屏时当前步骤的块很小，打开后每次换步骤，相机只框住当前步骤高亮的块和它们的标签，见 6.4。
 - `modules`：在图的左侧或右侧用竖直的大括号标出模块，见 6.5。
-- `labels`：按节点名给标签加像素偏移 `[dx, dy]`（x 向右、y 向下），作用于柱子块的块名标签和标量节点的标签，例如 `labels: { 'log p': [12, -8] }`。给了偏移的标签固定在这个位置，不再翻转和避让，其他标签避开它。一般由编辑模式写出，见 6.6。
-- `edit`：编辑模式，见 6.6。只在写页面时打开，发布前删掉。
+- `labels`：按节点名给标签加像素偏移 `[dx, dy]`（x 向右、y 向下），作用于柱子块的块名标签和标量节点的标签，例如 `labels: { 'log p': [12, -8] }`。给了偏移的标签固定在这个位置，不再翻转和避让，其他标签避开它。一般由编辑模式写出，见 6.7。
+- `edit`：编辑模式，见 6.7。只在写页面时打开，发布前删掉。
 
 场景左上角固定显示图例，右上角是「复位视角」按钮。浏览器创建不了 WebGL 时，容器里显示一行提示，`mountScene` 照常返回，步骤条和面板不受影响。
 
@@ -694,7 +694,37 @@ mountScene('#stage', g, {
 - `nodes` 里没有放进布局的节点忽略；一个都没有时抛错 `modules: '<title>' has no placed node`。
 - 编辑模式不能拖动大括号，「复制配置」不输出 `modules`。
 
-### 6.6 编辑模式
+### 6.6 自动布局
+
+节点很多时可以不手写 `layout` 和 `modules`，改为按模块层级写一棵树，交给 `autoLayout`：
+
+```js
+import { mountScene, autoLayout } from '@yhnocoder/vizflow/scene3d';
+
+const leaf = (node) => ({ kind: 'node', node });
+const tree = (title, subtitle, children) => ({ kind: 'module', title, subtitle, children });
+const root = tree(undefined, undefined, [
+  leaf(ids),
+  tree('embed_tokens', 'nn.Embedding(V, d)', [leaf(E), leaf(e)]),
+  tree('self_attn', 'Qwen3Attention', [
+    leaf(Wq), leaf(q), leaf(Wk), leaf(k), leaf(Wv), leaf(v),
+    { kind: 'parallel', branches: heads.map((h) => tree(undefined, undefined, [leaf(h.q), leaf(h.S), leaf(h.P), leaf(h.o)])) },
+    leaf(o), leaf(Wo), leaf(att),
+  ]),
+  tree('lm_head', 'nn.Linear(d, V)', [leaf(W), leaf(z)]),
+]);
+const { layout, modules } = autoLayout(root);
+mountScene('#stage', g, { steps, layout, modules });
+```
+
+- `children` 按计算顺序写，权重和 buffer 写在第一次用到它的节点前面。最外层的树不画大括号，`title` 省略的树也不画。
+- 节点自下而上排成一列，每个平面张量占一层。`a @ W.T` 这类右侧是二维节点的矩阵乘画成 `board`，几块共用同一个输入的板并排放在同一层。
+- `parallel` 的每个分支各占一条竖道并排，分支结束后从最高的分支往上继续。
+- 一维权重和 buffer 放在右侧，与第一个用到它的节点同高。
+- 根下面第一层的模块括号在左侧，更深的在右侧；各分支里同名的模块合并成一个括号。
+- 完整的例子见 `examples/auto-layout-qwen3.html`。
+
+### 6.7 编辑模式
 
 自动布局不满意时，临时在 `mountScene` 的选项里加上 `edit: true`，用 `npm run dev` 打开页面，画布右下角出现「编辑布局」面板：
 
