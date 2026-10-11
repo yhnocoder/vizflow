@@ -72,12 +72,11 @@ export const FOOTPRINTS = {
   bar: [0.62, 0.62],
   a: [0.6, 0.6],
   tile: [0.58, 0.4],
-  disc: [1.1, 1.1],
-  box: [1.2, 0.8],
+  disc: [0.54, 0.54],
+  box: [1.1, 0.8],
 } as const;
-export const DISC_RADIUS = 0.55;
-export const BATCH_DISC_RADIUS = 0.32;
-export const DISC_HEIGHT = 0.3;
+export const DISC_RADIUS = 0.27;
+export const DISC_HEIGHT = 0.17;
 export const BOX_HEIGHT = 0.5;
 
 export type BlockShape = 'bar' | 'tile' | 'disc' | 'box';

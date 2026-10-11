@@ -18,14 +18,14 @@ import {
   Vector3,
 } from 'three';
 import type { LinearRgb, ThemeColors } from '../theme';
-import { BATCH_DISC_RADIUS, BOX_HEIGHT, DISC_HEIGHT, DISC_RADIUS, PLATE_THICKNESS, type Block, type Element, type Vec3 } from './layout';
+import { BOX_HEIGHT, DISC_HEIGHT, DISC_RADIUS, PLATE_THICKNESS, type Block, type Element, type Vec3 } from './layout';
 import { LineBatch } from './lines';
 import { BREAK_POSITION, BREAK_THICKNESS } from './scales';
 
-const BREAK_MARGIN = 0.04;
+const BREAK_SIZE = 0.66;
 const PLATE_REVEALED = 0.5;
-const PLATE_HIDDEN = 0.15;
-const PLATE_INACTIVE_BACKWARD = 0.25;
+const PLATE_HIDDEN = 0.2;
+const PLATE_FAR = 0.1;
 const FRAME_REVEALED = 0.95;
 const FRAME_HIDDEN = 0.15;
 const FRAME_LIFT = 0.005;
@@ -34,6 +34,10 @@ const AXIS_TICK = 0.12;
 const NODE_OUTLINE_REVEALED = 0.9;
 const NODE_OUTLINE_HIDDEN = 0.3;
 const ANCHOR_GAP = 0.01;
+const NODE_ANCHOR_X = 0.2;
+const NODE_ANCHOR_Y = 0.08;
+const DISC_SEGMENTS = 32;
+const VISIBLE_HEIGHT = 0.004;
 
 const matrix = new Matrix4();
 const color = new Color();
@@ -63,23 +67,22 @@ export class BarMesh {
     readonly block: Block,
     theme: ThemeColors,
   ) {
-    const [w, d] = block.footprint;
     this.geometry = new BoxGeometry(1, 1, 1);
     this.geometry.translate(0, 0.5, 0);
     this.material = new MeshLambertMaterial({ side: DoubleSide });
     this.mesh = new InstancedMesh(this.geometry, this.material, block.elements.length);
     this.mesh.userData.block = block;
-    this.breakGeometry = new BoxGeometry(w + BREAK_MARGIN, BREAK_THICKNESS, d + BREAK_MARGIN);
+    this.breakGeometry = new BoxGeometry(BREAK_SIZE, BREAK_THICKNESS, BREAK_SIZE);
     this.breakMaterial = new MeshBasicMaterial({ color: new Color(...theme.surface) });
     this.breaks = new InstancedMesh(this.breakGeometry, this.breakMaterial, block.elements.length);
-    this.outline = new LineBatch(theme.ink);
+    this.outline = new LineBatch(theme.ink, theme.surface);
     this.group.add(this.mesh, this.breaks, this.outline.object);
     this.setTheme(theme);
   }
 
   setTheme(theme: ThemeColors): void {
     this.breakMaterial.color.setRGB(...theme.surface);
-    this.outline.setColor(theme.ink);
+    this.outline.setColor(theme.ink, theme.surface);
   }
 
   update(elements: Element[], data: BarUpdate): void {
@@ -88,14 +91,15 @@ export class BarMesh {
     for (let i = 0; i < elements.length; i++) {
       const { x, y, z } = elements[i];
       const h = data.heights[i];
-      if (h === 0) matrix.makeScale(0, 0, 0).setPosition(x, y, z);
+      const shown = Math.abs(h) > VISIBLE_HEIGHT;
+      if (!shown) matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       else matrix.makeScale(w, h, d).setPosition(x, y, z);
       this.mesh.setMatrixAt(i, matrix);
       this.mesh.setColorAt(i, color.setRGB(...data.colors[i]));
-      if (data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
+      if (shown && data.clipped[i]) matrix.makeScale(1, 1, 1).setPosition(x, y + h * BREAK_POSITION, z);
       else matrix.makeScale(0, 0, 0).setPosition(x, y, z);
       this.breaks.setMatrixAt(i, matrix);
-      for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i], dashed: false });
+      if (shown) for (const points of boxEdges(x, y, z, w, h, d)) lines.push({ points, opacity: data.outlineOpacity[i], dashed: false });
     }
     this.mesh.instanceMatrix.needsUpdate = true;
     if (this.mesh.instanceColor) this.mesh.instanceColor.needsUpdate = true;
@@ -122,7 +126,6 @@ function boxEdges(x: number, y: number, z: number, w: number, h: number, d: numb
   const z1 = z + d / 2;
   const y1 = y + h;
   const ring = (yy: number) => [x0, yy, z0, x1, yy, z0, x1, yy, z1, x0, yy, z1, x0, yy, z0];
-  if (h === 0) return [ring(y)];
   return [ring(y), ring(y1), [x0, y, z0, x0, y1, z0], [x1, y, z0, x1, y1, z0], [x1, y, z1, x1, y1, z1], [x0, y, z1, x0, y1, z1]];
 }
 
@@ -150,8 +153,8 @@ export class NodeMesh {
     theme: ThemeColors,
   ) {
     this.height = block.shape === 'disc' ? DISC_HEIGHT : BOX_HEIGHT;
-    this.radius = block.batched ? BATCH_DISC_RADIUS : DISC_RADIUS;
-    this.geometry = block.shape === 'disc' ? new CylinderGeometry(this.radius, this.radius, DISC_HEIGHT, 48) : new BoxGeometry(block.footprint[0], BOX_HEIGHT, block.footprint[1]);
+    this.radius = DISC_RADIUS;
+    this.geometry = block.shape === 'disc' ? new CylinderGeometry(this.radius, this.radius, DISC_HEIGHT, DISC_SEGMENTS) : new BoxGeometry(block.footprint[0], BOX_HEIGHT, block.footprint[1]);
     this.edges = new EdgesGeometry(this.geometry, 25);
     this.outlineMaterial = inkMaterial(theme);
     for (let i = 0; i < block.elements.length; i++) {
@@ -181,13 +184,11 @@ export class NodeMesh {
   }
 
   anchorIn(element: Element): Vec3 {
-    const cy = element.y + this.height / 2;
-    return this.block.shape === 'disc' ? [element.x - (this.radius - 0.15), cy - 0.14, element.z] : [element.x, cy - 0.25, element.z];
+    return [element.x - NODE_ANCHOR_X, element.y + this.height / 2 - NODE_ANCHOR_Y, element.z];
   }
 
   anchorOut(element: Element): Vec3 {
-    const cy = element.y + this.height / 2;
-    return this.block.shape === 'disc' ? [element.x - (this.radius - 0.25), cy + 0.14, element.z] : [element.x, cy + 0.25, element.z];
+    return [element.x - NODE_ANCHOR_X, element.y + this.height / 2 + NODE_ANCHOR_Y, element.z];
   }
 
   dispose(): void {
@@ -254,9 +255,9 @@ export class PlateMesh {
     this.axisMaterial.color.setRGB(...theme.ink);
   }
 
-  update(state: { revealed: boolean; active: boolean; backward: boolean }, frameXs: number[], ticks: number[], scale: number): void {
+  update(state: { revealed: boolean; far: boolean }, frameXs: number[], ticks: number[], scale: number): void {
     const { revealed } = state;
-    this.outlineMaterial.opacity = !revealed ? PLATE_HIDDEN : state.backward && !state.active ? PLATE_INACTIVE_BACKWARD : PLATE_REVEALED;
+    this.outlineMaterial.opacity = state.far ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN;
     this.frameMaterial.opacity = revealed ? FRAME_REVEALED : FRAME_HIDDEN;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];

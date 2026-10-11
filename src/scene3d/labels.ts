@@ -2,18 +2,20 @@ import { type Camera, Vector3 } from 'three';
 import { type Placement, avoidOverlaps } from './avoid';
 import type { Vec3 } from './layout';
 
-export type LabelKind = 'val' | 'tick' | 'ttl' | 'node' | 'cls' | 'kk' | 'colh' | 'mod';
+export type LabelKind = 'val' | 'tick' | 'ttl' | 'ntl' | 'nv' | 'cls' | 'kk' | 'colh' | 'mod';
 
 const ANCHORS: Record<string, [number, number]> = {
   'top-center': [-0.5, -1],
   'bottom-center': [-0.5, 0],
   'right-middle': [-1, -0.5],
   'left-middle': [0, -0.5],
+  'above-right': [0, -1],
 };
 
 export type AnchorName = keyof typeof ANCHORS;
 
 export const LABEL_SAFE_MARGIN = 12;
+export const LABEL_CLIP = 1.2;
 
 export function anchorOffset(anchor: AnchorName): [number, number] {
   return ANCHORS[anchor];
@@ -23,7 +25,8 @@ const DEFAULT_ANCHOR: Record<LabelKind, AnchorName> = {
   val: 'top-center',
   tick: 'right-middle',
   ttl: 'right-middle',
-  node: 'top-center',
+  ntl: 'above-right',
+  nv: 'left-middle',
   cls: 'bottom-center',
   kk: 'right-middle',
   colh: 'top-center',
@@ -54,8 +57,8 @@ export class Label {
     this.el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
     this.anchor = DEFAULT_ANCHOR[kind];
     this.priority =
-      kind === 'ttl' || kind === 'mod' ? PRIORITY.title : kind === 'node' ? PRIORITY.node : kind === 'val' ? PRIORITY.value : kind === 'cls' || kind === 'colh' ? PRIORITY.category : PRIORITY.minor;
-    this.movable = kind === 'ttl' || kind === 'node' || kind === 'mod';
+      kind === 'ttl' || kind === 'mod' ? PRIORITY.title : kind === 'ntl' ? PRIORITY.node : kind === 'val' || kind === 'nv' ? PRIORITY.value : kind === 'cls' || kind === 'colh' ? PRIORITY.category : PRIORITY.minor;
+    this.movable = kind === 'ttl' || kind === 'ntl' || kind === 'mod';
     this.hideOnOverlap = !this.movable;
   }
 
@@ -134,13 +137,13 @@ export class LabelLayer {
     return label;
   }
 
-  project(camera: Camera, width: number, height: number): void {
+  project(camera: Camera, width: number, height: number, avoid = true): void {
     const shown: Label[] = [];
     for (const label of this.labels) {
       let off = label.pos === undefined || !label.visible;
       if (!off) {
         projected.set(...label.pos!).project(camera);
-        off = Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1;
+        off = Math.abs(projected.x) > LABEL_CLIP || Math.abs(projected.y) > LABEL_CLIP;
       }
       label.el.classList.toggle('vf-off', off);
       if (!off) shown.push(label);
@@ -160,10 +163,6 @@ export class LabelLayer {
         box.y += label.offset[1];
         return { box, movable: false, hideOnOverlap: false, priority: label.priority };
       }
-      if (label.kind === 'node' && label.anchor === 'top-center') {
-        if (box.x + w > bounds.x + bounds.w) box.x = px - w;
-        else if (box.x < bounds.x) box.x = px;
-      }
       return {
         box,
         movable: label.movable,
@@ -181,7 +180,7 @@ export class LabelLayer {
         if (other.x < box.x + box.w && box.x < other.x + other.w) box.y = Math.max(box.y, other.y + other.h);
       }
     });
-    const adjustments = avoidOverlaps(placements, bounds);
+    const adjustments = avoid ? avoidOverlaps(placements, bounds) : placements.map(() => ({ dx: 0, dy: 0, hidden: false }));
     shown.forEach((label, i) => {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];

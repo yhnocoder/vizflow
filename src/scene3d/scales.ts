@@ -1,5 +1,8 @@
-export const UNIT_HEIGHT = 1.6;
-export const HEIGHT_CAP = 2.0;
+export const SCALE_FILL = 0.8;
+export const BAR_CAP = 1.2;
+export const TILE_CAP = 0.85;
+export const VECTOR_CAP = 1.0;
+export const HEIGHT_CAP = BAR_CAP;
 export const MIN_HEIGHT = 0.025;
 export const BREAK_THICKNESS = 0.07;
 export const BREAK_POSITION = 0.8;
@@ -8,10 +11,15 @@ export const TICK_COUNT = 3;
 
 const SCALE_FLOOR = 1e-6;
 
-export function scaleFor(values: ArrayLike<number>): number {
+export function capFor(shape: 'bar' | 'tile' | 'disc' | 'box', dims: number): number {
+  if (shape === 'tile') return TILE_CAP;
+  return dims === 1 ? VECTOR_CAP : BAR_CAP;
+}
+
+export function scaleFor(values: ArrayLike<number>, cap = BAR_CAP): number {
   let max = 0;
   for (let i = 0; i < values.length; i++) if (Number.isFinite(values[i])) max = Math.max(max, Math.abs(values[i]));
-  return UNIT_HEIGHT / Math.max(max, SCALE_FLOOR);
+  return max === 0 ? 1 : (cap * SCALE_FILL) / max;
 }
 
 export interface BarHeight {
@@ -19,12 +27,12 @@ export interface BarHeight {
   clipped: boolean;
 }
 
-export function barHeight(value: number, scale: number, revealed: boolean): BarHeight {
+export function barHeight(value: number, scale: number, revealed: boolean, cap = BAR_CAP): BarHeight {
   if (!revealed) return { height: 0, clipped: false };
   let height = value * scale;
   let clipped = false;
-  if (Math.abs(height) > HEIGHT_CAP) {
-    height = Math.sign(height) * HEIGHT_CAP;
+  if (Math.abs(height) > cap) {
+    height = Math.sign(height) * cap;
     clipped = true;
   }
   if (Math.abs(height) < MIN_HEIGHT) height = value < 0 ? -MIN_HEIGHT : MIN_HEIGHT;
@@ -48,7 +56,7 @@ function ticksWithStep(lo: number, hi: number, step: number): number[] {
   return ticks;
 }
 
-export function niceTicks(values: ArrayLike<number>, scale: number, count = TICK_COUNT): number[] {
+export function niceTicks(values: ArrayLike<number>, scale: number, count = TICK_COUNT, cap = BAR_CAP): number[] {
   let lo = 0;
   let hi = 0;
   for (let i = 0; i < values.length; i++) {
@@ -56,7 +64,7 @@ export function niceTicks(values: ArrayLike<number>, scale: number, count = TICK
     lo = Math.min(lo, values[i]);
     hi = Math.max(hi, values[i]);
   }
-  const limit = HEIGHT_CAP / scale;
+  const limit = cap / scale;
   const within = (ticks: number[]) => ticks.every((v) => Math.abs(v) <= limit + 1e-9);
   const span = Math.max(hi - lo, SCALE_FLOOR);
   let fallback: number[] = [0];
