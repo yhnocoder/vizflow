@@ -214,7 +214,8 @@ export class SceneController implements EditHost {
       for (const block of resolved.blocks) {
         const renderable = renderableFor(this, block);
         if (renderable === undefined) continue;
-        const moved = renderable.block.plate?.y !== block.plate?.y;
+        const before = renderable.block.plate;
+        const moved = before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.d !== block.plate?.d;
         renderable.block = block;
         if (moved && renderable.plate !== undefined) {
           this.scene.remove(renderable.plate.group);

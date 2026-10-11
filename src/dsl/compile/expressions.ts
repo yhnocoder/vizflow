@@ -138,7 +138,8 @@ export class ExpressionCompiler extends CompilerState {
         return this.call(ast, env, make, offset, top);
       case 'list': {
         const items = ast.items.map((item) => this.evaluate(item, env, make, offset));
-        if (items.length === 0 || !items.every((item) => item instanceof Node)) this.fail(env, 'a list must hold one or more nodes', offset + ast.pos);
+        if (items.length > 0 && items.every(isNum)) return items;
+        if (items.length === 0 || !items.every((item) => item instanceof Node)) this.fail(env, 'a list must hold one or more nodes, or one or more numbers', offset + ast.pos);
         return items as Node[];
       }
       case 'member': {
@@ -227,6 +228,7 @@ export class ExpressionCompiler extends CompilerState {
     if (def === undefined) this.fail(env, `unknown op '${op}'`, at);
     const convert = (argName: string, value: Value): unknown => {
       if (isNum(value)) return def.sizes?.includes(argName) ? this.dimSpec(value) : value.toy;
+      if (Array.isArray(value) && value.every(isNum)) return value.map((n) => (def.sizes?.includes(argName) ? this.dimSpec(n) : n.toy));
       if (isOp(value) || (isRecord(value) && 'buffer' in value)) this.fail(env, `argument '${argName}' of ${op} has the wrong type`, at);
       return value;
     };
@@ -247,7 +249,7 @@ export class ExpressionCompiler extends CompilerState {
     const operandTex = def.args.flatMap((argName, i) => {
       const value = positional[i];
       if (value instanceof Node) return [value.tex];
-      if (Array.isArray(value)) return (value as Node[]).map((n) => n.tex);
+      if (Array.isArray(value) && value.every((n) => n instanceof Node)) return value.map((n) => n.tex);
       return def.tensors.includes(argName) && typeof value === 'number' ? [numberTex(value)] : [];
     });
     const tex = top ? make.tex : (explainOf(op)?.tex.forward({ out: '', in: operandTex, attrs }) ?? `\\mathrm{${op}}`);
@@ -306,7 +308,7 @@ export class ExpressionCompiler extends CompilerState {
   nodeList(text: unknown, env: Env): Node[] {
     const found = this.reference(text, env);
     if (found instanceof Node) return [found];
-    if (Array.isArray(found)) return found;
+    if (Array.isArray(found) && found.every((n) => n instanceof Node)) return found;
     return this.fail(env, `'${String(text)}' is not a node`);
   }
 

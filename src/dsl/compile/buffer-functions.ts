@@ -26,7 +26,9 @@ export const BUFFER_FUNCTIONS: Record<string, BufferFunction> = {
   rope_cos: rope(Math.cos),
   rope_sin: rope(Math.sin),
   zeros: { args: [1, Infinity], options: {}, make: (shape) => ({ shape, values: filled(shape.map((n) => n.toy), 0) }) },
-  full: { args: [2, Infinity], options: {}, make: ([value, ...shape]) => ({ shape, values: filled(shape.map((n) => n.toy), value.toy) }) },
+  ones: { args: [1, Infinity], options: {}, make: (shape) => ({ shape, values: filled(shape.map((n) => n.toy), 1) }) },
+  full: { args: [2, Infinity], options: {}, make: (args) => ({ shape: args.slice(0, -1), values: filled(args.slice(0, -1).map((n) => n.toy), args[args.length - 1].toy) }) },
+  arange: { args: [1, 1], options: {}, make: ([n]) => ({ shape: [n], values: [...Array(n.toy).keys()] }) },
   causal_mask: {
     args: [1, 2],
     options: {},

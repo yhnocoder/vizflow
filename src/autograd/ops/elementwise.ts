@@ -1,4 +1,4 @@
-import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, normDim, offsetOf, unbroadcast } from '../../tensor';
+import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, formatShape, normDim, offsetOf, unbroadcast } from '../../tensor';
 import type { OpCost, OpDef } from '../op';
 import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
 
@@ -88,6 +88,47 @@ export function sigmoid(x: number): number {
   return e / (1 + e);
 }
 
+function integerOperands(a: Tensor, b: Tensor | undefined, other: number | undefined): boolean {
+  const integral = (t: Tensor) => t.int64 !== undefined || t.data.every(Number.isInteger);
+  return integral(a) && (b === undefined ? Number.isInteger(other) : integral(b));
+}
+
+function exactZip(a: Tensor, b: Tensor | undefined, other: number | undefined, fn: (x: bigint, y: bigint) => bigint): Tensor {
+  const shape = b === undefined ? [...a.shape] : broadcastShapes(a.shape, b.shape);
+  const values: bigint[] = [];
+  forEachIndex(shape, (index) => {
+    const x = a.exact(offsetOf(a.shape, broadcastIndex(index, a.shape)));
+    const y = b === undefined ? BigInt(other as number) : b.exact(offsetOf(b.shape, broadcastIndex(index, b.shape)));
+    values.push(BigInt.asIntN(64, fn(x, y)));
+  });
+  return Tensor.fromInt64(shape, values);
+}
+
+function withInt64(def: OpDef<ScalarAttrs>, exact: (x: bigint, y: bigint) => bigint): OpDef<ScalarAttrs> {
+  return {
+    ...def,
+    int64: true,
+    forward: (inputs, attrs) => {
+      const [a, b] = inputs;
+      const int64 = a.int64 !== undefined || b?.int64 !== undefined;
+      if (int64 && integerOperands(a, b, attrs.other)) return exactZip(a, b, attrs.other, exact);
+      const unsafe = inputs.find((t) => t.beyondExact());
+      if (unsafe !== undefined) throw new Error(`${def.name}: int64 values beyond 2^53 can only combine with integers`);
+      return def.forward(inputs, attrs);
+    },
+  };
+}
+
+function floorMod(x: number, y: number): number {
+  return x - Math.floor(x / y) * y;
+}
+
+function floorModExact(x: bigint, y: bigint): bigint {
+  if (y === 0n) throw new Error('remainder: integer division by zero');
+  const r = x % y;
+  return r !== 0n && r < 0n !== y < 0n ? r + y : r;
+}
+
 function additive(negated: boolean[]): OpCost {
   return {
     saves: [[], []],
@@ -106,7 +147,8 @@ const nonlinear = (saved: 0 | 'out') => pointwise(NONLINEAR_FORWARD, NONLINEAR_B
 
 export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([false, false]));
 export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
-export const mulOp = binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]]));
+export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]])), (x, y) => x * y);
+export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)], pointwise(1, 1, [[], [0, 1]])), floorModExact);
 export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
   saves: [[1], [0, 1]],
   flops: (inputs, out) => ({ forward: [numel(out)], backward: inputs.map((_, k) => (k === 0 ? [numel(out)] : [DIV_OTHER_BACKWARD, numel(out)])) }),
@@ -114,6 +156,54 @@ export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * 
 export const negOp = unary('neg', (x) => -x, () => -1, pointwise(1, 1, [[]]));
 export const expOp = unary('exp', Math.exp, (_x, y) => y, nonlinear('out'));
 export const logOp = unary('log', Math.log, (x) => 1 / x, nonlinear(0));
+
+const COMPARISON_COST: OpCost = pointwise(1, 0, [[], []]);
+
+function integerArgs(name: string, a: Tensor, b: Tensor | undefined, other: number | undefined): void {
+  if (!integerOperands(a, b, other)) throw new Error(`${name}: inputs must be integers or bools`);
+}
+
+function bitwise(name: string, fn: (x: bigint, y: bigint) => bigint): OpDef<ScalarAttrs> {
+  return {
+    name,
+    args: ['input', 'other'],
+    tensors: ['input', 'other'],
+    scalars: ['other'],
+    differentiable: [false, false],
+    int64: true,
+    cost: COMPARISON_COST,
+    shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+    forward: ([a, b], { other }) => {
+      integerArgs(name, a, b, other);
+      const out = exactZip(a, b, other, fn);
+      return a.int64 !== undefined || b?.int64 !== undefined ? out : new Tensor(out.shape, out.data);
+    },
+    backward: () => [null, null],
+  };
+}
+
+export const bitwiseXorOp = bitwise('bitwise_xor', (x, y) => x ^ y);
+export const bitwiseAndOp = bitwise('bitwise_and', (x, y) => x & y);
+
+function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<ScalarAttrs> {
+  return {
+    name,
+    args: ['input', 'other'],
+    tensors: ['input', 'other'],
+    scalars: ['other'],
+    differentiable: [false, false],
+    dtype: 'bool',
+    cost: COMPARISON_COST,
+    shape: ([a, b]) => (b === undefined ? [...a] : broadcastShapes(a, b)),
+    forward: ([a, b], { other }) =>
+      b === undefined ? mapWith(a, (x) => (fn(x, other as number) ? 1 : 0)) : zipWith(a, b, (x, y) => (fn(x, y) ? 1 : 0)),
+    backward: () => [null, null],
+  };
+}
+
+export const eqOp = compare('eq', (x, y) => x === y);
+export const geOp = compare('ge', (x, y) => x >= y);
+export const greaterOp = compare('greater', (x, y) => x > y);
 export const powOp = unary<{ exponent: number }>(
   'pow',
   (x, { exponent }) => x ** exponent,
@@ -156,6 +246,9 @@ export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 
 export const erfOp = unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x), nonlinear(0));
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
 export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
+export const absOp = unary('abs', Math.abs, (x) => Math.sign(x), pointwise(1, 1, [[0]]));
+export const signOp = unary('sign', Math.sign, () => 0, pointwise(1, 0, [[]]));
+export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), pointwise(1, 1, [[0]]), ['input', 'min']);
 
 function rotateHalf(input: Tensor, sign: number): Tensor {
   const width = input.shape[input.ndim - 1];
@@ -238,4 +331,53 @@ export const transposeOp: OpDef<TransposeAttrs> = {
   forward: ([a], attrs) => transposeTensor(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [transposeTensor(gradOut, attrs)],
   cost: VIEW_COST,
+};
+
+export interface TriuAttrs {
+  diagonal: number;
+}
+
+export function triuKeeps(index: readonly number[], attrs: TriuAttrs): boolean {
+  return index[index.length - 1] - index[index.length - 2] >= attrs.diagonal;
+}
+
+function triuOf(input: Tensor, attrs: TriuAttrs): Tensor {
+  const out = new Tensor(input.shape);
+  forEachIndex(input.shape, (index, offset) => {
+    if (triuKeeps(index, attrs)) out.data[offset] = input.data[offset];
+  });
+  return out;
+}
+
+export const triuOp: OpDef<TriuAttrs> = {
+  name: 'triu',
+  args: ['input', 'diagonal'],
+  tensors: ['input'],
+  defaults: { diagonal: 0 },
+  shape: ([a]) => {
+    if (a.length < 2) throw new Error(`triu: input ${formatShape(a)} must have at least two dimensions`);
+    return [...a];
+  },
+  forward: ([a], attrs) => triuOf(a, attrs),
+  backward: (gradOut, _inputs, _out, attrs) => [triuOf(gradOut, attrs)],
+  cost: movement(false, [[]]),
+};
+
+function maskedShape(input: readonly number[], mask: readonly number[]): number[] {
+  const shape = broadcastShapes(input, mask);
+  if (shape.length !== input.length || shape.some((size, d) => size !== input[d])) {
+    throw new Error(`masked_fill: mask ${formatShape(mask)} must broadcast to input ${formatShape(input)}`);
+  }
+  return [...input];
+}
+
+export const maskedFillOp: OpDef<{ value: number }> = {
+  name: 'masked_fill',
+  args: ['input', 'mask', 'value'],
+  tensors: ['input', 'mask'],
+  differentiable: [true, false],
+  shape: ([input, mask]) => maskedShape(input, mask),
+  forward: ([input, mask], { value }) => zipWith(input, mask, (x, fill) => (fill !== 0 ? value : x)),
+  backward: (gradOut, [, mask]) => [zipWith(gradOut, mask, (g, fill) => (fill !== 0 ? 0 : g)), null],
+  cost: movement(false, [[1], []]),
 };

@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { convTaps } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type PermuteAttrs, convTaps, cummaxSources, indexAddTarget, indexSource, padSource, permuteSource, repeatSourceIndex } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -115,10 +115,13 @@ export const repeatInterleaveExplain: OpExplain = {
   },
 };
 
+const dilationOf = (ctx: OpCtx) => (ctx.attrs as { dilation: number }).dilation;
+
 function convTap(ctx: OpCtx, out: number[], arg: number, input: number[]): { s: number; j: number } {
   const K = ctx.inputs[1].shape[1];
+  const d = dilationOf(ctx);
   const t = out[0];
-  return arg === 0 ? { s: input[0], j: input[0] - t + K - 1 } : { s: t - K + 1 + input[1], j: input[1] };
+  return arg === 0 ? { s: input[0], j: K - 1 - (t - input[0]) / d } : { s: t - (K - 1 - input[1]) * d, j: input[1] };
 }
 
 export const causalConv1dExplain: OpExplain = {
@@ -140,7 +143,7 @@ export const causalConv1dExplain: OpExplain = {
     const [T] = ctx.inputs[0].shape;
     const K = ctx.inputs[1].shape[1];
     const c = out[1];
-    return convTaps(T, K, out[0]).flatMap(({ s, j }) => [
+    return convTaps(T, K, out[0], dilationOf(ctx)).flatMap(({ s, j }) => [
       { arg: 0, index: [s, c] },
       { arg: 1, index: [c, j] },
     ]);
@@ -154,4 +157,123 @@ export const topkMaskExplain: OpExplain = {
     forward: (s) => `\\operatorname{topk\\_mask}(${s.in[0]},${(s.attrs as { k: number }).k})`,
     local: () => '0',
   },
+};
+
+export const topkIndicesExplain: OpExplain = {
+  pattern: 'dense',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{topk\\_indices}(${s.in[0]},${(s.attrs as { k: number }).k})`,
+    local: () => '0',
+  },
+};
+
+export const oneHotExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{one\\_hot}(${s.in[0]},${(s.attrs as { num_classes: number }).num_classes})`,
+    local: () => '0',
+  },
+  selected: () => [],
+};
+
+export const permuteExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{permute}(${s.in[0]},${(s.attrs as { dims: number[] }).dims.join(',')})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: permuteSource(ctx.inputs[0].shape, ctx.attrs as PermuteAttrs, out) }],
+};
+
+export const nonzeroStaticExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 0,
+  tex: {
+    forward: (s) => `\\operatorname{nonzero\\_static}(${s.in[0]},${(s.attrs as { size: number }).size})`,
+    local: () => '0',
+  },
+  selected: () => [],
+};
+
+export const indexExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `${s.in[0]}[${s.in.slice(1).join(',')}]`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, ...indices] = ctx.inputs;
+    return [{ arg: 0, index: [...indexSource(input.shape, indices, out[0]), ...out.slice(1)] }];
+  },
+};
+
+export const indexAddExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{index\\_add}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]},${s.in[2]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, index] = ctx.inputs;
+    const dim = normDim((ctx.attrs as { dim: number }).dim, input.ndim);
+    const picks = [{ arg: 0, index: [...out] }];
+    for (let i = 0; i < index.size; i++) {
+      if (indexAddTarget(input.shape, index, dim, i) !== out[dim]) continue;
+      const source = [...out];
+      source[dim] = i;
+      picks.push({ arg: 2, index: source });
+    }
+    return picks;
+  },
+};
+
+export const unsqueezeExplain: OpExplain = {
+  ...viewExplain,
+  tex: {
+    forward: (s) => `\\operatorname{unsqueeze}(${s.in[0]},${(s.attrs as { dim: number }).dim})`,
+    local: () => '1',
+  },
+};
+
+export const padExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{pad}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const source = padSource(ctx.inputs[0].shape, ctx.attrs as PadAttrs, out);
+    return source === undefined ? [] : [{ arg: 0, index: source }];
+  },
+};
+
+export const repeatExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{repeat}(${s.in[0]},${(s.attrs as { sizes: number[] }).sizes.join(',')})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: repeatSourceIndex(ctx.inputs[0].shape, out) }],
+};
+
+function cummaxSource(ctx: OpCtx, out: number[]): number[] {
+  const input = ctx.inputs[0];
+  return indexOf(input.shape, cummaxSources(input, ctx.attrs as { dim: number })[offsetOf(input.shape, out)]);
+}
+
+export const cummaxExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, _arg, input) => (offsetOf(ctx.inputs[0].shape, cummaxSource(ctx, out)) === offsetOf(ctx.inputs[0].shape, input) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{cummax}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: cummaxSource(ctx, out) }],
 };

@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, SOFTPLUS_THRESHOLD, clampInside, normalCdf, normalPdf, sigmoid } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -181,5 +181,50 @@ export const whereExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${scalarTex(s.attrs)})`,
     local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
+  },
+};
+
+export const triuExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out) => (triuKeeps(out, ctx.attrs as TriuAttrs) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{triu}(${s.in[0]},${(s.attrs as TriuAttrs).diagonal})`,
+    local: (s) => (triuKeeps(s.outIndex, s.attrs as TriuAttrs) ? '1' : '0'),
+  },
+};
+
+const valueTex = (attrs: object) => {
+  const v = (attrs as { value: number }).value;
+  return v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true });
+};
+
+export const maskedFillExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out, arg) => (arg === 0 && operand(ctx, 1, out) === 0 ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{masked\\_fill}(${s.in[0]},${s.in[1]},${valueTex(s.attrs)})`,
+    local: (s) => (s.arg === 0 && operand(s.ctx, 1, s.outIndex) === 0 ? '1' : '0'),
+  },
+};
+
+export const remainderExplain = binary(
+  (a, b) => `${a}\\bmod ${b}`,
+  (a, b, arg) => (arg === 0 ? 1 : -Math.floor(a / b)),
+  (a, b, arg) => (arg === 0 ? '1' : `-\\left\\lfloor ${a}/${b}\\right\\rfloor`),
+);
+export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
+export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
+export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
+export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
+export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');
+export const absExplain = unary((a) => `\\lvert ${a}\\rvert`, (x) => Math.sign(x), (x) => `\\operatorname{sign}(${x})`);
+export const signExplain = unary((a) => `\\operatorname{sign}(${a})`, () => 0, () => '0');
+const minOf = (attrs: object) => (attrs as { min: number }).min;
+export const clampMinExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, _out, _arg, input) => (ctx.inputs[0].get(input) > minOf(ctx.attrs) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\max(${s.in[0]},${formatNumber(minOf(s.attrs), { tex: true })})`,
+    local: (s) => `\\mathbf{1}[${s.in}>${formatNumber(minOf(s.attrs), { tex: true })}]`,
   },
 };

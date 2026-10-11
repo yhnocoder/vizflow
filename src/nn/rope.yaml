@@ -1,6 +1,6 @@
 module: RoPE
 subtitle: RoPE
-formula: '\step{add}{\of{q_embed}=}\step{cos}{\of{q}\odot\cos}\step{add}{+}\step{sin}{\step{rh}{\operatorname{cat}\big(}\step{neg}{-}\step{half}{\of{q}_{2}}\step{rh}{,}\step{half}{\of{q}_{1}}\step{rh}{\big)}\odot\sin}'
+formula: '\step{add}{\of{q_embed}=}\step{cos}{\of{q}\odot\cos}\step{add}{+}\step{sin}{\step{rh}{\operatorname{cat}\big(}\step{neg}{-}\step{half}{{\of{q}}_{2}}\step{rh}{,}\step{half}{{\of{q}}_{1}}\step{rh}{\big)}\odot\sin}'
 params:
   theta: { type: float, default: 1e4 }
 inputs:
@@ -24,12 +24,12 @@ fold:
 body:
   - qc:  { op: q * cos, tex: '\of{q}\odot\cos' }
   - kc:  { op: k * cos, tex: '\of{k}\odot\cos' }
-  - q1:  { op: 'narrow(q, -1, 0, dh // 2)', tex: '\of{q}_{1}' }
-  - q2:  { op: 'narrow(q, -1, dh // 2, dh // 2)', tex: '\of{q}_{2}' }
-  - k1:  { op: 'narrow(k, -1, 0, dh // 2)', tex: '\of{k}_{1}' }
-  - k2:  { op: 'narrow(k, -1, dh // 2, dh // 2)', tex: '\of{k}_{2}' }
-  - nq2: { op: -q2, tex: '-\of{q}_{2}' }
-  - nk2: { op: -k2, tex: '-\of{k}_{2}' }
+  - q1:  { op: 'narrow(q, -1, 0, dh // 2)', tex: '{\of{q}}_{1}' }
+  - q2:  { op: 'narrow(q, -1, dh // 2, dh // 2)', tex: '{\of{q}}_{2}' }
+  - k1:  { op: 'narrow(k, -1, 0, dh // 2)', tex: '{\of{k}}_{1}' }
+  - k2:  { op: 'narrow(k, -1, dh // 2, dh // 2)', tex: '{\of{k}}_{2}' }
+  - nq2: { op: -q2, tex: '-{\of{q}}_{2}' }
+  - nk2: { op: -k2, tex: '-{\of{k}}_{2}' }
   - qrh: { op: 'cat([nq2, q1], dim=-1)', tex: '\mathrm{rh}(\of{q})' }
   - krh: { op: 'cat([nk2, k1], dim=-1)', tex: '\mathrm{rh}(\of{k})' }
   - qs:  { op: qrh * sin, tex: '\mathrm{rh}(\of{q})\odot\sin' }
@@ -50,24 +50,24 @@ steps:
       title: 穿过乘 cos，传到 $\of{q}$ 和 $\of{k}$
   - id: half
     show: [q1, q2, k1, k2]
-    label: '$\of{q}_{1},\ \of{q}_{2}$'
+    label: '${\of{q}}_{1},\ {\of{q}}_{2}$'
     title: rotate_half：切成两半
     text: |
       HF 的 <code>rotate_half(x)</code> 有三行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>、<code>return torch.cat((-x2, x1), dim=-1)</code>。这里一行画一步。第一步把每个 head 的 $d_h=\of{dh}$ 列切成前后两半，切片只是取出元素，局部导数是 1。
-      $$\of{q}_{1}={{ q1 | matrix:2 }},\qquad \of{q}_{2}={{ q2 | matrix:2 }}$$
+      $${\of{q}}_{1}={{ q1 | matrix:2 }},\qquad {\of{q}}_{2}={{ q2 | matrix:2 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\of{k}$（rotate_half）'
       title: 两半拼回原来的位置
       text: 切片的反向把梯度放回被切出的那几列。
   - id: neg
     show: [nq2, nk2]
-    label: '$-\of{q}_{2}$'
+    label: '$-{\of{q}}_{2}$'
     title: rotate_half：后半取负
     text: |
       后半段每个元素取负号。
-      $$-\of{q}_{2}={{ nq2 | matrix:2 }}$$
+      $$-{\of{q}}_{2}={{ nq2 | matrix:2 }}$$
     backward:
-      label: '$\partial\of{q}_{2},\ \partial\of{k}_{2}$'
+      label: '$\partial{\of{q}}_{2},\ \partial{\of{k}}_{2}$'
       title: 穿过取负
       text: 局部导数是 $-1$。
   - id: rh
@@ -78,7 +78,7 @@ steps:
       取负的后半段放到前面，前半段放到后面，拼回 $d_h$ 列。拼接只是搬动元素，局部导数是 1，每个元素只连一条线。合起来 $\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$。
       $$\mathrm{rh}(\of{q})={{ qrh | matrix:2 }}$$
     backward:
-      label: '$\partial(-\of{q}_{2}),\ \partial\of{q}_{1}$'
+      label: '$\partial(-{\of{q}}_{2}),\ \partial{\of{q}}_{1}$'
       title: 穿过拼接
       text: 拼接的反向把梯度按列切回两段。
   - id: sin

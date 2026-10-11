@@ -1,0 +1,147 @@
+module: NGramEmbedding
+subtitle: Qwen4ExpTextNGramEmbedding
+import:
+  ShiftRightIgnoreEos: ./shift-right-ignore-eos.yaml
+  NGramHashStep: ./hash-step.yaml
+params:
+  N:   { type: int }
+  hpn: { type: dim }
+  eos: { type: int }
+  Vng: { type: dim }
+  dng: { type: dim }
+inputs:
+  ids: { shape: [T] }
+outputs: [out]
+weights:
+  Wng: { shape: [Vng, dng], tex: 'E_{ng}' }
+buffers:
+  ctx:     { value: 'full(N - 1, eos)', dtype: int64, tex: '\mathbf{eos}' }
+  m:       { value: zeros(N), dtype: int64, tex: '\mathbf{m}' }
+  sizes:   { value: 'zeros((N - 1) * hpn)', dtype: int64, tex: '\boldsymbol{\pi}' }
+  offsets: { value: 'zeros((N - 1) * hpn)', dtype: int64, tex: '\boldsymbol{\omega}' }
+body:
+  - hist: { op: 'cat([ctx, ids], dim=0)', tex: '\mathbf{tok}' }
+  - for: s
+    in: 1..N-1
+    name: shifts
+    sequential: true
+    body:
+      - 'shift[s]':
+          use: ShiftRightIgnoreEos
+          title: '_shift_right_ignore_eos(shift=\of{s})'
+          params: { shift: s, eos: eos }
+          inputs: { tok: hist }
+          outputs: { out: 'sh[s]' }
+  - for: g
+    in: 2..N
+    sequential: true
+    body:
+      - 'gram[g]':
+          title: '$\of{g}$-gram'
+          body:
+          - 'm0[g]': { op: 'select(m, 0, 0)', tex: 'm_{0}^{(\of{g})}' }
+          - 'mix[g][0]': { op: 'hist * m0[g]', tex: '\mathbf{h}_{\of{g},0}' }
+          - for: i
+            in: 1..g-1
+            sequential: true
+            body:
+              - 'hash[g][i]':
+                  use: NGramHashStep
+                  inline: true
+                  params: { g: g, i: i }
+                  inputs: { acc: 'mix[g][i-1]', tok: 'sh[i]', m: m }
+                  outputs: { out: 'mix[g][i]' }
+                  tex: { out: '\mathbf{h}_{\of{g},\of{i}}', prod: '(\mathbf{tok}^{(\of{i})}m_{\of{i}})^{(\of{g})}', mi: 'm_{\of{i}}^{(\of{g})}' }
+          - 'hv[g]': { op: 'narrow(sizes, 0, (g - 2) * hpn, hpn)', tex: '\boldsymbol{\pi}_{\of{g}}' }
+          - 'ho[g]': { op: 'narrow(offsets, 0, (g - 2) * hpn, hpn)', tex: '\boldsymbol{\omega}_{\of{g}}' }
+          - 'rem[g]': { op: 'remainder(view(mix[g][g-1], T + N - 1, 1), view(hv[g], 1, hpn))', tex: '\mathbf{h}_{\of{g}}\bmod\boldsymbol{\pi}_{\of{g}}' }
+          - 'blk[g]': { op: 'rem[g] + view(ho[g], 1, hpn)', tex: '\mathbf{id}_{\of{g}}' }
+          steps:
+          - id: products
+            show: [m, 'm0[g]', 'mix[g][0]']
+            label: '$\mathbf{h}_{\of{g},0}$'
+            title: $\of{g}$-gram：当前 token 乘第 0 个乘数
+            text: |
+              <code>mixed_ids = shifted_tokens[0] * self.layer_multipliers[0]</code>。<code>shifted_tokens[0]</code> 是 <code>_shift_right_ignore_eos(token_history, 0)</code>，shift 为 0 时原样返回 <code>token_history</code>，所以这里直接用 $\of{hist}$。乘数 $\mathbf{m}$ 是 int64 的 buffer，由 <code>_build_layer_multipliers</code> 用 splitmix64 从种子 $1234+10007\cdot$ple_layer_index 算出，都是奇数，最大到 $(2^{63}-1)/V$。乘积超过 float64 能精确表示的 $2^{53}$，vizflow 按 int64 精确计算，图上的数按科学计数法显示。HF 在每个 n 的循环里都重新算一次这个乘积，所以每个 n 各有一份。
+              $$\mathbf{m}={{ m | matrix:0 }},\qquad \mathbf{h}_{\of{g},0}={{ mix[g][0] | matrix:0 }}$$
+            backward:
+              label: 无梯度
+              title: 整数运算，没有梯度
+          - id: remainder
+            show: ['hv[g]', 'rem[g]', sizes]
+            label: '$\bmod\ \boldsymbol{\pi}_{\of{g}}$'
+            title: $\of{g}$-gram：对每个 head 的质数取模
+            text: |
+              <code>torch.remainder(mixed_ids.unsqueeze(-1), head_vocab_sizes.view(1, 1, -1))</code>：每个 n 有 $\of{hpn}$ 个 head，每个 head 的词表大小是一个质数，由 <code>_find_nth_prime_after(ngram_vocab_size_base - 1, k)</code> 从 ngram_vocab_size_base 往上依次取。同一个哈希值对不同的质数取模，得到 $\of{hpn}$ 个互相独立的 id，两个 n-gram 在所有 head 上都撞到一起的概率很小。这一页的质数是
+              $$\boldsymbol{\pi}={{ sizes | matrix:0 }},\qquad \mathbf{h}_{\of{g}}\bmod\boldsymbol{\pi}_{\of{g}}={{ rem[g] | matrix:0 }}$$
+            backward:
+              label: 无梯度
+              title: 整数运算，没有梯度
+          - id: offset
+            show: ['ho[g]', 'blk[g]', offsets]
+            label: '$+\,\boldsymbol{\omega}_{\of{g}}$'
+            title: $\of{g}$-gram：加上每个 head 在大表里的起点
+            text: |
+              <code>ngram_ids + head_offsets.view(1, 1, -1)</code>：所有 head 共用一张嵌入表，第 $k$ 个 head 占从 $\omega_k$ 开始的 $\pi_k$ 行，$\omega_k$ 是前面各个质数之和。
+              $$\boldsymbol{\omega}={{ offsets | matrix:0 }},\qquad \mathbf{id}_{\of{g}}={{ blk[g] | matrix:0 }}$$
+            backward:
+              label: 无梯度
+              title: 整数运算，没有梯度
+  - all_ids: { op: 'cat(blk[2..N], dim=1)', tex: '\mathbf{id}^{\mathrm{hist}}' }
+  - ngram_ids: { op: 'narrow(all_ids, 0, N - 1, T)', tex: '\mathbf{id}' }
+  - emb3: { op: 'embedding(ngram_ids, Wng)', tex: 'E_{ng}[\mathbf{id}]' }
+  - out: { op: 'view(emb3, T, (N - 1) * hpn * dng)', tex: '\mathbf{e}^{ng}' }
+steps:
+  - id: history
+    show: [ctx, hist]
+    label: '$\of{hist}$'
+    title: 在序列前面补 $N-1$ 个 eos
+    text: |
+      <code>previous_context = input_ids.new_full((B, self.context_len), self.eos_token_id)</code>，<code>token_history = torch.cat([previous_context, input_ids], dim=-1)</code>：没有缓存时，历史就是 $N-1=\of{N-1}$ 个 eos（id $\of{eos}$）接上这一段 token。n-gram 往前看的位置不够时，取到的就是这些 eos。
+      $$\of{hist}={{ hist | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: token id 没有梯度
+  - id: concat
+    show: all_ids
+    label: '$\of{all_ids}$'
+    title: 拼起各个 head
+    text: |
+      <code>torch.cat(blocks, dim=-1)</code>：$\of{N-1}$ 个 n 的 $\of{hpn}$ 个 head 拼成每个位置 $\of{(N-1)*hpn}$ 个 id。
+      $$\of{all_ids}={{ all_ids | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: token id 没有梯度
+  - id: trim
+    show: ngram_ids
+    label: '$\of{ngram_ids}$'
+    title: 去掉补上的位置
+    text: |
+      <code>[:, -input_ids.shape[1]:]</code>：去掉历史开头补的 $\of{N-1}$ 个位置，只留当前的 $T$ 个。
+      $$\of{ngram_ids}={{ ngram_ids | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: token id 没有梯度
+  - id: lookup
+    show: [Wng, emb3]
+    label: '$E_{ng}[\mathbf{id}]$'
+    title: 查 n-gram 嵌入表
+    text: |
+      <code>self.ngram_embedding(ngram_ids)</code>：每个 id 取出一行，宽 $\of{dng}$。这张表有 $\of{Vng}$ 行（各个质数之和，再向上取整到 make_ngram_vocab_size_divisible_by 的倍数）。
+      $$E_{ng}[\mathbf{id}]={{ emb3 | matrix:2 }}$$
+    backward:
+      label: '$\partial E_{ng}$'
+      title: 传到 n-gram 嵌入表
+      text: |
+        和 embed_tokens 一样，梯度加回被取到的那些行，其余行是 0。
+        $$\frac{\partial\ell}{\partial E_{ng}}={{ Wng.grad | matrix:3 }}$$
+  - id: flatten
+    show: out
+    label: '$\of{out}$'
+    title: 各 head 拼成一行
+    text: |
+      <code>.flatten(-2)</code>：$\of{(N-1)*hpn}$ 个 head 的嵌入并排拼成宽 $\of{(N-1)*hpn*dng}$ 的一行，就是 ple_embed_dim。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial E_{ng}[\mathbf{id}]$'
+      title: 拆回各个 head

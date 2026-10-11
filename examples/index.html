@@ -19,6 +19,11 @@
   <li><a href="auto-layout-qwen3.html">Qwen3 一层：自动布局</a>：建图代码与上一页相同，布局由 <code>autoLayout</code> 按模块层级生成，用来和手写布局对比。</li>
   <li><a href="qwen3-dsl.html">Qwen3 一层（YAML 页面描述）</a>：和上一页同样的模型与数值，用 <code>qwen3-dsl.yaml</code> 页面描述文件写成，由 <code>&lt;vizflow-page src&gt;</code> 在浏览器里编译。</li>
   <li><a href="qwen3_5-dsl.html">Qwen3.5 最后两层（YAML 页面描述）</a>：Qwen3.5 的混合结构，倒数第二层是 Gated DeltaNet 线性注意力，按位置展开状态的递推；最后一层是带输出门、只转部分维度 RoPE 的 softmax 注意力。用 <code>qwen3_5-dsl.yaml</code> 写成。</li>
+  <li><a href="qwen3_moe-dsl.html">Qwen3 MoE 最后一层（YAML 页面描述）</a>：Qwen3-30B-A3B 的最后一层，注意力和 Qwen3 相同，MLP 换成 softmax 路由、选 top-k 个专家的稀疏 MoE，没有共享专家。用 <code>qwen3_moe-dsl.yaml</code> 写成。</li>
+  <li><a href="qwen3_5_moe-dsl.html">Qwen3.5 MoE 最后两层（YAML 页面描述）</a>：Qwen3.5-397B-A17B 的最后两层，token mixer 与 Qwen3.5 相同，MLP 换成稀疏 MoE 加一个带 sigmoid 门的共享专家。用 <code>qwen3_5_moe-dsl.yaml</code> 写成。</li>
+  <li><a href="qwen3_5-dsl.html">Qwen3.8 Dense</a>：Qwen3.8-27B 的结构和尺寸与 Qwen3.5-27B 完全相同，用的是 Qwen3.5 那一页。</li>
+  <li><a href="qwen3_8_moe-dsl.html">Qwen3.8 MoE 最后两层（YAML 页面描述）</a>：Qwen3.8-2.4T-A95B，结构与 Qwen3.5 MoE 相同，尺寸按它的 config。用 <code>qwen3_8_moe-dsl.yaml</code> 写成。</li>
+  <li><a href="qwen3_8_flash_next-dsl.html">Qwen3.8-Flash-Next（YAML 页面描述）</a>：HF 的 <code>qwen4_exp</code> 结构，从 token id 画到损失。残差流复制成几条并行的流，每个子层经过 GatedResidual 读出和写回；第 2 层有 PLE（n-gram 哈希嵌入）；full_attention 层的注意力前面有 QSA indexer，按块选出要保留的 key。用 <code>qwen3_8_flash_next-dsl.yaml</code> 写成。</li>
   <li><a href="deepseek_v3-dsl.html">DeepSeek V3：MLA 与 MoE（YAML 页面描述）</a>：第 3 层（最后一个 dense 层）和第 4 层（第一个 MoE 层）。注意力是 multi-head latent attention，q 和 kv 先压缩成 latent 再展开；MoE 用 sigmoid 亲和度、按组限制的 top-k 路由和一个共享专家。用 <code>deepseek_v3-dsl.yaml</code> 写成。</li>
   <li><a href="deepseek_v3_2-dsl.html">DeepSeek V3.2：DeepSeek Sparse Attention（YAML 页面描述）</a>：和上一页的结构相同，每一层的 MLA 里多一个 lightning indexer，给每对位置打分，每个位置只保留分数最高的 <code>index_topk</code> 个 key 参与注意力。用 <code>deepseek_v3_2-dsl.yaml</code> 写成。</li>
   <li><a href="deepseek_v4-dsl.html">DeepSeek V4：压缩注意力与 mHC（YAML 页面描述）</a>：第 3 层（CSA，hash 路由的 MoE）和第 4 层（HCA，top-k 路由的 MoE），尺寸按 DeepSeek-V4-Flash。注意力的 key 是滑动窗口里的 token 加上压缩过的条目，CSA 的 indexer 只挑出少数几个条目；残差是几条并行的 stream，由 mHC 在子层前合成、在子层后写回。用 <code>deepseek_v4-dsl.yaml</code> 写成。</li>

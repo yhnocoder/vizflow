@@ -2,7 +2,7 @@ import { Tensor } from '../tensor';
 import type { Graph } from './graph';
 import type { Node } from './node';
 import type { AnyOpDef } from './op';
-import { opDef } from './registry';
+import { inputDifferentiable, opDef } from './registry';
 
 export function moduleJacobian(g: Graph, module: { readonly nodes: readonly Node[] }, input: Node, output: Node): number[][] {
   const inside = new Set(module.nodes);
@@ -20,7 +20,7 @@ export function moduleJacobian(g: Graph, module: { readonly nodes: readonly Node
       const inputGrads = def.backward(gradOut, node.inputs.map((n) => n.value), node.value, node.attrs);
       node.inputs.forEach((source, k) => {
         const grad = inputGrads[k];
-        if (grad === null || grad === undefined || (def.differentiable !== undefined && !def.differentiable[k])) return;
+        if (grad === null || grad === undefined || !inputDifferentiable(def, k)) return;
         const target = grads.get(source);
         if (target === undefined) grads.set(source, grad.clone());
         else for (let j = 0; j < target.size; j++) target.data[j] += grad.data[j];

@@ -1,0 +1,118 @@
+module: GroupedRMSNorm
+subtitle: Qwen4ExpTextRMSNorm，按组归一化
+formula: '\step{scale}{\of{out}=}\step{flatten}{\operatorname{flatten}\big(}\step{normalize}{\of{xg}\big/}\step{rms}{\sqrt{\step{mean}{\operatorname{mean}\big(}\step{square}{{\of{xg}}^{2}}\step{mean}{\big)}\step{eps}{+\epsilon}}}\step{flatten}{\big)}\step{scale}{\odot(1+\of{weight})}'
+params:
+  g:    { type: dim }
+  eps:  { type: float, default: 1e-6 }
+  name: { type: text, default_key: true }
+  intro: { type: text, default: '' }
+inputs:
+  x: { shape: [T, n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: zeros, tex: '\boldsymbol{\gamma}' }
+body:
+  - xg: { op: 'view(x, T, n // g, g)', tex: '{\of{x}}^{\mathrm{grp}}', dtype: fp32 }
+  - sq: { op: xg ** 2, tex: '({\of{x}}^{\mathrm{grp}})^{2}' }
+  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
+  - r:  { op: rsqrt(mse), tex: r }
+  - xh: { op: xg * r, tex: '\hat{\of{x}}^{\mathrm{grp}}' }
+  - flat: { op: 'view(xh, T, n)', tex: '\operatorname{flatten}(\hat{\of{x}}^{\mathrm{grp}})' }
+  - scale: { op: weight + 1, tex: '(1+\of{weight})', dtype: fp32 }
+  - out: { op: flat * scale, dtype: x }
+steps:
+  - id: group
+    show: xg
+    label: '$\of{xg}$'
+    title: \of{name}：转成 float32，按组 reshape
+    text: |
+      \of{intro}<code>x.float().reshape(*x.shape[:-1], -1, group_size)</code>：输入先转成 float32，最后一维 $n=\of{n}$ 切成 $\of{n//g}$ 组，每组 $g=\of{g}$ 个数，也就是每个残差流一组。之后的均方根在每一组里单独计算，各组互不影响。
+      $$\of{xg}={{ xg | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 按组拼回输入
+      text: |
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: square
+    show: sq
+    label: '$\of{sq}$'
+    title: 逐元素平方
+    text: |
+      <code>x.pow(2)</code>。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{xg}$'
+      title: 穿过平方
+      text: 平方这一路的局部导数是 $2x$。
+  - id: mean
+    show: ms
+    label: '$\of{ms}$'
+    title: 每组平方的平均
+    text: |
+      <code>x.pow(2).mean(-1, keepdim=True)</code>：每个位置、每一组对组里的 $\of{g}$ 个平方取平均，各得到一个 ms。
+      $$\mathrm{ms}={{ ms | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 穿过平均
+      text: |
+        平均值的局部导数是 $1/\of{g}$，ms 的梯度均分给组里的每个平方。
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: mse
+    label: '$\of{mse}$'
+    title: 加上 $\epsilon$
+    text: |
+      <code>... + eps</code>，$\epsilon=\of{eps}$，保证下一步不会除以 0。
+      $$\of{mse}={{ mse | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ms}$'
+      title: 穿过加 $\epsilon$
+      text: |
+        加常数的局部导数是 1，梯度原样传下去。
+        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }}$$
+  - id: rms
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      <code>torch.rsqrt(...)</code>：每个位置、每一组各得到一个 $r=1/\sqrt{\mathrm{ms}+\epsilon}$。
+      $$r={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mse}$'
+      title: 穿过 rsqrt
+      text: |
+        $\frac{d}{dv}v^{-1/2}=-\frac{1}{2}v^{-3/2}$，所以局部导数是 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial\of{mse}}={{ mse.grad | matrix:3 }}$$
+  - id: normalize
+    show: xh
+    label: '$\of{xh}$'
+    title: 归一化
+    text: |
+      组里的每个数乘上这一组的 $r$。
+      $$\of{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial r,\ \partial\of{xg}$'
+      title: 传到 r 和直连的那一路
+  - id: flatten
+    show: flat
+    label: '$\of{flat}$'
+    title: 拼回一行
+    text: |
+      <code>out.flatten(-2)</code>：各组按原来的顺序拼回长度 $\of{n}$ 的一行。
+      $$\of{flat}={{ flat | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{xh}$'
+      title: 切回各组
+  - id: scale
+    show: [weight, scale, out]
+    label: '$\of{out}$'
+    title: 乘上 $1+\of{weight}$
+    text: |
+      <code>output * (1.0 + self.weight.float())</code>，再 <code>type_as(x)</code> 转回输入的 dtype。权重长 $\of{n}$，每一组有自己的 $\of{g}$ 个系数；权重初值是 0，乘的是 $1+\of{weight}$。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weight},\ \partial\of{flat}$'
+      title: 传到 $\of{weight}$ 和归一化的结果
+      text: |
+        $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$

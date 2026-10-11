@@ -1,4 +1,4 @@
-import type { Graph, Node } from '../autograd';
+import { type Graph, type Node, isIntegerDtype } from '../autograd';
 import { formatNumber } from '../tensor';
 
 type Subscript = { kind: 'int'; value: number } | { kind: 'focus' } | { kind: 'node'; node: Node; row: boolean };
@@ -183,7 +183,7 @@ function evaluate(t: Template, focus: number, math: boolean): string {
     return token;
   }
   if (typeof t.format === 'number') return formatNumber(value, { digits: t.format, tex: math });
-  if (ref.node.kind === 'label' && !ref.grad) return integerText(value, math);
+  if ((ref.node.kind === 'label' || isIntegerDtype(ref.node.dtype)) && !ref.grad) return integerText(value, math);
   return formatNumber(value, { tex: math });
 }
 

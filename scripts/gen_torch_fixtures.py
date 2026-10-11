@@ -539,9 +539,52 @@ def transformer_op_fixtures():
     cases += head_cases()
     cases += linear_attention_cases()
     cases += routing_cases()
+    cases += chunk_delta_rule_cases()
+    cases += hash_and_mask_cases()
     cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
     cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
     return cases
+
+
+def hash_and_mask_cases():
+    cases = []
+    for a, b in [((3, 4), (3, 4)), ((3, 4), (4,))]:
+        cases.append(op_case("remainder", f"float {a} by {b}", torch.remainder, [("input", randn(*a) * 4), ("input", positive(*b) * (randn(*b).sign()))], [tensor_arg(0), tensor_arg(1)]))
+    ints = randint(1 << 20, (5, 1)) - (1 << 19)
+    cases.append(op_case("remainder", "int64 (5, 1) by primes (1, 3)", torch.remainder, [("label", ints), ("label", torch.tensor([[13, 17, 19]]))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("remainder", "int64 by a scalar", lambda x: torch.remainder(x, 7), [("label", ints)], [tensor_arg(0), 7]))
+    left, right = randint(1 << 30, (4, 3)), randint(1 << 30, (4, 3))
+    cases.append(op_case("bitwise_xor", "int64 (4, 3)", torch.bitwise_xor, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_xor", "int64 with a scalar", lambda x: torch.bitwise_xor(x, 5), [("label", left)], [tensor_arg(0), 5]))
+    p, q = randint(2, (3, 4)).bool(), randint(2, (4,)).bool()
+    cases.append(op_case("bitwise_and", "bool (3, 4) and (4,)", torch.bitwise_and, [("label", p), ("label", q)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_and", "int64 (4, 3)", torch.bitwise_and, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    small = randint(4, (3, 4))
+    cases.append(op_case("eq", "int64 with a scalar", lambda x: torch.eq(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("eq", "int64 (3, 4) and (4,)", torch.eq, [("label", small), ("label", randint(4, (4,)))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("ge", "int64 with a scalar", lambda x: torch.ge(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("ge", "float (3, 4) and (3, 1)", torch.ge, [("label", randn(3, 4)), ("label", randn(3, 1))], [tensor_arg(0), tensor_arg(1)]))
+    cases += pointwise_cases("abs", torch.abs, randn)
+    cases += pointwise_cases("sign", torch.sign, randn)
+    x = torch.tensor([-2.0, -1e-6, 0.0, 1e-6, 2.5, 1e-7], dtype=torch.float64)
+    cases.append(op_case("clamp_min", "around the bound 1e-6", lambda v: v.clamp_min(1e-6), [("input", x)], [tensor_arg(0), 1e-6]))
+    cases.append(op_case("clamp_min", "(3, 4) at 0", lambda v: v.clamp_min(0.0), [("input", randn(3, 4))], [tensor_arg(0), 0.0]))
+    for shape, sizes in [((3, 4), (1, 2)), ((2, 3), (2, 1, 2)), ((4,), (3,))]:
+        cases.append(op_case("repeat", f"{shape} by {sizes}", lambda v, sizes=sizes: v.repeat(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    for shape, dim in [((3, 5), 1), ((4, 2, 3), 0)]:
+        cases.append(op_case("cummax", f"{shape} dim {dim}", lambda v, dim=dim: torch.cummax(v, dim).values, [("input", distinct(*shape))], [tensor_arg(0), dim]))
+    tied = torch.tensor([[1.0, 3.0, 3.0, 2.0, 3.0]], dtype=torch.float64)
+    cases.append(op_case("cummax", "ties pass the gradient to the latest maximum", lambda v: torch.cummax(v, 1).values, [("input", tied)], [tensor_arg(0), 1]))
+    for T, C, K, d in [(7, 3, 4, 2), (5, 2, 3, 3), (3, 4, 4, 3)]:
+        cases.append(op_case("causal_conv1d", f"T {T} channels {C} kernel {K} dilation {d}", lambda x, w, d=d: dilated_conv1d(x, w, d), [("input", randn(T, C)), ("input", randn(C, K))], [tensor_arg(0), tensor_arg(1)], {"dilation": d}))
+    return cases
+
+
+def dilated_conv1d(x, w, dilation):
+    T, C = x.shape
+    K = w.shape[1]
+    pad = (K - 1) * dilation
+    return F.conv1d(F.pad(x.T.unsqueeze(0), (pad, 0)), w.unsqueeze(1), groups=C, dilation=dilation)[0].T
 
 
 def topk_mask(x, k, dim):
@@ -556,6 +599,94 @@ def routing_cases():
         keep = (randn(*condition) > 0).to(torch.float64)
         cases.append(
             op_case("where", f"condition {condition} input {shape} other {other}", lambda c, x, other=other: torch.where(c != 0, x, other), [("label", keep), ("input", randn(*shape))], [tensor_arg(0), tensor_arg(1), other])
+        )
+    cases += expert_routing_cases()
+    return cases
+
+
+def grouped_linear(x, weight, group):
+    return torch.stack([F.linear(x[r], weight[group[r]]) for r in range(x.shape[0])])
+
+
+def expert_routing_cases():
+    cases = []
+    for shape, other in [((3, 4), 0.0), ((5,), 1.0)]:
+        cases.append(op_case("greater", f"{shape} > {other}", lambda x, other=other: torch.greater(x, other), [("input", randn(*shape))], [tensor_arg(0), other]))
+    cases.append(op_case("greater", "(2, 3) > (3,)", torch.greater, [("input", randn(2, 3)), ("input", randn(3))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, k, dim in [((3, 6), 2, -1), ((3, 2, 4), 3, -1), ((4, 3), 2, 0)]:
+        cases.append(op_case("topk_indices", f"{shape} k {k} dim {dim}", lambda x, k=k, dim=dim: x.topk(k, dim)[1], [("label", distinct(*shape))], [tensor_arg(0), k, dim]))
+    for shape, classes in [((3, 2), 5), ((4,), 4)]:
+        cases.append(op_case("one_hot", f"{shape} into {classes} classes", lambda t, classes=classes: F.one_hot(t, classes), [("label", randint(classes, shape))], [tensor_arg(0), classes]))
+    for shape, dims in [((3, 2, 5), (2, 1, 0)), ((2, 3), (1, 0)), ((2, 3, 4), (0, -1, 1))]:
+        cases.append(op_case("permute", f"{shape} dims {dims}", lambda x, dims=dims: x.permute(*dims), [("input", randn(*shape))], [tensor_arg(0), *dims]))
+    mask = torch.tensor([[[1, 0, 0], [0, 0, 1]], [[0, 1, 0], [1, 0, 0]], [[0, 0, 0], [0, 0, 0]], [[0, 1, 1], [0, 0, 0]]])
+    for size, fill in [(6, None), (4, None), (9, None), (8, 7)]:
+        options = {"size": size} if fill is None else {"size": size, "fill_value": fill}
+        cases.append(op_case("nonzero_static", f"(4, 2, 3) size {size}" + ("" if fill is None else f" fill {fill}"), lambda m, options=options: torch.nonzero_static(m, **options), [("label", mask.clone())], [tensor_arg(0)], options))
+    rows = torch.tensor([2, 0, 2, -3, 1])
+    cols = torch.tensor([1, 0, 1, 2, -1])
+    cases.append(op_case("index", "(4, 3)[rows]", lambda x, i: x[i], [("input", randn(4, 3)), ("label", rows.clone())], [tensor_arg(0), [tensor_arg(1)]]))
+    cases.append(op_case("index", "(3, 3)[rows, cols]", lambda x, i, j: x[i, j], [("input", randn(3, 3)), ("label", rows.clone().clamp(min=-3, max=2)), ("label", cols.clone())], [tensor_arg(0), [tensor_arg(1), tensor_arg(2)]]))
+    cases.append(op_case("index", "(3, 2, 4)[rows, cols]", lambda x, i, j: x[i, j], [("input", randn(3, 2, 4)), ("label", torch.tensor([0, 2, 2, 1])), ("label", torch.tensor([1, 0, 1, 1]))], [tensor_arg(0), [tensor_arg(1), tensor_arg(2)]]))
+    for shape, dim, index, source in [((4, 3), 0, [2, 0, 2, 3, 2], (5, 3)), ((2, 4), 1, [3, 3, 0], (2, 3)), ((3,), 0, [1, 2, 1, 0], (4,))]:
+        cases.append(
+            op_case(
+                "index_add",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, s, dim=dim: torch.index_add(x, dim, i, s),
+                [("input", randn(*shape)), ("label", torch.tensor(index)), ("input", randn(*source))],
+                [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    for rows, groups, outs, width, group in [(6, 4, 4, 3, [0, 0, 1, 3, 3, 3]), (3, 2, 2, 2, [1, 0, 1])]:
+        cases.append(
+            op_case(
+                "grouped_linear",
+                f"{rows} rows over {groups} groups of ({outs}, {width})",
+                grouped_linear,
+                [("input", randn(rows, width)), ("input", randn(groups, outs, width)), ("label", torch.tensor(group))],
+                [tensor_arg(0), tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    return cases
+
+
+def lower_system(n, batch=()):
+    return torch.tril(randn(*batch, n, n) * 0.4) + torch.diag_embed(positive(*batch, n))
+
+
+def chunk_delta_rule_cases():
+    cases = []
+    for a, b in [((2, 3, 4), (2, 4, 5)), ((3, 4), (2, 4, 2)), ((2, 1, 3, 2), (3, 2, 2))]:
+        cases.append(op_case("matmul", f"batched {a} x {b}", torch.matmul, [("input", randn(*a)), ("input", randn(*b))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, dim in [((4,), 0), ((3, 4), 1), ((2, 3, 4), -2)]:
+        cases.append(op_case("cumsum", f"{shape} dim {dim}", lambda x, dim=dim: torch.cumsum(x, dim), [("input", randn(*shape))], [tensor_arg(0), dim]))
+    for shape, dim in [((3, 4), -1), ((3, 4), 0), ((2, 3, 4), 2)]:
+        cases.append(op_case("unsqueeze", f"{shape} dim {dim}", lambda x, dim=dim: torch.unsqueeze(x, dim), [("input", randn(*shape))], [tensor_arg(0), dim]))
+    for shape, pad in [((3, 4), [0, 0, 0, 1]), ((2, 3), [1, 2]), ((2, 3, 2), [0, 1, 2, 0])]:
+        cases.append(op_case("pad", f"{shape} pad {pad}", lambda x, pad=pad: F.pad(x, tuple(pad)), [("input", randn(*shape))], [tensor_arg(0), pad]))
+    for shape, diagonal in [((4, 4), 1), ((3, 4), 0), ((2, 3, 3), -1)]:
+        cases.append(op_case("triu", f"{shape} diagonal {diagonal}", lambda x, diagonal=diagonal: torch.triu(x, diagonal), [("input", randn(*shape))], [tensor_arg(0), diagonal]))
+    for mask, shape, value in [((3, 4), (3, 4), -2.5), ((4, 4), (2, 4, 4), 0.0), ((4,), (3, 4), 1e9)]:
+        hit = (randn(*mask) > 0).to(torch.float64)
+        cases.append(
+            op_case("masked_fill", f"mask {mask} input {shape} value {value}", lambda m, x, value=value: x.masked_fill(m != 0, value), [("label", hit), ("input", randn(*shape))], [tensor_arg(1), tensor_arg(0), value])
+        )
+    specs = [
+        ("lower (3, 3) by (3, 2)", lower_system(3), randn(3, 2), False, False),
+        ("upper (3, 3) by (3, 4)", lower_system(3).transpose(-1, -2).contiguous(), randn(3, 4), True, False),
+        ("unitriangular lower (2, 4, 4) by (2, 4, 3)", lower_system(4, (2,)), randn(2, 4, 3), False, True),
+    ]
+    for title, a, b, upper, unitriangular in specs:
+        cases.append(
+            op_case(
+                "solve_triangular",
+                title,
+                lambda a, b, upper=upper, unitriangular=unitriangular: torch.linalg.solve_triangular(a, b, upper=upper, unitriangular=unitriangular),
+                [("input", a), ("input", b)],
+                [tensor_arg(0), tensor_arg(1)],
+                {"upper": upper, "unitriangular": unitriangular},
+            )
         )
     return cases
 
