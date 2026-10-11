@@ -20,8 +20,9 @@ import {
   subExplain,
   transposeExplain,
   whereExplain,
+  geExplain,
 } from './elementwise';
-import { catExplain, causalConv1dExplain, embeddingExplain, gatherExplain, narrowExplain, repeatInterleaveExplain, selectExplain, topkMaskExplain, viewExplain } from './index_ops';
+import { catExplain, causalConv1dExplain, embeddingExplain, gatherExplain, indexCopyExplain, narrowExplain, repeatInterleaveExplain, selectExplain, topkIndicesExplain, topkMaskExplain, viewExplain } from './index_ops';
 import { nllLossExplain } from './loss';
 import { matmulExplain, selectMatmulExplain } from './matmul';
 import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -65,6 +66,9 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   causal_conv1d: causalConv1dExplain,
   topk_mask: topkMaskExplain,
   where: whereExplain,
+  ge: geExplain,
+  index_copy: indexCopyExplain,
+  topk_indices: topkIndicesExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

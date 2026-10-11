@@ -6,6 +6,7 @@ import {
   addOp,
   divOp,
   expOp,
+  geOp,
   geluOp,
   identityOp,
   logOp,
@@ -23,7 +24,7 @@ import {
   transposeOp,
   whereOp,
 } from './elementwise';
-import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, topkMaskOp, viewOp } from './index_ops';
+import { catOp, causalConv1dOp, embeddingOp, gatherOp, indexCopyOp, narrowOp, repeatInterleaveOp, selectOp, topkIndicesOp, topkMaskOp, viewOp } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { matmulOp, selectMatmulOp } from './matmul';
 import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
@@ -92,6 +93,9 @@ export interface BuiltinOps {
   causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
+  ge(input: Node, other: number, options?: OpOptions): Node;
+  index_copy(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
+  topk_indices(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -132,6 +136,9 @@ export const builtinOps: readonly AnyOpDef[] = [
   causalConv1dOp,
   topkMaskOp,
   whereOp,
+  geOp,
+  indexCopyOp,
+  topkIndicesOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

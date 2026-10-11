@@ -1,4 +1,4 @@
-import { Tensor, forEachIndex, formatShape, normDim, offsetOf, reduceMap } from '../../tensor';
+import { Tensor, forEachIndex, formatShape, indexOf, normDim, offsetOf, reduceMap } from '../../tensor';
 import type { OpDef } from '../op';
 
 export interface GatherAttrs {
@@ -405,6 +405,121 @@ export const topkMaskOp: OpDef<TopkMaskAttrs> = {
     for (const members of groups.values()) {
       const ranked = [...members].sort((a, b) => input.data[b] - input.data[a] || a - b);
       for (const offset of ranked.slice(0, attrs.k)) out.data[offset] = 1;
+    }
+    return out;
+  },
+  backward: () => [null],
+};
+
+export interface IndexCopyAttrs {
+  dim: number;
+}
+
+function indexCopyTargets(input: readonly number[], index: Tensor | readonly number[], source: readonly number[], attrs: IndexCopyAttrs): { dim: number; rows: number[] } {
+  const dim = normDim(attrs.dim, input.length);
+  const shape = index instanceof Tensor ? index.shape : index;
+  if (shape.length !== 1) throw new Error(`index_copy: index ${formatShape(shape)} must be one-dimensional`);
+  if (source.length !== input.length || source.some((size, d) => size !== (d === dim ? shape[0] : input[d]))) {
+    throw new Error(`index_copy: source ${formatShape(source)} must match input ${formatShape(input)} except along dim ${dim}, where it has ${shape[0]} entries`);
+  }
+  if (!(index instanceof Tensor)) return { dim, rows: [] };
+  const rows = Array.from(index.data, (v) => Math.round(v));
+  rows.forEach((row, i) => {
+    if (row < 0 || row >= input[dim]) throw new Error(`index_copy: index ${row} at [${i}] is out of range for input ${formatShape(input)} along dim ${dim}`);
+    if (rows.indexOf(row) !== i) throw new Error(`index_copy: index ${row} appears more than once`);
+  });
+  return { dim, rows };
+}
+
+export function indexCopySource(ctx: { inputs: Tensor[]; attrs: object }, out: readonly number[]): { arg: number; index: number[] } {
+  const [input, index, source] = ctx.inputs;
+  const { dim, rows } = indexCopyTargets(input.shape, index, source.shape, ctx.attrs as IndexCopyAttrs);
+  const at = rows.indexOf(out[dim]);
+  if (at < 0) return { arg: 0, index: [...out] };
+  const from = [...out];
+  from[dim] = at;
+  return { arg: 2, index: from };
+}
+
+export const indexCopyOp: OpDef<IndexCopyAttrs> = {
+  name: 'index_copy',
+  args: ['input', 'dim', 'index', 'source'],
+  tensors: ['input', 'index', 'source'],
+  differentiable: [true, false, true],
+  shape: ([input, index, source], attrs) => {
+    indexCopyTargets(input, index, source, attrs);
+    return [...input];
+  },
+  forward: ([input, index, source], attrs) => {
+    const { dim, rows } = indexCopyTargets(input.shape, index, source.shape, attrs);
+    const out = new Tensor(input.shape, Float64Array.from(input.data));
+    forEachIndex(source.shape, (position, offset) => {
+      const target = [...position];
+      target[dim] = rows[position[dim]];
+      out.data[offsetOf(input.shape, target)] = source.data[offset];
+    });
+    return out;
+  },
+  backward: (gradOut, [input, index, source], _out, attrs) => {
+    const { dim, rows } = indexCopyTargets(input.shape, index, source.shape, attrs);
+    const gradInput = new Tensor(input.shape, Float64Array.from(gradOut.data));
+    const gradSource = new Tensor(source.shape);
+    forEachIndex(source.shape, (position, offset) => {
+      const target = [...position];
+      target[dim] = rows[position[dim]];
+      const at = offsetOf(input.shape, target);
+      gradSource.data[offset] = gradOut.data[at];
+      gradInput.data[at] = 0;
+    });
+    return [gradInput, null, gradSource];
+  },
+};
+
+export interface TopkIndicesAttrs {
+  k: number;
+  dim: number;
+}
+
+export function rankAlong(input: Tensor, dim: number): { shape: number[]; groups: number[][] } {
+  const { map } = reduceMap(input.shape, [dim], false);
+  const groups = new Map<number, number[]>();
+  map.forEach((group, offset) => {
+    const members = groups.get(group);
+    if (members === undefined) groups.set(group, [offset]);
+    else members.push(offset);
+  });
+  return { shape: [...input.shape], groups: [...groups.values()].map((members) => [...members].sort((a, b) => input.data[b] - input.data[a] || a - b)) };
+}
+
+function topkIndicesShape(shape: readonly number[], attrs: TopkIndicesAttrs): { dim: number; shape: number[] } {
+  if (shape.length === 0) throw new Error('topk_indices: input must have at least one dimension');
+  const dim = normDim(attrs.dim, shape.length);
+  if (!Number.isInteger(attrs.k) || attrs.k < 0 || attrs.k > shape[dim]) {
+    throw new Error(`topk_indices: k ${attrs.k} is out of range for input ${formatShape(shape)} along dim ${dim}`);
+  }
+  const out = [...shape];
+  out[dim] = attrs.k;
+  return { dim, shape: out };
+}
+
+export const topkIndicesOp: OpDef<TopkIndicesAttrs> = {
+  name: 'topk_indices',
+  args: ['input', 'k', 'dim'],
+  tensors: ['input'],
+  sizes: ['k'],
+  defaults: { dim: -1 },
+  differentiable: [false],
+  shape: ([input], attrs) => topkIndicesShape(input, attrs).shape,
+  forward: ([input], attrs) => {
+    const { dim, shape } = topkIndicesShape(input.shape, attrs);
+    const out = new Tensor(shape);
+    for (const ranked of rankAlong(input, dim).groups) {
+      ranked.slice(0, attrs.k).forEach((offset, rank) => {
+        const position = indexOf(input.shape, offset);
+        const picked = position[dim];
+        position[dim] = rank;
+        out.data[offsetOf(shape, position)] = picked;
+      });
     }
     return out;
   },
