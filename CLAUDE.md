@@ -144,6 +144,5 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 调研外部项目、方案或工具时：
 
-1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
-2. 同时开一个 issue，加 `question` 标签，写明调研动机、Artifact 链接与结论摘要。结论确定后关闭 issue。
-3. 调研结论中需要实施的改动，写进 Design Doc 或 feature issue，注明来源 issue 编号。
+1. 报告正文发布成 Artifact（claude.ai 上的私有页面），不写进仓库，也不为调研开 GitHub issue。之后的 agent 会搜索和读取仓库里的文件，调研过程写进仓库会混进这些结果。
+2. 调研结论中需要实施的改动，写进 Design Doc 或实现它的 PR，注明来源 Artifact 的链接。
