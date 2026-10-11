@@ -510,7 +510,8 @@ class StepsImpl implements Steps {
     const derived = new Set<Node>();
     for (const n of g.nodes) if (members.has(n) && n.kind === 'op' && n.inputs.every((i) => cacheSet.has(i) || derived.has(i))) derived.add(n);
     const masks = new Set<Node>();
-    for (const n of members) for (const i of n.inputs) if (i.kind === 'buffer' && i.shape[0] === T) masks.add(i);
+    const isMask = (n: Node) => n.kind === 'buffer' && n.shape.length === 2 && n.shape[0] === T && n.shape[1] === T && n.value.data.every((v) => v === 0 || v === -Infinity);
+    for (const n of members) for (const i of n.inputs) if (isMask(i)) masks.add(i);
     const positional = g.nodes.filter((n) => n.kind === 'buffer' && n.shape[0] === T && !masks.has(n));
     const ancestors = (node: Node) => {
       const seen = new Set<Node>();
