@@ -256,7 +256,11 @@ export const selectOp: OpDef<SelectAttrs> = {
   name: 'select',
   args: ['input', 'dim', 'index'],
   tensors: ['input'],
-  shape: ([input], attrs) => selected(input, attrs).shape,
+  shape: ([input], attrs) => {
+    if (input.length === 0) throw new Error('select: input must have at least one dimension');
+    const dim = normDim(attrs.dim, input.length);
+    return input.filter((_, d) => d !== dim);
+  },
   forward: ([input], attrs) => {
     const out = new Tensor(selected(input.shape, attrs).shape);
     forEachIndex(out.shape, (index, offset) => {
@@ -652,5 +656,73 @@ export const indexAddOp: OpDef<IndexAddAttrs> = {
     const gs = new Tensor(source.shape);
     for (const [to, from] of indexAddPairs(input, index, source, attrs)) gs.data[from] = gradOut.data[to];
     return [gradOut.clone(), null, gs];
+  },
+};
+
+export interface UnsqueezeAttrs {
+  dim: number;
+}
+
+export function unsqueezedShape(input: readonly number[], attrs: UnsqueezeAttrs): number[] {
+  const dim = normDim(attrs.dim, input.length + 1);
+  return [...input.slice(0, dim), 1, ...input.slice(dim)];
+}
+
+export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
+  name: 'unsqueeze',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  shape: ([input], attrs) => unsqueezedShape(input, attrs),
+  forward: ([input], attrs) => new Tensor(unsqueezedShape(input.shape, attrs), input.data.slice()),
+  backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+};
+
+export interface PadAttrs {
+  pad: number[];
+}
+
+function padding(shape: readonly number[], attrs: PadAttrs): { before: number[]; shape: number[] } {
+  const { pad } = attrs;
+  if (pad.length % 2 !== 0 || pad.length / 2 > shape.length || pad.some((p) => !Number.isInteger(p) || p < 0)) {
+    throw new Error(`pad: (${pad.join(', ')}) must be pairs of non-negative integers, at most one pair per dimension of ${formatShape(shape)}`);
+  }
+  const before = shape.map(() => 0);
+  const out = [...shape];
+  for (let pair = 0; pair < pad.length / 2; pair++) {
+    const d = shape.length - 1 - pair;
+    before[d] = pad[2 * pair];
+    out[d] += pad[2 * pair] + pad[2 * pair + 1];
+  }
+  return { before, shape: out };
+}
+
+export function padSource(inputShape: readonly number[], attrs: PadAttrs, out: readonly number[]): number[] | undefined {
+  const { before } = padding(inputShape, attrs);
+  const index = out.map((i, d) => i - before[d]);
+  return index.every((i, d) => i >= 0 && i < inputShape[d]) ? index : undefined;
+}
+
+export const padOp: OpDef<PadAttrs> = {
+  name: 'pad',
+  args: ['input', 'pad'],
+  tensors: ['input'],
+  rest: 'pad',
+  sizes: ['pad'],
+  shape: ([input], attrs) => padding(input, attrs).shape,
+  forward: ([input], attrs) => {
+    const out = new Tensor(padding(input.shape, attrs).shape);
+    forEachIndex(out.shape, (index, offset) => {
+      const source = padSource(input.shape, attrs, index);
+      if (source !== undefined) out.data[offset] = input.get(source);
+    });
+    return out;
+  },
+  backward: (gradOut, [input], _out, attrs) => {
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (index, offset) => {
+      const source = padSource(input.shape, attrs, index);
+      if (source !== undefined) grad.set(source, gradOut.data[offset]);
+    });
+    return [grad];
   },
 };

@@ -23,6 +23,8 @@ import {
   transposeOp,
   whereOp,
   greaterOp,
+  maskedFillOp,
+  triuOp,
 } from './elementwise';
 import {
   catOp,
@@ -34,16 +36,18 @@ import {
   narrowOp,
   nonzeroStaticOp,
   oneHotOp,
+  padOp,
   permuteOp,
   repeatInterleaveOp,
   selectOp,
   topkIndicesOp,
   topkMaskOp,
+  unsqueezeOp,
   viewOp,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { groupedLinearOp, matmulOp, selectMatmulOp } from './matmul';
-import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
+import { groupedLinearOp, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
+import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
 export type { Dim, Reduction };
@@ -73,6 +77,15 @@ export interface CatOptions extends OpOptions {
 export interface NonzeroStaticOptions extends OpOptions {
   size?: number | string;
   fill_value?: number;
+}
+
+export interface SolveTriangularOptions extends OpOptions {
+  upper?: boolean;
+  unitriangular?: boolean;
+}
+
+export interface TriuOptions extends OpOptions {
+  diagonal?: number;
 }
 
 export interface BuiltinOps {
@@ -124,6 +137,13 @@ export interface BuiltinOps {
   index(input: Node, indices: Node[], options?: OpOptions): Node;
   index_add(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
   grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
+  cumsum(input: Node, dim: number, options?: OpOptions): Node;
+  unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
+  pad(input: Node, pad: (number | string)[], options?: OpOptions): Node;
+  pad(input: Node, ...pad: (number | string)[]): Node;
+  triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
+  masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
+  solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -172,6 +192,12 @@ export const builtinOps: readonly AnyOpDef[] = [
   indexOp,
   indexAddOp,
   groupedLinearOp,
+  cumsumOp,
+  unsqueezeOp,
+  padOp,
+  triuOp,
+  maskedFillOp,
+  solveTriangularOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

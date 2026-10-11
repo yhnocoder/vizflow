@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { type PermuteAttrs, convTaps, indexAddTarget, indexSource, permuteSource } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type PermuteAttrs, convTaps, indexAddTarget, indexSource, padSource, permuteSource } from '../../autograd/ops/index_ops';
 import { indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -226,5 +226,26 @@ export const indexAddExplain: OpExplain = {
       picks.push({ arg: 2, index: source });
     }
     return picks;
+  },
+};
+
+export const unsqueezeExplain: OpExplain = {
+  ...viewExplain,
+  tex: {
+    forward: (s) => `\\operatorname{unsqueeze}(${s.in[0]},${(s.attrs as { dim: number }).dim})`,
+    local: () => '1',
+  },
+};
+
+export const padExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{pad}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const source = padSource(ctx.inputs[0].shape, ctx.attrs as PadAttrs, out);
+    return source === undefined ? [] : [{ arg: 0, index: source }];
   },
 };

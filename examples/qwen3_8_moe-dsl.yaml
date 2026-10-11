@@ -8,9 +8,9 @@ import:
   GatedDeltaNet:       ./qwen3_5/gated-deltanet.yaml
   GatedAttention:      ./qwen3_5/attention.yaml
   Qwen3_5MoE:          ./qwen3_5_moe/moe.yaml
-dims: { T: 3, d: 4, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4, Ne: 4, Nk: 2, mf: 2, sf: 2 }
+dims: { T: 3, d: 4, V: 5, H: 2, Hkv: 1, dh: 8, rd: 2, Hk: 1, Hv: 2, dk: 2, dv: 2, K: 4, chunk: 2, Ne: 4, Nk: 2, mf: 2, sf: 2 }
 dtype: bf16
-real: { name: Qwen3.8-2.4T-A95B, d: 8192, V: 248320, H: 64, Hkv: 4, dh: 256, rd: 64, Hk: 16, Hv: 128, dk: 128, dv: 128, K: 4, Ne: 512, Nk: 10, mf: 2048, sf: 2048 }
+real: { name: Qwen3.8-2.4T-A95B, d: 8192, V: 248320, H: 64, Hkv: 4, dh: 256, rd: 64, Hk: 16, Hv: 128, dk: 128, dv: 128, K: 4, chunk: 64, Ne: 512, Nk: 10, mf: 2048, sf: 2048 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261013 }
 sequence: { tokens: [the, cat, sat, on], input: ids, label: y }
@@ -28,7 +28,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$ 传给更早的位置；在 linear_attention 层里，跨位置的梯度沿着状态 $S_t\to S_{t-1}$ 一步步往回传，每一步乘上衰减 $\alpha_t$，也经过短卷积传给前面 3 个位置。MoE 里每个位置的梯度只进入选中它的那几个路由专家和共享专家。
+      整条反向路径一起显示。在 full_attention 层里，跨位置的梯度经过注意力权重 $P$ 和 $\mathbf{k}$、$\mathbf{v}$ 传给更早的位置；在 linear_attention 层里，序列按 $C=2$ 个位置分块，跨位置的梯度在块内经过下三角的系数矩阵 $A$、块内注意力 $\mathcal{P}$ 和 cumsum 传给前面的位置，在块之间沿着状态 $S_i\to S_{i-1}$ 一块一块往回传，每块乘上整块的衰减；也经过短卷积传给前面 3 个位置。MoE 里每个位置的梯度只进入选中它的那几个路由专家和共享专家。
       $$\frac{\partial\ell}{\partial\mathbf{x}_0}={{ x0.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -40,7 +40,7 @@ leaves:
 modules:
   LinearDecoderLayer:
     subtitle: Qwen3_5MoeDecoderLayer
-    params: { Hk: { type: dim }, Hv: { type: dim }, dk: { type: dim }, dv: { type: dim }, K: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim } }
+    params: { Hk: { type: dim }, Hv: { type: dim }, dk: { type: dim }, dv: { type: dim }, K: { type: dim }, chunk: { type: dim }, Ne: { type: dim }, Nk: { type: dim }, mf: { type: dim }, sf: { type: dim } }
     inputs: { x: { shape: [T, d] } }
     outputs: [x_out]
     fold:
@@ -66,7 +66,7 @@ modules:
           folded: true
       - linear_attn:
           use: GatedDeltaNet
-          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K }
+          params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, chunk: chunk }
           inputs: { x: n1 }
           outputs: { out: att }
           tex: { out: '\mathbf{att}_{1}' }
@@ -216,7 +216,7 @@ body:
       title: Qwen3_5MoeDecoderLayer
       subtitle: 第 $N-1$ 层，linear_attention
       split: true
-      params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, Ne: Ne, Nk: Nk, mf: mf, sf: sf }
+      params: { Hk: Hk, Hv: Hv, dk: dk, dv: dv, K: K, chunk: chunk, Ne: Ne, Nk: Nk, mf: mf, sf: sf }
       inputs: { x: x0 }
       outputs: { x_out: x1 }
       tex: { x_out: '\mathbf{x}_{1}' }
@@ -334,6 +334,29 @@ panels:
     ids: ids
     title: full_attention 层的注意力权重 P
     note: 行是 query 的位置，列是 key 的位置。
+  - title: Qwen3_5MoeGatedDeltaNet.forward
+    code: |-
+      # 没有缓存（prefill 和训练）时走的分支，attention_mask 为 None
+      hidden_states = apply_mask_to_padding_states(hidden_states, attention_mask)
+      mixed_qkv = self.in_proj_qkv(hidden_states).transpose(1, 2)
+      z = self.in_proj_z(hidden_states).reshape(batch_size, seq_len, -1, self.head_v_dim)
+      b = self.in_proj_b(hidden_states)
+      a = self.in_proj_a(hidden_states)
+      mixed_qkv = causal_conv1d_fn(mixed_qkv, self.conv1d.weight.squeeze(1), self.conv1d.bias, activation=self.activation)
+      query, key, value = torch.split(mixed_qkv.transpose(1, 2), [self.key_dim, self.key_dim, self.value_dim], dim=-1)
+      query = query.reshape(batch_size, seq_len, -1, self.head_k_dim)
+      key = key.reshape(batch_size, seq_len, -1, self.head_k_dim)
+      value = value.reshape(batch_size, seq_len, -1, self.head_v_dim)
+      beta = b.sigmoid()
+      g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)
+      query = query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+      key = key.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)
+      core_attn_out, _ = torch_chunk_gated_delta_rule(
+          query, key, value, g=g, beta=beta, initial_state=None,
+          output_final_state=False, use_qk_l2norm_in_kernel=True)   # chunk_size 默认 64，本页用 2
+      core_attn_out = self.norm(core_attn_out.reshape(-1, self.head_v_dim), z.reshape(-1, self.head_v_dim))
+      output = self.out_proj(core_attn_out.reshape(batch_size, seq_len, -1))
+    note: 带缓存、seq_len 为 1 的 decode 改用 <code>causal_conv1d_update</code> 和逐个位置递推的 <code>torch_recurrent_gated_delta_rule</code>，这一页不画。<code>torch_chunk_gated_delta_rule</code> 的每一行在 linear_attn 的步骤里逐行画出；HF 用 <code>chunk_size=64</code>，结果与块长无关，这一页用 2，让 $T=3$ 的序列分成两块并补一个位置。
   - title: 对应的 PyTorch
     code: |-
       # transformers Qwen3_5Moe 的文本部分，layer_types[-2:] = linear, full

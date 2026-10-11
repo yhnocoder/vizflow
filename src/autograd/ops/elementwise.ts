@@ -1,4 +1,4 @@
-import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, normDim, offsetOf, unbroadcast } from '../../tensor';
+import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, formatShape, normDim, offsetOf, unbroadcast } from '../../tensor';
 import type { OpDef } from '../op';
 
 type NoAttrs = Record<string, never>;
@@ -195,4 +195,51 @@ export const transposeOp: OpDef<TransposeAttrs> = {
   shape: ([a], attrs) => swapped(a, attrs).shape,
   forward: ([a], attrs) => transposeTensor(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [transposeTensor(gradOut, attrs)],
+};
+
+export interface TriuAttrs {
+  diagonal: number;
+}
+
+export function triuKeeps(index: readonly number[], attrs: TriuAttrs): boolean {
+  return index[index.length - 1] - index[index.length - 2] >= attrs.diagonal;
+}
+
+function triuOf(input: Tensor, attrs: TriuAttrs): Tensor {
+  const out = new Tensor(input.shape);
+  forEachIndex(input.shape, (index, offset) => {
+    if (triuKeeps(index, attrs)) out.data[offset] = input.data[offset];
+  });
+  return out;
+}
+
+export const triuOp: OpDef<TriuAttrs> = {
+  name: 'triu',
+  args: ['input', 'diagonal'],
+  tensors: ['input'],
+  defaults: { diagonal: 0 },
+  shape: ([a]) => {
+    if (a.length < 2) throw new Error(`triu: input ${formatShape(a)} must have at least two dimensions`);
+    return [...a];
+  },
+  forward: ([a], attrs) => triuOf(a, attrs),
+  backward: (gradOut, _inputs, _out, attrs) => [triuOf(gradOut, attrs)],
+};
+
+function maskedShape(input: readonly number[], mask: readonly number[]): number[] {
+  const shape = broadcastShapes(input, mask);
+  if (shape.length !== input.length || shape.some((size, d) => size !== input[d])) {
+    throw new Error(`masked_fill: mask ${formatShape(mask)} must broadcast to input ${formatShape(input)}`);
+  }
+  return [...input];
+}
+
+export const maskedFillOp: OpDef<{ value: number }> = {
+  name: 'masked_fill',
+  args: ['input', 'mask', 'value'],
+  tensors: ['input', 'mask'],
+  differentiable: [true, false],
+  shape: ([input, mask]) => maskedShape(input, mask),
+  forward: ([input, mask], { value }) => zipWith(input, mask, (x, fill) => (fill !== 0 ? value : x)),
+  backward: (gradOut, [, mask]) => [zipWith(gradOut, mask, (g, fill) => (fill !== 0 ? 0 : g)), null],
 };

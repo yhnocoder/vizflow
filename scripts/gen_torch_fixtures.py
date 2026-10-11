@@ -539,6 +539,7 @@ def transformer_op_fixtures():
     cases += head_cases()
     cases += linear_attention_cases()
     cases += routing_cases()
+    cases += chunk_delta_rule_cases()
     return cases
 
 
@@ -601,6 +602,46 @@ def expert_routing_cases():
                 grouped_linear,
                 [("input", randn(rows, width)), ("input", randn(groups, outs, width)), ("label", torch.tensor(group))],
                 [tensor_arg(0), tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    return cases
+
+
+def lower_system(n, batch=()):
+    return torch.tril(randn(*batch, n, n) * 0.4) + torch.diag_embed(positive(*batch, n))
+
+
+def chunk_delta_rule_cases():
+    cases = []
+    for a, b in [((2, 3, 4), (2, 4, 5)), ((3, 4), (2, 4, 2)), ((2, 1, 3, 2), (3, 2, 2))]:
+        cases.append(op_case("matmul", f"batched {a} x {b}", torch.matmul, [("input", randn(*a)), ("input", randn(*b))], [tensor_arg(0), tensor_arg(1)]))
+    for shape, dim in [((4,), 0), ((3, 4), 1), ((2, 3, 4), -2)]:
+        cases.append(op_case("cumsum", f"{shape} dim {dim}", lambda x, dim=dim: torch.cumsum(x, dim), [("input", randn(*shape))], [tensor_arg(0), dim]))
+    for shape, dim in [((3, 4), -1), ((3, 4), 0), ((2, 3, 4), 2)]:
+        cases.append(op_case("unsqueeze", f"{shape} dim {dim}", lambda x, dim=dim: torch.unsqueeze(x, dim), [("input", randn(*shape))], [tensor_arg(0), dim]))
+    for shape, pad in [((3, 4), [0, 0, 0, 1]), ((2, 3), [1, 2]), ((2, 3, 2), [0, 1, 2, 0])]:
+        cases.append(op_case("pad", f"{shape} pad {pad}", lambda x, pad=pad: F.pad(x, tuple(pad)), [("input", randn(*shape))], [tensor_arg(0), pad]))
+    for shape, diagonal in [((4, 4), 1), ((3, 4), 0), ((2, 3, 3), -1)]:
+        cases.append(op_case("triu", f"{shape} diagonal {diagonal}", lambda x, diagonal=diagonal: torch.triu(x, diagonal), [("input", randn(*shape))], [tensor_arg(0), diagonal]))
+    for mask, shape, value in [((3, 4), (3, 4), -2.5), ((4, 4), (2, 4, 4), 0.0), ((4,), (3, 4), 1e9)]:
+        hit = (randn(*mask) > 0).to(torch.float64)
+        cases.append(
+            op_case("masked_fill", f"mask {mask} input {shape} value {value}", lambda m, x, value=value: x.masked_fill(m != 0, value), [("label", hit), ("input", randn(*shape))], [tensor_arg(1), tensor_arg(0), value])
+        )
+    specs = [
+        ("lower (3, 3) by (3, 2)", lower_system(3), randn(3, 2), False, False),
+        ("upper (3, 3) by (3, 4)", lower_system(3).transpose(-1, -2).contiguous(), randn(3, 4), True, False),
+        ("unitriangular lower (2, 4, 4) by (2, 4, 3)", lower_system(4, (2,)), randn(2, 4, 3), False, True),
+    ]
+    for title, a, b, upper, unitriangular in specs:
+        cases.append(
+            op_case(
+                "solve_triangular",
+                title,
+                lambda a, b, upper=upper, unitriangular=unitriangular: torch.linalg.solve_triangular(a, b, upper=upper, unitriangular=unitriangular),
+                [("input", a), ("input", b)],
+                [tensor_arg(0), tensor_arg(1)],
+                {"upper": upper, "unitriangular": unitriangular},
             )
         )
     return cases

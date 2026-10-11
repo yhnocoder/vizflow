@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { normDims, offsetOf, reduceMap } from '../../tensor';
+import { normDim, normDims, offsetOf, reduceMap } from '../../tensor';
 
 interface ReduceAttrs {
   dim: number | number[] | null;
@@ -53,5 +53,22 @@ export const logsumexpExplain: OpExplain = {
   tex: {
     forward: (s) => `\\log\\sum\\exp(${s.in[0]})`,
     local: (s) => `\\exp(${s.in}-${s.out})`,
+  },
+};
+
+export const cumsumExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{cumsum}(${s.in[0]},${(s.attrs as { dim: number }).dim})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const dim = normDim((ctx.attrs as { dim: number }).dim, out.length);
+    return Array.from({ length: out[dim] + 1 }, (_, m) => {
+      const index = [...out];
+      index[dim] = m;
+      return { arg: 0, index };
+    });
   },
 };

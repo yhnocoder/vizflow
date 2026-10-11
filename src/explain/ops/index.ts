@@ -21,6 +21,8 @@ import {
   transposeExplain,
   whereExplain,
   greaterExplain,
+  maskedFillExplain,
+  triuExplain,
 } from './elementwise';
 import {
   catExplain,
@@ -32,16 +34,18 @@ import {
   narrowExplain,
   nonzeroStaticExplain,
   oneHotExplain,
+  padExplain,
   permuteExplain,
   repeatInterleaveExplain,
   selectExplain,
   topkIndicesExplain,
   topkMaskExplain,
+  unsqueezeExplain,
   viewExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
-import { groupedLinearExplain, matmulExplain, selectMatmulExplain } from './matmul';
-import { logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
+import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
+import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
@@ -90,6 +94,12 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   index: indexExplain,
   index_add: indexAddExplain,
   grouped_linear: groupedLinearExplain,
+  cumsum: cumsumExplain,
+  unsqueeze: unsqueezeExplain,
+  pad: padExplain,
+  triu: triuExplain,
+  masked_fill: maskedFillExplain,
+  solve_triangular: solveTriangularExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
