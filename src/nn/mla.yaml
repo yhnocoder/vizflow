@@ -35,43 +35,34 @@ fold:
     text: |
       $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 body:
-  - q_branch:
-      title: query
-      subtitle: 'q_a_proj $\cdot$ q_a_layernorm $\cdot$ q_b_proj'
-      body:
-      - cq: { op: x @ Wqa.T, tex: '\mathbf{c}_{q}' }
-      - q_a_layernorm:
-          use: RMSNorm
-          subtitle: DeepseekV3RMSNorm
-          suffix: q
-          params: { intro: 'q 的 latent 先做一次 RMSNorm，范围是 $r_q$ 维。' }
-          inputs: { x: cq }
-          outputs: { out: cqn }
-          tex: { out: '\bar{\of{cq}}' }
-          folded: true
-      - q: 'view(cqn @ Wqb.T, T, H, dn + dr)'
-      - q_pass: { op: 'narrow(q, -1, 0, dn)', tex: '\mathbf{q}_{\mathrm{pass}}' }
-      - q_rot:  { op: 'narrow(q, -1, dn, dr)', tex: '\mathbf{q}_{\mathrm{rot}}' }
-  - kv_branch:
-      beside: q_branch
-      title: key 和 value
-      subtitle: 'kv_a_proj_with_mqa $\cdot$ kv_a_layernorm $\cdot$ kv_b_proj'
-      body:
-      - ckv: { op: x @ Wkva.T, tex: '[\mathbf{c}_{kv}\,|\,\mathbf{k}_{\mathrm{rot}}]' }
-      - c_kv: { op: 'narrow(ckv, -1, 0, rkv)', tex: '\mathbf{c}_{kv}' }
-      - k_rot: { op: 'view(narrow(ckv, -1, rkv, dr), T, 1, dr)', tex: '\mathbf{k}_{\mathrm{rot}}' }
-      - kv_a_layernorm:
-          use: RMSNorm
-          subtitle: DeepseekV3RMSNorm
-          suffix: kv
-          params: { intro: 'kv 的 latent 也做一次 RMSNorm，范围是 $r_{kv}$ 维；带 RoPE 的那一段不归一化。' }
-          inputs: { x: c_kv }
-          outputs: { out: ckvn }
-          tex: { out: '\bar{\of{c_kv}}' }
-          folded: true
-      - kv: 'view(ckvn @ Wkvb.T, T, H, dn + dv)'
-      - k_pass: { op: 'narrow(kv, -1, 0, dn)', tex: '\mathbf{k}_{\mathrm{pass}}' }
-      - v: 'narrow(kv, -1, dn, dv)'
+  - cq: { op: x @ Wqa.T, tex: '\mathbf{c}_{q}' }
+  - q_a_layernorm:
+      use: RMSNorm
+      subtitle: DeepseekV3RMSNorm
+      suffix: q
+      params: { intro: 'q 的 latent 先做一次 RMSNorm，范围是 $r_q$ 维。' }
+      inputs: { x: cq }
+      outputs: { out: cqn }
+      tex: { out: '\bar{\of{cq}}' }
+      folded: true
+  - q: 'view(cqn @ Wqb.T, T, H, dn + dr)'
+  - q_pass: { op: 'narrow(q, -1, 0, dn)', tex: '\mathbf{q}_{\mathrm{pass}}' }
+  - q_rot:  { op: 'narrow(q, -1, dn, dr)', tex: '\mathbf{q}_{\mathrm{rot}}' }
+  - ckv: { op: x @ Wkva.T, tex: '[\mathbf{c}_{kv}\,|\,\mathbf{k}_{\mathrm{rot}}]' }
+  - c_kv: { op: 'narrow(ckv, -1, 0, rkv)', tex: '\mathbf{c}_{kv}' }
+  - k_rot: { op: 'view(narrow(ckv, -1, rkv, dr), T, 1, dr)', tex: '\mathbf{k}_{\mathrm{rot}}' }
+  - kv_a_layernorm:
+      use: RMSNorm
+      subtitle: DeepseekV3RMSNorm
+      suffix: kv
+      params: { intro: 'kv 的 latent 也做一次 RMSNorm，范围是 $r_{kv}$ 维；带 RoPE 的那一段不归一化。' }
+      inputs: { x: c_kv }
+      outputs: { out: ckvn }
+      tex: { out: '\bar{\of{c_kv}}' }
+      folded: true
+  - kv: 'view(ckvn @ Wkvb.T, T, H, dn + dv)'
+  - k_pass: { op: 'narrow(kv, -1, 0, dn)', tex: '\mathbf{k}_{\mathrm{pass}}' }
+  - v: 'narrow(kv, -1, dn, dv)'
   - apply_rotary_pos_emb:
       use: RoPE
       title: apply_rotary_pos_emb
@@ -81,9 +72,9 @@ body:
       outputs: { q_embed: q_emb, k_embed: k_emb }
       tex: { q_embed: "{\\of{q_rot}}'", k_embed: "{\\of{k_rot}}'" }
       folded: true
-  - qs: { op: 'cat([q_pass, q_emb], dim=2)', tex: "\\mathbf{q}'" }
+  - qs: { op: 'cat([q_pass, q_emb], dim=2)', tex: "{\\mathbf{q}'}" }
   - k_rep: { op: 'repeat_interleave(k_emb, H, 1)', tex: '\mathrm{rep}(\of{k_emb})' }
-  - ks: { op: 'cat([k_pass, k_rep], dim=2)', tex: "\\mathbf{k}'" }
+  - ks: { op: 'cat([k_pass, k_rep], dim=2)', tex: "{\\mathbf{k}'}" }
   - eager_attention_forward:
       use: GQA
       inline: true
@@ -108,7 +99,6 @@ body:
 formula: '\step{o_proj}{\of{att}=}\step{eager_attention_forward.*}{\operatorname{attn}\big(}\step{q_cat}{\big[}\step{q_split}{\of{q_pass}}\step{q_cat}{,}\step{apply_rotary_pos_emb.*}{\mathrm{RoPE}(\of{q_rot})}\step{q_cat}{\big]},\ \step{k_cat}{\big[}\step{kv_split}{\of{k_pass}}\step{k_cat}{,}\step{k_expand}{\mathrm{RoPE}(\of{k_rot})}\step{k_cat}{\big]},\ \step{kv_split}{\of{v}}\step{eager_attention_forward.*}{\big)}\step{o_proj}{{\of{Wo}}^{\top}}'
 steps:
   - id: q_down
-    brace: { title: q_a_proj, subtitle: nn.Linear }
     show: [Wqa.T, cq]
     label: '$\of{cq}$'
     title: q_a_proj：把 query 压缩成 latent
@@ -119,7 +109,6 @@ steps:
       label: '$\partial W_{qa},\ \partial\of{x}$'
       title: 传到 q_a_proj 的权重和 $\of{x}$
   - id: q_up
-    brace: { title: q_b_proj, subtitle: nn.Linear }
     show: [Wqb.T, q]
     label: '$\of{q}$'
     title: q_b_proj：展开成 \of{H} 个 head
@@ -140,7 +129,6 @@ steps:
       label: '$\partial\of{q}$'
       title: 两段拼回一个 head
   - id: kv_down
-    brace: { title: kv_a_proj_with_mqa, subtitle: nn.Linear }
     show: [Wkva.T, ckv]
     label: '$\of{ckv}$'
     title: kv_a_proj_with_mqa：kv 的 latent 和共享的 RoPE key
@@ -164,7 +152,6 @@ steps:
       label: '$\partial[\of{c_kv}\,|\,\of{k_rot}]$'
       title: 两段拼回去
   - id: kv_up
-    brace: { title: kv_b_proj, subtitle: nn.Linear }
     show: [Wkvb.T, kv]
     label: '$\of{kv}$'
     title: kv_b_proj：从 latent 展开 k 和 v

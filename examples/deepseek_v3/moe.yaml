@@ -47,30 +47,26 @@ body:
         - den: { op: 'sum(w, -1, keepdim=true) + 1e-20', tex: '\textstyle\sum\mathbf{w}' }
         - wn: { op: w / den, tex: '\bar{\mathbf{w}}' }
         - rw: { op: wn * rsf, tex: '\mathbf{p}' }
-  - experts:
-      title: experts
-      subtitle: DeepseekV3Experts，路由专家
-      body:
-        - for: e
-          in: 1..E
-          body:
-            - expert[e]:
-                use: GLU
-                subtitle: 路由专家
-                folded: true
-                params: { act: silu, f: mf, name: expert }
-                inputs: { x: x }
-                outputs: { down: 'y[e]' }
-            - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
-        - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
-        - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\mathbf{p}\odot Y' }
-        - routed: { op: 'sum(Yw, 1)', tex: '\mathbf{y}^{\mathrm{r}}' }
+  - for: e
+    in: 1..E
+    body:
+      - expert[e]:
+          use: GLU
+          subtitle: DeepseekV3Experts，路由专家
+          folded: true
+          params: { act: silu, f: mf, name: expert }
+          inputs: { x: x }
+          outputs: { down: 'y[e]' }
+      - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
+  - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
+  - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\mathbf{p}\odot Y' }
+  - routed: { op: 'sum(Yw, 1)', tex: '\mathbf{y}^{\mathrm{r}}' }
   - shared_experts:
       use: GLU
       subtitle: DeepseekV3MLP，共享专家
       suffix: s
       folded: true
-      params: { act: silu, f: mf*Sh }
+      params: { act: silu, f: mf*Sh, name: shared }
       inputs: { x: x }
       outputs: { down: shared }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
