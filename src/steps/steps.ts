@@ -1,7 +1,8 @@
 import type { Graph, Node } from '../autograd';
 import { type Nested, offsetOf } from '../tensor';
 import { type Positions, explain } from '../explain';
-import { type CacheDecl, analyzeCache } from './cache';
+import { type CacheDecl, type CacheKind, analyzeCache } from './cache';
+import { type SampleDraw, type SamplerSpec } from './sampling';
 import { compileTemplate } from './template';
 
 export type StepKind = 'overview' | 'inputs' | 'op' | 'module';
@@ -66,6 +67,8 @@ export interface InferSpec {
   label: Node;
   logits: Node;
   caches: CacheDecl[];
+  draws: ReadonlyMap<number, SampleDraw>;
+  sampler?: SamplerSpec;
 }
 
 export interface UpdateSpec {
@@ -120,6 +123,13 @@ export interface StepState {
   revealed(node: Node): boolean;
   active(node: Node): boolean;
   row?(node: Node, index: readonly number[]): RowState | undefined;
+  generation?: GenerationState;
+}
+
+export interface GenerationState {
+  position: number;
+  known: number;
+  caches: { decl: CacheDecl; kind: CacheKind; nodes: Node[]; values: number; perToken: number }[];
 }
 
 export interface Steps {
@@ -168,6 +178,7 @@ function withNotes(info: StepInfo, notes: StepNote[] | undefined): StepInfo {
 interface Entry {
   info: StepInfo;
   rows?: RowSpec;
+  generation?: GenerationState;
   enter?: () => () => void;
   revealed: Set<Node>;
   active: Set<Node>;
@@ -574,12 +585,25 @@ class StepsImpl implements Steps {
       withNotes(full, notes);
       const entry = this.entry(full, shownBy(rows.shown), new Set(active));
       entry.rows = rows;
+      entry.generation = generationAt(current, Math.max(current + 1, rows.labels + 1));
       entries.push(entry);
     };
+    let current = P - 1;
+    const generationAt = (position: number, known: number): GenerationState => ({
+      position,
+      known,
+      caches: infer.caches.map((decl) => {
+        const kind = cache.kind(decl);
+        const values = cache.stored(decl, position + 1);
+        const nodes = kind === 'state' ? decl.nodes.filter((n) => cache.horizons(n)[0] === position) : decl.nodes;
+        return { decl, kind, nodes, values, perToken: kind === 'rows' ? values - cache.stored(decl, position) : 0 };
+      }),
+    });
     const decodeRows = (t: number, extra: Partial<RowSpec> = {}): RowSpec => ({ shown: t + 1, lit: [t, t + 1], labels: t, ...extra });
     const inputsEntry = entries.findIndex((e) => e.info.kind === 'inputs');
     if (inputsEntry >= 0) {
       entries[inputsEntry].rows = { shown: P, lit: [0, P], labels: 0 };
+      entries[inputsEntry].generation = generationAt(P - 1, P);
       entries[inputsEntry].revealed = new Set([...entries[inputsEntry].revealed].filter((n) => (cache.first(n) ?? 0) < P));
     }
     const kinds = new Map(infer.caches.map((c) => [c, cache.kind(c)]));
@@ -692,14 +716,25 @@ class StepsImpl implements Steps {
     const sample = (row: number, phase: string) => {
       const V = infer.logits.shape[1];
       const tokens = infer.label.tokens ?? infer.input.tokens;
-      const listed = tokens !== undefined && V <= 8 ? `$$${Array.from({ length: V }, (_, v) => `\\log p(\\text{${tokens[v]}})={{${infer.logits.name}[${row},${v}]:3}}`).join(',\\quad ')}$$` : '';
       const next = row + 1 < T ? `它被写进输入的第 ${row + 2} 个位置，成为下一个 decode 步唯一的新输入。` : `页面只画 ${T} 个位置，生成到这里停止。`;
+      const draw = infer.draws.get(row);
+      const picked = `{{${label}[${row}]:token}}`;
+      let body: string;
+      if (infer.sampler === undefined || draw === undefined) {
+        const listed = tokens !== undefined && V <= 8 ? `$$${Array.from({ length: V }, (_, v) => `\\log p(\\text{${tokens[v]}})={{${infer.logits.name}[${row},${v}]:3}}`).join(',\\quad ')}$$` : '';
+        body = `第 ${row + 1} 行的 $${infer.logits.tex}$ 是词表里每个 token 的对数概率：${listed}greedy 解码取最大的一项，得到 ${picked}。${next}推理没有标签，图里 $${infer.label.tex}$ 这一格显示的就是采样结果。按温度 $\\tau$ 随机采样时，改为按 $\\operatorname{softmax}(\\mathbf{z}/\\tau)$ 的概率抽取，前面的计算不变。`;
+      } else {
+        const first = row === P - 1;
+        body = first
+          ? `${samplingSteps(infer.sampler, infer.logits.tex, row, V)}\n\n${samplingTable(draw, tokens, infer.sampler)}这一步抽到 ${picked}。${pickNote(draw, tokens)}${next}推理没有标签，图里 $${infer.label.tex}$ 这一格显示的就是采样结果。随机数来自页面设置的种子 ${infer.sampler.seed}，每次打开页面结果相同；PyTorch 和 vLLM 用各自的随机数生成器，同样的种子抽到的 token 一般不同，但抽取所依据的分布 $q$ 相同。`
+          : `第 ${row + 1} 行按同样的采样设置处理：${samplingTable(draw, tokens, infer.sampler)}抽到 ${picked}。${pickNote(draw, tokens)}${next}`;
+      }
       push(
         {
           id: `s:${row}`,
           title: `采样第 ${row + 2} 个 token`,
           label: '采样',
-          text: `第 ${row + 1} 行的 $${infer.logits.tex}$ 是词表里每个 token 的对数概率：${listed}greedy 解码取最大的一项，得到 {{${label}[${row}]:token}}。${next}推理没有标签，图里 $${infer.label.tex}$ 这一格显示的就是采样结果。按温度 $\\tau$ 随机采样时，改为按 $\\operatorname{softmax}(\\mathbf{z}/\\tau)$ 的概率抽取，前面的计算不变。`,
+          text: body,
           nodes: [infer.logits],
           segment: phase,
           sub: '采样',
@@ -711,6 +746,7 @@ class StepsImpl implements Steps {
     sample(P - 1, 'prefill');
 
     for (let row = P; row < T; row++) {
+      current = row;
       const phase = `decode ${row - P + 1}`;
       const detailed = row === P;
       const pos = row + 1;
@@ -990,6 +1026,7 @@ class StepsImpl implements Steps {
       revealed: (node) => entry.revealed.has(node),
       active: (node) => entry.active.has(node),
       row: (node, index) => rowState(entry, this.spec.infer, this.positions, this.skipped, node, index),
+      ...(entry.generation === undefined ? {} : { generation: entry.generation }),
     };
   }
 
@@ -1057,6 +1094,39 @@ class StepsImpl implements Steps {
   private notify(): void {
     [...this.subscribers].forEach((fn) => fn());
   }
+}
+
+const PROB_DIGITS = 3;
+
+function samplingSteps(sampler: SamplerSpec, logpTex: string, row: number, vocab: number): string {
+  const parts = [`第 ${row + 1} 行的 $${logpTex}$ 是词表里每个 token 的对数概率。页面设置温度 $\\tau=${sampler.temperature}$${sampler.topK === undefined ? '' : `、top-k $k=${sampler.topK}$`}${sampler.topP === undefined ? '' : `、top-p $p=${sampler.topP}$`}。${sampler.note ?? ''}这几步按 Hugging Face 的顺序依次处理，vLLM 与 SGLang 的顺序相同。`];
+  parts.push(`温度：$p_\\tau=\\operatorname{softmax}(\\log p/\\tau)$。$\\log p$ 与 logits $\\mathbf{z}$ 的每一项只差同一个常数，除以 $\\tau$ 以后仍然只差常数，所以结果等于 $\\operatorname{softmax}(\\mathbf{z}/\\tau)$。$\\tau<1$ 让分布更集中，$\\tau>1$ 让分布更平。`);
+  if (sampler.topK !== undefined) parts.push(`top-k：只保留 $p_\\tau$ 最大的 ${sampler.topK} 个 token，其余的概率置为 0。${sampler.topK >= vocab ? `这里的词表只有 ${vocab} 个 token，所以 top-k 不去掉任何 token；真实词表有十几万个 token，它才起作用。` : ''}`);
+  if (sampler.topP !== undefined) parts.push(`top-p：把${sampler.topK === undefined ? '' : '剩下 token 的'}概率重新归一化，从大到小累加；一个 token 之前的累加和已经达到 $p$ 时，它和比它小的 token 都去掉。保留下来的是总概率达到 $p$ 所需的最少几个 token。`);
+  parts.push('把保留下来的概率重新归一化得到 $q$，取一个 $[0,1)$ 里的随机数 $u$，从概率最大的 token 开始累加 $q$，累加和第一次超过 $u$ 的 token 就是采样结果。');
+  return parts.join('\n\n');
+}
+
+function pickNote(draw: SampleDraw, tokens: readonly string[] | undefined): string {
+  const top = draw.order[0];
+  if (draw.token === top) return '';
+  const name = (v: number) => tokens?.[v] ?? String(v);
+  const before = draw.order.slice(0, draw.order.indexOf(draw.token)).reduce((sum, v) => sum + draw.final[v], 0);
+  return `$u$ 超过了排在前面的 token 的累加和 ${before.toFixed(PROB_DIGITS)}，所以这次抽到的不是概率最大的 ${name(top)}，greedy 解码会选 ${name(top)}。`;
+}
+
+function samplingTable(draw: SampleDraw, tokens: readonly string[] | undefined, sampler: SamplerSpec): string {
+  const fmt = (x: number) => x.toFixed(PROB_DIGITS);
+  let cumulative = 0;
+  const rows = draw.order.map((v) => {
+    const name = tokens?.[v] ?? String(v);
+    const keep = draw.kept[v];
+    if (keep) cumulative += draw.final[v];
+    const cells = [`\\text{${name}}`, fmt(draw.logp[v]), fmt(draw.scaled[v]), keep ? fmt(draw.final[v]) : '0', keep ? fmt(cumulative) : '\\cdot'];
+    return v === draw.token ? cells.map((cell) => `\\mathbf{${cell}}`).join(' & ') : cells.join(' & ');
+  });
+  const tau = `p_{\\tau=${sampler.temperature}}`;
+  return `$$\\begin{array}{lrrrr}\\text{token} & \\log p & ${tau} & q & \\textstyle\\sum q \\\\ \\hline ${rows.join(' \\\\ ')}\\end{array}\\qquad u=${fmt(draw.u ?? 0)}$$`;
 }
 
 function rowState(entry: Entry, infer: InferSpec | undefined, positions: Positions | undefined, skipped: (node: Node, offset: number, h: number) => boolean, node: Node, index: readonly number[]): RowState | undefined {

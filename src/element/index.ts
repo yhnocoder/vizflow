@@ -145,7 +145,7 @@ export class VizflowPage extends HTMLElement {
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
       this.#mode = compiled.modes === undefined ? 'train' : 'infer';
-      this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
+      this.#panels = this.#panelsFor(this.#mode);
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
       this.#scene = { layout, modules, levels, sequence: this.#sequence, hint: compiled.page.hint, camera: compiled.page.camera };
@@ -250,7 +250,15 @@ export class VizflowPage extends HTMLElement {
     if (modes === undefined || value === this.#mode) return;
     this.#mode = value;
     this.#steps = modes[value];
+    this.#panels = this.#panelsFor(value);
     this.#schedule();
+  }
+
+  #panelsFor(mode: 'train' | 'infer'): PanelItem[] | undefined {
+    const compiled = this.#compiled;
+    if (compiled === undefined) return undefined;
+    const panels = compiled.modePanels?.[mode] ?? compiled.panels;
+    return panels.length > 0 ? panels : undefined;
   }
 
   #modeSwitch(modes: NonNullable<CompiledPage['modes']>): HTMLElement {

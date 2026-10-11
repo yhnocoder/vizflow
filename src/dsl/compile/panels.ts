@@ -19,6 +19,11 @@ export function compilePanels(c: Compiler, env: Env): PanelItem[] {
     if (!isRecord(panel)) fail(at, "a panel must be 'loss' or a mapping");
     const out: Record<string, unknown> = { ...panel };
     const field = (key: string) => child(at, panel, key);
+    if (panel.mode !== undefined && panel.mode !== 'train' && panel.mode !== 'infer') fail(field('mode'), "mode must be 'train' or 'infer'");
+    if (panel.generation !== undefined) {
+      if (panel.generation !== true) fail(field('generation'), 'generation must be true');
+      if (c.page.generate === undefined) fail(field('generation'), 'a generation panel needs generate on the page');
+    }
     for (const key of ['title', 'note', 'caption']) if (typeof panel[key] === 'string') out[key] = textAt(panel[key], field(key));
     for (const key of ['tokens', 'matrix', 'sliders', 'ids']) {
       if (panel[key] === undefined) continue;

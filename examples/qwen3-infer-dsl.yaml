@@ -1,5 +1,5 @@
 title: Qwen3 一层：训练与推理
-lede: 同一个 Qwen3 decoder 层，用上方的开关在训练和推理之间切换。推理从 2 个 token 的 prompt 开始：prefill 一次算完 prompt 的所有行，之后每个 decode 步只算新的一行，注意力从 k、v 的缓存里读前面的行，最后按 greedy 采样出下一个 token。训练把生成出的 5 个 token 当作一条序列，所有位置同时计算、求 loss、反向，最后做一步 AdamW 更新。词表只画 5 个 token。
+lede: 同一个 Qwen3 decoder 层，用上方的开关在训练和推理之间切换。推理从 2 个 token 的 prompt 开始：prefill 一次算完 prompt 的所有行，之后每个 decode 步只算新的一行，注意力从 k、v 的缓存里读前面的行，最后按 Qwen3 默认的温度、top-k 与 top-p 采样出下一个 token。训练把生成出的 5 个 token 当作一条序列，所有位置同时计算、求 loss、反向，最后做一步 AdamW 更新。词表只画 5 个 token。
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
@@ -12,7 +12,7 @@ real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936, H: 32, Hkv: 8, dh: 128 }
 vocab: [on, mat, the, sat, cat]
 init: { seed: 20261010 }
 sequence: { tokens: [the, cat], input: ids, label: y }
-generate: { steps: 3 }
+generate: { steps: 3, temperature: 0.6, top_k: 20, top_p: 0.95, seed: 6, note: "τ、k、p 取 Qwen3-8B 的 generation_config.json 里的默认值。" }
 optimizer: { type: adamw, lr: 0.02 }
 inputs: {}
 weights:
@@ -314,10 +314,12 @@ steps:
         $$\frac{\partial\ell}{\partial\ell_t}=\frac{1}{T}=0.25$$
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
+    mode: train
   - sequence: true
+    mode: train
     title: 序列
-    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']
-    note: 前三个是输入，后三个是标签：标签就是输入右移一位，所以改第 2、3 个 token 会同时改变输入和标签。
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$x_4$ $\cdot$ $y_3$', '$y_4$']
+    note: 前四个是输入，后四个是标签：标签就是输入右移一位，所以改第 2 到 4 个 token 会同时改变输入和标签。
     sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
     random: true
     reset: true
@@ -326,6 +328,7 @@ panels:
     title: 注意力权重 P
     note: 行是 query 的位置，列是 key 的位置。右上角被 causal mask 挡住，是 0。
   - title: lm_head 权重
+    mode: train
     matrices:
       - { matrix: W.T, caption: '$W^{\top}$，$(d, V) = (4, 5)$', limit: 1.2 }
       - { matrix: W.T, grad: true, caption: '$\partial\ell/\partial W^{\top} = \mathbf{h}^{\top}\,\partial\ell/\partial\mathbf{z}$，$(4, 5)$', limit: 0.3 }
@@ -333,6 +336,7 @@ panels:
     rows: h
     note: 框出的是标签 token 的列。lm_head.weight 在 PyTorch 里存成 (V, d)，它的 .grad 是这里的转置。
   - title: 对应的 PyTorch
+    mode: train
     code: |-
       # input_ids: (B, T)，labels 在 loss 里右移一位
       e = model.embed_tokens(input_ids)
@@ -353,7 +357,21 @@ panels:
       h = model.norm(x)
       logp = F.log_softmax(lm_head(h).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
-    note: Qwen3-8B：d = 4096，32 个 query head、8 个 kv head，head_dim = 128，intermediate_size = 12288，V = 151936，36 层，rope_theta = $10^6$（这里取 10，见 RoPE 一步的说明），rms_norm_eps = $10^{-6}$，lm_head 不和 embedding 共享。这里用 d = 4、2 个 query head、1 个 kv head、head_dim = 4、f = 6、V = 5、T = 3。
+    note: Qwen3-8B：d = 4096，32 个 query head、8 个 kv head，head_dim = 128，intermediate_size = 12288，V = 151936，36 层，rope_theta = $10^6$（这里取 10，见 RoPE 一步的说明），rms_norm_eps = $10^{-6}$，lm_head 不和 embedding 共享。这里用 d = 4、2 个 query head、1 个 kv head、head_dim = 4、f = 6、V = 5、T = 4。
+  - generation: true
+    mode: infer
+    title: 生成过程
+  - title: 对应的 PyTorch
+    mode: infer
+    code: |-
+      ids = tok("the cat", return_tensors="pt").input_ids
+      out = model.generate(ids, max_new_tokens=3, do_sample=True, temperature=0.6, top_k=20, top_p=0.95)
+      # generate 内部：
+      # prefill：一次前向算 prompt 的全部位置，写满 past_key_values，
+      #          lm_head 只算最后一个位置（logits_to_keep=1）
+      # decode：每步只送上一步采样的 1 个 token，
+      #          读缓存、只算这一个位置、更新缓存
+
 sections:
   - title: RoPE：用旋转来编码位置
     src: qwen3/rope.md

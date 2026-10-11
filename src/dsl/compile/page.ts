@@ -1,6 +1,6 @@
 import type { Graph, Node } from '../../autograd';
 import type { CameraOptions, LayoutEntry, LayoutTree } from '../../scene3d';
-import { type ForwardStep, type InferSpec, checkCache, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
+import { type ForwardStep, type InferSpec, type SampleDraw, type SamplerSpec, checkCache, drawToken, uniforms, type PageModule, type StepsSpec, type UpdateSpec, isLeafLike } from '../../steps';
 import { type Nested, inferShape } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import { DslError, type Where, child, fail } from '../source';
@@ -28,6 +28,7 @@ export interface CompiledPage {
   nodes: Map<string, Node>;
   sequence?: PageSequence;
   modes?: { train: StepsSpec; infer: StepsSpec };
+  modePanels?: { train: PanelItem[]; infer: PanelItem[] };
   layout?: unknown;
   page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
 }
@@ -118,9 +119,15 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
   if (page.optimizer !== undefined) stepsSpec.update = updateSpec(c);
   if (sequence !== undefined) compiled.sequence = sequence;
   if (sequence?.prompt !== undefined) {
-    generate(c.g, sequence);
-    compiled.modes = { train: stepsSpec, infer: { ...stepsSpec, update: undefined, infer: inferSpec(c, sequence.prompt) } };
+    const sampler = samplerSpec(c);
+    const draws = generate(c.g, sequence, sampler);
+    const infer: InferSpec = { ...inferSpec(c, sequence.prompt), draws, ...(sampler === undefined ? {} : { sampler }) };
+    compiled.modes = { train: stepsSpec, infer: { ...stepsSpec, update: undefined, infer } };
     compiled.steps = compiled.modes.infer;
+    const panels = compiled.panels.map((item) => (typeof item === 'object' && 'generation' in item ? { ...item, generation: infer } : item));
+    const inMode = (mode: string) => panels.filter((item) => typeof item === 'string' || (item as { mode?: string }).mode === undefined || (item as { mode?: string }).mode === mode);
+    compiled.modePanels = { train: inMode('train').filter((item) => typeof item !== 'object' || !('generation' in item)), infer: inMode('infer') };
+    compiled.panels = compiled.modePanels.infer;
   }
   if (page.layout !== undefined) compiled.layout = page.layout;
   return compiled;
@@ -244,24 +251,49 @@ function generateSteps(c: Compiler): number | undefined {
   return spec.steps;
 }
 
+function samplerSpec(c: Compiler): SamplerSpec | undefined {
+  const where = child(c.pageWhere, c.page, 'generate');
+  const spec = c.page.generate as Record<string, unknown>;
+  const at = (key: string) => child(where, spec, key);
+  const { temperature, top_k: topK, top_p: topP, seed, note } = spec;
+  if (temperature === undefined) {
+    for (const key of ['top_k', 'top_p', 'seed', 'note']) if (spec[key] !== undefined) fail(at(key), `generate.${key} needs a temperature above 0; without one generate is greedy`);
+    return undefined;
+  }
+  if (typeof temperature !== 'number' || !(temperature >= 0)) fail(at('temperature'), 'generate.temperature must be a number of at least 0');
+  if (temperature === 0) {
+    for (const key of ['top_k', 'top_p', 'seed', 'note']) if (spec[key] !== undefined) fail(at(key), `generate.${key} has no effect when temperature is 0, which is greedy decoding`);
+    return undefined;
+  }
+  if (topK !== undefined && (typeof topK !== 'number' || !Number.isInteger(topK) || topK < 1)) fail(at('top_k'), 'generate.top_k must be a positive integer');
+  if (topP !== undefined && (typeof topP !== 'number' || !(topP > 0 && topP <= 1))) fail(at('top_p'), 'generate.top_p must be a number in (0, 1]');
+  if (seed !== undefined && (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0)) fail(at('seed'), 'generate.seed must be a non-negative integer');
+  if (note !== undefined && typeof note !== 'string') fail(at('note'), 'generate.note must be text');
+  return { temperature, seed: (seed as number | undefined) ?? 0, ...(note === undefined ? {} : { note: note as string }), ...(topK === undefined ? {} : { topK: topK as number }), ...(topP === undefined ? {} : { topP: topP as number }) };
+}
+
 function nllOf(g: Graph): Node {
   const nll = g.nodes.find((n) => n.op === 'nll_loss');
   if (nll === undefined || nll.inputs[1]?.kind !== 'label') throw new Error('generate: the page needs an nll_loss of the log probabilities and the sequence label');
   return nll;
 }
 
-function generate(g: Graph, sequence: PageSequence): void {
+function generate(g: Graph, sequence: PageSequence, sampler: SamplerSpec | undefined): Map<number, SampleDraw> {
   const logits = nllOf(g).inputs[0];
   const ids = sequence.get();
   const V = logits.shape[1];
+  const random = uniforms(sampler?.seed ?? 0);
+  const draws = new Map<number, SampleDraw>();
   for (let t = (sequence.prompt as number) - 1; t < ids.length - 1; t++) {
-    const row = logits.value.data.subarray(t * V, (t + 1) * V);
-    ids[t + 1] = row.indexOf(Math.max(...row));
+    const draw = drawToken(logits.value.data.subarray(t * V, (t + 1) * V), sampler, random());
+    draws.set(t, draw);
+    ids[t + 1] = draw.token;
     sequence.set(ids);
   }
+  return draws;
 }
 
-function inferSpec(c: Compiler, prompt: number): InferSpec {
+function inferSpec(c: Compiler, prompt: number): Omit<InferSpec, 'draws'> {
   const [logits, label] = nllOf(c.g).inputs;
   const input = c.g.nodes.find((n) => n.kind === 'label' && n !== label && n.shape[0] === label.shape[0]) as Node;
   const scored = new Set<Node>();

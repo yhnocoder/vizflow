@@ -25,6 +25,7 @@ export interface CacheAnalysis {
   reads(t: number): CacheReads;
   kind(decl: CacheDecl): CacheKind;
   window(decl: CacheDecl, t: number): number[];
+  stored(decl: CacheDecl, positions: number): number;
 }
 
 export function analyzeCache(g: Graph, length: number, caches: readonly CacheDecl[], scope: ReadonlySet<Node>, outputs: readonly Node[]): CacheAnalysis {
@@ -107,6 +108,13 @@ export function analyzeCache(g: Graph, length: number, caches: readonly CacheDec
       return rowsRead(decl, length - 1).length < length - 1 ? 'window' : 'rows';
     },
     window: rowsRead,
+    stored: (decl, n) => {
+      const all = decl.nodes.flatMap((node) => horizons(node).filter((h): h is number => h !== undefined));
+      if (decl.nodes.every((node) => new Set(horizons(node)).size === 1)) return all.filter((h) => h === n - 1).length;
+      const span = rowsRead(decl, length - 1).length;
+      const from = span < length - 1 ? n - span : 0;
+      return all.filter((h) => h < n && h >= from).length;
+    },
   };
 }
 

@@ -2,7 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, createUniqueId, onCl
 import { render } from 'solid-js/web';
 import { Node, type Graph } from '../autograd';
 import { renderText } from '../formula';
-import { allVisible, compileTemplate, type StepState, type Steps } from '../steps';
+import { type InferSpec, allVisible, compileTemplate, type StepState, type Steps } from '../steps';
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
@@ -61,6 +61,7 @@ export type PanelItem =
   | { attention: Node[]; ids: Node; title?: string; note?: string }
   | SequenceOptions
   | { code: string; title?: string; note?: string }
+  | { generation: InferSpec; title?: string; note?: string }
   | { note: string; title?: string };
 
 const SLIDER_MIN = -2.5;
@@ -72,6 +73,8 @@ const MIN_MATRIX_LIMIT = 1e-6;
 const SUBSCRIPT_DIGITS = '₀₁₂₃₄₅₆₇₈₉';
 const TINT_ZERO = 1e-9;
 const ATTENTION_LIMIT = 1;
+const PROB_DIGITS = 2;
+const CACHE_KIND_TEXT = { rows: '每个 token 一行，随长度增长', window: '只留最近几行，大小固定', state: '只留一个状态，大小固定' } as const;
 
 interface Context {
   g: Graph;
@@ -643,6 +646,81 @@ function CodePanel(props: { ctx: Context; item: Extract<PanelItem, { code: strin
   );
 }
 
+function GenerationPanel(props: { ctx: Context; item: Extract<PanelItem, { generation: InferSpec }> }) {
+  const { ctx, item } = props;
+  const infer = item.generation;
+  const vocab = infer.label.tokens ?? infer.input.tokens ?? [];
+  const length = infer.input.shape[0] + 1;
+  const ids = createMemo(() => {
+    ctx.version();
+    return [...Array.from(infer.input.value.data.subarray(0, 1)), ...Array.from(infer.label.value.data)].map(Math.round);
+  });
+  const generation = () => ctx.state().generation;
+  const sampler = infer.sampler;
+  const settings = sampler === undefined ? 'greedy：每步取概率最大的 token' : [`$\\tau=${sampler.temperature}$`, sampler.topK === undefined ? '' : `top-k $=${sampler.topK}$`, sampler.topP === undefined ? '' : `top-p $=${sampler.topP}$`, `seed ${sampler.seed}`].filter((x) => x !== '').join('，');
+  const positions = Array.from({ length }, (_, p) => p);
+  return (
+    <Card title={item.title ?? '生成过程'}>
+      <Show when={generation()} fallback={<p class="vf-note">选一个 prefill 或 decode 步骤查看生成过程。</p>}>
+        {(state) => (
+          <>
+            <div class="vf-gen-phase">
+              {state().position < infer.prompt ? `prefill：一次算 prompt 的 ${infer.prompt} 个位置` : `decode：只算第 ${state().position + 1} 个位置`}
+            </div>
+            <div class="vf-gen-seq" style={{ 'grid-template-columns': `repeat(${length}, minmax(0, 1fr))` }}>
+              <For each={positions}>
+                {(p) => {
+                  const known = () => p < state().known;
+                  const generated = p >= infer.prompt;
+                  const draw = generated ? infer.draws.get(p - 1) : undefined;
+                  const cls = () => ['vf-gen-tok', generated ? 'vf-gen-new' : 'vf-gen-prompt', known() ? '' : 'vf-gen-pending', p === state().position ? 'vf-gen-now' : ''].join(' ');
+                  return (
+                    <div class={cls()}>
+                      <span class="vf-gen-pos">{p + 1}</span>
+                      <span class="vf-gen-word">{known() ? (vocab[ids()[p]] ?? String(ids()[p])) : '?'}</span>
+                      <span class="vf-gen-p">{draw !== undefined && known() ? `p ${Math.exp(draw.logp[draw.token]).toFixed(PROB_DIGITS)}` : generated ? '' : 'prompt'}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+            <p class="vf-note">
+              <Rich text={`采样：${settings}。每个生成的 token 下面是模型给它的概率 $p$。`} />
+            </p>
+            <Show when={state().caches.length > 0}>
+              <table class="vf-gen-cache">
+                <thead>
+                  <tr>
+                    <th>缓存</th>
+                    <th>保存的数</th>
+                    <th>每个 token</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <For each={state().caches}>
+                    {(row) => (
+                      <tr>
+                        <td>
+                          <Rich text={row.nodes.map((n) => `$${n.tex}$`).join(' ')} />
+                          <div class="vf-gen-kind">{CACHE_KIND_TEXT[row.kind]}</div>
+                        </td>
+                        <td>{row.values}</td>
+                        <td>{row.kind === 'rows' ? `+${row.perToken}` : '+0'}</td>
+                      </tr>
+                    )}
+                  </For>
+                </tbody>
+              </table>
+              <p class="vf-note">处理完第 {state().position + 1} 个位置后，图里每份缓存保存的数，按页面的玩具尺寸计算。真实显存还要乘每个数的字节数，没画出的层也各有一份。</p>
+            </Show>
+          </>
+        )}
+      </Show>
+      <Show when={item.note}>{(note) => <TemplateText ctx={ctx} class="vf-note" text={note()} />}</Show>
+    </Card>
+  );
+}
+
 function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
@@ -653,6 +731,7 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   if ('tokens' in item) return <TokensPanel ctx={props.ctx} item={item} />;
   if ('matrix' in item || 'matrices' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
   if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
+  if ('generation' in item) return <GenerationPanel ctx={props.ctx} item={item} />;
   return (
     <Card title={item.title}>
       <TemplateText ctx={props.ctx} class="vf-note" text={item.note} />

@@ -3,8 +3,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { Node } from '../../src/autograd';
 import type { CompiledPage } from '../../src/dsl';
 import { positionsOf } from '../../src/explain';
-import { analyzeCache, checkCache, createSteps } from '../../src/steps';
-import { loadExample } from './load';
+import { analyzeCache, checkCache, createSteps, drawToken, uniforms } from '../../src/steps';
+import { loadPage } from '../../src/dsl';
+import { examplesUrl, loadExample, readFileUrl } from './load';
 
 describe('qwen3-infer-dsl: generate and optimizer', () => {
   let page: CompiledPage;
@@ -12,15 +13,19 @@ describe('qwen3-infer-dsl: generate and optimizer', () => {
     page = await loadExample('qwen3-infer-dsl.yaml');
   });
 
-  it('fills the sequence greedily from the prompt', () => {
+  it('fills the sequence by sampling each row of the final log probabilities with the page seed', () => {
     const ids = page.sequence!.get();
     const logp = page.nodes.get('logp')!;
     const V = logp.shape[1];
+    const infer = page.modes!.infer.infer!;
+    const random = uniforms(infer.sampler!.seed);
     expect(ids.slice(0, 2)).toEqual([2, 4]);
     for (let t = 1; t < ids.length - 1; t++) {
-      const row = Array.from(logp.value.data.subarray(t * V, (t + 1) * V));
-      expect(ids[t + 1]).toBe(row.indexOf(Math.max(...row)));
+      const draw = drawToken(logp.value.data.subarray(t * V, (t + 1) * V), infer.sampler, random());
+      expect(ids[t + 1]).toBe(draw.token);
+      expect(infer.draws.get(t)!.token).toBe(draw.token);
     }
+    expect(ids.slice(2)).not.toEqual(ids.slice(2).map((_, k) => infer.draws.get(k + 1)!.order[0]));
   });
 
   it('builds prefill, sample and decode steps without backward', () => {
@@ -114,5 +119,37 @@ describe('cache analysis', () => {
       ['dense_layer.self_attn.kv_a_layernorm.out', 'dense_layer.self_attn.apply_rotary_pos_emb.k_embed'],
       ['moe_layer.self_attn.kv_a_layernorm.out', 'moe_layer.self_attn.apply_rotary_pos_emb.k_embed'],
     ]);
+  });
+
+  it('counts the values each cache holds after the current position', async () => {
+    const page = await loadExample('qwen3_5-dsl.yaml');
+    const steps = createSteps(page.graph, page.modes!.infer);
+    const first = steps.list.findIndex((s) => s.segment === 'decode 1');
+    steps.go(first);
+    const state = steps.state().generation!;
+    expect(state.position).toBe(2);
+    const byKind = new Map(state.caches.map((c) => [c.kind, c]));
+    const rows = byKind.get('rows')!;
+    expect(rows.values).toBe(3 * rows.perToken);
+    const window = byKind.get('window')!;
+    expect(window.values).toBe(2 * window.decl.nodes[0].value.size / 4);
+    expect(byKind.get('state')!.perToken).toBe(0);
+  });
+});
+
+describe('generate settings and mode panels', () => {
+  const variant = (generate: string) =>
+    loadPage(new URL('qwen3-infer-dsl.yaml', examplesUrl).href, { read: (u) => readFileUrl(u).then((s) => s.replace(/^generate: .*$/m, `generate: ${generate}`)) });
+
+  it('rejects sampling settings without a temperature', async () => {
+    await expect(variant('{ steps: 3, top_p: 0.9 }')).rejects.toThrow(/generate.top_p needs a temperature above 0/);
+    await expect(variant('{ steps: 3, temperature: 0.5, top_p: 1.5 }')).rejects.toThrow(/top_p must be a number in \(0, 1\]/);
+  });
+
+  it('shows the generation panel only in infer mode and the loss only in train mode', async () => {
+    const page = await loadExample('qwen3-infer-dsl.yaml');
+    const kinds = (items: unknown[]) => items.map((item) => (typeof item === 'string' ? item : Object.keys(item as object).find((k) => ['loss', 'sequence', 'generation', 'attention', 'matrices', 'code'].includes(k))));
+    expect(kinds(page.modePanels!.infer)).toEqual(['attention', 'generation', 'code']);
+    expect(kinds(page.modePanels!.train)).toEqual(['loss', 'sequence', 'attention', 'matrices', 'code']);
   });
 });

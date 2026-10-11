@@ -348,10 +348,12 @@ steps:
       title: 从损失出发
 panels:
   - loss: { parts: lt, hint: 走几步看损失下降 }
+    mode: train
   - sequence: true
+    mode: train
     title: 序列
-    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$y_3$']
-    note: 前三个是输入，后三个是标签。
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$x_4$ $\cdot$ $y_3$', '$y_4$']
+    note: 前四个是输入，后四个是标签。
     sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
     random: true
     reset: true
@@ -360,6 +362,7 @@ panels:
     title: 第 3 层的注意力权重 P
     note: 行是 query 的位置，列是 key 的位置。
   - title: 对应的 PyTorch
+    mode: train
     code: |-
       # transformers DeepseekV3，first_k_dense_replace = 3
       x0 = layers[:2](model.embed_tokens(input_ids))     # 图里是占位盒子
@@ -372,5 +375,19 @@ panels:
       logp = F.log_softmax(lm_head(model.norm(x)).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
     note: DeepSeek-V3：d = 7168，61 层，前 3 层 dense；MLA 128 个 head，$r_q=1536$，$r_{kv}=512$，$d_n=128$，$d_r=64$，$d_v=128$，rope_theta = $10^4$ 并用 YaRN 把上下文扩到 128K（这一页不画 YaRN）；MoE 256 个路由专家分 8 组，每个 token 选 4 组里的 8 个，另有 1 个共享专家，moe_intermediate_size = 2048，routed_scaling_factor = 2.5；dense 层的 intermediate_size = 18432，V = 129280。权重用 FP8 存储，这一页按 bf16 显示。
+  - generation: true
+    mode: infer
+    title: 生成过程
+  - title: 对应的 PyTorch
+    mode: infer
+    code: |-
+      ids = tok("the cat", return_tensors="pt").input_ids
+      out = model.generate(ids, max_new_tokens=3, do_sample=False)
+      # generate 内部：
+      # prefill：一次前向算 prompt 的全部位置，写满 past_key_values，
+      #          lm_head 只算最后一个位置（logits_to_keep=1）
+      # decode：每步只送上一步采样的 1 个 token，
+      #          读缓存、只算这一个位置、更新缓存
+
 values:
   moe_layer.mlp.bias: [0, 0.1, -0.02, 0, 0.02, -0.03]

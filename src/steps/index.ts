@@ -23,3 +23,4 @@ export {
 export { compileTemplate } from './template';
 export { analyzeCache, checkCache, type CacheAnalysis, type CacheDecl, type CacheKind } from './cache';
 export { createStepList, type StepListItem } from './list';
+export { drawToken, isGreedy, type SampleDraw, type SamplerSpec, uniforms } from './sampling';
