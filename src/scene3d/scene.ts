@@ -159,6 +159,8 @@ const ARROW_HEAD: [number, number] = [0.06, 0.2];
 const ARROW_HEAD_SEGMENTS = 14;
 const ARROW_HEAD_INSET = 0.1;
 const SAME_LEVEL = 0.05;
+const SKIP_CLEARANCE = 0.9;
+const BUNDLE_PULL = 0.85;
 export const BOARD_BOW = -2.6;
 export const RESIDUAL_BOW = 1.8;
 export const SPLIT_JACOBIAN_BOW = 1.4;
@@ -199,6 +201,8 @@ interface DrawnEdge {
   style: EdgeStyle;
   screen: number[];
   bow?: number;
+  bundle?: string;
+  controls?: [Vec3, Vec3, Vec3, Vec3];
   jac?: { module: StepModule; value: number };
   link?: boolean;
 }
@@ -272,8 +276,7 @@ export function controlPoints(a: Vec3, b: Vec3, flat: boolean, bow?: number): [V
   return [a, [a[0], a[1] + d * CURVE_TANGENT, a[2]], [b[0], b[1] - d * CURVE_TANGENT, b[2]], b];
 }
 
-function sampleCurve(a: Vec3, b: Vec3, flat: boolean, bow?: number): number[] {
-  const c = controlPoints(a, b, flat, bow);
+function sampleCurve(c: [Vec3, Vec3, Vec3, Vec3]): number[] {
   const points: number[] = [];
   for (let s = 0; s <= CURVE_SEGMENTS; s++) {
     const t = s / CURVE_SEGMENTS;
@@ -355,6 +358,8 @@ class SceneController implements EditHost {
   private lastFrame: number | undefined;
   private wheelTimer = 0;
   private farOn = true;
+  private routeSkips = true;
+  private frontRowOnly = true;
   private lod = false;
   private stepNodes = new Set<Node>();
   private readonly highlightMaterial: MeshBasicMaterial;
@@ -617,6 +622,21 @@ class SceneController implements EditHost {
       unfoldAll.addEventListener('click', () => this.steps?.setAllFolded?.(false));
       tools.append(foldAll, unfoldAll);
     }
+    const skips = chip('跨层连线绕行');
+    skips.setAttribute('aria-pressed', 'true');
+    skips.addEventListener('click', () => {
+      this.routeSkips = !this.routeSkips;
+      skips.setAttribute('aria-pressed', String(this.routeSkips));
+      this.refresh();
+    });
+    const front = chip('只画最前一行');
+    front.setAttribute('aria-pressed', 'true');
+    front.addEventListener('click', () => {
+      this.frontRowOnly = !this.frontRowOnly;
+      front.setAttribute('aria-pressed', String(this.frontRowOnly));
+      this.refresh();
+    });
+    tools.append(skips, front);
     const reset = chip('复位视角');
     reset.addEventListener('click', () => this.resetView());
     tools.appendChild(reset);
@@ -1225,6 +1245,8 @@ class SceneController implements EditHost {
       });
       if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
     };
+    const mixing = new Set<Node>();
+    if (this.frontRowOnly) for (const edge of this.explainer.edges()) if (!('cell' in edge.from) && !('cell' in edge.to) && edge.from.index[0] !== edge.to.index[0]) mixing.add(edge.op);
     for (const edge of this.explainer.edges()) {
       if ('cell' in edge.from || 'cell' in edge.to) {
         const board = this.boards.find((b) => b.op === edge.op);
@@ -1274,6 +1296,7 @@ class SceneController implements EditHost {
       const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
       const fromElement = this.elementOf(fromR.block, from.node, from.index);
       const toElement = this.elementOf(toR.block, to.node, to.index);
+      if (this.frontRowOnly && !mixing.has(edge.op) && from.index.length > 1 && to.index.length > 1 && from.index[0] === to.index[0] && toElement.z < Math.max(...toR.block.elements.map((e) => e.z)) - SAME_LEVEL) continue;
       let entry: Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
       if (fromR.block.table !== undefined && Math.abs(fromElement.y - toElement.y) < SAME_LEVEL) {
         const y = toElement.y + LINE_HEIGHT;
@@ -1282,7 +1305,8 @@ class SceneController implements EditHost {
         entry = { edge, fromNode: from.node, toNode: to.node, contract: false, endpoints: () => [a, b], flat: true };
       } else {
         const long = toElement.y - fromElement.y > LONG_EDGE;
-        const bow = toR.block.role === 'board-b' && long ? BOARD_BOW : to.node.kind === 'op' && to.node.op === 'add' && long ? RESIDUAL_BOW : undefined;
+        const skip = this.routeSkips ? this.skipBow(fromR, toR, fromElement, toElement) : undefined;
+        const bow = toR.block.role === 'board-b' && long ? BOARD_BOW : to.node.kind === 'op' && to.node.op === 'add' && long ? RESIDUAL_BOW : skip;
         entry = {
           edge,
           fromNode: from.node,
@@ -1291,6 +1315,7 @@ class SceneController implements EditHost {
           endpoints: () => [this.anchorOut(from.node, from.index, fromR)!, this.anchorIn(to.node, to.index, toR)!],
           flat: false,
           bow,
+          bundle: skip === undefined ? undefined : `${fromR.block.key ?? from.node.id}>${toR.block.key ?? to.node.id}:${from.index.slice(1, -1).join(',')}`,
         };
       }
       push(entry, fromR, toR, rows, this.explainer.zeroGrad(edge));
@@ -1346,6 +1371,19 @@ class SceneController implements EditHost {
     }
   }
 
+  private skipBow(fromR: Renderable, toR: Renderable, a: Element, b: Element): number | undefined {
+    const lo = Math.min(a.y, b.y) + SAME_LEVEL;
+    const hi = Math.max(a.y, b.y) - SAME_LEVEL;
+    const between = this.renderables.filter((r) => {
+      const plate = r.block.plate;
+      if (r === fromR || r === toR || plate === undefined || !this.shown(r.block) || plate.y <= lo || plate.y >= hi) return false;
+      return [a.x, b.x].some((x) => Math.abs(x - plate.x) < plate.w / 2);
+    });
+    if (between.length === 0) return undefined;
+    const front = Math.max(...between.map((r) => r.block.plate!.z + r.block.plate!.d / 2));
+    return front + SKIP_CLEARANCE - Math.max(a.z, b.z);
+  }
+
   private updateGeometry(): void {
     for (const renderable of this.renderables) {
       if (renderable.bars === undefined) continue;
@@ -1371,9 +1409,21 @@ class SceneController implements EditHost {
       });
       renderable.bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline });
     }
+    const bundles = new Map<string, [Vec3, Vec3, Vec3, Vec3][]>();
     for (const d of this.edges) {
       const [a, b] = d.endpoints();
-      d.points = sampleCurve(a, b, d.flat, d.bow);
+      d.controls = controlPoints(a, b, d.flat, d.bow);
+      if (d.bundle !== undefined) bundles.set(d.bundle, [...(bundles.get(d.bundle) ?? []), d.controls]);
+    }
+    const centers = new Map([...bundles].map(([key, list]) => [key, [1, 2].map((k) => [0, 1, 2].map((axis) => list.reduce((sum, c) => sum + c[k][axis], 0) / list.length)) as [Vec3, Vec3]]));
+    for (const d of this.edges) {
+      const center = d.bundle === undefined ? undefined : centers.get(d.bundle);
+      if (center !== undefined && d.controls !== undefined) {
+        const [p0, p1, p2, p3] = d.controls;
+        const pull = (p: Vec3, c: Vec3) => p.map((v, axis) => v + (c[axis] - v) * BUNDLE_PULL) as Vec3;
+        d.controls = [p0, pull(p1, center[0]), pull(p2, center[1]), p3];
+      }
+      d.points = sampleCurve(d.controls!);
     }
     this.lines.setPolylines(this.edges.map((d) => ({ points: d.points, opacity: d.style.opacity, dashed: d.style.dashed })));
     this.updateHighlight();
@@ -1388,7 +1438,7 @@ class SceneController implements EditHost {
     const d = this.hoverEdge;
     if (d === undefined) return;
     const [a, b] = d.endpoints();
-    const [p0, p1, p2, p3] = controlPoints(a, b, d.flat, d.bow).map((p) => new Vector3(...p));
+    const [p0, p1, p2, p3] = (d.controls ?? controlPoints(a, b, d.flat, d.bow)).map((p) => new Vector3(...p));
     const curve = new CubicBezierCurve3(p0, p1, p2, p3);
     this.highlight = new Mesh(new TubeGeometry(curve, HIGHLIGHT_SEGMENTS, HIGHLIGHT_RADIUS / Math.sqrt(this.camera.zoom), HIGHLIGHT_SIDES, false), this.highlightMaterial);
     this.scene.add(this.highlight);
