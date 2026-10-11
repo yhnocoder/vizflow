@@ -1,0 +1,93 @@
+module: Qwen3Attention
+subtitle: self_attn
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  RoPE:    vizflow/nn/rope
+  SDPA:    vizflow/nn/sdpa
+params:
+  H:     { type: dim }
+  Hkv:   { type: dim }
+  dh:    { type: dim }
+  theta: { type: float, default: 1e6 }
+inputs:
+  x: { shape: [T, d] }
+outputs: [att]
+weights:
+  Wq: { shape: [H*dh, d] }
+  Wk: { shape: [Hkv*dh, d] }
+  Wv: { shape: [Hkv*dh, d] }
+  Wo: { shape: [d, H*dh] }
+  gq: { shape: [dh], init: ones, tex: '\boldsymbol{\gamma}_q' }
+  gk: { shape: [dh], init: ones, tex: '\boldsymbol{\gamma}_k' }
+body:
+  - q: x @ Wq.T
+  - k: x @ Wk.T
+  - v: x @ Wv.T
+  - for: g
+    in: 1..Hkv
+    brace: kv head $\of{g}$
+    body:
+      - k[g]: narrow(k, 1, (g-1)*dh, dh)
+      - v[g]: narrow(v, 1, (g-1)*dh, dh)
+      - k_norm[g]:
+          use: RMSNorm
+          inputs: { x: 'k[g]' }
+          weights: { weight: gk }
+          outputs: { out: 'kn[g]' }
+          suffix: '^{k\of{g}}'
+          tex: { out: '\bar{\mathbf{k}}^{(\of{g})}' }
+      - k_rope[g]:
+          use: RoPE
+          params: { theta: theta }
+          inputs: { x: 'kn[g]' }
+          outputs: { out: 'kr[g]' }
+          tex: { out: "\\mathbf{k}'^{(\\of{g})}" }
+  - for: h
+    in: 1..H
+    brace: head $\of{h}$
+    body:
+      - q[h]: narrow(q, 1, (h-1)*dh, dh)
+      - q_norm[h]:
+          use: RMSNorm
+          inputs: { x: 'q[h]' }
+          weights: { weight: gq }
+          outputs: { out: 'qn[h]' }
+          suffix: '^{q\of{h}}'
+          tex: { out: '\bar{\mathbf{q}}^{(\of{h})}' }
+      - q_rope[h]:
+          use: RoPE
+          params: { theta: theta }
+          inputs: { x: 'qn[h]' }
+          outputs: { out: 'qr[h]' }
+          tex: { out: "\\mathbf{q}'^{(\\of{h})}" }
+      - attn[h]:
+          use: SDPA
+          inputs: { q: 'qr[h]', k: 'kr[(h-1)//(H//Hkv)+1]', v: 'v[(h-1)//(H//Hkv)+1]' }
+          outputs: { o: 'o[h]', P: 'P[h]' }
+  - o:   'cat(o[1..H], dim=1)'
+  - att: { op: o @ Wo.T, tex: '\mathbf{att}' }
+steps:
+  - id: qkv
+    show: [Wq.T, Wk.T, Wv.T, q, k, v]
+    label: '$\mathbf{q},\mathbf{k},\mathbf{v}$'
+    title: q_proj、k_proj、v_proj
+    text: |
+      三个投影的输入都是 $\of{x}$。q 有 $H$ 个 head，k 和 v 只有 $H_{kv}$ 个，每 $H/H_{kv}$ 个 query head 共用一个 kv head，这就是 GQA。Qwen3 的这三个 Linear 都没有 bias。
+      $$\mathbf{k}={{ k | matrix }},\qquad \mathbf{v}={{ v | matrix }}$$
+  - id: split
+    show: ['k[1..Hkv]', 'v[1..Hkv]', 'q[1..H]']
+    label: '$\mathbf{q}^{(h)}$'
+    title: 按 head 拆开
+    text: 代码里的 <code>view(B, T, H, d_h).transpose(1, 2)</code> 把列按 head 分组。这里的张量最多二维，所以用 <code>narrow</code> 按 $d_h$ 把每个 head 的列取出来，后面每个 head 各画一列。
+  - id: concat
+    show: o
+    label: 拼接
+    title: 拼回所有 head
+    text: <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code> 把各个 head 的输出并排拼回去，局部导数是 1。
+  - id: o_proj
+    show: [Wo.T, att]
+    label: o_proj
+    title: o_proj
+    text: |
+      投影回 $d$ 维。o_proj 也没有 bias。
+      $$\mathbf{att}=\mathbf{o}W_o^{\top}={{ att | matrix }}$$

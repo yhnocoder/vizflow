@@ -1,4 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
+import { transposedTex } from '../../autograd/node';
 import { normalCdf, normalPdf } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
@@ -126,7 +127,7 @@ export const transposeExplain: OpExplain = {
   pattern: 'elementwise',
   local: () => 1,
   tex: {
-    forward: (s) => `${s.in[0]}^{\\top}`,
+    forward: (s) => transposedTex(s.in[0]),
     local: () => '1',
   },
   selected: (ctx, out) => {

@@ -106,3 +106,7 @@ export function defaultTex(name: string, shape: readonly number[]): { tex: strin
 export function normalizeName(name: string): string {
   return name.replace(/\s+/g, '');
 }
+
+export function transposedTex(tex: string): string {
+  return /[\^']/.test(tex) ? `{${tex}}^{\\top}` : `${tex}^{\\top}`;
+}

@@ -1,7 +1,7 @@
 import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor';
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
-import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName } from './node';
+import { Node, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef } from './op';
 import type { BuiltinOps } from './ops';
 import { opDef } from './registry';
@@ -397,8 +397,8 @@ class GraphImpl {
     }
     state.transposed = this.self.transpose(node, 0, 1, {
       name: `${node.name}.T`,
-      tex: `${node.tex}^{\\top}`,
-      elem: `${node.elem}^{\\top}`,
+      tex: transposedTex(node.tex),
+      elem: transposedTex(node.elem),
     });
     return state.transposed;
   }

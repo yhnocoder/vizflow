@@ -1,0 +1,50 @@
+module: LMHeadNLL
+subtitle: lm_head、log_softmax、nll_loss
+params:
+  V: { type: dim }
+inputs:
+  h: { shape: [T, d] }
+  y: { shape: [T] }
+outputs: [loss, z, logp]
+weights:
+  W: { shape: [V, d] }
+body:
+  - z:    h @ W.T
+  - LSE:  'logsumexp(z, -1, keepdim=true)'
+  - logp: { op: z - LSE, tex: '\log\mathbf{p}' }
+  - lt:   { op: 'nll_loss(logp, y, reduction="none")', tex: '\boldsymbol{\ell}' }
+  - loss: { op: mean(lt), tex: '\ell' }
+steps:
+  - id: logits
+    show: [W.T, z]
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每个位置的 ${\of{h}}_t$ 都乘同一块 $W^{\top}$，得到这个位置对下一个 token 的 logits。
+      $$\of{z}=\of{h}W^{\top}={{ z | matrix }}$$
+  - id: lse
+    show: LSE
+    label: LSE
+    title: log-sum-exp
+    text: |
+      每个位置各算一个 LSE。实现里先减去这一行的最大值再取指数，不会溢出。
+      $$\mathrm{LSE}={{ LSE | matrix:3 }}$$
+  - id: logp
+    show: logp
+    label: '$\log\mathbf{p}$'
+    title: log_softmax
+    text: 每个 logit 减去自己那一行的 LSE。
+  - id: nll
+    show: lt
+    label: '$\ell_t$'
+    title: nll_loss（逐位置）
+    text: |
+      每个位置按标签取出目标 token 的 log p，取负号。
+      $$\ell_t=-\log p_{t,y_t}={{ lt | matrix:3 }}$$
+  - id: mean
+    show: loss
+    label: '$\ell$'
+    title: 取平均
+    text: |
+      <code>F.nll_loss</code> 默认 <code>reduction='mean'</code>，对 $T$ 个位置取平均。它在一个算子里同时做了取格、取负和平均，这里分成两步画。
+      $$\ell=\frac{1}{T}\sum_t\ell_t={{loss:3}}$$

@@ -1,0 +1,40 @@
+module: RMSNorm
+subtitle: LlamaRMSNorm / Qwen3RMSNorm
+params:
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: { shape: [T, n] }
+outputs: [out]
+weights:
+  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+body:
+  - sq: { op: x ** 2, tex: '{\of{x}}^{2}' }
+  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - r:  { op: rsqrt(ms + eps), tex: r }
+  - xh: { op: x * r, tex: '\hat{\of{x}}' }
+  - out: xh * weight
+steps:
+  - id: square
+    show: sq
+    label: '${\of{x}}^2$'
+    title: 逐元素平方
+    text: RMSNorm 先对输入逐元素平方。HF 的实现先把输入转成 float32 再平方。
+  - id: rms
+    show: [ms, r]
+    label: '$\mathrm{ms},\ r$'
+    title: 均方根的倒数
+    text: |
+      每一行对平方取平均得到 $\mathrm{ms}$，加上 $\epsilon=\of{eps}$ 再取平方根的倒数。每一行各有一个 $r$，不同的行之间互不影响。
+      $$\of{r} = {{ r | matrix:3 }}$$
+  - id: normalize
+    show: xh
+    label: '$\hat{\of{x}}$'
+    title: 归一化
+    text: 每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素。这里不减均值，也没有 bias。
+  - id: scale
+    show: [weight, out]
+    label: '$\of{out}$'
+    title: 乘上权重 $\of{weight}$
+    text: |
+      $\of{weight}$ 是长度为 $n$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。
+      $$\of{out} = \of{weight} \odot \hat{\of{x}} = {{ out | matrix }}$$

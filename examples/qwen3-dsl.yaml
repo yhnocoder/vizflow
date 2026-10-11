@@ -1,0 +1,168 @@
+title: Qwen3 一层：从 token 到损失
+lede: 从 token id 开始，经过 embedding、占位的前 $N-1$ 层、最后一个 decoder 层（attention 和 SwiGLU MLP，各带残差）、final norm、lm_head、log_softmax 和 nll_loss 得到损失，前向和反向都逐步画出来。这一页由 YAML 页面描述文件生成，序列长度 $T=3$，词表只画 5 个 token。
+hint: 拖动旋转 · 右键拖动平移 · 滚轮按光标缩放 · 换步骤时相机跟随当前步骤
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  RMSNorm:        vizflow/nn/rmsnorm
+  GLU:            vizflow/nn/glu
+  LMHeadNLL:      vizflow/nn/lm-head-nll
+  Qwen3Attention: ./qwen3/attention.yaml
+dims: { T: 3, d: 4, f: 6, V: 5, H: 2, Hkv: 1, dh: 4 }
+real: { name: Qwen3-8B, d: 4096, f: 12288, V: 151936 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261010 }
+inputs:
+  ids: { tokens: [the, cat, sat] }
+  y:   { tokens: [cat, sat, on] }
+weights:
+  E: { shape: [V, d], init: uniform }
+overview:
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失，自下而上。embedding 按 id 取出每个位置的向量，中间的 $N-1$ 个 decoder 层用一个节点占位，最后一层完整展开：attention 和 SwiGLU MLP 各带一个残差，之后是 final norm、lm_head、log_softmax 和 nll_loss。大括号标出每一段对应 HF 实现里的哪个模块。
+    尺寸用 $d=4$、$f=6$、$V=5$，2 个 query head、1 个 kv head，$d_h=4$。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+
+modules:
+  Qwen3DecoderLayer:
+    subtitle: Qwen3DecoderLayer
+    params: { H: { type: dim }, Hkv: { type: dim }, dh: { type: dim }, f: { type: dim } }
+    inputs: { x: { shape: [T, d] } }
+    outputs: [x_out]
+    body:
+      - input_layernorm: { use: RMSNorm, inputs: { x: x }, outputs: { out: n1 } }
+      - self_attn:
+          use: Qwen3Attention
+          params: { H: H, Hkv: Hkv, dh: dh }
+          inputs: { x: n1 }
+          outputs: { att: att }
+          steps:
+            q_norm[1].square:
+              append: Qwen3 比 Qwen2 多了 q_norm 和 k_norm：在 RoPE 之前对 q 和 k 的每个 head 各做一次 RMSNorm，范围是每个 head 的 $d_h$，而不是整个 hidden size。
+      - a: x + att
+      - post_attention_layernorm: { use: RMSNorm, inputs: { x: a }, outputs: { out: n } }
+      - mlp: { use: GLU, params: { act: silu, f: f }, inputs: { x: n }, outputs: { down: down } }
+      - x_out: { op: a + down, tex: '\mathbf{x}' }
+    steps:
+      - id: res1
+        show: a
+        label: '$\mathbf{a}=\of{x}+\mathbf{att}$'
+        title: 残差相加
+        text: |
+          attention 算出来的只是一个增量，加回 residual stream。$\of{x}$ 到 $\mathbf{a}$ 的那组长连线就是残差连接，它绕过了整个 attention。
+          $$\mathbf{a}=\of{x}+\mathbf{att}={{ a | matrix }}$$
+      - id: res2
+        show: x_out
+        label: '$\mathbf{x}=\mathbf{a}+\mathbf{down}$'
+        title: 残差相加
+        text: |
+          MLP 的输出加回 residual stream，得到这一层的输出。
+          $$\mathbf{x}=\mathbf{a}+\mathbf{down}={{ x_out | matrix }}$$
+    backward:
+      a:
+        title: 穿过 attention 的残差
+        text: |
+          相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\mathbf{att}$，进入 attention；一份沿残差直接交给 $\of{x}$。
+          $$\frac{\partial\ell}{\partial\mathbf{a}}={{ a.grad | matrix:3 }}$$
+      x_out:
+        title: 穿过 MLP 的残差
+        text: 梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\mathbf{a}$。
+
+body:
+  - e:  { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - x0: { op: identity(e), tex: '\mathbf{x}_0' }
+  - layer: { use: Qwen3DecoderLayer, params: { H: H, Hkv: Hkv, dh: dh, f: f }, inputs: { x: x0 }, outputs: { x_out: x } }
+  - norm:  { use: RMSNorm, inputs: { x: x }, outputs: { out: h } }
+  - head:  { use: LMHeadNLL, params: { V: V }, inputs: { h: h, y: y }, outputs: { loss: loss, z: z, logp: logp } }
+steps:
+  - id: embed
+    show: [E, e]
+    label: '$\mathbf{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。它等价于 one-hot 向量乘 $E$，但实现里就是按下标取行，所以每个位置只和被取到的那一行有连线。
+      $$\mathbf{e}_t=E[x_t],\qquad \mathbf{e}={{ e | matrix }}$$
+  - id: layers
+    show: x0
+    label: '$\mathbf{x}_0$'
+    title: 前面 N−1 个 decoder 层（占位）
+    text: 真实模型在 embedding 和最后一层之间还有 $N-1$ 个结构相同的 decoder 层，Qwen3-8B 里 $N=36$。这里只用一个节点示意：没有真实计算，数值按恒等映射处理，所以 $\mathbf{x}_0$ 和 $\mathbf{e}$ 相同。
+backward:
+  E:
+    title: 传到 embedding 表
+    text: |
+      取行的反向是把梯度加回被取到的那一行（scatter-add）。没有出现在输入里的 token，那一行的梯度是 0。
+      $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  z:
+    title: 传到 logits
+    text: |
+      两条路加起来，每一行都是 $(\mathbf{p}_t-\mathbf{e}_{y_t})/T$。
+      $$\frac{\partial\ell}{\partial\mathbf{z}}={{ z.grad | matrix:3 }}$$
+panels:
+  - loss: { sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }, reset: true, text: '位置 {{b+1}}：输入 {{ids[b]:token}}，标签 {{y[b]:token}}' }
+  - { tokens: y, columns: [{ node: z, title: z }, logp, { node: z, grad: true, title: '∂ℓ/∂z' }], title: 当前位置的 logits 与标签 }
+  - { matrix: 'layer.self_attn.P[1]', title: 注意力权重 P⁽¹⁾, note: 行是 query 的位置，列是 key 的位置。右上角被 causal mask 挡住，是 0。 }
+  - { matrix: 'layer.self_attn.P[2]', title: 注意力权重 P⁽²⁾ }
+  - { matrix: head.W.T, highlight: y, title: 'lm_head 权重 Wᵀ，(d, V) = (4, 5)' }
+  - { matrix: head.W.T, grad: true, highlight: y, title: '∂ℓ/∂Wᵀ = hᵀ ∂ℓ/∂z，(4, 5)' }
+values:
+  E:
+    - [0.49, -0.96, 0.35, 0.09]
+    - [-1.09, -0.46, -0.67, -0.25]
+    - [0.22, 0.4, -0.29, -1]
+    - [-0.54, -1.17, 0.19, -0.93]
+    - [0.87, 0.87, -0.6, 0.17]
+  layer.input_layernorm.weight: [1.02, 0.97, 1, 1.03]
+  layer.self_attn.Wq:
+    - [-0.04, 0.32, -0.41, 0.44]
+    - [0.25, 0.78, -0.42, 0.01]
+    - [0.29, 0.73, 0.68, 0.63]
+    - [-0.56, 0.14, 0.19, -0.03]
+    - [-0.23, 0.73, 0.09, -0.36]
+    - [0.15, -0.48, 0.69, -0.66]
+    - [0.16, 0.36, 0.04, -0.25]
+    - [-0.35, 0.67, 0.57, -0.8]
+  layer.self_attn.Wk:
+    - [0.39, 0.43, 0.5, -0.53]
+    - [0.58, -0.77, -0.26, -0.24]
+    - [-0.27, -0.36, -0.42, -0.1]
+    - [0.39, 0.27, 0.34, 0.77]
+  layer.self_attn.Wv:
+    - [0.2, -0.07, -0.38, -0.43]
+    - [0.26, 0.16, -0.31, -0.86]
+    - [-0.01, -0.11, -0.3, -0.71]
+    - [0.18, -0.34, 0.78, -0.73]
+  layer.self_attn.gq: [1, 0.96, 1.04, 1]
+  layer.self_attn.gk: [0.98, 1.02, 1, 1.01]
+  layer.self_attn.Wo:
+    - [0.44, 0, 0.23, -0.21, -0.46, -0.2, -0.07, 0.37]
+    - [0.03, -0.31, -0.39, -0.41, -0.31, 0.33, 0.34, 0.19]
+    - [-0.19, -0.12, -0.47, 0.49, -0.1, 0.49, 0.18, -0.35]
+    - [-0.25, 0.29, -0.03, 0.28, 0.01, -0.28, -0.48, 0.49]
+  layer.post_attention_layernorm.weight: [1, 0.95, 1.05, 1]
+  layer.mlp.Wg:
+    - [0.6, -0.4, 0.2, 0.5]
+    - [-0.5, 0.3, 0.6, -0.2]
+    - [0.3, 0.7, -0.4, 0.4]
+    - [-0.2, -0.6, 0.5, 0.3]
+    - [0.7, 0.1, -0.3, -0.5]
+    - [0.1, -0.3, 0.8, 0.6]
+  layer.mlp.Wu:
+    - [0.4, 0.2, -0.5, 0.3]
+    - [0.3, -0.6, 0.2, 0.5]
+    - [-0.4, 0.5, 0.3, 0.2]
+    - [0.6, 0.1, -0.2, -0.4]
+    - [-0.3, -0.4, 0.6, 0.1]
+    - [0.2, 0.6, 0.1, -0.3]
+  layer.mlp.Wd:
+    - [0.3, -0.2, 0.4, 0.1, 0.2, -0.3]
+    - [-0.4, 0.3, -0.1, 0.2, -0.3, 0.1]
+    - [0.2, 0.1, 0.3, -0.4, 0.1, 0.2]
+    - [0.4, -0.1, 0.2, 0.3, 0.3, 0.2]
+  norm.weight: [0.94, 1.03, 1.04, 1.01]
+  head.W:
+    - [0.5, 0.7, -0.6, -0.2]
+    - [-0.7, 0.4, -0.3, -0.5]
+    - [0.9, -0.6, 0.3, 0.6]
+    - [-0.4, 0.2, 0.9, 0.3]
+    - [0.2, -0.8, 0.6, 0.2]
