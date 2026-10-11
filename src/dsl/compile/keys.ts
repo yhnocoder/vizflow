@@ -8,7 +8,7 @@ export const PAGE_KEYS = new Set([
   'title', 'lede', 'hint', 'camera', 'overview', 'leaves', 'import', 'modules', 'subtitle', 'params', 'dims', 'real', 'dtype', 'vocab', 'init', 'inputs', 'sequence',
   'weights', 'buffers', 'values', 'body', 'steps', 'backward', 'panels', 'sections', 'layout',
 ]);
-export const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'backward', 'notes']);
+export const STEP_KEYS = new Set(['id', 'show', 'active', 'label', 'title', 'text', 'segment', 'brace', 'beside', 'backward', 'notes']);
 export const BRACE_KEYS = new Set(['title', 'subtitle']);
 export const PATCH_KEYS = new Set(['title', 'label', 'text', 'append', 'backward', 'notes']);
 export const TEXT_KEYS = new Set(['title', 'text', 'label']);

@@ -31,6 +31,7 @@ export interface ForwardStep {
   sub?: string;
   module?: string;
   brace?: { title: string; subtitle?: string; formula?: string };
+  beside?: Node[];
   backward?: BackwardOverride;
   marks?: string[];
 }

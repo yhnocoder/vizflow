@@ -368,7 +368,8 @@ class Plan implements LevelPlan {
   }
 
   private buildLevels(): void {
-    const units = this.spec.forward.filter((s) => s.kind !== 'inputs').map((s) => list(s.show).filter((n) => this.computed.has(n)));
+    const forward = this.spec.forward.filter((s) => s.kind !== 'inputs');
+    const units = forward.map((s) => list(s.show).filter((n) => this.computed.has(n)));
     const unitOf = new Map<Node, number>();
     units.forEach((prod, i) => prod.forEach((n) => unitOf.set(n, i)));
     const moveTo = new Map<Node, Node>();
@@ -383,6 +384,7 @@ class Plan implements LevelPlan {
       if (unitOf.get(a) === unitOf.get(board.op)! - 1 && users.every((u) => unitOf.get(u) === unitOf.get(board.op) && this.boards.get(u)?.a === a)) moveTo.set(a, board.op);
     }
     const levelOfNode = new Map<Node, Level>();
+    const unitLevels = new Map<number, Level[]>();
     units.forEach((prod, index) => {
       for (const copy of this.copies) {
         if (copy.board !== undefined) continue;
@@ -393,7 +395,11 @@ class Plan implements LevelPlan {
       if (own.length === 0) return;
       const depth = new Map<Node, number>();
       for (const n of own) depth.set(n, Math.max(0, ...n.inputs.filter((i) => depth.has(i)).map((i) => depth.get(i)! + 1)));
-      const levels = Array.from({ length: Math.max(...depth.values()) + 1 }, () => this.newLevel());
+      const besideNodes = forward[index].beside;
+      const target = besideNodes === undefined ? -1 : units.findIndex((u) => u.some((n) => besideNodes.includes(n)));
+      const shared = target >= 0 && target < index && !own.some((n) => n.inputs.some((i) => units[target].includes(i))) ? (unitLevels.get(target) ?? []) : [];
+      const levels = Array.from({ length: Math.max(...depth.values()) + 1 }, (_, i) => shared[i] ?? this.newLevel());
+      unitLevels.set(index, levels);
       for (const n of own) {
         const level = levels[depth.get(n)!];
         for (const copy of this.copies) if (copy.board !== undefined && this.boards.get(n)?.a === copy.node && copy.consumers.includes(n) && !this.copyEntries.has(copy)) this.entry(copy.node, level, copy);

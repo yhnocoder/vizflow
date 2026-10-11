@@ -36,14 +36,13 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
   if (decl.steps === undefined) return [];
   const stepsWhere = child(env.where, decl, field);
   if (!Array.isArray(decl.steps)) fail(stepsWhere, 'steps must be a list');
-  const seen = new Set<string>();
+  const seen = new Map<string, Node[]>();
   return decl.steps.map((step, i) => {
     const at = child(stepsWhere, decl.steps as unknown[], i);
     if (!isRecord(step)) fail(at, 'a step must be a mapping');
     checkKeys(step, STEP_KEYS, at);
     if (typeof step.id !== 'string') fail(at, 'a step needs an id');
     if (seen.has(step.id)) fail(child(at, step, 'id'), `step id '${step.id}' is used twice`);
-    seen.add(step.id);
     const fieldEnv = (key: string): Env => ({ ...env, where: child(at, step, key) });
     if (step.show === undefined) fail(at, 'a step needs show');
     const shown = list(step.show as unknown).flatMap((s, k) => c.nodeList(s, { ...env, where: Array.isArray(step.show) ? child(child(at, step, 'show'), step.show, k) : child(at, step, 'show') }));
@@ -63,6 +62,12 @@ function resolveSteps(c: Compiler, scope: Scope, decl: Record<string, unknown>, 
     if (step.brace !== undefined) forward.brace = braceOf(c, step.brace, fieldEnv('brace'));
     if (step.backward !== undefined) forward.backward = c.texts(step.backward, fieldEnv('backward'), TEXT_KEYS);
     if (step.notes !== undefined) forward.notes = notesOf(c, step.notes, fieldEnv('notes'));
+    if (step.beside !== undefined) {
+      const target = typeof step.beside === 'string' ? seen.get(step.beside) : undefined;
+      if (target === undefined) fail(fieldEnv('beside').where, `beside must name an earlier step in the same list, got '${String(step.beside)}'`);
+      forward.beside = target;
+    }
+    seen.set(step.id, show);
     return { rec: { refs: [{ owner: scope.path, id: step.id }], step: forward }, show };
   });
 }
