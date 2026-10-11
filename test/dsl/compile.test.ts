@@ -767,6 +767,26 @@ body:
     expect(result.page.title).toBe('t');
   });
 
+  it('gives a page input its real shape from the shape key and checks the value against it', async () => {
+    const source = (shape: string) => `
+title: t
+dims: { T: 2, d: 3 }
+real: { name: Big, T: 4096, d: 7168 }
+inputs:
+  x: { shape: ${shape}, value: [[1, 2, 3], [4, 5, 6]] }
+  y: { value: [1, 2] }
+body:
+  - z: x * 2
+`;
+    const result = await page(source('[T, d]'));
+    expect(result.nodes.get('x')!.shape).toEqual([2, 3]);
+    expect(result.nodes.get('x')!.realShape).toEqual([4096, 7168]);
+    expect(result.nodes.get('z')!.realShape).toEqual([4096, 7168]);
+    expect(result.nodes.get('y')!.realShape).toEqual([2]);
+    await expect(page(source('[d, T]'))).rejects.toThrow('input value has shape (2, 3), but shape gives (3, 2)');
+    await expect(page(source('T'))).rejects.toThrow('shape must be a list');
+  });
+
   it('compiles a JS object with a base URL and package modules', async () => {
     const spec: PageFile = {
       title: 'js',

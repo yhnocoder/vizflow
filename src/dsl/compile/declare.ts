@@ -66,7 +66,7 @@ export function declareParams(c: Compiler, scope: Scope, decl: Record<string, un
   }
 }
 
-function shapeOf(c: Compiler, spec: unknown, env: Env, where: Where): Num[] {
+export function shapeOf(c: Compiler, spec: unknown, env: Env, where: Where): Num[] {
   if (!Array.isArray(spec)) fail(where, 'shape must be a list');
   return spec.map((entry, i) => {
     const at = child(where, spec, i);
@@ -76,7 +76,7 @@ function shapeOf(c: Compiler, spec: unknown, env: Env, where: Where): Num[] {
   });
 }
 
-function leafSpec(c: Compiler, shape: Num[]): (number | string)[] {
+export function leafSpec(c: Compiler, shape: Num[]): (number | string)[] {
   return shape.map((d) => c.dimSpec(d));
 }
 

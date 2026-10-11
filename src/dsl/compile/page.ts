@@ -6,7 +6,7 @@ import type { PanelItem, SectionItem } from '../../ui';
 import { DslError, type Where, child, fail } from '../source';
 import { defaultTex, elemOf } from '../tex';
 import { compileBody } from './body';
-import { declareBuffers, declareParams, declareWeights, define } from './declare';
+import { declareBuffers, declareParams, declareWeights, define, leafSpec, shapeOf } from './declare';
 import { markFormulas } from './formula';
 import { GENERATE_KEYS, OPTIMIZER_KEYS, OVERVIEW_KEYS, SEQUENCE_KEYS, TEXT_KEYS } from './keys';
 import { pageModules, placeSteps } from './modules';
@@ -63,7 +63,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
         node = c.g.label(name, given ?? tokenIds(c, spec.tokens as unknown[], child(at, spec, 'tokens')), { tokens: vocab as string[], tex, elem: elemOf(tex) });
       } else if (spec.value !== undefined) {
         const values = (given ?? spec.value) as Nested;
-        node = c.g.input(name, inferShape(values), values, { tex, elem: elemOf(tex), ...dtypeOption(spec, at) });
+        node = c.g.input(name, inputShape(c, spec, values, env, at), values, { tex, elem: elemOf(tex), ...dtypeOption(spec, at) });
       } else {
         fail(at, 'a page input needs tokens or value');
       }
@@ -156,6 +156,16 @@ function packedLabels(ids: number[], lengths: number[]): number[] {
     start += n;
   }
   return labels;
+}
+
+function inputShape(c: Compiler, spec: Record<string, unknown>, values: Nested, env: Env, at: Where): (number | string)[] {
+  const inferred = inferShape(values);
+  if (spec.shape === undefined) return inferred;
+  const shapeWhere = child(at, spec, 'shape');
+  const shape = shapeOf(c, spec.shape, { ...env, where: shapeWhere }, shapeWhere);
+  const toy = shape.map((d) => d.toy);
+  if (toy.join(',') !== inferred.join(',')) fail(shapeWhere, `input value has shape (${inferred.join(', ')}), but shape gives (${toy.join(', ')})`);
+  return leafSpec(c, shape);
 }
 
 function tokenIds(c: Compiler, tokens: unknown[], where: Where): number[] {

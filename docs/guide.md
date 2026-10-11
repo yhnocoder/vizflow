@@ -216,6 +216,7 @@ panels:
 写法要点：
 
 - `body` 按顺序建图。表达式里 `inf` 是正无穷，`-inf` 是负无穷。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`view(x @ Wq.T, T, H, dh)`、`select(k, 1, h-1)`、`cat(o[1..H], dim=1)`。`view` 的形状逐个写在后面，可以写维度名，其中一个可以写 `-1`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
+- 页面 `inputs` 的一项写 `{ value: 数组 }` 时，形状从数组推出，真实形状与示例形状相同。要让层名卡片显示真实尺寸，同时写 `shape`，例如 `x: { shape: [T, d], value: [[...], [...]] }`：形状按维度名在 `dims` 里取示例值、在 `real` 里取真实值，数组的形状必须等于示例形状，不一致时报错 `input value has shape (2, 3), but shape gives (3, 2)`。
 - 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
 - dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`int4`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp4_e2m1`、`e8m0`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
 - `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。

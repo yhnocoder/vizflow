@@ -70,7 +70,7 @@ steps:
     <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
     <tr><td><code>dtype</code></td><td>页面</td><td>传给 <code>graph({ dtype })</code> 的默认 dtype，例如 <code>bf16</code>，不写时是 <code>fp32</code></td></tr>
     <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
-    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组, dtype? } }</code> 建 input 节点</td></tr>
+    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组, shape?, dtype? } }</code> 建 input 节点；给出 <code>shape</code>（维度名的列表）时，示例形状必须与数组的形状相同，真实形状按 <code>real</code> 取，不一致时报错 <code>input value has shape (2, 3), but shape gives (3, 2)</code>；不给时形状从数组推出，真实形状等于示例形状</td></tr>
     <tr><td><code>outputs</code></td><td>模块</td><td>输出节点的名字列表</td></tr>
     <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex?, dtype? } }</code>，建 param 节点</td></tr>
     <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, shape?, tex?, dtype? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点；<code>shape</code> 把数值按这个形状重排，元素个数必须相同，否则报错 <code>buffer 'x' has N values, which do not fit the shape (...)</code></td></tr>
