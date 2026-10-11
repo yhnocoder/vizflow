@@ -89,7 +89,7 @@ steps:
 </table>
 <p>body 的每一项是只有一个键的映射，或者一个 for：</p>
 <ul>
-  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex, dtype }</code> 同时给出 tex 和 dtype。<code>dtype</code> 写 dtype 名（<code>fp32</code>），或者写一个张量的名字，表示取那个张量的 dtype，对应 torch 里的 <code>.to(x.dtype)</code>。示例里 RMSNorm 把平方写成 <code>fp32</code>，之后的 ms、$r$、$\hat{x}$ 按类型提升都是 fp32，输出写 <code>dtype: x</code> 转回输入的 dtype，所以输入是 bf16 或 fp32 时模块都不用改。名字既不是 dtype、也不是张量时报错。</li>
+  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex, dtype, beside }</code> 同时给出 tex、dtype 和场景里的位置（<code>beside</code> 见下面的「并排」）。<code>dtype</code> 写 dtype 名（<code>fp32</code>），或者写一个张量的名字，表示取那个张量的 dtype，对应 torch 里的 <code>.to(x.dtype)</code>。示例里 RMSNorm 把平方写成 <code>fp32</code>，之后的 ms、$r$、$\hat{x}$ 按类型提升都是 fp32，输出写 <code>dtype: x</code> 转回输入的 dtype，所以输入是 bf16 或 fp32 时模块都不用改。名字既不是 dtype、也不是张量时报错。</li>
   <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside?, inline?, brace?, formula?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex；<code>steps</code> 是步骤补丁。其余字段决定这个实例作为一个模块怎么显示和折叠，见下面的「模块记录」。</li>
   <li><code>name: { body, steps?, beside?, formula?, title?, subtitle?, fixed?, folded?, split?, fold? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，用来画大括号、把步骤分组和整体折叠。</li>
   <li><code>{ for: h, in: '1..H', name?, brace?, beside?, sequential?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。<code>sequential</code>（默认 <code>false</code>）为 <code>true</code> 时，各次迭代按顺序往上叠在主列上，每次迭代的步骤单独成步，用于后一次迭代依赖前一次结果的递推，例如 gated delta rule 按位置更新的状态 $S_t$；默认的迭代互相独立，并排画出、步骤合并，例如 GQA 的各个 head。</li>
@@ -102,7 +102,8 @@ steps:
   <li><code>fold</code> 是折叠后那一步的文字，字段与模块文件顶层的 <code>fold</code> 相同，逐个字段覆盖模块文件给的默认值。</li>
   <li><code>inline: true</code> 的实例不建模块记录，也不生成子布局树：节点和步骤直接算作外层模块的，路径仍然带实例名。它不能写 <code>title</code>、<code>subtitle</code>、<code>fixed</code>、<code>folded</code>、<code>split</code>、<code>fold</code>，写了报错 <code>an inline instance has no box of its own, so it cannot have 'x'</code>。Qwen3 注意力里的 q_norm、k_norm 和 eager_attention_forward 用 inline，因为 HF 里它们不是单独的一次模块调用。</li>
 </ul>
-<p><b>并排。</b>实例、group 和 for 可以写 <code>beside: 名字</code>，表示这一项在场景里画在前一项的旁边，从同一层开始。名字是紧挨着的前一项的名字（实例名、group 名或 for 的 <code>name</code>），或者是已经 beside 前一项的某一项的名字，这样几项连成一组，例如 c beside b、b beside a 是三条竖道。一组里的项在编译结果的布局树里合成一个 <code>parallel</code>，每项一个分支，按书写顺序从左到右排列；主列从各分支最高的一层再往上一层继续。没有写 <code>beside</code> 的项按原来的规则排在主列上。</p>
+<p><b>并排。</b>实例、group 和 for 可以写 <code>beside: 名字</code>，表示这一项在场景里画在前一项的旁边，从同一层开始。名字是紧挨着的前一项的名字（实例名、group 名或 for 的 <code>name</code>），或者是已经 beside 前一项的某一项的名字，这样几项连成一组，例如 c beside b、b beside a 是三条竖道。一组里的项在编译结果的布局树里合成一个 <code>parallel</code>，每项一个分支，按书写顺序从左到右排列；主列从各分支最高的一层再往上一层继续。没有写 <code>beside</code> 的项按原来的规则排在主列上。页面描述文件的场景用分层布局（见 vizflow 设计的「分层布局」），布局树里的 <code>parallel</code> 不决定位置：并排的同一模块实例合并步骤以后，它们的节点在同一层；同一层有两个叶子（例如两个实例的输入都是页面输入或权重）时，第二个叶子另起一条竖道，画在第一条竖道右侧，用到它的节点跟着它往上排。</p>
+<p>单个节点也可以写 <code>beside: 名字</code>，名字是一个已经有的张量，例如本模块的输入或前面的节点。这个节点画在名字所在的那一层，放在那一层同一竖道已有的块右侧，中间留一道缝，块名写在块的下方；它总是画成柱子板，不画成圆柱。名字和这个节点在同一个步骤里时，依赖这个节点的节点照常往上一层；名字在更早的步骤里时，这个节点放进名字的那一层。Quant 模块用它把缩放因子 $\mathbf{s}$ 画在输入旁边、把量化误差 $\mathbf{e}$ 画在反量化值旁边；FP8 Linear 页把不量化的对照 $\mathbf{z}_{\mathrm{ref}}$ 和误差 $\Delta\mathbf{z}$ 画在 $\mathbf{z}$ 旁边。节点的 <code>beside</code> 只影响位置，不合并步骤，也不检查是否用到同组的结果。名字不是张量时报错，例如 <code>'na' is a module instance, not a value</code>。</p>
 <p>并排的几项是同一个模块的实例时，步骤也合并：各实例 id 相同的步骤合成一步，<code>show</code> 和 <code>active</code> 取并集，标题和正文用第一个实例的（模块默认值或这个实例的补丁），按钮文字和反向按钮文字把各实例不同的写法连起来，两边都是一整个行内公式时合成一个公式 <code>$a,\ b$</code>，否则用 <code>, </code> 连接。其余情况下 <code>beside</code> 只影响布局，步骤不变。合并让「q 和 k 各做一次 RMSNorm」只占四步，读者在同一步里看到两边的对应关系。</p>
 <pre><code class="language-yaml">- q: 'view(x @ Wq.T, T, H, dh)'
 - k: 'view(x @ Wk.T, T, Hkv, dh)'
@@ -115,10 +116,9 @@ steps:
     use: RoPE
     inputs: { q: qn, k: kn }
     outputs: { q_embed: qr, k_embed: kr }</code></pre>
-<p>这里 q_norm 和 k_norm 是两条竖道，从同一层开始，整组由 group qk_norm 画一个大括号；均方根那一步的按钮文字是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。RoPE 从两条竖道的上方开始。一个 body 里实例的步骤补丁在这个 body 全部建完之后才编译，所以 q_norm 的补丁可以引用后面 k_norm 的节点，例如在合并后的那一步里同时写出 $r^{q}$ 和 $r^{k}$。以下情况报错，错误信息指向 <code>beside</code> 所在的行：</p>
+<p>这里 q_norm 和 k_norm 是两条竖道，从同一层开始，整组由 group qk_norm 画一个大括号；均方根那一步的按钮文字是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。RoPE 从两条竖道的上方开始。一个 body 里实例的步骤补丁在这个 body 全部建完之后才编译，所以 q_norm 的补丁可以引用后面 k_norm 的节点，例如在合并后的那一步里同时写出 $r^{q}$ 和 $r^{k}$。实例、group 和 for 的 <code>beside</code> 在以下情况报错，错误信息指向 <code>beside</code> 所在的行：</p>
 <ul>
   <li>名字不是紧挨着的前一项，也不是与前一项并排的项，例如中间隔了一个节点。错误信息区分「这个名字前面没有」和「这个名字不是前一项」。</li>
-  <li>写在单个节点 <code>name: expr</code> 上。并排的单位是实例、group 和 for。</li>
   <li>这一项用到了同一组里前面某一项算出的值。并排的项从同一层开始，用到别的竖道的结果的项必须画在那条竖道上方，所以要写在这一组之后。权重、buffer 和只由它们算出的节点（例如权重的转置）不算。</li>
 </ul>
 <p>结构检查手写，不用 JSON Schema。未知的字段、缺少的字段和类型不对的值都报错，错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>bad.yaml:5:8 body[0].y: name 'nope' is not defined in the page</code>。行号和列号来自 <code>yaml</code> 包解析时保留的位置，传入的是 JavaScript 对象时信息里只有路径。YAML 里的重复键同样报错。</p>

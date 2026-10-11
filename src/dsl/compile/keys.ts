@@ -1,4 +1,4 @@
-export const ITEM_KEYS = new Set(['op', 'tex', 'dtype']);
+export const ITEM_KEYS = new Set(['op', 'tex', 'dtype', 'beside']);
 export const MODULE_ITEM_KEYS = ['title', 'subtitle', 'fixed', 'folded', 'split', 'fold'];
 export const INSTANCE_KEYS = new Set(['use', 'params', 'inputs', 'outputs', 'weights', 'suffix', 'tex', 'steps', 'beside', 'inline', 'brace', 'formula', ...MODULE_ITEM_KEYS]);
 export const GROUP_KEYS = new Set(['body', 'steps', 'beside', 'formula', ...MODULE_ITEM_KEYS]);

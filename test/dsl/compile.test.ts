@@ -868,8 +868,9 @@ body:
 `;
     await expect(page(gap, files)).rejects.toThrow(/page\.yaml:11:\d+ body\[2\]\.nb\.beside: beside 'na': 'na' is not the item right before this one/);
     await expect(page(`${head}  - na: { use: Norm, inputs: { x: x } }\n  - b: { op: exp(x), beside: na }\n`, files)).rejects.toThrow(
-      /body\[1\]\.b\.beside: beside applies to an instance, a group or a for item, not to a single node/,
+      /body\[1\]\.b\.beside: 'na' is a module instance, not a value/,
     );
+    await expect(page(`${head}  - b: { op: exp(x), beside: 3 }\n`, files)).rejects.toThrow(/body\[0\]\.b\.beside: beside on a node must name a tensor/);
   });
 
   it('rejects an item that uses a result of an item in the same beside group', async () => {

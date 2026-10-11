@@ -95,6 +95,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
   const overviewWhere = child(c.pageWhere, page, 'overview');
   const overview = page.overview === undefined ? undefined : record(page.overview, overviewWhere, 'overview');
   const stepsSpec: StepsSpec = { forward: [...leaves, ...forward], backward: 'reverse', modules };
+  if (c.besides.size > 0) stepsSpec.beside = c.besides;
   if (overview !== undefined) {
     const texts = c.texts(overview, { ...env, where: overviewWhere }, OVERVIEW_KEYS);
     stepsSpec.overview = { title: texts.title ?? String(page.title), text: texts.text ?? '' };

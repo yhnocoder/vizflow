@@ -201,7 +201,6 @@ function compileItem(
     slots.push({ kind: 'group', decl: value, where: valueWhere, loops: env.loops, slots: groupSlots });
     return { name, beside: besideOf(value, valueWhere) };
   }
-  if (isRecord(value) && 'beside' in value) fail(child(valueWhere, value, 'beside'), 'beside applies to an instance, a group or a for item, not to a single node');
   slots.push(compileNodeItem(c, scope, name, base, indices, value, valueEnv, entries, before));
   return { name: undefined, beside: undefined };
 }
@@ -214,11 +213,19 @@ function itemDtype(c: Compiler, value: unknown, env: Env): string {
   return node.dtype;
 }
 
+function besideNode(c: Compiler, value: unknown, env: Env): Node {
+  if (typeof value !== 'string') fail(env.where, 'beside on a node must name a tensor');
+  const node = c.expression(value, env, undefined);
+  if (!(node instanceof Node)) fail(env.where, `beside '${value}' is not a tensor`);
+  return node;
+}
+
 function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, indices: number[], value: unknown, env: Env, entries: LayoutEntry[], before: number): Slot {
   let expr: unknown = value;
   let declared: string | undefined;
   let dtype: string | undefined;
   let exprWhere = env.where;
+  let beside: Node | undefined;
   if (isRecord(value)) {
     checkKeys(value, ITEM_KEYS, env.where);
     if (!('op' in value)) fail(env.where, `'${name}' needs op, use or body`);
@@ -229,6 +236,7 @@ function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, 
       declared = value.tex;
     }
     if (value.dtype !== undefined) dtype = itemDtype(c, value.dtype, { ...env, where: child(env.where, value, 'dtype') });
+    if (value.beside !== undefined) beside = besideNode(c, value.beside, { ...env, where: child(env.where, value, 'beside') });
   }
   if (scope.local(name) !== undefined || scope.groups.has(name)) fail(env.where, `name '${name}' is already defined in ${c.scopeLabel(scope)}`);
   const override = scope.texOverride.get(name) ?? scope.texOverride.get(base);
@@ -242,6 +250,7 @@ function compileNodeItem(c: Compiler, scope: Scope, name: string, base: string, 
   if (!(result instanceof Node) || result.name !== make.path) fail(exprWhere, `'${name}' must compute a new node; its expression only refers to an existing value`);
   scope.anon.set(result, make.anon);
   define(c, scope, name, result, env);
+  if (beside !== undefined) c.besides.set(result, beside);
   for (const node of make.anon) {
     entries.push({ kind: 'node', node });
     c.nodes.set(node.name, node);

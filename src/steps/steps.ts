@@ -95,6 +95,7 @@ export interface StepsSpec {
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
   backward?: BackwardSpec;
   modules?: StepModule[];
+  beside?: ReadonlyMap<Node, Node>;
 }
 
 export interface StepInfo {

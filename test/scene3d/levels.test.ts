@@ -192,3 +192,39 @@ describe('levelPlan with views and head-selecting boards', () => {
   });
 });
 
+describe('levelPlan with beside nodes and side-by-side leaves', () => {
+  it('starts a new lane for a second leaf on a level and draws a beside node to the right of its target', () => {
+    const g = graph();
+    const a = g.input('a', [2, 3], [[1, 2, 3], [4, 5, 6]]);
+    const b = g.input('b', [2, 3], [[-1, -2, -3], [-4, -5, -6]]);
+    const sa = g.mul(a, 2, { name: 'sa' });
+    const sb = g.mul(b, 2, { name: 'sb' });
+    const ea = g.exp(sa, { name: 'ea' });
+    const eb = g.exp(sb, { name: 'eb' });
+    const da = g.sub(ea, sa, { name: 'da' });
+    const loss = g.loss(g.sum(g.add(ea, eb), null, { name: 'loss' }));
+    const spec: StepsSpec = {
+      forward: [
+        { show: [a, b], title: 'inputs', kind: 'inputs' },
+        { show: [sa, sb], title: 's' },
+        { show: [ea, eb, da], title: 'e' },
+        { show: [loss], title: 'loss' },
+      ],
+      backward: 'reverse',
+      beside: new Map([[da, ea]]),
+    };
+    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const xs = (n: Node) => blockOf(blocks, n).elements.map((e) => e.x);
+    const y = (n: Node) => blockOf(blocks, n).elements[0].y;
+    expect(y(a)).toBe(y(b));
+    expect(Math.min(...xs(b))).toBeGreaterThan(Math.max(...xs(a)));
+    expect(xs(sa)).toEqual(xs(a));
+    expect(xs(sb)).toEqual(xs(b));
+    expect(y(da)).toBe(y(ea));
+    expect(blockOf(blocks, da).shape).toBe('bar');
+    expect(Math.min(...xs(da))).toBeGreaterThan(Math.max(...xs(ea)));
+    expect(Math.min(...xs(eb))).toBeGreaterThan(Math.max(...xs(da)));
+    expect(blockOf(blocks, da).title.anchor).toBe('below');
+  });
+});
+
