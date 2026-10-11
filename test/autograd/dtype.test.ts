@@ -24,6 +24,21 @@ describe('dtype', () => {
     expect(g.add(a, a).dtype).toBe('bf16');
   });
 
+  it('promotes integers by width independent of order and rejects mixing the two fp8 formats', () => {
+    const g = graph({ dims: { V: 2 } });
+    const make = (name: string, dtype: string) => g.input(name, ['V'], [1, 2], { dtype });
+    const i32 = make('i32', 'int32');
+    const i64 = make('i64', 'int64');
+    const b = make('b', 'bool');
+    const u8 = make('u8', 'uint8');
+    const i8 = make('i8', 'int8');
+    expect([g.add(i32, i64), g.add(i64, i32), g.add(b, i32), g.add(u8, i8)].map((n) => n.dtype)).toEqual(['int64', 'int64', 'int32', 'int16']);
+    const e4 = make('e4', 'fp8_e4m3');
+    const e5 = make('e5', 'fp8_e5m2');
+    expect(() => g.add(e4, e5, { name: 'mix' })).toThrow(/add 'mix': cannot promote fp8_e4m3 with fp8_e5m2/);
+    expect(g.add(e4, e5, { name: 'cast', dtype: 'bf16' }).dtype).toBe('bf16');
+  });
+
   it('rejects unknown dtypes', () => {
     expect(() => graph({ dtype: 'float' })).toThrow(/unknown dtype 'float'/);
     const g = graph({ dims: { V: 2 } });

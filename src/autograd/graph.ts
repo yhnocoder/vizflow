@@ -305,7 +305,7 @@ class GraphImpl {
     if (this.check) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
-    const dtype = promoteDtypes(inputs.map((n) => n.dtype), this.dtype);
+    const dtype = options.dtype === undefined ? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`) : checkDtype(options.dtype, `node '${name}'`);
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state);
   }
 

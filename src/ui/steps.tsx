@@ -277,7 +277,7 @@ function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; cu
   const single = () => positions().length === 1 && list[positions()[0]].label === props.segment.name;
   let el!: HTMLDivElement;
   createEffect(
-    on([() => props.center, () => props.segment], ([center]) => {
+    on([() => props.center, () => props.segment, () => props.current], ([center]) => {
       const width = el.offsetWidth;
       const max = props.bar.clientWidth;
       const left = Math.min(Math.max(center - width / 2, 0), Math.max(max - width, 0));

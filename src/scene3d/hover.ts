@@ -1,5 +1,6 @@
 import { BufferGeometry, Color, DoubleSide, Group, LineBasicMaterial, LineLoop, Mesh, MeshBasicMaterial, PlaneGeometry, Vector3 } from 'three';
 import type { Node } from '../autograd';
+import { explainOf } from '../explain';
 import type { ThemeColors } from '../theme';
 import type { Block, Element } from './layout';
 
@@ -18,24 +19,94 @@ export interface TokenRect {
   d: number;
 }
 
-export function tokenNodes(nodes: readonly Node[]): Set<Node> {
-  const tokened = new Set<Node>();
-  const lengths = new Set(nodes.filter((n) => (n.kind === 'input' || n.kind === 'label') && n.shape.length > 0).map((n) => n.shape[0]));
+const REDUCE_OPS = new Set(['sum', 'mean', 'max', 'logsumexp']);
+const ALONG_OPS = new Set(['softmax', 'log_softmax']);
+
+function axisOf(dim: unknown, rank: number): number {
+  const d = Number(dim);
+  return d < 0 ? d + rank : d;
+}
+
+function viewAxis(input: readonly number[], output: readonly number[], axis: number): number | undefined {
+  const before = input.slice(0, axis).reduce((p, n) => p * n, 1);
+  let product = 1;
+  for (let k = 0; k < output.length; k++) {
+    if (product === before && output[k] === input[axis]) return k;
+    product *= output[k];
+  }
+  return undefined;
+}
+
+function opTokenAxis(node: Node, axes: Map<Node, number>): number | undefined {
+  const { inputs, attrs, shape } = node;
+  const first = axes.get(inputs[0]);
+  const rank = (n: Node) => n.shape.length;
+  switch (node.op) {
+    case 'transpose': {
+      if (first === undefined) return undefined;
+      const d0 = axisOf(attrs.dim0, rank(inputs[0]));
+      const d1 = axisOf(attrs.dim1, rank(inputs[0]));
+      return first === d0 ? d1 : first === d1 ? d0 : first;
+    }
+    case 'matmul': {
+      if (first !== undefined && first < rank(inputs[0]) - 1) return first + shape.length - rank(inputs[0]);
+      const other = axes.get(inputs[1]);
+      return other !== undefined && other === rank(inputs[1]) - 1 ? shape.length - 1 : undefined;
+    }
+    case 'select_matmul':
+      return first === 0 ? 0 : axes.get(inputs[1]) === 1 ? 1 : undefined;
+    case 'embedding':
+      return first;
+    case 'select': {
+      if (first === undefined) return undefined;
+      const dim = axisOf(attrs.dim, rank(inputs[0]));
+      return first === dim ? undefined : first > dim ? first - 1 : first;
+    }
+    case 'narrow':
+      return first === axisOf(attrs.dim, rank(inputs[0])) ? undefined : first;
+    case 'cat': {
+      const dim = axisOf(attrs.dim ?? 0, rank(inputs[0]));
+      return first !== dim && inputs.every((n) => axes.get(n) === first) ? first : undefined;
+    }
+    case 'view':
+      return first === undefined ? undefined : viewAxis(inputs[0].shape, shape, first);
+    case 'nll_loss':
+      return attrs.reduction === 'none' && first === 0 ? 0 : undefined;
+  }
+  if (node.op !== undefined && ALONG_OPS.has(node.op)) return first;
+  if (node.op !== undefined && REDUCE_OPS.has(node.op)) {
+    if (first === undefined) return undefined;
+    const r = rank(inputs[0]);
+    const dims = attrs.dim === null || attrs.dim === undefined ? Array.from({ length: r }, (_, i) => i) : (Array.isArray(attrs.dim) ? attrs.dim : [attrs.dim]).map((d) => axisOf(d, r));
+    if (dims.includes(first)) return undefined;
+    return attrs.keepdim === true ? first : first - dims.filter((d) => d < first).length;
+  }
+  if (node.op === undefined || explainOf(node.op)?.pattern !== 'elementwise') return undefined;
+  for (const input of inputs) {
+    const axis = axes.get(input);
+    if (axis === undefined) continue;
+    const at = shape.length - rank(input) + axis;
+    if (shape[at] === input.shape[axis]) return at;
+  }
+  return undefined;
+}
+
+export function tokenAxes(nodes: readonly Node[]): Map<Node, number> {
+  const axes = new Map<Node, number>();
   for (const node of nodes) {
     if (node.shape.length === 0) continue;
-    if (node.kind === 'input' || node.kind === 'label') tokened.add(node);
-    else if (node.kind === 'buffer' && lengths.has(node.shape[0])) tokened.add(node);
-    else if (node.kind === 'op' && node.inputs.some((input) => tokened.has(input) && input.shape[0] === node.shape[0])) tokened.add(node);
+    const axis = node.kind === 'input' || node.kind === 'label' ? 0 : node.kind === 'op' ? opTokenAxis(node, axes) : undefined;
+    if (axis !== undefined) axes.set(node, axis);
   }
-  return tokened;
+  return axes;
 }
 
-export function sameToken(block: Block, element: Element): Element[] {
-  return block.elements.filter((e) => e.index[0] === element.index[0]);
+export function sameToken(block: Block, element: Element, axis: number): Element[] {
+  return block.elements.filter((e) => e.index[axis] === element.index[axis]);
 }
 
-export function tokenRect(block: Block, element: Element): TokenRect {
-  const members = sameToken(block, element);
+export function tokenRect(block: Block, element: Element, axis: number): TokenRect {
+  const members = sameToken(block, element, axis);
   const [fw, fd] = block.footprint;
   const xs = members.map((e) => e.x);
   const zs = members.map((e) => e.z);
