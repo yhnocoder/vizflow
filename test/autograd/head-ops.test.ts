@@ -22,6 +22,17 @@ describe('ops for multi-head tensors laid out as (T, H, d_h)', () => {
     checkOp(opDef('rsqrt')!, [new Tensor([2, 3], filled([2, 3], 8).data.map((x) => x * x))], { eps: 0.5 });
   });
 
+  it('carry the real-model dimensions through view, select and select_matmul', () => {
+    const g = graph({ dims: { T: 1, H: 2, dh: 4, HD: 8 }, real: { H: 32, dh: 128, HD: 4096 } });
+    const x = g.input('x', ['T', 'HD'], [[1, 2, 3, 4, 5, 6, 7, 8]]);
+    const heads = g.view(x, 'T', 'H', 'dh');
+    expect(heads.realShape).toEqual([1, 32, 128]);
+    expect(g.view(x, 'T', -1, 'dh').realShape).toEqual([1, 32, 128]);
+    expect(g.select(heads, 1, 1).realShape).toEqual([1, 128]);
+    const k = g.input('k', ['dh', 1], [[1], [1], [1], [1]]);
+    expect(g.select_matmul(heads, k, 1).realShape).toEqual([1, 1]);
+  });
+
   it('reshape, select and multiply one head', () => {
     const g = graph({ dims: { T: 1, H: 2, dh: 4 } });
     const x = g.input('x', [1, 8], [[1, 2, 3, 4, 5, 6, 7, 8]]);

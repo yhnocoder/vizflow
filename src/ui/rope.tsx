@@ -138,7 +138,7 @@ export function RopeDial(props: { g: Graph; version: Accessor<number>; spec: Rop
       ${arrow(cx, cy, qx, qy, 'var(--pos)', false)}${arrow(cx, cy, kx, ky, 'var(--neg)', false)}
       ${label(qx, qy, 'var(--pos)', `$\\mathbf{q}'$`)}
       ${label(kx, ky, 'var(--neg)', `$\\mathbf{k}'$`)}
-      <foreignObject x="8" y="259" width="272" height="20"><div class="vf-fo" style="color:var(--muted);font-size:10.5px" data-vf-text="${texAttr(DIAL_NOTE)}"></div></foreignObject>`;
+      <foreignObject x="8" y="262" width="272" height="20"><div class="vf-fo" style="color:var(--muted);font-size:10.5px" data-vf-text="${texAttr(DIAL_NOTE)}"></div></foreignObject>`;
     fillTex(svg);
     const dp = qr[0] * kr[0] + qr[1] * kr[1];
     const dp0 = qa[0] * ka[0] + qa[1] * ka[1];
@@ -237,6 +237,7 @@ export function RopeCurve(props: { g: Graph; version: Accessor<number>; spec: Ro
       ${range(Math.floor(N / TICK_STEP) + 1).map((i) => i * TICK_STEP).map((d) => `<text x="${X(d)}" y="${H - 10}" font-size="10" fill="var(--muted)" text-anchor="middle">${d}</text>`).join('')}
       <foreignObject x="${x1 - LABEL_BOX}" y="${H - 22}" width="${LABEL_BOX}" height="18"><div class="vf-fo" style="color:var(--muted);font-size:10px;text-align:right" data-vf-text="$t-s$"></div></foreignObject>
       <text x="${x0 - 6}" y="${y0 + 6}" font-size="10" fill="var(--muted)" text-anchor="end">${fmt(m, 2)}</text><text x="${x0 - 6}" y="${y1 + 2}" font-size="10" fill="var(--muted)" text-anchor="end">${fmt(-m, 2)}</text>`;
+    fillTex(svg);
   });
   return (
     <div class="vf-rope-curve">

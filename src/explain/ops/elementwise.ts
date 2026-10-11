@@ -122,7 +122,7 @@ export const powExplain: OpExplain = {
   pattern: 'elementwise',
   local: (ctx, _out, _arg, input) => exponentOf(ctx.attrs) * ctx.inputs[0].get(input) ** (exponentOf(ctx.attrs) - 1),
   tex: {
-    forward: (s) => `{${s.in[0]}}^{${exponentOf(s.attrs)}}`,
+    forward: (s) => (exponentOf(s.attrs) === 2 ? `${s.in[0]}\\odot ${s.in[0]}` : `{${s.in[0]}}^{${exponentOf(s.attrs)}}`),
     local: (s) => {
       const p = exponentOf(s.attrs);
       return p - 1 === 1 ? `${p}${s.in}` : `${p}{${s.in}}^{${p - 1}}`;

@@ -863,7 +863,7 @@ body:
     expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'RMSNorm：逐元素平方', '均方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
     const rms = forward[3];
     expect(rms.label).toBe('$\\mathrm{ms}_{a},\\ r_{a},\\ \\mathrm{ms}_{b},\\ r_{b}$');
-    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial{\\mathbf{f}}^{2}$');
+    expect(rms.backward?.label).toBe('$\\partial\\mathrm{ms}_{a},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}_{b},\\ \\partial\\mathbf{f}^{2}$');
     expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.ms', 'qa.r', 'qb.ms', 'qb.r']);
     expect(rms.text).toContain('{{qb.r[0]:3}}');
     expect(rms.text).toContain('{{qb.r[1]:3}}');
@@ -876,6 +876,25 @@ inputs:
 body:
   - n: { use: RMSNorm, inline: true, title: norm, inputs: { x: x } }
 `)).rejects.toThrow(/body\[0\]\.n\.title: an inline instance has no box of its own, so it cannot have 'title'/);
+  });
+
+  it('writes a rank-3 matrix as one matrix per head, side by side', async () => {
+    const result = await page(`
+title: t
+dims: { T: 2, H: 2, dh: 2 }
+inputs:
+  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
+body:
+  - q: 'view(x, T, H, dh)'
+  - k: 'view(x, T, 4, 1)'
+  - c: 'view(x, T, 1, 4)'
+steps:
+  - { id: s, show: [q, k, c], title: s, text: 'q={{ q | matrix:2 }} c={{ c | matrix }}' }
+`);
+    const cell = (i: string) => ` {{q[${i}]:2}} `;
+    const head = (h: number) => `\\begin{pmatrix}${cell(`0, ${h}, 0`)}&${cell(`0, ${h}, 1`)}\\\\${cell(`1, ${h}, 0`)}&${cell(`1, ${h}, 1`)}\\end{pmatrix}_{h=${h + 1}}`;
+    expect(result.steps.forward[0].text).toContain(`q=\\left[\\,${head(0)}\\;\\;${head(1)}\\,\\right]`);
+    expect(result.steps.forward[0].text).toContain('c=\\begin{pmatrix} {{c[0, 0, 0]}} & {{c[0, 0, 1]}} & {{c[0, 0, 2]}} & {{c[0, 0, 3]}} \\\\ {{c[1, 0, 0]}} ');
   });
 
   it.each([

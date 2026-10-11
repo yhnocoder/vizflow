@@ -131,20 +131,63 @@ function paragraphs(source: string, markdown: boolean): Segment[] {
   });
 }
 
+function topLevelParts(tex: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let index = 0; index < tex.length; index++) {
+    const char = tex[index];
+    if (char === '\\') {
+      if (depth === 0 && /^\\qquad(?![a-zA-Z])/.test(tex.slice(index))) {
+        parts.push(tex.slice(start, index));
+        start = index + '\\qquad'.length;
+        index = start - 1;
+        continue;
+      }
+      const word = /^\\([a-zA-Z]+)/.exec(tex.slice(index))?.[1];
+      if (word === 'begin' || word === 'left') depth++;
+      else if (word === 'end' || word === 'right') depth--;
+      index++;
+    } else if (char === '{') depth++;
+    else if (char === '}') depth--;
+  }
+  parts.push(tex.slice(start));
+  return parts.map((part) => part.trim()).filter((part) => part !== '');
+}
+
+function renderFormula(tex: string, display: boolean): HTMLElement {
+  const parts = display ? topLevelParts(tex) : [tex];
+  if (parts.length < 2) return render(tex, { display });
+  const row = document.createElement('div');
+  row.className = 'vf-display-row';
+  row.append(...parts.map((part) => render(part, { display: true })));
+  return row;
+}
+
+const closingPunctuation = /^[，。、；：！？）」』》〉]/u;
+
 function fill(segments: Segment[], target: HTMLElement): void {
   const formulas: { tex: string; display: boolean }[] = [];
+  let carried = 0;
   const markup = segments
-    .map((segment) => {
-      if (segment.kind === 'html') return segment.html;
+    .map((segment, index) => {
+      const skip = carried;
+      carried = 0;
+      if (segment.kind === 'html') return segment.html.slice(skip);
       formulas.push(segment);
-      return `<span data-vf-tex="${formulas.length - 1}"></span>`;
+      const marker = `<span data-vf-tex="${formulas.length - 1}"></span>`;
+      const next = segments[index + 1];
+      const punctuation = !segment.display && next?.kind === 'html' ? closingPunctuation.exec(next.html)?.[0] : undefined;
+      if (punctuation === undefined) return marker;
+      carried = punctuation.length;
+      return `<span style="white-space:nowrap">${marker}${punctuation}</span>`;
     })
     .join('');
   const template = document.createElement('template');
   template.innerHTML = markup;
   for (const marker of template.content.querySelectorAll<HTMLElement>('[data-vf-tex]')) {
     const formula = formulas[Number(marker.dataset.vfTex)];
-    marker.replaceWith(render(formula.tex, { display: formula.display }));
+    marker.replaceWith(renderFormula(formula.tex, formula.display));
   }
   target.replaceChildren(template.content);
 }

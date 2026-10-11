@@ -119,7 +119,7 @@ const TITLE_CHANGES: Record<string, string> = { b_r1n: '传到γ1和x0', b_r2n: 
 const REF_BROKEN = new Set(['b_r1sq', 'b_r2sq', 'b_fsq']);
 const LABEL_CHANGES: Record<string, string> = {
   qkrs: '$\\mathrm{ms}^{q},\\ r^{q},\\ \\mathrm{ms}^{k},\\ r^{k}$',
-  b_qkrs: '$\\partial\\mathrm{ms}^{q},\\ \\partial{\\mathbf{q}}^{2},\\ \\partial\\mathrm{ms}^{k},\\ \\partial{\\mathbf{k}}^{2}$',
+  b_qkrs: '$\\partial\\mathrm{ms}^{q},\\ \\partial\\mathbf{q}^{2},\\ \\partial\\mathrm{ms}^{k},\\ \\partial\\mathbf{k}^{2}$',
   b_qkah: '$\\partial r^{q},\\ \\partial\\mathbf{q},\\ \\partial r^{k},\\ \\partial\\mathbf{k}$',
   b_qkn: '$\\partial\\boldsymbol{\\gamma}_{q},\\ \\partial\\hat{\\mathbf{q}},\\ \\partial\\boldsymbol{\\gamma}_{k},\\ \\partial\\hat{\\mathbf{k}}$',
 };
@@ -175,6 +175,13 @@ function mathText(tex: string): string {
   }
   const text = mathml.replace(/<annotation[\s\S]*?<\/annotation>/g, '').replace(/<[^>]+>/g, '');
   return text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;/g, "'");
+}
+
+function flatHeads(text: string): string {
+  return text.replace(/\\left\[\\,([\s\S]*?)\\,\\right\]/g, (_m, inner: string) => {
+    const blocks = [...inner.matchAll(/\\begin\{pmatrix\}([\s\S]*?)\\end\{pmatrix\}_\{h=\d+\}/g)].map((b) => b[1].split('\\\\'));
+    return `\\begin{pmatrix}${blocks[0].map((_, r) => blocks.map((rows) => rows[r]).join('&')).join('\\\\')}\\end{pmatrix}`;
+  });
 }
 
 function visible(text: string): string {
@@ -263,14 +270,14 @@ describe('qwen3-dsl.yaml against the reference page', () => {
       }
       const [refTitle, refBody] = (want.d === 'f' ? ref.CF : ref.CB)[want.id]();
       expect(visible(title), `step ${i} ${want.id}`).toBe(TITLE_CHANGES[want.id] ?? visible(refTitle));
-      expect(visible(body), `step ${i} ${want.id}`).toBe(visible(refBody));
+      expect(visible(flatHeads(body)), `step ${i} ${want.id}`).toBe(visible(refBody));
     });
   });
 
   it('labels steps so that they read like the reference OPL, OPLB and MODF tables', () => {
     const expected = refSteps(ref);
     steps.list.forEach((info, i) => expect(visible(info.label), `step ${i} ${expected[i].id}: ${info.label}`).toBe(visible(LABEL_CHANGES[expected[i].id] ?? refLabel(ref, expected[i]))));
-    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '${\\mathbf{x}_0}^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
+    expect(steps.list.map((s) => s.label).slice(2, 8)).toEqual(['$\\mathbf{e}=E[x]$', '$\\mathbf{x}_0$', '$\\mathbf{x}_0^{2}$', '$\\mathrm{ms}_{1},\\ r_{1}$', '$\\hat{\\mathbf{x}}_{0}$', '$\\mathbf{n}_{1}$']);
     expect(steps.list.map((s) => s.kind).filter((k) => k !== 'op')).toEqual(['overview', 'inputs', 'module', 'module', 'overview']);
   });
 
@@ -360,7 +367,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
         const i = s.list.indexOf(info);
         const [title, body] = (info.dir === 'forward' ? ref.CF[`F_${key}`] : ref.CB[`B_${key}`])();
         expect(visible(s.text(i).title), `${id} ${info.dir}`).toBe(visible(title));
-        expect(visible(s.text(i).body), `${id} ${info.dir}`).toBe(visible(body));
+        expect(visible(flatHeads(s.text(i).body)), `${id} ${info.dir}`).toBe(visible(body));
       }
       s.dispose();
     }
