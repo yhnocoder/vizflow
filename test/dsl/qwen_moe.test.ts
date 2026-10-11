@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { CompiledPage } from '../../src/dsl';
+import { type CompiledPage, compilePage, type PageFile, parseYaml } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { loadExample } from './load';
@@ -56,5 +56,25 @@ describe.each(PAGES)('$page against transformers $model in float64', ({ page: fi
     expect(titles).toContain('top-$2$：选出 $K$ 个专家的编号');
     expect(titles).toContain('softmax：按行求和');
     expect(titles).toContain('列出每个专家的 (槽位, 位置)');
+  });
+});
+
+describe('SparseMoE with norm_topk_prob at its default', () => {
+  it('casts the top-k probabilities back to the logits dtype without normalising them', async () => {
+    const page = await compilePage(parseYaml(`
+title: t
+import: { SparseMoE: vizflow/nn/moe }
+dims: { d: 2 }
+inputs:
+  x: { value: [[0.3, -0.8], [1.1, 0.2], [-0.5, 0.9]] }
+body:
+  - mlp: { use: SparseMoE, params: { E: 3, K: 2, mf: 2 }, inputs: { x: x }, outputs: { out: y } }
+  - loss: sum(y)
+`, 'mem:/page.yaml') as PageFile);
+    expect(page.nodes.get('mlp.rw')).toBeUndefined();
+    expect(Array.from(page.nodes.get('mlp.topc')!.value.data)).toEqual(Array.from(page.nodes.get('mlp.top')!.value.data));
+    const titles = createSteps(page.graph, page.steps).list.map((s) => s.title);
+    expect(titles).toContain('路由权重转回分数的 dtype');
+    expect(titles).not.toContain('归一化成路由权重');
   });
 });

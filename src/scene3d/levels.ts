@@ -2,7 +2,7 @@ import type { Node } from '../autograd';
 import { explainOf } from '../explain';
 import { type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Vec3, labelBehind, rowCol, rowsCols } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Slab, type Vec3, labelBehind, rowCol, rowsCols } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -228,6 +228,8 @@ class Plan implements LevelPlan {
   private readonly tables = new Map<Node, Node>();
   private readonly rowGroups = new Map<Node, Node>();
   private readonly labelledGroups = new Set<Node>();
+  private readonly slabbed = new Map<Node, Node>();
+  private readonly groupWeights = new Map<Node, Node[]>();
   private readonly lanes: Lane[] = [];
   private readonly segments: { title: string; nodes: Node[]; params: boolean; nested: boolean }[] = [];
   private readonly stream: Lane;
@@ -311,7 +313,11 @@ class Plan implements LevelPlan {
     };
     for (const u of this.computed) {
       if (u.kind !== 'op' || u.op !== 'grouped_linear') continue;
-      const group = u.inputs[2];
+      const [, weight, group] = u.inputs;
+      if (isLeafLike(weight) && weight.shape.length === 3 && !this.slabbed.has(weight)) {
+        this.slabbed.set(weight, group);
+        this.groupWeights.set(group, [...(this.groupWeights.get(group) ?? []), weight]);
+      }
       mark(u, group);
       mark(u.inputs[0], group);
       this.labelledGroups.add(source(u.inputs[0]));
@@ -329,21 +335,53 @@ class Plan implements LevelPlan {
     }
   }
 
+  private bands(group: Node): { start: number[]; height: number[]; rows: number[] } {
+    const weights = this.groupWeights.get(group) ?? [];
+    const data = Array.from(group.value.data, Math.round);
+    const count = Math.max(0, ...weights.map((w) => w.shape[0]), ...data.map((g) => g + 1));
+    const span = Math.max(0, ...weights.map((w) => (w.shape[1] - 1) * TILE_ROW_DENSE));
+    const rows = Array.from({ length: count }, (_, g) => data.filter((v) => v === g).length);
+    const start: number[] = [];
+    const height: number[] = [];
+    let z = LEVEL_FRONT;
+    for (let g = 0; g < count; g++) {
+      start.push(z);
+      if (rows[g] === 0 && weights.length === 0) {
+        height.push(0);
+        continue;
+      }
+      height.push(Math.max((rows[g] - 1) * LEVEL_ROW, span));
+      z += height[g] + LEVEL_ROW + ROW_GROUP_GAP;
+    }
+    return { start, height, rows };
+  }
+
   private rowZs(n: Node, rows: number): number[] {
     const group = this.rowGroups.get(n);
-    let gaps = 0;
+    if (group === undefined) return Array.from({ length: rows }, (_, r) => zPlate(r));
+    const { start, height, rows: counts } = this.bands(group);
+    const seen = counts.map(() => 0);
     return Array.from({ length: rows }, (_, r) => {
-      if (group !== undefined && r > 0 && group.value.data[r] !== group.value.data[r - 1]) gaps++;
-      return zPlate(r) + gaps * ROW_GROUP_GAP;
+      const g = Math.round(group.value.data[r]);
+      return start[g] + (height[g] - (counts[g] - 1) * LEVEL_ROW) / 2 + seen[g]++ * LEVEL_ROW;
     });
+  }
+
+  private slabZ(weight: Node, g: number, row: number): number {
+    const { start, height } = this.bands(this.slabbed.get(weight)!);
+    return start[g] + (height[g] - (weight.shape[1] - 1) * TILE_ROW_DENSE) / 2 + row * TILE_ROW_DENSE;
   }
 
   private groupLabels(e: Entry, x: number, y: number, zs: number[]): Block['rowLabels'] {
     const group = this.rowGroups.get(e.node);
-    if (group === undefined || e.copy !== undefined || !this.labelledGroups.has(e.node) || e.rows !== group.shape[0]) return [];
-    const name = group.name.slice(group.name.lastIndexOf('.') + 1);
+    if (group === undefined || !this.hasGroupLabels(e)) return [];
     const data = group.value.data;
-    return zs.map((z, r) => ({ text: r === 0 || data[r] !== data[r - 1] ? `${name}=${Math.round(data[r])}` : '', col: r, x, y: y + ROW_NAME_LIFT, z, anchor: 'right' as const }));
+    return zs.map((z, r) => ({ text: r === 0 || data[r] !== data[r - 1] ? groupText(group, data[r]) : '', col: r, x, y: y + ROW_NAME_LIFT, z, anchor: 'left' as const }));
+  }
+
+  private hasGroupLabels(e: Entry): boolean {
+    const group = this.rowGroups.get(e.node);
+    return group !== undefined && e.copy === undefined && e.table === undefined && this.labelledGroups.has(e.node) && e.rows === group.shape[0];
   }
 
   private findCopies(): void {
@@ -369,6 +407,7 @@ class Plan implements LevelPlan {
   }
 
   private shapeOf(n: Node): [number, number] {
+    if (this.slabbed.has(n)) return [n.shape[1], n.shape[2]];
     if (n.shape.length === 0) return [1, 1];
     if (n.shape.length === 1) {
       const main = n.inputs[0];
@@ -585,7 +624,7 @@ class Plan implements LevelPlan {
       const width = Math.max(0, ...lane.members.flatMap((m) => m.offsets)) + 1;
       if (group > 0) for (let b = group; b < width; b += group) lane.breaks.add(b);
     }
-    for (const e of this.entries) if (e.xs === undefined && e.lane !== undefined) e.xs = e.offsets.map((o) => position(e.lane!, o));
+    for (const e of this.entries) if (e.xs === undefined && e.lane !== undefined) e.xs = this.slabbed.has(e.node) ? slabXs(e) : e.offsets.map((o) => position(e.lane!, o));
     for (const [e, main] of beside) e.xs = this.sideXs(e, main);
     for (const e of this.entries) if (e.xs === undefined && e.copy !== undefined) e.xs = this.entryOf.get(e.copy.node)!.xs;
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
@@ -961,6 +1000,25 @@ class Plan implements LevelPlan {
     };
   }
 
+  private slabsOf(e: Entry, elements: Element[], footprint: readonly [number, number], y: number): Slab[] | undefined {
+    const group = this.slabbed.get(e.node);
+    if (group === undefined) return undefined;
+    const used = new Set(Array.from(group.value.data, Math.round));
+    return Array.from({ length: e.node.shape[0] }, (_, g) => {
+      const members = elements.filter((el) => el.index[0] === g);
+      const xs = members.map((el) => el.x);
+      const zs = members.map((el) => el.z);
+      const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+      return { plate: { x: (x0 + x1) / 2, y, z: (z0 + z1) / 2, w: x1 - x0 + footprint[0] + PLATE_MARGIN, d: z1 - z0 + footprint[1] + PLATE_MARGIN }, used: used.has(g) };
+    });
+  }
+
+  private rowGroupsOf(e: Entry): number[] | undefined {
+    const group = this.rowGroups.get(e.node);
+    if (group === undefined || e.rows !== group.shape[0]) return undefined;
+    return Array.from(group.value.data, Math.round);
+  }
+
   private selectLabel(n: Node): Node | undefined {
     for (const u of this.consumers(n)) {
       const label = u.inputs.map(labelBehind).find((l) => l !== undefined);
@@ -973,6 +1031,7 @@ class Plan implements LevelPlan {
     if (e.kind === 'tile') return Array.from({ length: e.rows }, (_, r) => zTile(r, e.rows));
     if (e.kind === 'vector') return [zVector];
     if (e.kind === 'box') return [zPlate((this.rowsOf() - 1) / 2)];
+    if (this.slabbed.has(e.node)) return Array.from({ length: e.node.shape[0] * e.rows }, (_, i) => this.slabZ(e.node, Math.floor(i / e.rows), i % e.rows));
     return this.rowZs(e.node, e.rows);
   }
 
@@ -989,8 +1048,10 @@ class Plan implements LevelPlan {
     const size = n.value.size;
     for (let offset = 0; offset < size; offset++) {
       const index = indexOf(n.shape, offset);
-      const [row, col] = e.rows > 1 && e.cols === 1 ? [offset, 0] : n.shape.length >= 2 ? rowCol(n.shape, index) : [0, offset];
-      elements.push({ index, row, col, x: xs[Math.min(col, xs.length - 1)], y, z: zs[Math.min(row, zs.length - 1)] });
+      const slab = this.slabbed.has(n);
+      const [row, col] = slab ? [index[1], index[2]] : e.rows > 1 && e.cols === 1 ? [offset, 0] : n.shape.length >= 2 ? rowCol(n.shape, index) : [0, offset];
+      const z = slab ? this.slabZ(n, index[0], row) : zs[Math.min(row, zs.length - 1)];
+      elements.push({ index, row, col, x: xs[Math.min(col, xs.length - 1)], y, z });
     }
     const spacing = e.lane?.spacing ?? STREAM_SPACING;
     const footprint: [number, number] =
@@ -1000,9 +1061,11 @@ class Plan implements LevelPlan {
           ? DISC_FOOTPRINT
           : e.kind === 'box'
             ? BOX_FOOTPRINT
-            : e.lane?.stream === true
-              ? [STREAM_FOOTPRINT, STREAM_FOOTPRINT]
-              : [Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE), Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE)];
+            : this.slabbed.has(n)
+              ? [STREAM_FOOTPRINT, TILE_DEPTH_DENSE]
+              : e.lane?.stream === true
+                ? [STREAM_FOOTPRINT, STREAM_FOOTPRINT]
+                : [Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE), Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE)];
     const ex = elements.map((el) => el.x);
     const ez = elements.map((el) => el.z);
     const x0 = Math.min(...ex);
@@ -1014,19 +1077,22 @@ class Plan implements LevelPlan {
     let title: Anchor;
     if (e.kind === 'tile') title = { x: x0 + TITLE.board[0], y, z: Math.min(...zs) + TITLE.board[1], anchor: 'left' };
     else if (e.kind === 'vector') title = { x: x1 + TITLE.vector[0], y: y + TITLE.vector[1], z: zVector, anchor: 'right' };
-    else if (e.title === 'below') title = { x: (x0 + x1) / 2, y: y + TITLE.below[0], z: front + TITLE.below[1], anchor: 'below' };
+    else if (e.title === 'below' || (e.title === 'left' && this.hasGroupLabels(e))) title = { x: (x0 + x1) / 2, y: y + TITLE.below[0], z: front + TITLE.below[1], anchor: 'below' };
     else if (e.title === 'right') title = { x: x1 + TITLE.right[0], y: y + TITLE.right[1], z: front, anchor: 'right' };
     else title = { x: x0 + TITLE.left[0], y: y + TITLE.left[1], z: front, anchor: 'left' };
     const label = e.table === undefined ? undefined : e.table.inputs.find((i) => i.kind === 'label');
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
+    const slabs = this.slabsOf(e, elements, footprint, y);
+    const slabGroup = this.slabbed.get(n);
+    const slabLabels = slabGroup === undefined ? undefined : slabs!.map((slab, g) => ({ text: groupText(slabGroup, g), col: g, x: x1 + ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: slab.plate.z, anchor: 'right' as const }));
     const classLabels = (named ?? []).slice(0, e.cols).map((text, col) =>
       e.kind === 'tile'
         ? { text, col, x: xs[col], y: y + COLUMN_NAME_LIFT, z: Math.min(...zs) - COLUMN_NAME_BACK, anchor: 'above' as const }
         : { text, col, x: xs[col], y: y + COLUMN_NAME_PLATE_LIFT, z: Math.min(...zs) - COLUMN_NAME_PLATE_BACK, anchor: 'above' as const },
     );
     const rowTokens = label?.tokens;
-    const rowLabels = rowTokens === undefined ? this.groupLabels(e, x1 + ROW_NAME_SIDE, y, zs) : rowTokens.slice(0, e.rows).map((text, r) => ({ text, col: r, x: x0 - ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: zs[r], anchor: 'left' as const }));
+    const rowLabels = slabLabels !== undefined ? slabLabels : rowTokens === undefined ? this.groupLabels(e, x0 - ROW_NAME_SIDE, y, zs) : rowTokens.slice(0, e.rows).map((text, r) => ({ text, col: r, x: x0 - ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: zs[r], anchor: 'left' as const }));
     const framed = e.kind === 'plate' && aligned.has(n) && e.copy === undefined;
     return {
       node: n,
@@ -1043,6 +1109,8 @@ class Plan implements LevelPlan {
       elements,
       footprint,
       plate: scalar ? undefined : { x: (x0 + x1) / 2, y, z: (z0 + z1) / 2, w: x1 - x0 + footprint[0] + PLATE_MARGIN, d: z1 - z0 + footprint[1] + PLATE_MARGIN },
+      slabs,
+      rowGroups: this.rowGroupsOf(e),
       title,
       classLabels,
       rowLabels,
@@ -1056,6 +1124,15 @@ class Plan implements LevelPlan {
 }
 
 export const TILE_FRAME_PAD: [number, number] = [0.42, 0.3];
+
+function groupText(group: Node, value: number): string {
+  return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;
+}
+
+function slabXs(e: Entry): number[] {
+  const x0 = position(e.lane!, e.offsets[0]);
+  return e.offsets.map((_, i) => x0 + i * e.lane!.spacing);
+}
 
 function boardStart(op: Node): number {
   const head = (op.attrs as { index?: number }).index;

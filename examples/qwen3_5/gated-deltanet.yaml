@@ -14,6 +14,7 @@ params:
   K:  { type: dim }
   chunk: { type: dim, default: 64 }
   norm_act: { type: module, values: [SiLU, Sigmoid], default: SiLU }
+  norm_class: { type: text, default: Qwen3_5RMSNormGated }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -30,7 +31,7 @@ fold:
   label: '$\of{out}=\mathrm{linear\_attn}(\of{x})$'
   title: linear_attn（已折叠）
   text: |
-    投影、短卷积、gated delta rule、门控 RMSNorm 和 out_proj 都收进了盒子，对应 HF 里 <code>self.linear_attn(hidden_states)</code> 这一次调用。位置 $t$ 的输出只依赖 $s\le t$ 的输入，和 softmax 注意力一样是块下三角，但每一步只需要一个固定大小的状态。
+    投影、短卷积、gated delta rule、门控 RMSNorm 和 out_proj 都收进了盒子，对应 HF 里 <code>hidden_states = self.linear_attn(</code> 这一次调用。位置 $t$ 的输出只依赖 $s\le t$ 的输入，和 softmax 注意力一样是块下三角，但每一步只需要一个固定大小的状态。
     $$\of{out}={{ out | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\of{x}$'
@@ -76,13 +77,13 @@ body:
   - chunk_gated_delta_rule:
       use: GatedDeltaRuleChunk
       inline: true
-      params: { chunk: chunk }
+      params: { chunk: chunk, use_qk_l2norm_in_kernel: true }
       inputs: { q: qr, k: kr, v: v, g: g, beta: beta }
       outputs: { o: core }
       tex: { o: '\mathbf{o}' }
   - norm:
       use: GatedRMSNorm
-      subtitle: Qwen3_5RMSNormGated
+      subtitle: \of{norm_class}
       suffix: o
       params: { act: norm_act }
       inputs: { x: core, gate: z }
@@ -143,7 +144,7 @@ steps:
     label: '$\of{conv}$'
     title: 因果短卷积
     text: |
-      q、k、v 三段在进入 gated delta rule 之前先过一个深度卷积：每个通道 $c$ 有自己的 $\of{K}$ 个系数，输出 $c_{t,c}=\sum_{j}W_{c,j}\,u_{t-\of{K}+1+j,\,c}$，只看当前和之前的 $\of{K}-1$ 个位置。HF 的 <code>causal_conv1d_fn</code> 先把 $\mathbf{u}$ 转成 $(B, C, T)$，用 <code>F.conv1d(..., padding=K-1, groups=C)</code> 在两端各补 $\of{K}-1$ 个 0，再用 <code>[..., :seq_len]</code> 只留前 $T$ 个输出，结果是只在左边补了 $\of{K}-1$ 个 0，最后转回 $(B, T, C)$。图里的 <code>causal_conv1d</code> 直接按 $(T, C)$ 算，数值相同。连线只在同一列之内。
+      q、k、v 三段在进入 gated delta rule 之前先过一个深度卷积：每个通道 $c$ 有自己的 $\of{K}$ 个系数，输出 $c_{t,c}=\sum_{j}W_{c,j}\,u_{t-\of{K}+1+j,\,c}$，只看当前和之前的 $\of{K}-1$ 个位置。HF 的 <code>causal_conv1d_fn</code> 先把 $\mathbf{u}$ 转成 $(B, C, T)$，用 <code>F.conv1d</code>，参数 <code>padding=padding</code>（<code>padding = weight.shape[-1] - 1</code>）和 <code>groups=hidden_size</code>，在两端各补 $\of{K}-1$ 个 0，再用 <code>)[:, :, :seq_len]</code> 只留前 $T$ 个输出，结果是只在左边补了 $\of{K}-1$ 个 0，最后转回 $(B, T, C)$。图里的 <code>causal_conv1d</code> 直接按 $(T, C)$ 算，数值相同。连线只在同一列之内。
       $$\mathbf{c}={{ conv | matrix:2 }}$$
     backward:
       label: '$\partial W_{\mathrm{conv}},\ \partial\mathbf{u}$'
@@ -215,7 +216,7 @@ steps:
     label: '$\mathrm{repeat\_interleave}$'
     title: 把 key head 复制给 value head
     text: |
-      value head 比 key head 多：$H_v/H_k=\of{Hv//Hk}$。<code>repeat_interleave</code> 把每个 key head 的 q 和 k 连续复制 $\of{Hv//Hk}$ 份，第 $j$ 个 value head 用第 $\lfloor j/\of{Hv//Hk}\rfloor$ 个 key head。这和 GQA 里 kv head 少于 query head 的做法方向相反：这里是 value 多、key 少。之后调用 <code>torch_chunk_gated_delta_rule(query, key, value, g=g, beta=beta, initial_state=None, output_final_state=False, use_qk_l2norm_in_kernel=True)</code>；只有带缓存、一次一个 token 的 decode 才调用逐个位置递推的 <code>torch_recurrent_gated_delta_rule</code>。
+      value head 比 key head 多：$H_v/H_k=\of{Hv//Hk}$。<code>repeat_interleave</code> 把每个 key head 的 q 和 k 连续复制 $\of{Hv//Hk}$ 份，第 $j$ 个 value head 用第 $\lfloor j/\of{Hv//Hk}\rfloor$ 个 key head。这和 GQA 里 kv head 少于 query head 的做法方向相反：这里是 value 多、key 少。之后调用 <code>core_attn_out, last_recurrent_state = torch_chunk_gated_delta_rule(</code>，参数是 <code>g=g</code>、<code>beta=beta</code>、<code>initial_state=recurrent_state</code>、<code>output_final_state=cache_params is not None</code>、<code>use_qk_l2norm_in_kernel=True</code>；没有缓存时 <code>recurrent_state</code> 是 None，<code>output_final_state</code> 是 False；只有带缓存、一次一个 token 的 decode 才调用逐个位置递推的 <code>torch_recurrent_gated_delta_rule</code>。
       $$\mathrm{rep}(\mathbf{k})={{ kr | matrix:2 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\of{k}$'

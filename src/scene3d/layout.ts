@@ -100,6 +100,11 @@ export interface Plate {
   d: number;
 }
 
+export interface Slab {
+  plate: Plate;
+  used: boolean;
+}
+
 export interface Anchor {
   x: number;
   y: number;
@@ -122,6 +127,8 @@ export interface Block {
   elements: Element[];
   footprint: readonly [number, number];
   plate?: Plate;
+  slabs?: Slab[];
+  rowGroups?: number[];
   axis?: { x: number; z: number };
   title: Anchor;
   classLabels: TextLabel[];

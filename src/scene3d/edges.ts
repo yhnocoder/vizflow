@@ -92,8 +92,10 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
   const frontZ = new Map<Block, number>();
   const frontOf = (block: Block) => frontZ.get(block) ?? frontZ.set(block, Math.max(...block.elements.map((e) => e.z))).get(block)!;
+  const isFrontRow = (block: Block, element: Element) =>
+    block.rowGroups === undefined ? element.z >= frontOf(block) - SAME_LEVEL : block.rowGroups[element.row + 1] !== block.rowGroups[element.row];
   const isBackRow = (op: Node, fromIndex: number[], toIndex: number[], block: Block, element: Element) =>
-    c.frontRowOnly && !crossRow.has(op) && fromIndex.length > 1 && toIndex.length > 1 && element.z < frontOf(block) - SAME_LEVEL;
+    c.frontRowOnly && !crossRow.has(op) && fromIndex.length > 1 && toIndex.length > 1 && !isFrontRow(block, element);
   for (const edge of c.explainer.edges()) {
     if ('cell' in edge.from || 'cell' in edge.to) {
       const board = c.boards.find((b) => b.op === edge.op);

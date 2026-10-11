@@ -203,7 +203,7 @@ function compileItem(
     if (scope.local(name) !== undefined || scope.groups.has(name)) fail(valueWhere, `name '${name}' is already defined`);
     scope.groups.add(name);
     const group: LayoutTree = { kind: 'module', title: titleOf(c, value, braceTitle, valueEnv), children: [] };
-    if (typeof value.subtitle === 'string') group.subtitle = value.subtitle;
+    if (typeof value.subtitle === 'string') group.subtitle = c.ofText(value.subtitle, { ...valueEnv, where: child(valueWhere, value, 'subtitle') });
     entries.push(group);
     const rec = openModule(c, join(scope.path, name), group.title as string, group.subtitle, value, valueEnv);
     const groupSlots = compileItems(c, scope, value.body, { ...valueEnv, where: child(valueWhere, value, 'body') }, group.children, counts, ordinals);

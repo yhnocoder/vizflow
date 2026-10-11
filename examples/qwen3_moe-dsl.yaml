@@ -85,7 +85,7 @@ modules:
       - mlp:
           use: SparseMoE
           subtitle: Qwen3MoeSparseMoeBlock
-          params: { E: Ne, K: K, mf: mf }
+          params: { E: Ne, K: K, mf: mf, norm_topk_prob: true }
           inputs: { x: n }
           outputs: { out: moe }
           steps:
@@ -96,6 +96,9 @@ modules:
             topk:
               append: |
                 Qwen3-30B-A3B 里是 128 选 8。
+            topsum:
+              append: |
+                <code>Qwen3MoeTopKRouter</code> 写的是 <code>if self.norm_topk_prob:</code>。<code>Qwen3MoeConfig</code> 里 norm_topk_prob 的默认值是 False，Qwen3-30B-A3B 的配置文件写的是 true，所以条件成立，这一页传 true。
             normalize:
               append: |
                 这一页的模型 dtype 是 bf16，所以路由权重转回 bf16。

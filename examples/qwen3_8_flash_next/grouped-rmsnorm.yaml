@@ -27,7 +27,7 @@ steps:
     label: '$\of{xg}$'
     title: \of{name}：转成 float32，按组 reshape
     text: |
-      \of{intro}<code>x.float().reshape(*x.shape[:-1], -1, group_size)</code>：输入先转成 float32，最后一维 $n=\of{n}$ 切成 $\of{n//g}$ 组，每组 $g=\of{g}$ 个数，也就是每个残差流一组。之后的均方根在每一组里单独计算，各组互不影响。
+      \of{intro}<code>output = self._norm(x.float())</code>：输入先转成 float32。<code>_norm</code> 里先 <code>x = x.reshape(*x.shape[:-1], -1, self.group_size)</code>，最后一维 $n=\of{n}$ 切成 $\of{n//g}$ 组，每组 $g=\of{g}$ 个数，也就是每个残差流一组。之后的均方根在每一组里单独计算，各组互不影响。
       $$\of{xg}={{ xg | matrix:2 }}$$
     backward:
       label: '$\partial\of{x}$'
@@ -109,7 +109,7 @@ steps:
     label: '$\of{out}$'
     title: 乘上 $1+\of{weight}$
     text: |
-      <code>output * (1.0 + self.weight.float())</code>，再 <code>type_as(x)</code> 转回输入的 dtype。权重长 $\of{n}$，每一组有自己的 $\of{g}$ 个系数；权重初值是 0，乘的是 $1+\of{weight}$。
+      <code>output * (1.0 + self.weight.float())</code>，再 <code>return output.type_as(x)</code> 转回输入的 dtype。权重长 $\of{n}$，每一组有自己的 $\of{g}$ 个系数；权重初值是 0，乘的是 $1+\of{weight}$。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{weight},\ \partial\of{flat}$'

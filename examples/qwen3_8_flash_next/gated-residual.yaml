@@ -58,7 +58,7 @@ steps:
     label: '$\of{beta}=2\sigma(\mathbf{v})$'
     title: 乘 2 得到写回系数 $\boldsymbol{\beta}$
     text: |
-      <code>2 * torch.sigmoid(...)</code>：$\boldsymbol{\beta}$ 在 0 和 2 之间，初始化附近约为 1，相当于普通残差的「直接加上」。这一步之后 GatedResidual 返回 <code>(mixed_input, hyper_input, injection_weights)</code>，其中 <code>hyper_input</code> 是没有归一化的 $H$ 本身。
+      <code>injection_weights = 2 * torch.sigmoid(self.block_inject_weight(hyper_input_normed) / self.hc_count)</code>：$\boldsymbol{\beta}$ 在 0 和 2 之间，初始化附近约为 1，相当于普通残差的「直接加上」。这一步之后 GatedResidual 执行 <code>return mixed_input, hyper_input, injection_weights</code>，其中 <code>hyper_input</code> 是没有归一化的 $H$ 本身。
       $$\boldsymbol{\beta}={{ beta | matrix:3 }}$$
     backward:
       label: '$\partial\sigma(\mathbf{v})$'
