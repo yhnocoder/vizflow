@@ -305,13 +305,16 @@ function chip(text: string): HTMLButtonElement {
 }
 
 function ropeKind(node: Node): string | undefined {
-  if (node.shape.length !== 2) return undefined;
-  const [T, dh] = node.shape;
+  const shape = node.shape;
+  if (shape.length < 2 || shape.slice(1, -1).some((size) => size !== 1)) return undefined;
+  const T = shape[0];
+  const dh = shape[shape.length - 1];
+  const at = (t: number, c: number) => node.value.get([t, ...shape.slice(1, -1).map(() => 0), c]);
   return Object.keys(WAVE_INVERSE).find((kind) => {
-    if (checkFigure('rope_wave', node.shape, [kind]) !== undefined) return false;
+    if (checkFigure('rope_wave', shape, [kind]) !== undefined) return false;
     const f = kind === 'cos' ? Math.cos : Math.sin;
-    const omegas = Array.from({ length: dh }, (_, c) => WAVE_INVERSE[kind](node.value.get([1, c])));
-    for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) if (Math.abs(node.value.get([t, c]) - f(t * omegas[c])) > ROPE_TOLERANCE) return false;
+    const omegas = Array.from({ length: dh }, (_, c) => WAVE_INVERSE[kind](at(1, c)));
+    for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) if (Math.abs(at(t, c) - f(t * omegas[c])) > ROPE_TOLERANCE) return false;
     return true;
   });
 }
