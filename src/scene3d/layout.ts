@@ -20,6 +20,7 @@ export interface StackOptions extends TemplateOptions {
   level?: number;
   back?: number;
   offsets?: Record<string, Vec3>;
+  scalars?: 'rise' | 'row';
 }
 
 export type LayoutItem =
@@ -60,6 +61,7 @@ export const STACK_BACK_OFFSET = 0.7;
 export const SIDE_NODE_OFFSET = 2.6;
 export const SELECT_NODE_RISE = 2.6;
 export const SCALAR_NODE_RISE = 0.7;
+export const SCALAR_ROW_GAP = 3.0;
 export const LINE_HEIGHT = 0.03;
 export const PLATE_THICKNESS = 0.04;
 export const AXIS_OFFSET = 2.0;
@@ -336,11 +338,12 @@ interface StackCursor {
   zs: number[];
   rowXs?: number[];
   spanXs?: number[];
+  row?: boolean;
 }
 
 function shiftCursor(cursor: StackCursor, [dx, dy, dz]: Vec3): StackCursor {
   const add = (values: number[] | undefined, d: number) => values?.map((v) => v + d);
-  return { y: cursor.y + dy, xs: add(cursor.xs, dx)!, zs: add(cursor.zs, dz)!, rowXs: add(cursor.rowXs, dx), spanXs: add(cursor.spanXs, dx) };
+  return { y: cursor.y + dy, xs: add(cursor.xs, dx)!, zs: add(cursor.zs, dz)!, rowXs: add(cursor.rowXs, dx), spanXs: add(cursor.spanXs, dx), row: cursor.row };
 }
 
 interface Layer {
@@ -463,7 +466,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       const y = layer.y + level / 2;
       const zs = layer.zs.map((z) => z - back / 2);
       block = scalarBlock(n, 'disc', (r) => [x, y, zs[Math.min(r, layer.rows - 1)]], options);
-      last = { y, xs: [x], zs };
+      last = { y, xs: [x], zs, row: true };
     } else if (source !== undefined && source.cols > 1 && pattern === 'select') {
       const layer = layerOf(source);
       const label = ctx.aligned.get(source.node);
@@ -479,15 +482,16 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       last = { y, xs: [(layer.xs[0] + layer.xs[layer.cols - 1]) / 2], zs: block.elements.map((e) => e.z), rowXs: block.elements.map((e) => e.x), spanXs: layer.xs };
     } else {
       const base = last ?? { y: ay, xs: [ax], zs: [az] };
-      const y = base.y + SCALAR_NODE_RISE * s;
-      const center = (base.xs[0] + base.xs[base.xs.length - 1]) / 2;
+      const row = options.scalars === 'row' && base.row === true;
+      const y = row ? base.y : base.y + SCALAR_NODE_RISE * s;
+      const center = (base.xs[0] + base.xs[base.xs.length - 1]) / 2 + (row ? SCALAR_ROW_GAP * s : 0);
       const rowXs = base.rowXs !== undefined && rows === base.rowXs.length ? base.rowXs : undefined;
       const xOf = (r: number) => rowXs?.[r] ?? center;
       const zOf = (r: number) => (rows === base.zs.length ? base.zs[r] : (base.zs[0] + base.zs[base.zs.length - 1]) / 2);
       const spanXs = rowXs === undefined ? undefined : base.spanXs;
       const extent = (spanXs ?? []).map((x): Vec3 => [x, y, zOf(0)]);
       block = scalarBlock(n, isLoss(n) ? 'box' : 'disc', (r) => [xOf(r), y, zOf(r)], options, extent, base.zs.length > 1 ? 'left' : 'right');
-      last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs };
+      last = { y, xs: [center], zs: block.elements.map((e) => e.z), rowXs, spanXs, row };
     }
     const offset = options.offsets?.[n.name];
     if (offset !== undefined) {

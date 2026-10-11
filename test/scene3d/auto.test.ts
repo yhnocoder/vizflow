@@ -3,7 +3,7 @@ import type { Node } from '../../src/autograd';
 import { graph } from '../../src/core';
 import '../../src/explain';
 import { AUTO_LEVEL, AUTO_SIDE_GAP, type LayoutEntry, type LayoutTree, autoLayout } from '../../src/scene3d/auto';
-import { type Block, classAlignment, resolveLayout, targetColumn } from '../../src/scene3d/layout';
+import { type Block, SCALAR_ROW_GAP, classAlignment, resolveLayout, targetColumn } from '../../src/scene3d/layout';
 import { blockSpan } from '../../src/scene3d/modules';
 
 const leaf = (node: Node): LayoutEntry => ({ kind: 'node', node });
@@ -162,12 +162,24 @@ describe('autoLayout', () => {
     const t = model();
     const { of } = resolve(t.g, t.root);
     const [b1, b2] = t.branches;
-    const lane = (b: typeof b1) => [b.qn.out, b.S, b.P, b.o].map((n) => box(of(n)));
+    const lane = (b: typeof b1) => [...b.qn.parts, b.qn.out, b.S, b.P, b.o].map((n) => box(of(n)));
     const right1 = Math.max(...lane(b1).map((b) => Math.max(b.x1, b.px1)));
     const left2 = Math.min(...lane(b2).map((b) => Math.min(b.x0, b.px0)));
     expect(right1).toBeLessThan(left2);
     expect(baseY(of(b1.S))).toBeCloseTo(baseY(of(b2.S)), 9);
     expect(baseY(of(t.o)) - baseY(of(b1.o))).toBeCloseTo(AUTO_LEVEL, 9);
+  });
+
+  it('lays each norm scalar chain out in a row beside its plate', () => {
+    const t = model();
+    const { of } = resolve(t.g, t.root);
+    for (const parts of [t.n1.parts, ...t.branches.map((b) => b.qn.parts)]) {
+      const [ms, shifted, r] = parts.slice(1, 4).map((n) => of(n));
+      expect(ys(shifted)).toEqual(ys(ms));
+      expect(ys(r)).toEqual(ys(ms));
+      expect(xs(shifted)[0] - xs(ms)[0]).toBeCloseTo(SCALAR_ROW_GAP, 9);
+      expect(xs(r)[0] - xs(shifted)[0]).toBeCloseTo(SCALAR_ROW_GAP, 9);
+    }
   });
 
   it('puts one-dimensional weights and buffers on a side lane at the height of their first user', () => {

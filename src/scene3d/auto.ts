@@ -8,6 +8,7 @@ import {
   DISC_RADIUS,
   type LayoutItem,
   PLATE_SIDE_MARGIN,
+  SCALAR_ROW_GAP,
   SIDE_NODE_OFFSET,
   board,
   rowsCols,
@@ -61,7 +62,7 @@ const colsOf = (n: Node) => rowsCols(n.shape)[1];
 const halfSpan = (cols: number) => ((cols - 1) / 2) * BOARD_COLUMN_SPACING;
 const leftReach = (cols: number) => halfSpan(cols) + AXIS_OFFSET + AUTO_LABEL_ROOM;
 const rightReach = (cols: number) => halfSpan(cols) + PLATE_SIDE_MARGIN;
-const flow = (at: [number, number, number]) => ({ at, level: AUTO_LEVEL, back: 0 });
+const flow = (at: [number, number, number]) => ({ at, level: AUTO_LEVEL, back: 0, scalars: 'row' as const });
 
 function treeNodes(entries: readonly LayoutEntry[]): Node[] {
   return entries.flatMap((entry) => {
@@ -115,15 +116,19 @@ export function autoLayout(tree: LayoutTree): { layout: LayoutItem[]; modules: S
     const center = anchored ? (sink.centers.get(cursor.anchor!) ?? x) : x;
     const nodes = anchored ? [cursor.anchor!, ...run] : run;
     sink.items.push(stack(...nodes, flow([x, (cursor.level + 1) * AUTO_LEVEL, 0])));
+    let rowIndex = 0;
     for (const n of run) {
       const cols = colsOf(n);
       if (cols > 1) {
         cursor.level++;
         cursor.anchor = n;
+        rowIndex = 0;
         sink.spans.push({ level: cursor.level, left: center - leftReach(cols), right: center + rightReach(cols) });
       } else {
         const host = cursor.anchor === undefined ? 1 : colsOf(cursor.anchor);
-        sink.spans.push({ level: cursor.level, left: center - leftReach(host), right: center + halfSpan(host) + SIDE_NODE_OFFSET + DISC_RADIUS + AUTO_LABEL_ROOM });
+        const right = center + halfSpan(host) + SIDE_NODE_OFFSET + rowIndex * SCALAR_ROW_GAP + DISC_RADIUS + AUTO_LABEL_ROOM;
+        sink.spans.push({ level: cursor.level, left: center - leftReach(host), right });
+        rowIndex++;
       }
       sink.place(n, cursor.level, center);
     }

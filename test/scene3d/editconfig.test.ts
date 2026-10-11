@@ -92,7 +92,7 @@ describe('layoutCode', () => {
     const { g, h, W, z, L, logp, loss } = build();
     const layout = editableLayout([
       board(h, W.T, z, { scales: { h: { forward: 0.45 }, 'W.T': { forward: 0.6, backward: 0.8 } } }),
-      stack(z, L, logp, { level: 3.9 }),
+      stack(z, L, logp, { level: 3.9, scalars: 'row' }),
       node(loss, { at: [0, 12, 0] }),
     ]);
     writePosition(moveTarget(layout, h, g.nodes)!, h, [0.5, 0, -1]);
@@ -105,7 +105,7 @@ describe('layoutCode', () => {
       [
         'layout: [',
         "  board(g.node('h'), g.node('W.T'), g.node('z'), { scales: { h: { forward: 0.45 }, 'W.T': { forward: 0.6, backward: 0.8 } }, at: [0.5, 0, -1], gap: 1.2 }),",
-        "  stack(g.node('z'), g.node('LSE'), g.node('log p'), { level: 3.9, offsets: { 'log p': [1, 0, -0.5] } }),",
+        "  stack(g.node('z'), g.node('LSE'), g.node('log p'), { level: 3.9, scalars: 'row', offsets: { 'log p': [1, 0, -0.5] } }),",
         "  node(g.node('loss'), { at: [0, 12, 0] }),",
         '],',
         'camera: { direction: [0.5, 0.8, 1], polar: [0.3, 1.45] },',

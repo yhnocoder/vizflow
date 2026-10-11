@@ -6,6 +6,7 @@ import {
   BATCH_ROW_SPACING,
   BOARD_COLUMN_SPACING,
   SCALAR_NODE_RISE,
+  SCALAR_ROW_GAP,
   SELECT_NODE_RISE,
   SIDE_NODE_OFFSET,
   STACK_BACK_OFFSET,
@@ -205,6 +206,48 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'u').elements[0].z).toBeCloseTo(0.9, 12);
     expect(blockOf(blocks, 'S').elements[0].z).toBeCloseTo(0.05, 12);
     expect(blockOf(blocks, 'p').elements[0].z).toBeCloseTo(-0.8, 12);
+  });
+
+  it('lays the scalars after a side scalar out in a row when scalars is row', () => {
+    const g = graph({ dims: { d: 3 } });
+    const x = g.input('x', [2, 'd'], [
+      [1, 2, 3],
+      [3, 1, 2],
+    ]);
+    const ms = g.mean(x, -1, { keepdim: true, name: 'ms' });
+    const shifted = g.add(ms, 1e-6, { name: 'ms+ε' });
+    const r = g.rsqrt(shifted, { name: 'r' });
+    const hat = g.mul(x, r, { name: 'x̂' });
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const rise = resolveLayout([stack(x, ms, shifted, r, hat, { scale: 2 })], ctx).blocks;
+    expect(blockOf(rise, 'ms+ε').elements[0].y - blockOf(rise, 'ms').elements[0].y).toBeCloseTo(2 * SCALAR_NODE_RISE, 12);
+    expect(blockOf(rise, 'r').elements[0].x).toBe(blockOf(rise, 'ms').elements[0].x);
+    const row = resolveLayout([stack(x, ms, shifted, r, hat, { scalars: 'row', scale: 2 })], ctx).blocks;
+    const first = blockOf(row, 'ms').elements;
+    expect(first[0].x).toBeCloseTo(2 * (BOARD_COLUMN_SPACING + SIDE_NODE_OFFSET), 12);
+    ['ms+ε', 'r'].forEach((name, i) => {
+      const elements = blockOf(row, name).elements;
+      expect(elements.map((e) => e.y)).toEqual(first.map((e) => e.y));
+      expect(elements.map((e) => e.z)).toEqual(first.map((e) => e.z));
+      for (const e of elements) expect(e.x).toBeCloseTo(first[0].x + 2 * (i + 1) * SCALAR_ROW_GAP, 12);
+    });
+    expect(blockOf(row, 'x̂').elements.map((e) => e.y)).toEqual(blockOf(rise, 'x̂').elements.map((e) => e.y));
+  });
+
+  it('keeps select chains rising when scalars is row', () => {
+    const g = graph({ dims: { V: 3 } });
+    const x = g.input('x', ['V'], [1, 2, 3]);
+    const t = g.label('t', [0], { tokens: ['a', 'b', 'c'] });
+    const p = g.softmax(x, -1, { name: 'p' });
+    const y = g.gather(p, 0, t, { name: 'y' });
+    const logy = g.log(y, { name: 'log y' });
+    const l = g.neg(logy, { name: 'loss' });
+    const ctx = { visible: g.nodes, aligned: classAlignment(g.nodes), targetOf: targetColumn, focus: 0 };
+    const position = (scalars: 'rise' | 'row') => {
+      const { blocks } = resolveLayout([stack(x, p, y, logy, l, { scalars })], ctx);
+      return ['y', 'log y', 'loss'].map((name) => blockOf(blocks, name).elements.map((e) => [e.x, e.y, e.z]));
+    };
+    expect(position('row')).toEqual(position('rise'));
   });
 
   it('keeps each batch row of a select chain on its own target column and centers the collapsed loss', () => {

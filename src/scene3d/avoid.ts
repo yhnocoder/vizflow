@@ -40,13 +40,6 @@ function inside(box: Box, bounds: Box | undefined): boolean {
   return bounds === undefined || (box.x >= bounds.x && box.y >= bounds.y && box.x + box.w <= bounds.x + bounds.w && box.y + box.h <= bounds.y + bounds.h);
 }
 
-function clamped(box: Box, bounds: Box | undefined): [number, number] {
-  if (bounds === undefined) return [0, 0];
-  const x = Math.max(bounds.x, Math.min(box.x, bounds.x + bounds.w - box.w));
-  const y = Math.max(bounds.y, Math.min(box.y, bounds.y + bounds.h - box.h));
-  return [x - box.x, y - box.y];
-}
-
 export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
   const order = items.map((_, i) => i).sort((a, b) => items[b].priority - items[a].priority || a - b);
   const placed: { box: Box }[] = [];
@@ -66,7 +59,11 @@ export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
           }
         }
       }
-      const [dx, dy] = found ?? clamped(item.box, bounds);
+      if (found === undefined) {
+        result[i].hidden = true;
+        continue;
+      }
+      const [dx, dy] = found;
       result[i] = { dx, dy, hidden: false };
       placed.push({ box: shifted(item.box, dx, dy) });
     } else if (item.hideOnOverlap) {

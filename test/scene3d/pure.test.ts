@@ -157,10 +157,28 @@ describe('label avoidance', () => {
     expect(result[3].hidden).toBe(false);
   });
 
-  it('leaves a movable label in place when no offset is free', () => {
+  it('hides a movable label when no offset is free and leaves its spot to later labels', () => {
     const result = avoidOverlaps([
       { box: box(-200, -200, 400, 400), movable: false, hideOnOverlap: false, priority: 4 },
       { box: box(0, 0), movable: true, hideOnOverlap: false, priority: 3 },
+      { box: box(300, 0), movable: true, hideOnOverlap: false, priority: 2 },
+      { box: box(305, 5), movable: true, hideOnOverlap: false, priority: 1 },
+    ]);
+    expect(result[1].hidden).toBe(true);
+    expect(result[2]).toEqual({ dx: 0, dy: 0, hidden: false });
+    expect(result[3].hidden).toBe(false);
+    const ghost = avoidOverlaps([
+      { box: box(300, -40), movable: true, hideOnOverlap: false, priority: 3 },
+      { box: box(60, 0), movable: false, hideOnOverlap: true, priority: 1 },
+    ], box(0, 0, 100, 100));
+    expect(ghost[0].hidden).toBe(true);
+    expect(ghost[1].hidden).toBe(false);
+  });
+
+  it('keeps a label with a user offset visible where it overlaps', () => {
+    const result = avoidOverlaps([
+      { box: box(0, 0), movable: true, hideOnOverlap: false, priority: 3 },
+      { box: box(5, 5), movable: false, hideOnOverlap: false, priority: 1 },
     ]);
     expect(result[1]).toEqual({ dx: 0, dy: 0, hidden: false });
   });
@@ -178,9 +196,9 @@ describe('label avoidance', () => {
     expect(result[2].hidden).toBe(false);
   });
 
-  it('clamps a movable label into the bounds when no free offset exists', () => {
+  it('hides a movable label that cannot be moved into the bounds', () => {
     const result = avoidOverlaps([{ box: box(300, -40), movable: true, hideOnOverlap: false, priority: 3 }], box(0, 0, 100, 100));
-    expect(result[0]).toEqual({ dx: -240, dy: 40, hidden: false });
+    expect(result[0].hidden).toBe(true);
   });
 });
 
