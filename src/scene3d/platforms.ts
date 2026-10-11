@@ -357,10 +357,12 @@ export class PlatformLayer {
     this.slots.forEach((slot, i) => {
       const shift = arrangement.shifts[i];
       if (slot.kind !== 'rank' || shift === undefined) return;
+      const rowStart = i === 0 || slotNode(this.topology, this.slots[i - 1]) !== slot.device.node;
       for (const block of blocks) {
         const key = i === 0 ? block.key : `p${slot.rank}/${block.key ?? `n${block.node.id}`}`;
         const copy = shiftBlock(block, shift, slot.rank, key);
         if (!drawn(block)) copy.hidden = true;
+        if (!rowStart) copy.untitled = true;
         out.push(copy);
       }
     });
