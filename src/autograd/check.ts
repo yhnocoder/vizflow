@@ -1,5 +1,6 @@
 import { Tensor, formatShape, indexOf } from '../tensor';
 import type { AnyOpDef, OpDef } from './op';
+import { inputDifferentiable, inputName } from './registry';
 
 export const CHECK_EPSILON = 1e-6;
 export const CHECK_ABS_TOLERANCE = 1e-6;
@@ -37,8 +38,8 @@ export function checkOpNamed<A extends object>(
   const base = dot(upstream, out);
   const where = nodeName === undefined ? '' : ` (node '${nodeName}')`;
   inputs.forEach((input, arg) => {
-    if (def.differentiable && !def.differentiable[arg]) return;
-    const what = `op '${def.name}'${where}, input ${arg} '${def.list === undefined ? def.tensors[arg] : `${def.list}[${arg}]`}'`;
+    if (!inputDifferentiable(def, arg)) return;
+    const what = `op '${def.name}'${where}, input ${arg} '${inputName(def, arg)}'`;
     const grad = grads[arg];
     if (grad === null || grad === undefined) {
       throw new Error(`gradient check failed: ${what} has no gradient`);

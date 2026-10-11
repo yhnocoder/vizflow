@@ -24,11 +24,42 @@ import {
   subOp,
   transposeOp,
   whereOp,
+  greaterOp,
+  maskedFillOp,
+  triuOp,
+  remainderOp,
+  bitwiseXorOp,
+  bitwiseAndOp,
+  eqOp,
+  geOp,
+  absOp,
+  signOp,
+  clampMinOp,
 } from './elementwise';
-import { catOp, causalConv1dOp, embeddingOp, gatherOp, narrowOp, repeatInterleaveOp, selectOp, topkMaskOp, viewOp } from './index_ops';
+import {
+  catOp,
+  causalConv1dOp,
+  cummaxOp,
+  embeddingOp,
+  gatherOp,
+  indexAddOp,
+  indexOp,
+  narrowOp,
+  nonzeroStaticOp,
+  oneHotOp,
+  padOp,
+  permuteOp,
+  repeatInterleaveOp,
+  repeatOp,
+  selectOp,
+  topkIndicesOp,
+  topkMaskOp,
+  unsqueezeOp,
+  viewOp,
+} from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { matmulOp, selectMatmulOp } from './matmul';
-import { type Dim, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
+import { groupedLinearOp, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
+import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
 export type { Dim, Reduction };
@@ -50,9 +81,27 @@ export interface RsqrtOptions extends OpOptions {
   eps?: number;
 }
 
+export interface ConvOptions extends OpOptions {
+  dilation?: number | string;
+}
+
 export interface CatOptions extends OpOptions {
   dim?: number;
   pieces?: number | string | null;
+}
+
+export interface NonzeroStaticOptions extends OpOptions {
+  size?: number | string;
+  fill_value?: number;
+}
+
+export interface SolveTriangularOptions extends OpOptions {
+  upper?: boolean;
+  unitriangular?: boolean;
+}
+
+export interface TriuOptions extends OpOptions {
+  diagonal?: number;
 }
 
 export interface BuiltinOps {
@@ -93,9 +142,37 @@ export interface BuiltinOps {
   select(input: Node, dim: number, index: number, options?: OpOptions): Node;
   select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
-  causal_conv1d(input: Node, weight: Node, options?: OpOptions): Node;
+  causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
+  remainder(input: Node, other: Node | number, options?: OpOptions): Node;
+  bitwise_xor(input: Node, other: Node | number, options?: OpOptions): Node;
+  bitwise_and(input: Node, other: Node | number, options?: OpOptions): Node;
+  eq(input: Node, other: Node | number, options?: OpOptions): Node;
+  ge(input: Node, other: Node | number, options?: OpOptions): Node;
+  abs(input: Node, options?: OpOptions): Node;
+  sign(input: Node, options?: OpOptions): Node;
+  clamp_min(input: Node, min: number, options?: OpOptions): Node;
+  repeat(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
+  repeat(input: Node, ...sizes: (number | string)[]): Node;
+  cummax(input: Node, dim: number, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
+  greater(input: Node, other: Node | number, options?: OpOptions): Node;
+  topk_indices(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
+  one_hot(input: Node, num_classes: number | string, options?: OpOptions): Node;
+  permute(input: Node, dims: number[], options?: OpOptions): Node;
+  permute(input: Node, ...dims: number[]): Node;
+  nonzero_static(input: Node, size: number | string, options?: NonzeroStaticOptions): Node;
+  nonzero_static(input: Node, options: NonzeroStaticOptions): Node;
+  index(input: Node, indices: Node[], options?: OpOptions): Node;
+  index_add(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
+  grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
+  cumsum(input: Node, dim: number, options?: OpOptions): Node;
+  unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
+  pad(input: Node, pad: (number | string)[], options?: OpOptions): Node;
+  pad(input: Node, ...pad: (number | string)[]): Node;
+  triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
+  masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
+  solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -138,6 +215,30 @@ export const builtinOps: readonly AnyOpDef[] = [
   causalConv1dOp,
   topkMaskOp,
   whereOp,
+  greaterOp,
+  topkIndicesOp,
+  oneHotOp,
+  permuteOp,
+  nonzeroStaticOp,
+  indexOp,
+  indexAddOp,
+  groupedLinearOp,
+  cumsumOp,
+  unsqueezeOp,
+  padOp,
+  triuOp,
+  maskedFillOp,
+  solveTriangularOp,
+  remainderOp,
+  bitwiseXorOp,
+  bitwiseAndOp,
+  eqOp,
+  geOp,
+  absOp,
+  signOp,
+  clampMinOp,
+  repeatOp,
+  cummaxOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

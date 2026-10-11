@@ -1,0 +1,45 @@
+module: Qwen4ExpTextAttention
+subtitle: Qwen4ExpTextAttention
+import:
+  QSAIndexer: ./qsa-indexer.yaml
+  GatedAttention: ../qwen3_5/attention.yaml
+params:
+  H:     { type: dim }
+  Hkv:   { type: dim }
+  dh:    { type: dim }
+  rd:    { type: dim }
+  HI:    { type: dim }
+  DI:    { type: dim }
+  B:     { type: int }
+  c:     { type: int }
+  theta: { type: float, default: 1e7 }
+inputs:
+  x: { shape: [T, d] }
+  M: { shape: [T, T] }
+outputs: [att]
+body:
+  - indexer:
+      use: QSAIndexer
+      params: { HI: HI, DI: DI, rd: rd, B: B, c: c, theta: theta }
+      inputs: { x: x, M: M }
+      outputs: { sel_mask: MI }
+      tex: { sel_mask: 'M^{I}' }
+  - mask: { op: M + MI, tex: 'M+M^{I}' }
+  - attention:
+      use: GatedAttention
+      inline: true
+      params: { H: H, Hkv: Hkv, dh: dh, rd: rd, theta: theta, model: Qwen3.8-Flash-Next, norm_class: Qwen4ExpTextRMSNorm }
+      inputs: { x: x, mask: mask }
+      outputs: { att: att }
+      tex: { att: '\mathbf{att}' }
+steps:
+  - id: combine
+    show: mask
+    label: '$\of{mask}$'
+    title: causal mask 加上 indexer 的 mask
+    text: |
+      <code>attention_mask = attention_mask + selected_token_mask</code>：两个加性 mask 相加，只有 causal 可见并且被 indexer 选中的格子是 0，其余是 $-\infty$。之后的注意力和 Qwen3.5 的 gated attention 相同，只是用这个 mask。这一页的 $T$ 很小，可见的 token 不超过 budget $\of{B}$ 时 indexer 全部保留，超过时才丢掉分数低的块；真实模型每个 query 保留的完整块最多 2048 个 token（512 块），加上不满一块的尾部最多 $c-1=3$ 个 token。
+      $$M+M^{I}={{ mask | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: mask 是常量

@@ -1,0 +1,422 @@
+module: QSAIndexer
+subtitle: Qwen4ExpTextQSAIndexer
+import:
+  ZeroCenteredRMSNorm: vizflow/nn/rmsnorm-zero-centered
+  ReLU:                vizflow/nn/relu
+params:
+  HI:    { type: dim }
+  DI:    { type: dim }
+  rd:    { type: dim }
+  B:     { type: int }
+  c:     { type: int }
+  theta: { type: float, default: 1e7 }
+inputs:
+  x: { shape: [T, d] }
+  M: { shape: [T, T] }
+outputs: [sel_mask]
+weights:
+  Wiqk: { shape: [(HI + 1) * DI, d], tex: 'W_{iqk}' }
+buffers:
+  cos: { value: 'rope_cos(T, rd, theta)', shape: [T, 1, rd], tex: '\cos^{I}' }
+  sin: { value: 'rope_sin(T, rd, theta)', shape: [T, 1, rd], tex: '\sin^{I}' }
+  Z:   { value: 'zeros(T, T)', tex: '\mathbf{0}' }
+body:
+  - iqk: { op: x @ Wiqk.T, tex: '[\mathbf{q}^{I}\,|\,\mathbf{k}^{I}]' }
+  - iq: { op: 'view(narrow(iqk, -1, 0, HI * DI), T, HI, DI)', tex: '\mathbf{q}^{I}' }
+  - rk: { op: 'narrow(iqk, -1, HI * DI, DI)', tex: '\mathbf{k}^{I}' }
+  - q_layernorm:
+      use: ZeroCenteredRMSNorm
+      subtitle: Qwen4ExpTextRMSNorm
+      suffix: iq
+      params: { intro: 'indexer 的 query 每个 head 做一次 RMSNorm，范围是 indexer_head_dim。' }
+      inputs: { x: iq }
+      outputs: { out: iqn }
+      steps:
+        square: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        mean: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        eps: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        rms: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        normalize: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        scale: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+      tex: { out: '\bar{\mathbf{q}}^{I}', weight: '\boldsymbol{\gamma}_{iq}', sq: '(\mathbf{q}^{I})^{2}', xh: '\hat{\mathbf{q}}^{I}' }
+  - iq_rot:  { op: 'narrow(iqn, -1, 0, rd)', tex: '\bar{\mathbf{q}}^{I}_{\mathrm{rot}}' }
+  - iq_pass: { op: 'narrow(iqn, -1, rd, DI - rd)', tex: '\bar{\mathbf{q}}^{I}_{\mathrm{pass}}' }
+  - iq_cos:  { op: iq_rot * cos, tex: '\bar{\mathbf{q}}^{I}_{\mathrm{rot}}\odot\cos' }
+  - iq_r1:   { op: 'narrow(iq_rot, -1, 0, rd // 2)', tex: '{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{1}' }
+  - iq_r2:   { op: 'narrow(iq_rot, -1, rd // 2, rd // 2)', tex: '{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}' }
+  - iq_nr2:  { op: -iq_r2, tex: '-{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}' }
+  - iq_rh:   { op: 'cat([iq_nr2, iq_r1], dim=-1)', tex: '\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})' }
+  - iq_sin:  { op: iq_rh * sin, tex: '\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})\odot\sin' }
+  - iq_emb:  { op: iq_cos + iq_sin, tex: "\\mathbf{q}'^{I}_{\\mathrm{rot}}" }
+  - iqr:     { op: 'cat([iq_emb, iq_pass], dim=2)', tex: "\\mathbf{q}'^{I}" }
+  - visible: { op: 'eq(M, 0)', tex: '\mathbf{vis}' }
+  - kg: { op: 'view(rk, T // c, c, DI)', tex: '\mathbf{k}^{I}_{\mathrm{blk}}' }
+  - pk: { op: 'mean(kg, 1)', tex: '\bar{\mathbf{k}}^{I}_{\mathrm{fp32}}', dtype: fp32 }
+  - pkc: { op: identity(pk), tex: '\bar{\mathbf{k}}^{I}', dtype: rk }
+  - k_layernorm:
+      use: ZeroCenteredRMSNorm
+      subtitle: Qwen4ExpTextRMSNorm
+      suffix: ik
+      params: { intro: '每个块的平均 key 做一次 RMSNorm，范围是 indexer_head_dim。' }
+      inputs: { x: pkc }
+      outputs: { out: pkn }
+      steps:
+        square: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        mean: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        eps: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        rms: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        normalize: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+        scale: { backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里，HF 里这个权重的梯度是 None，图里是 0。 } }
+      tex: { out: '\hat{\mathbf{k}}^{I}', weight: '\boldsymbol{\gamma}_{ik}', sq: '(\bar{\mathbf{k}}^{I})^{2}', xh: '\hat{\bar{\mathbf{k}}}^{I}' }
+  - bcos: { op: 'select(view(cos, T // c, c, 1, rd), 1, 0)', tex: '\cos_{\mathrm{blk}}' }
+  - bsin: { op: 'select(view(sin, T // c, c, 1, rd), 1, 0)', tex: '\sin_{\mathrm{blk}}' }
+  - pk3:  { op: 'view(pkn, T // c, 1, DI)', tex: '\operatorname{unsqueeze}(\hat{\mathbf{k}}^{I})' }
+  - ik_rot:  { op: 'narrow(pk3, -1, 0, rd)', tex: '\hat{\mathbf{k}}^{I}_{\mathrm{rot}}' }
+  - ik_pass: { op: 'narrow(pk3, -1, rd, DI - rd)', tex: '\hat{\mathbf{k}}^{I}_{\mathrm{pass}}' }
+  - ik_cos:  { op: ik_rot * bcos, tex: '\hat{\mathbf{k}}^{I}_{\mathrm{rot}}\odot\cos_{\mathrm{blk}}' }
+  - ik_r1:   { op: 'narrow(ik_rot, -1, 0, rd // 2)', tex: '{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{1}' }
+  - ik_r2:   { op: 'narrow(ik_rot, -1, rd // 2, rd // 2)', tex: '{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}' }
+  - ik_nr2:  { op: -ik_r2, tex: '-{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}' }
+  - ik_rh:   { op: 'cat([ik_nr2, ik_r1], dim=-1)', tex: '\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})' }
+  - ik_sin:  { op: ik_rh * bsin, tex: '\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})\odot\sin_{\mathrm{blk}}' }
+  - ik_emb:  { op: ik_cos + ik_sin, tex: "\\mathbf{k}'^{I}_{\\mathrm{rot}}" }
+  - ikr:     { op: 'view(cat([ik_emb, ik_pass], dim=2), T // c, DI)', tex: "K'^{I}" }
+  - qk: { op: 'view(view(iqr, T * HI, DI) @ ikr.T, T, HI, T // c)', tex: "\\mathbf{q}'^{I}K'^{I\\top}" }
+  - score_relu:
+      use: ReLU
+      inputs: { x: qk }
+      outputs: { out: qk_relu }
+      tex: { out: "\\operatorname{relu}(\\mathbf{q}'^{I}K'^{I\\top})" }
+      steps:
+        relu:
+          text: |
+            <code>torch.relu(scores)</code>：负的点积记为 0，一个 head 只能给块加分，不能减分。
+            $$\operatorname{relu}={{ qk_relu | matrix:3 }}$$
+          backward: { label: 无梯度, title: 没有梯度, text: 选块是硬选择，梯度传不到 indexer 里。 }
+  - qk_sum: { op: 'sum(qk_relu, 1)', tex: '\textstyle\sum_h\operatorname{relu}' }
+  - scores: { op: qk_sum / DI ** 0.5, tex: '\mathbf{sc}' }
+  - vb: { op: 'select(view(visible, T, T // c, c), 2, c - 1)', tex: '\mathbf{vis}_{\mathrm{blk}}' }
+  - masked: { op: 'where(vb, scores, -inf)', tex: '\mathbf{sc}_{\mathrm{vis}}' }
+  - top: { op: 'topk_mask(masked, min(B // c, T // c), -1)', tex: '\operatorname{top}_{k}' }
+  - sel_blk: { op: top * vb, tex: '\mathbf{sel}_{\mathrm{blk}}' }
+  - drop_blk: { op: vb - sel_blk, tex: '\mathbf{drop}_{\mathrm{blk}}' }
+  - drop_tok: { op: 'repeat_interleave(drop_blk, c, 1)', tex: '\mathbf{drop}' }
+  - sel_tok: { op: visible - drop_tok, tex: '\mathbf{sel}' }
+  - sel_mask: { op: 'where(sel_tok, Z, -inf)', tex: 'M^{I}' }
+steps:
+  - id: proj
+    show: [Wiqk.T, iqk]
+    brace: { title: index_qk_proj, subtitle: 'nn.Linear，$\of{d}\to\of{(HI+1)*DI}$' }
+    label: '$\of{iqk}$'
+    title: index_qk_proj
+    text: |
+      <code>qk = self.index_qk_proj(hidden_states)</code>：indexer 有自己的投影，和注意力的 q_proj、k_proj 无关，没有 bias。输出宽 $(\of{HI}+1)\cdot\of{DI}$：前面是 $\of{HI}$ 个 query head，最后是 1 个 key head（indexer_kv_heads，真实模型也是 1），每个 head 宽 indexer_head_dim $=\of{DI}$。
+      $$\of{iqk}={{ iqk | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: indexer 的参数没有梯度
+      text: 选块是硬选择（topk 给出下标），从注意力传回来的梯度到这里就断了，HF 里 indexer 三个参数的梯度是 None，图里是 0。
+  - id: split
+    show: [iq, rk]
+    label: '$\of{iq},\ \of{rk}$'
+    title: 拆出 query 和 key
+    text: |
+      <code>q, token_k = torch.split(qk, [self.index_n_heads * self.index_head_dim, self.index_kv_heads * self.index_head_dim], dim=-1)</code>，然后 <code>q, raw_keys = q.reshape(*hidden_shape), token_k.reshape(*hidden_shape).squeeze(2)</code>：query reshape 成 $(T, \of{HI}, \of{DI})$，key reshape 后 <code>squeeze(2)</code> 去掉只有 1 个 head 的那一维，得到 $(T, \of{DI})$ 的 raw_keys。
+      $$\mathbf{k}^{I}={{ rk | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_split
+    show: [iq_rot, iq_pass]
+    label: '$\mathrm{rot},\ \mathrm{pass}$'
+    title: query 切成旋转和不旋转两段
+    text: |
+      <code>apply_rotary_pos_emb(q, cos=current_cos, sin=current_sin, unsqueeze_dim=2)</code>：cos/sin 表和注意力共用，宽 $\of{rd}$，所以 indexer 的 query 也只有前 $\of{rd}$ 维旋转，其余 $\of{DI-rd}$ 维原样保留。
+      $$\bar{\mathbf{q}}^{I}_{\mathrm{rot}}={{ iq_rot | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_cos
+    show: [cos, iq_cos]
+    label: '$\odot\cos$'
+    title: query 乘 cos
+    text: |
+      <code>q_rope * cos</code>，按 query 的位置 $0..T-1$ 取 cos。
+      $$\cos^{I}={{ cos | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_half
+    show: [iq_r1, iq_r2]
+    label: 'rotate_half'
+    title: rotate_half：切成两半
+    text: |
+      <code>rotate_half(q_rope)</code> 有三行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>、<code>return torch.cat((-x2, x1), dim=-1)</code>。这里一行画一步。第一步把旋转的 $\of{rd}$ 维切成前后两半。
+      $${\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}={{ iq_r2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_neg
+    show: iq_nr2
+    label: 'rotate_half'
+    title: rotate_half：后半取负
+    text: |
+      $$-{\bar{\mathbf{q}}^{I}_{\mathrm{rot}}}_{2}={{ iq_nr2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_rh
+    show: iq_rh
+    label: rotate_half
+    title: rotate_half：交换位置拼回去
+    text: |
+      <code>torch.cat((-x2, x1), dim=-1)</code>：取负的后半放到前面。
+      $$\mathrm{rh}(\bar{\mathbf{q}}^{I}_{\mathrm{rot}})={{ iq_rh | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_sin
+    show: [sin, iq_sin]
+    label: '$\odot\sin$'
+    title: 乘 sin
+    text: |
+      <code>rotate_half(q_rope) * sin</code>。
+      $$\sin^{I}={{ sin | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_add
+    show: iq_emb
+    label: "$\\of{iq_emb}$"
+    title: cos 和 sin 两项相加
+    text: |
+      <code>q_rope = (q_rope * cos) + (rotate_half(q_rope) * sin)</code>。
+      $$\mathbf{q}'^{I}_{\mathrm{rot}}={{ iq_emb | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: q_rope_cat
+    show: iqr
+    label: "$\\of{iqr}$"
+    title: 拼回整个 head
+    text: |
+      <code>torch.cat([q_rope, q_nope], dim=-1)</code>：旋转过的 $\of{rd}$ 维和原样的 $\of{DI-rd}$ 维拼回去。
+      $$\mathbf{q}'^{I}={{ iqr | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: visible
+    show: visible
+    label: '$\of{visible}$'
+    title: 能看到的位置
+    text: |
+      <code>visible_token_indices = attention_mask if attention_mask.dtype == torch.bool else attention_mask == 0</code>：indexer 拿到的是 causal mask，eager 实现里它是加性的浮点 mask，等于 0 的格子是这个 query 能看到的 key。HF 的加性 mask 用 dtype 的最小值表示不可见，图里写成 $-\infty$，两者在 softmax 之后都是 0。
+      $$\mathbf{vis}={{ visible | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: pool
+    show: [kg, pk]
+    label: '$\of{pk}$'
+    title: 每 $\of{c}$ 个 token 的 key 取平均
+    text: |
+      <code>key_groups = raw_keys[batch_idx].index_select(0, block_token_indices.flatten())</code>，然后 <code>pooled_keys = key_groups.float().mean(dim=1).to(raw_keys.dtype)</code> 的前半段 <code>key_groups.float().mean(dim=1)</code>：key 先转成 float32 再平均。能看到的 token 从头开始每 indexer_compress_ratio $=\of{c}$ 个分成一块，块里的 key 取平均。HF 对每个 query 单独找能看到的 token 再分块；没有 padding 时每个 query 能看到的都是从位置 0 开始的一段，块的边界对所有 query 相同，所以图里对整段序列分一次块，再按 query 标出哪些块完整可见，结果和逐个 query 计算相同。这一页的 $c=\of{c}$，每块只有一个 token，平均就是它自己；真实模型的 $c=4$。这里要求 $T$ 是 $c$ 的倍数。
+      $$\of{pk}={{ pk | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: pool_cast
+    show: pkc
+    label: '$\of{pkc}$'
+    title: 平均转回 key 的 dtype
+    text: |
+      <code>pooled_keys = key_groups.float().mean(dim=1).to(raw_keys.dtype)</code> 的最后一段 <code>.to(raw_keys.dtype)</code>：float32 的平均转回 key 原来的 dtype，再送进 k_layernorm。之后算分数时 HF 再用 <code>block_key_states.float()</code> 转成 float32。
+      $$\of{pkc}={{ pkc | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_table
+    show: [bcos, bsin]
+    label: '$\cos_{\mathrm{blk}},\ \sin_{\mathrm{blk}}$'
+    title: 取每块起点位置的 cos 和 sin
+    text: |
+      <code>full_cos[batch_idx].index_select(0, group_starts)</code>：块的 key 按这一块第一个 token 的位置旋转，第 $b$ 块的位置是 $b\cdot\of{c}$。图里把 cos 表按 $\of{c}$ 行一组 reshape，取每组的第一行。
+      $$\cos_{\mathrm{blk}}={{ bcos | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_split
+    show: [pk3, ik_rot, ik_pass]
+    label: '$\mathrm{rot},\ \mathrm{pass}$'
+    title: 块 key 切成旋转和不旋转两段
+    text: |
+      <code>apply_rotary_pos_emb(pooled_keys.unsqueeze(1), cos=..., sin=...)</code>：前 $\of{rd}$ 维旋转。
+      $$\hat{\mathbf{k}}^{I}_{\mathrm{rot}}={{ ik_rot | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_cos
+    show: ik_cos
+    label: '$\odot\cos_{\mathrm{blk}}$'
+    title: 乘 cos
+    text: |
+      $$\hat{\mathbf{k}}^{I}_{\mathrm{rot}}\odot\cos_{\mathrm{blk}}={{ ik_cos | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_half
+    show: [ik_r1, ik_r2]
+    label: 'rotate_half'
+    title: rotate_half：切成两半
+    text: |
+      块 key 的 rotate_half 和 query 的相同：先把旋转的 $\of{rd}$ 维切成前后两半。
+      $${\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}={{ ik_r2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_neg
+    show: ik_nr2
+    label: 'rotate_half'
+    title: rotate_half：后半取负
+    text: |
+      $$-{\hat{\mathbf{k}}^{I}_{\mathrm{rot}}}_{2}={{ ik_nr2 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_rh
+    show: ik_rh
+    label: rotate_half
+    title: rotate_half：交换位置拼回去
+    text: |
+      $$\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})={{ ik_rh | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_sin
+    show: ik_sin
+    label: '$\odot\sin_{\mathrm{blk}}$'
+    title: 乘 sin
+    text: |
+      $$\mathrm{rh}(\hat{\mathbf{k}}^{I}_{\mathrm{rot}})\odot\sin_{\mathrm{blk}}={{ ik_sin | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_add
+    show: ik_emb
+    label: "$\\of{ik_emb}$"
+    title: cos 和 sin 两项相加
+    text: |
+      $$\mathbf{k}'^{I}_{\mathrm{rot}}={{ ik_emb | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: k_rope_cat
+    show: ikr
+    label: "$\\of{ikr}$"
+    title: 拼回整个 head
+    text: |
+      旋转过的一段和原样的一段拼回去，<code>.squeeze(1)</code> 去掉 head 维，得到每块一行的 block_key_states。
+      $$K'^{I}={{ ikr | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: dot
+    show: qk
+    label: "$\\of{qk}$"
+    title: 每个 query head 和每块 key 的点积
+    text: |
+      <code>torch.matmul(q[batch_idx, query_idx].float(), block_key_states.float().transpose(-1, -2))</code>：HF 对每个 query 算一次，形状 $(\of{HI}, \text{块数})$；图里把所有 query 一起算，形状 $(T, \of{HI}, \of{T//c})$。
+      $$\mathbf{q}'^{I}K'^{I\top}={{ qk | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: head_sum
+    show: qk_sum
+    label: '$\sum_h$'
+    title: 各 head 相加
+    text: |
+      <code>.sum(dim=-1)</code>：$\of{HI}$ 个 head 的分数加起来，每个 query、每块一个分数。
+      $${{ qk_sum | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: score
+    show: scores
+    label: '$\of{scores}$'
+    title: 除以 $\sqrt{d_I}$
+    text: |
+      <code>... / math.sqrt(self.index_head_dim)</code>，$d_I=\of{DI}$。
+      $$\mathbf{sc}={{ scores | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: complete
+    show: vb
+    label: '$\of{vb}$'
+    title: 每个 query 完整可见的块
+    text: |
+      <code>num_complete_blocks = local_visible_indices.shape[-1] // self.compress_ratio</code>：query $t$ 能看到 $t+1$ 个 token，其中前 $\lfloor (t+1)/\of{c}\rfloor$ 块是完整的。第 $b$ 块完整可见，当且仅当这一块的最后一个 token 可见；图里把可见表按 $\of{c}$ 列一组 reshape，取每组的最后一列。
+      $$\mathbf{vis}_{\mathrm{blk}}={{ vb | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: mask_scores
+    show: masked
+    label: '$\of{masked}$'
+    title: 不完整的块记 $-\infty$
+    text: |
+      HF 只对完整的块打分；图里所有块一起打分，不完整的块记成 $-\infty$，下一步不会被选中。
+      $$\mathbf{sc}_{\mathrm{vis}}={{ masked | matrix:3 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: topk
+    show: top
+    label: '$\operatorname{top}_{k}$'
+    title: 每个 query 选分数最高的块
+    text: |
+      <code>scores.topk(min(self.block_topk, num_complete_blocks), dim=0)</code>：block_topk $=$ indexer_budget $/$ indexer_compress_ratio $=\of{B}/\of{c}=\of{B//c}$。真实模型的 budget 是 2048、$c=4$，每个 query 选 512 块，完整块最多 2048 个 token；不满一块的尾部（最多 $c-1=3$ 个 token）不参与打分，全部保留，所以 HF 给每个 query 的下标表留的宽度是 <code>self.token_budget + self.compress_ratio - 1</code>。图里每行都选 $\min(\of{B//c}, \of{T//c})$ 个，可见块不够时会选到 $-\infty$ 的块，下一步再去掉，和 HF 按行取 $\min(\text{block\_topk}, \text{完整块数})$ 结果相同。
+      $$\operatorname{top}_{k}={{ top | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: topk 给出下标，没有梯度
+  - id: select_blocks
+    show: sel_blk
+    label: '$\of{sel_blk}$'
+    title: 选中的完整块
+    text: |
+      选中、并且完整可见的块。
+      $$\mathbf{sel}_{\mathrm{blk}}={{ sel_blk | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: drop
+    show: [drop_blk, drop_tok]
+    label: '$\of{drop_tok}$'
+    title: 没被选中的块展开回 token
+    text: |
+      <code>block_token_indices.index_select(0, selected_block_indices).flatten()</code> 把选中的块换回 token 的下标。图里反过来算：可见但没被选中的块，每块展开成 $\of{c}$ 个 token。
+      $$\mathbf{drop}={{ drop_tok | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: tokens
+    show: sel_tok
+    label: '$\of{sel_tok}$'
+    title: 选中的 token
+    text: |
+      <code>tail = local_visible_indices[num_complete_blocks * self.compress_ratio :]</code>，<code>selected_tokens = torch.cat([selected_tokens, tail]).to(torch.int32)</code>：选中块里的 token，加上最后一块不完整的、总是保留的 token。也就是可见的 token 去掉没被选中的块。$c=1$ 时没有不完整的块。
+      $$\mathbf{sel}={{ sel_tok | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: 没有梯度
+  - id: mask
+    show: [Z, sel_mask]
+    label: '$\of{sel_mask}$'
+    title: 选中的 token 记 0，其余记 $-\infty$
+    text: |
+      <code>selected_token_mask.scatter(-1, scatter_indices, True)</code>，<code>torch.where(selected_token_mask, attention_mask.new_zeros(()), min_dtype)</code>：indexer 返回一个和 causal mask 同形状的加性 mask。
+      $$M^{I}={{ sel_mask | matrix:0 }}$$
+    backward:
+      label: 无梯度
+      title: mask 是常量

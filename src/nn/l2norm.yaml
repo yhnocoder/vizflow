@@ -42,7 +42,7 @@ steps:
     label: '$\of{ss}$'
     title: 平方和
     text: |
-      每一行的平方加起来，对应 <code>(x * x).sum(dim=-1, keepdim=True)</code>。
+      每一行的平方加起来，对应 <code>inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)</code> 里的 <code>(x * x).sum(dim=dim, keepdim=True)</code>，调用时 <code>dim=-1</code>。
       $$\of{ss}={{ ss | matrix:3 }}$$
     backward:
       label: '$\partial\of{sq}$'

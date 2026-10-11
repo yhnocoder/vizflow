@@ -1,0 +1,487 @@
+module: GatedDeltaRuleChunk
+subtitle: torch_chunk_gated_delta_rule
+import:
+  L2Norm: vizflow/nn/l2norm
+params:
+  chunk: { type: dim, default: 64 }
+  use_qk_l2norm_in_kernel: { type: bool, default: false }
+inputs:
+  q:    { shape: [T, H, dk] }
+  k:    { shape: [T, H, dk] }
+  v:    { shape: [T, H, dv] }
+  g:    { shape: [T, H] }
+  beta: { shape: [T, H] }
+outputs: [o]
+buffers:
+  ones: { value: 'ones(chunk, chunk)', tex: '\mathbf{1}', dtype: bool }
+  S0:   { value: 'zeros(H, dk, dv)', tex: 'S_{0}', dtype: fp32 }
+fold:
+  label: '$\of{o}$'
+  title: torch_chunk_gated_delta_rule（已折叠）
+  text: |
+    HF 在没有缓存时（prefill 和训练）调用 <code>torch_chunk_gated_delta_rule</code>：序列按 $C=\of{chunk}$ 个位置一块切开，块内的递推用一个下三角方程组一次解出，块与块之间按顺序传递每个 head 的 $d_k\times d_v$ 状态 $S$。结果与逐个位置递推的 $S_t=e^{g_t}S_{t-1}+\mathbf{k}_t\big(\beta_t(\mathbf{v}_t-e^{g_t}S_{t-1}^{\top}\mathbf{k}_t)\big)^{\top}$、$\mathbf{o}_t=S_t^{\top}\mathbf{q}_t$ 相同。
+    $$\of{o}={{ o | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{q},\ \partial\of{k},\ \partial\of{v},\ \partial\of{g},\ \partial\of{beta}$'
+    title: 穿过 torch_chunk_gated_delta_rule（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{v}}={{ v.grad | matrix:3 }}$$
+body:
+  - qh:    { op: 'transpose(q, 0, 1)', tex: '\mathbf{q}^{\prime}', dtype: fp32 }
+  - kh:    { op: 'transpose(k, 0, 1)', tex: '\mathbf{k}^{\prime}', dtype: fp32 }
+  - vh:    { op: 'transpose(v, 0, 1)', tex: '\mathbf{v}^{\prime}', dtype: fp32 }
+  - bh:    { op: 'transpose(beta, 0, 1)', tex: '\boldsymbol{\beta}^{\prime}', dtype: fp32 }
+  - gh:    { op: 'transpose(g, 0, 1)', tex: '\mathbf{g}^{\prime}', dtype: fp32 }
+  - q_l2norm:
+      use: L2Norm
+      when: use_qk_l2norm_in_kernel
+      inline: true
+      suffix: q
+      inputs: { x: qh }
+      outputs: { out: qn }
+      tex: { out: '\hat{\mathbf{q}}', sq: '\mathbf{q}^{\prime}\odot\mathbf{q}^{\prime}', ss: '\lVert\mathbf{q}^{\prime}\rVert^{2}', r: 'r^{q}' }
+  - k_l2norm:
+      use: L2Norm
+      when: use_qk_l2norm_in_kernel
+      inline: true
+      suffix: k
+      beside: q_l2norm
+      inputs: { x: kh }
+      outputs: { out: kn }
+      tex: { out: '\hat{\mathbf{k}}', sq: '\mathbf{k}^{\prime}\odot\mathbf{k}^{\prime}', ss: '\lVert\mathbf{k}^{\prime}\rVert^{2}', r: 'r^{k}' }
+  - qs:    { op: (qn if use_qk_l2norm_in_kernel else qh) * dk ** -0.5, tex: '\tilde{\mathbf{q}}' }
+  - qp:    { op: 'pad(qs, 0, 0, 0, (T+chunk-1)//chunk*chunk - T)', tex: '\tilde{\mathbf{q}}_{\mathrm{pad}}' }
+  - kp:    { op: 'pad(kn if use_qk_l2norm_in_kernel else kh, 0, 0, 0, (T+chunk-1)//chunk*chunk - T)', tex: '\hat{\mathbf{k}}_{\mathrm{pad}}' }
+  - vp:    { op: 'pad(vh, 0, 0, 0, (T+chunk-1)//chunk*chunk - T)', tex: '\mathbf{v}_{\mathrm{pad}}' }
+  - bp:    { op: 'pad(bh, 0, (T+chunk-1)//chunk*chunk - T)', tex: '\boldsymbol{\beta}_{\mathrm{pad}}' }
+  - gp:    { op: 'pad(gh, 0, (T+chunk-1)//chunk*chunk - T)', tex: '\mathbf{g}_{\mathrm{pad}}' }
+  - bu:    { op: 'unsqueeze(bp, -1)', tex: '\boldsymbol{\beta}_{\mathrm{pad}}^{\downarrow}' }
+  - vb:    { op: vp * bu, tex: '\mathbf{v}_{\beta}' }
+  - kb:    { op: kp * bu, tex: '\mathbf{k}_{\beta}' }
+  - M:     { op: 'triu(ones, 1)', tex: 'M_{\triangle}' }
+  - for: h
+    in: 1..H
+    body:
+      - head[h]:
+          title: head $\of{h}$
+          body:
+            - qc[h]:  { op: 'view(select(qp, 0, h-1), (T+chunk-1)//chunk, chunk, dk)', tex: '\tilde{\mathbf{q}}^{(\of{h})}' }
+            - kc[h]:  { op: 'view(select(kp, 0, h-1), (T+chunk-1)//chunk, chunk, dk)', tex: '\hat{\mathbf{k}}^{(\of{h})}' }
+            - kbc[h]: { op: 'view(select(kb, 0, h-1), (T+chunk-1)//chunk, chunk, dk)', tex: '\mathbf{k}_{\beta}^{(\of{h})}' }
+            - vbc[h]: { op: 'view(select(vb, 0, h-1), (T+chunk-1)//chunk, chunk, dv)', tex: '\mathbf{v}_{\beta}^{(\of{h})}' }
+            - gc[h]:  { op: 'view(select(gp, 0, h-1), (T+chunk-1)//chunk, chunk)', tex: '\mathbf{g}^{(\of{h})}' }
+            - cum[h]: { op: 'cumsum(gc[h], 1)', tex: '\mathbf{c}^{(\of{h})}' }
+            - pd[h]:  { op: 'unsqueeze(cum[h], 2) - unsqueeze(cum[h], 1)', tex: 'C^{(\of{h})}' }
+            - pdm[h]: { op: 'masked_fill(pd[h], M, -inf)', tex: '\bar{C}^{(\of{h})}' }
+            - pde[h]: { op: 'exp(pdm[h])', tex: 'D^{(\of{h})}' }
+            - kT[h]:  { op: 'transpose(kc[h], -1, -2)', tex: '{\hat{\mathbf{k}}^{(\of{h})}}^{\top}' }
+            - kk[h]:  { op: 'kbc[h] @ kT[h]', tex: 'B^{(\of{h})}' }
+            - ut[h]:  { op: 'kk[h] * pde[h]', tex: 'A^{(\of{h})}' }
+            - qk[h]:  { op: 'qc[h] @ kT[h]', tex: 'Q^{(\of{h})}' }
+            - att[h]: { op: 'qk[h] * pde[h]', tex: '\mathcal{P}^{(\of{h})}' }
+            - ec[h]:  { op: 'exp(cum[h])', tex: 'e^{\mathbf{c}^{(\of{h})}}' }
+            - ecu[h]: { op: 'unsqueeze(ec[h], -1)', tex: '{e^{\mathbf{c}^{(\of{h})}}}^{\downarrow}' }
+            - dkb[h]: { op: 'kbc[h] * ecu[h]', tex: '\tilde{\mathbf{k}}_{\beta}^{(\of{h})}' }
+            - nv[h]:  { op: 'solve_triangular(ut[h], vbc[h], upper=false, unitriangular=true)', tex: 'U^{(\of{h})}' }
+            - kcd[h]: { op: 'solve_triangular(ut[h], dkb[h], upper=false, unitriangular=true)', tex: 'W^{(\of{h})}' }
+            - 'S[h][0]': { op: 'select(S0, 0, h-1)', tex: 'S^{(\of{h})}_{0}' }
+            - qd[h]:  { op: 'qc[h] * ecu[h]', tex: '\bar{\mathbf{q}}^{(\of{h})}' }
+            - cl[h]:  { op: 'narrow(cum[h], -1, -1, 1)', tex: '\mathbf{c}^{(\of{h})}_{\mathrm{last}}' }
+            - kg[h]:  { op: 'cl[h] - cum[h]', tex: '\mathbf{c}^{(\of{h})}_{\mathrm{last}}-\mathbf{c}^{(\of{h})}' }
+            - ke[h]:  { op: 'exp(kg[h])', tex: 'e^{\mathbf{c}^{(\of{h})}_{\mathrm{last}}-\mathbf{c}^{(\of{h})}}' }
+            - keu[h]: { op: 'unsqueeze(ke[h], -1)', tex: '{e^{\mathbf{c}^{(\of{h})}_{\mathrm{last}}-\mathbf{c}^{(\of{h})}}}^{\downarrow}' }
+            - kd[h]:  { op: 'kc[h] * keu[h]', tex: '\bar{\mathbf{k}}^{(\of{h})}' }
+            - cg[h]:  { op: 'select(cum[h], -1, -1)', tex: '\mathbf{c}^{(\of{h})}_{\mathrm{end}}' }
+            - ce[h]:  { op: 'exp(cg[h])', tex: 'e^{\mathbf{c}^{(\of{h})}_{\mathrm{end}}}' }
+            - ceu[h]: { op: 'unsqueeze(ce[h], -1)', tex: '{e^{\mathbf{c}^{(\of{h})}_{\mathrm{end}}}}^{\downarrow}' }
+            - cd[h]:  { op: 'unsqueeze(ceu[h], -1)', tex: '\boldsymbol{\gamma}^{(\of{h})}' }
+            - for: i
+              in: 1..(T+chunk-1)//chunk
+              sequential: true
+              body:
+                - chunk[h][i]:
+                    title: 块 $\of{i}$
+                    body:
+                      - Wi[h][i]:  { op: 'select(kcd[h], 0, i-1)', tex: 'W^{(\of{h})}_{\of{i}}' }
+                      - vq[h][i]:  { op: 'Wi[h][i] @ S[h][i-1]', tex: 'W^{(\of{h})}_{\of{i}}S^{(\of{h})}_{\of{i-1}}' }
+                      - Ui[h][i]:  { op: 'select(nv[h], 0, i-1)', tex: 'U^{(\of{h})}_{\of{i}}' }
+                      - vn[h][i]:  { op: 'Ui[h][i] - vq[h][i]', tex: '\mathbf{u}^{(\of{h})}_{\of{i}}' }
+                      - Qi[h][i]:  { op: 'select(qd[h], 0, i-1)', tex: '\bar{\mathbf{q}}^{(\of{h})}_{\of{i}}' }
+                      - ie[h][i]:  { op: 'Qi[h][i] @ S[h][i-1]', tex: '\mathbf{o}^{\mathrm{inter}(\of{h})}_{\of{i}}' }
+                      - Pi[h][i]:  { op: 'select(att[h], 0, i-1)', tex: '\mathcal{P}^{(\of{h})}_{\of{i}}' }
+                      - ia[h][i]:  { op: 'Pi[h][i] @ vn[h][i]', tex: '\mathbf{o}^{\mathrm{intra}(\of{h})}_{\of{i}}' }
+                      - oc[h][i]:  { op: 'ie[h][i] + ia[h][i]', tex: '\mathbf{o}^{(\of{h})}_{\of{i}}' }
+                      - gi[h][i]:  { op: 'select(cd[h], 0, i-1)', tex: '\gamma^{(\of{h})}_{\of{i}}' }
+                      - Sd[h][i]:  { op: 'S[h][i-1] * gi[h][i]', tex: '\gamma^{(\of{h})}_{\of{i}}S^{(\of{h})}_{\of{i-1}}' }
+                      - Ki[h][i]:  { op: 'select(kd[h], 0, i-1)', tex: '\bar{K}^{(\of{h})}_{\of{i}}' }
+                      - KT[h][i]:  { op: 'transpose(Ki[h][i], -1, -2)', tex: '\bar{K}^{(\of{h})\top}_{\of{i}}' }
+                      - kv[h][i]:  { op: 'KT[h][i] @ vn[h][i]', tex: '\bar{K}^{(\of{h})\top}_{\of{i}}\mathbf{u}^{(\of{h})}_{\of{i}}' }
+                      - 'S[h][i]': { op: 'Sd[h][i] + kv[h][i]', tex: 'S^{(\of{h})}_{\of{i}}' }
+                    steps:
+                      - id: v_old
+                        show: ['Wi[h][i]', 'vq[h][i]']
+                        label: '$W_{\of{i}}S_{\of{i-1}}$'
+                        title: 块 $\of{i}$：用旧状态预测这一块的 value
+                        text: |
+                          <code>k_cumdecay[:, :, i] @ last_recurrent_state</code>：取出第 $\of{i}$ 块的 $W$（$C\times d_k$），乘进入这一块之前的状态 $S_{\of{i-1}}$（$d_k\times d_v$）。$W$ 的每一行已经乘过从块首到这个位置的衰减，所以这一行是旧状态衰减到这个位置以后、对这个 key 读出的 value。第 1 块的 $S_0=0$，这一项全是 0。
+                          $$W^{(\of{h})}_{\of{i}}S^{(\of{h})}_{\of{i-1}}={{ vq[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial W_{\of{i}},\ \partial S_{\of{i-1}}$'
+                          title: 块 $\of{i}$：传回 $W$ 和旧状态
+                          text: |
+                            $S_{\of{i-1}}$ 从这里收到 $W_{\of{i}}^{\top}\,\partial\ell/\partial(W_{\of{i}}S_{\of{i-1}})$，$W_{\of{i}}$ 收到 $\partial\ell/\partial(W_{\of{i}}S_{\of{i-1}})\,S_{\of{i-1}}^{\top}$。状态的梯度就是这样从后一块传回前一块的；第 1 块的 $S_0$ 是常量，梯度到这里为止。
+                            $$\frac{\partial\ell}{\partial(W^{(\of{h})}_{\of{i}}S^{(\of{h})}_{\of{i-1}})}={{ vq[h][i].grad | matrix:3 }}$$
+                      - id: v_new
+                        show: ['Ui[h][i]', 'vn[h][i]']
+                        label: '$\of{vn[h][i]}$'
+                        title: 块 $\of{i}$：v_new，减去旧状态已经预测到的部分
+                        text: |
+                          <code>v_new = new_values[:, :, i] - k_cumdecay[:, :, i] @ last_recurrent_state</code>。$U_{\of{i}}$ 是只考虑块内写入时解出的新 value，减去旧状态的预测以后，剩下的是这一块真正要写进状态的修正量，这就是 delta rule 的「只写差值」。
+                          $$\mathbf{u}^{(\of{h})}_{\of{i}}={{ vn[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial U_{\of{i}},\ \partial(WS)$'
+                          title: 块 $\of{i}$：穿过相减
+                          text: |
+                            $\mathbf{u}_{\of{i}}$ 有两个去处：块内的输出 $\mathcal{P}_{\of{i}}\mathbf{u}_{\of{i}}$ 和写入新状态 $\bar{K}_{\of{i}}^{\top}\mathbf{u}_{\of{i}}$，梯度是两份之和，再原样交给 $U_{\of{i}}$、取负交给 $W_{\of{i}}S_{\of{i-1}}$。
+                            $$\frac{\partial\ell}{\partial\mathbf{u}^{(\of{h})}_{\of{i}}}={{ vn[h][i].grad | matrix:3 }}$$
+                      - id: inter
+                        show: ['Qi[h][i]', 'ie[h][i]']
+                        label: '$\bar{\mathbf{q}}_{\of{i}}S_{\of{i-1}}$'
+                        title: 块 $\of{i}$：query 读旧状态
+                        text: |
+                          <code>inter_chunk_attn = query[:, :, i] @ last_recurrent_state</code>：这里的 query 已经乘过块内的累计衰减 $e^{\mathbf{c}}$，所以每个位置读到的是衰减到自己这个位置的旧状态。这一项给出前面各块对这一块输出的贡献。
+                          $$\mathbf{o}^{\mathrm{inter}(\of{h})}_{\of{i}}={{ ie[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial\bar{\mathbf{q}}_{\of{i}},\ \partial S_{\of{i-1}}$'
+                          title: 块 $\of{i}$：传回 query 和旧状态
+                      - id: intra
+                        show: ['Pi[h][i]', 'ia[h][i]']
+                        label: '$\mathcal{P}_{\of{i}}\mathbf{u}_{\of{i}}$'
+                        title: 块 $\of{i}$：块内的注意力乘 v_new
+                        text: |
+                          <code>intra_chunk_attn[:, :, i] @ v_new</code>：$\mathcal{P}_{\of{i}}$ 是块内带衰减的 $\mathbf{q}\mathbf{k}^{\top}$，下三角，对角线保留，所以位置 $t$ 用到块内 $s\le t$ 的修正量。
+                          $$\mathbf{o}^{\mathrm{intra}(\of{h})}_{\of{i}}={{ ia[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial\mathcal{P}_{\of{i}},\ \partial\mathbf{u}_{\of{i}}$'
+                          title: 块 $\of{i}$：传回块内注意力和 v_new
+                          text: |
+                            $\partial\ell/\partial\mathbf{u}_{\of{i}}$ 收到 $\mathcal{P}_{\of{i}}^{\top}$ 乘输出的梯度：块内后面位置的梯度经过这里传给前面的位置。
+                      - id: out
+                        show: 'oc[h][i]'
+                        label: '$\of{oc[h][i]}$'
+                        title: 块 $\of{i}$：输出 = 旧状态的部分 + 块内的部分
+                        text: |
+                          <code>core_attn_out[:, :, i] = inter_chunk_attn + intra_chunk_attn[:, :, i] @ v_new</code>。HF 先建一个全 0 的 <code>core_attn_out</code>，再逐块写进第 $\of{i}$ 块；图里每一块是一个单独的张量，最后按块拼起来，数值相同。
+                          $$\mathbf{o}^{(\of{h})}_{\of{i}}={{ oc[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial\mathbf{o}^{\mathrm{inter}},\ \partial\mathbf{o}^{\mathrm{intra}}$'
+                          title: 块 $\of{i}$：梯度复制给两项
+                      - id: decay
+                        show: ['gi[h][i]', 'Sd[h][i]']
+                        label: '$\gamma_{\of{i}}S_{\of{i-1}}$'
+                        title: 块 $\of{i}$：旧状态乘整块的衰减
+                        text: |
+                          <code>last_recurrent_state * chunk_decay[:, :, i]</code>：$\gamma_{\of{i}}=e^{c_{\of{i},C}}$ 是这一块全部 $C$ 个位置的衰减之积，旧状态经过整块以后乘上它。
+                          $$\gamma^{(\of{h})}_{\of{i}}S^{(\of{h})}_{\of{i-1}}={{ Sd[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial S_{\of{i-1}},\ \partial\gamma_{\of{i}}$'
+                          title: 块 $\of{i}$：穿过整块的衰减
+                          text: |
+                            旧状态从这里收到的梯度乘上 $\gamma_{\of{i}}$，和前面读出的两处一起交给上一块。
+                      - id: write
+                        show: ['Ki[h][i]', 'KT[h][i]', 'kv[h][i]']
+                        label: '$\bar{K}_{\of{i}}^{\top}\mathbf{u}_{\of{i}}$'
+                        title: 块 $\of{i}$：把修正量写进状态
+                        text: |
+                          <code>key[:, :, i].transpose(-1, -2) @ v_new</code>：这里的 key 已经乘过 $e^{c_{C}-c_{t}}$，也就是从位置 $t$ 到块尾的衰减，所以每个位置写入的量到块尾时已经衰减到位。$d_k\times C$ 乘 $C\times d_v$，得到 $d_k\times d_v$。
+                          $$\bar{K}^{(\of{h})\top}_{\of{i}}\mathbf{u}^{(\of{h})}_{\of{i}}={{ kv[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial\bar{K}_{\of{i}},\ \partial\mathbf{u}_{\of{i}}$'
+                          title: 块 $\of{i}$：传回 key 和 v_new
+                      - id: state
+                        show: 'S[h][i]'
+                        label: '$\of{S[h][i]}$'
+                        title: 块 $\of{i}$：新状态
+                        text: |
+                          <code>last_recurrent_state = last_recurrent_state * chunk_decay[:, :, i] + key[:, :, i].transpose(-1, -2) @ v_new</code> 的加法。$S_{\of{i}}$ 等于逐个位置递推到第 $\of{i}$ 块最后一个位置时的状态，交给下一块。
+                          $$S^{(\of{h})}_{\of{i}}={{ S[h][i] | matrix:3 }}$$
+                        backward:
+                          label: '$\partial S_{\of{i}}$'
+                          title: 块 $\of{i}$：新状态的梯度分给两项
+                          text: |
+                            $S_{\of{i}}$ 的梯度来自下一块的三处使用（预测 value、query 读出、整块衰减）。最后一块的状态 HF 不返回（<code>output_final_state=False</code>），梯度是 0。
+                            $$\frac{\partial\ell}{\partial S^{(\of{h})}_{\of{i}}}={{ S[h][i].grad | matrix:3 }}$$
+            - of[h]: { op: 'cat(oc[h][1..(T+chunk-1)//chunk], dim=0)', tex: '\mathbf{o}_{\mathrm{pad}}^{(\of{h})}' }
+          steps:
+            - id: chunks
+              show: ['qc[h]', 'kc[h]', 'kbc[h]', 'vbc[h]', 'gc[h]']
+              label: '$\mathrm{reshape}$'
+              title: 取出 head $\of{h}$，切成 $C=\of{chunk}$ 个位置一块
+              text: |
+                HF 把所有 head 放在一个张量里一起算，图里每个 head 画一条竖道，先用 <code>select</code> 取出 head $\of{h}$，各 head 的步骤合成一步。然后是代码里的 <code>x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, k_beta, v_beta)</code>：把 $\of{(T+chunk-1)//chunk*chunk}$ 个位置切成 $N=\of{(T+chunk-1)//chunk}$ 块，每块 $C$ 个位置。<code>decay</code>（也就是 $\mathbf{g}$）按同样的方式切成 $N\times C$。下面的块内计算对所有块同时做，块之间的递推在最后。
+                $$\mathbf{g}^{(\of{h})}={{ gc[h] | matrix:3 }}$$
+              backward:
+                label: '$\partial(\text{head }\of{h})$'
+                title: 按位置拼回，放回 head $\of{h}$
+            - id: cumsum
+              show: 'cum[h]'
+              label: '$\mathrm{cumsum}$'
+              title: 块内累加对数衰减
+              text: |
+                <code>cum_decay = decay.cumsum(dim=3)</code>：在每一块里从块首累加 $g$，$c_{t}=\sum_{s\le t}g_{s}$。$g$ 是衰减的对数，所以 $e^{c_{t}}$ 是从块首到位置 $t$ 的衰减之积。累加只在块内，每块从 0 开始。
+                $$\mathbf{c}^{(\of{h})}={{ cum[h] | matrix:3 }}$$
+              backward:
+                label: '$\partial\mathbf{g}$'
+                title: 穿过 cumsum：从块尾往回累加
+                text: |
+                  $c_t$ 用到了块内 $s\le t$ 的每个 $g_s$，所以 $\partial\ell/\partial g_s=\sum_{t\ge s}\partial\ell/\partial c_t$，在块内从后往前累加。块内后面位置的梯度经过这里传给前面的位置。
+                  $$\frac{\partial\ell}{\partial\mathbf{g}^{(\of{h})}}={{ gc[h].grad | matrix:3 }}$$
+            - id: pairwise
+              show: 'pd[h]'
+              label: '$c_t-c_s$'
+              title: 两两之差 $c_t-c_s$
+              text: |
+                <code>cum_decay.unsqueeze(4) - cum_decay.unsqueeze(3)</code>：$(N, C, 1)$ 减 $(N, 1, C)$ 广播成 $(N, C, C)$，第 $t$ 行第 $s$ 列是 $c_t-c_s$，也就是从位置 $s$ 到位置 $t$ 的对数衰减。
+                $$C^{(\of{h})}={{ pd[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\mathbf{c}$'
+                title: 穿过两两之差
+                text: |
+                  $c_t$ 在第 $t$ 行里取正号，在第 $t$ 列里取负号，梯度是这一行之和减这一列之和。
+            - id: masked
+              show: 'pdm[h]'
+              label: '$\mathrm{masked\_fill}$'
+              title: 上三角填 $-\infty$
+              text: |
+                <code>pairwise_decay.masked_fill(strictly_upper_mask, float("-inf"))</code>：$s>t$ 的格子是未来的位置，填成 $-\infty$。HF 在取 exp 之前填，因为这些格子里的 $c_t-c_s$ 是正数，取 exp 可能溢出。
+                $$\bar{C}^{(\of{h})}={{ pdm[h] | slices:3 }}$$
+              backward:
+                label: '$\partial C$'
+                title: 穿过 masked_fill
+                text: 被填的格子与输入无关，梯度是 0；其余格子原样传下去。
+            - id: exp
+              show: 'pde[h]'
+              label: '$\exp$'
+              title: 取 exp，得到两两衰减 $D$
+              text: |
+                <code>pairwise_decay.exp()</code>：$D_{t,s}=e^{c_t-c_s}$ 是位置 $s$ 写入的内容到位置 $t$ 时剩下的比例，$e^{-\infty}=0$，上三角变成 0。
+                $$D^{(\of{h})}={{ pde[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\bar{C}$'
+                title: 穿过 exp
+                text: exp 的导数是它自己，上三角是 0，那里的梯度也是 0。
+            - id: kk
+              show: ['kT[h]', 'kk[h]']
+              label: '$\mathbf{k}_{\beta}\mathbf{k}^{\top}$'
+              title: 块内 $\mathbf{k}_{\beta}\mathbf{k}^{\top}$
+              text: |
+                <code>k_beta @ key.transpose(-1, -2)</code>：对每一块做 $(C, d_k)$ 乘 $(d_k, C)$，第 $t$ 行第 $s$ 列是 $\beta_t\,\hat{\mathbf{k}}_t\cdot\hat{\mathbf{k}}_s$。代码在这一行和下面 <code>query @ key.transpose(-1, -2)</code> 那一行各写了一次转置，转置只是换轴，图里两行共用一个 $\hat{\mathbf{k}}^{\top}$。
+                $$B^{(\of{h})}={{ kk[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\mathbf{k}_{\beta},\ \partial\mathbf{k}^{\top}$'
+                title: 传到 $\mathbf{k}_{\beta}$ 和 $\hat{\mathbf{k}}^{\top}$
+            - id: ut
+              show: 'ut[h]'
+              label: '$\of{ut[h]}$'
+              title: 乘衰减，得到方程组的系数 $A$
+              text: |
+                <code>ut_system = (k_beta @ key.transpose(-1, -2)) * pairwise_decay</code>：$A_{t,s}=\beta_t\,e^{c_t-c_s}\,\hat{\mathbf{k}}_t\cdot\hat{\mathbf{k}}_s$。块内的 delta rule 写入可以写成一个下三角方程组 $(I+\operatorname{tril}(A,-1))U=\mathbf{v}_{\beta}$，下面用 <code>solve_triangular</code> 解它。对角线和上三角在求解时不用。
+                $$A^{(\of{h})}={{ ut[h] | slices:3 }}$$
+              backward:
+                label: '$\partial B,\ \partial D$'
+                title: 穿过逐元素相乘
+            - id: qk
+              show: 'qk[h]'
+              label: '$\tilde{\mathbf{q}}\mathbf{k}^{\top}$'
+              title: 块内 $\tilde{\mathbf{q}}\mathbf{k}^{\top}$
+              text: |
+                <code>query @ key.transpose(-1, -2)</code>：每一块里 query 和 key 的点积，$(C, d_k)$ 乘 $(d_k, C)$。
+                $$Q^{(\of{h})}={{ qk[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\tilde{\mathbf{q}},\ \partial\mathbf{k}^{\top}$'
+                title: 传到 query 和 $\hat{\mathbf{k}}^{\top}$
+            - id: intra_attn
+              show: 'att[h]'
+              label: '$\of{att[h]}$'
+              title: 块内注意力 $\mathcal{P}=Q\odot D$
+              text: |
+                <code>intra_chunk_attn = (query @ key.transpose(-1, -2)) * pairwise_decay</code>：乘上两两衰减，上三角变成 0，对角线保留。它和 softmax 注意力的分数表位置相同，但不做 softmax。
+                $$\mathcal{P}^{(\of{h})}={{ att[h] | slices:3 }}$$
+              backward:
+                label: '$\partial Q,\ \partial D$'
+                title: 穿过逐元素相乘
+                text: |
+                  $D$ 从这里和 $A$ 那一步各收到一份梯度，两份相加后经过 exp、两两之差和 cumsum 传回 $\mathbf{g}$。
+                  $$\frac{\partial\ell}{\partial D^{(\of{h})}}={{ pde[h].grad | slices:3 }}$$
+            - id: decayed_k_beta
+              show: ['ec[h]', 'ecu[h]', 'dkb[h]']
+              label: '$\of{dkb[h]}$'
+              title: '$\mathbf{k}_{\beta}$ 乘块首到各位置的衰减'
+              text: |
+                <code>decayed_k_beta = k_beta * cum_decay.exp().unsqueeze(-1)</code>：第 $t$ 行乘 $e^{c_t}$。代码在这一行和后面 <code>query * cum_decay.exp().unsqueeze(-1)</code> 那一行各算了一次 <code>cum_decay.exp().unsqueeze(-1)</code>，两次的值相同，图里画一次。
+                $$\tilde{\mathbf{k}}_{\beta}^{(\of{h})}={{ dkb[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\mathbf{k}_{\beta},\ \partial e^{\mathbf{c}}$'
+                title: 穿过逐元素相乘
+            - id: new_values
+              show: 'nv[h]'
+              label: '$\of{nv[h]}$'
+              title: 解下三角方程组，得到 new_values
+              text: |
+                <code>new_values = torch.linalg.solve_triangular(ut_system, v_beta, upper=False, unitriangular=True)</code>：<code>unitriangular=True</code> 把对角线当作 1，<code>upper=False</code> 只用严格下三角，解 $(I+\operatorname{tril}(A,-1))\,U=\mathbf{v}_{\beta}$。按行从上往下代入：$U_t=\mathbf{v}_{\beta,t}-\sum_{s<t}A_{t,s}U_s$，也就是逐个位置做 delta rule 时，块内前面位置的写入对位置 $t$ 的影响被一次扣掉。每块的第 1 行前面没有位置，直接等于 $\mathbf{v}_{\beta}$ 的第 1 行。
+                $$U^{(\of{h})}={{ nv[h] | slices:3 }}$$
+              backward:
+                label: '$\partial A,\ \partial\mathbf{v}_{\beta}$'
+                title: 穿过 solve_triangular
+                text: |
+                  记 $L=I+\operatorname{tril}(A,-1)$。$\partial\ell/\partial\mathbf{v}_{\beta}=L^{-\top}\,\partial\ell/\partial U$，$L^{\top}$ 是上三角，所以块内后面位置的梯度传给前面的位置；$\partial\ell/\partial A=-\operatorname{tril}\big((\partial\ell/\partial\mathbf{v}_{\beta})U^{\top},-1\big)$，对角线和上三角是 0。
+                  $$\frac{\partial\ell}{\partial\mathbf{v}_{\beta}^{(\of{h})}}={{ vbc[h].grad | slices:3 }}$$
+            - id: k_cumdecay
+              show: 'kcd[h]'
+              label: '$\of{kcd[h]}$'
+              title: 同一个方程组，右边换成衰减后的 $\mathbf{k}_{\beta}$
+              text: |
+                <code>k_cumdecay = torch.linalg.solve_triangular(ut_system, decayed_k_beta, upper=False, unitriangular=True)</code>：系数还是 $A$。$W$ 在后面乘旧状态，给出旧状态对这一块每个位置的预测。
+                $$W^{(\of{h})}={{ kcd[h] | slices:3 }}$$
+              backward:
+                label: '$\partial A,\ \partial\tilde{\mathbf{k}}_{\beta}$'
+                title: 穿过 solve_triangular
+            - id: state0
+              show: 'S[h][0]'
+              label: '$S_{0}$'
+              title: 初始状态 $S_0=0$
+              text: |
+                <code>last_recurrent_state = torch.zeros(recurrent_state_shape, dtype=new_values.dtype, device=new_values.device)</code>，其中 <code>recurrent_state_shape = (batch_size, num_v_heads, k_head_dim, v_head_dim)</code>：没有缓存时 <code>initial_state</code> 是 None，状态从 0 开始。图里取出 head $\of{h}$ 的一份，$d_k\times d_v$。
+              backward:
+                label: '$\partial S_0$'
+                title: 初始状态是常量
+                text: $S_0$ 是常量，梯度到这里为止。
+            - id: query_decay
+              show: 'qd[h]'
+              label: '$\of{qd[h]}$'
+              title: query 乘块首到各位置的衰减
+              text: |
+                <code>query = query * cum_decay.exp().unsqueeze(-1)</code>，代码注释说「衰减只乘一次，不在每一块里乘」：第 $t$ 行乘 $e^{c_t}$，读旧状态时用。
+                $$\bar{\mathbf{q}}^{(\of{h})}={{ qd[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\tilde{\mathbf{q}},\ \partial e^{\mathbf{c}}$'
+                title: 穿过逐元素相乘
+            - id: key_decay
+              show: ['cl[h]', 'kg[h]', 'ke[h]', 'keu[h]', 'kd[h]']
+              label: '$\of{kd[h]}$'
+              title: key 乘各位置到块尾的衰减
+              text: |
+                <code>key = key * (cum_decay[..., -1:] - cum_decay).exp().unsqueeze(-1)</code>：第 $t$ 行乘 $e^{c_C-c_t}$，$c_C$ 是块尾的累计值，图中是 $\mathbf{c}_{\mathrm{last}}$，用 <code>[..., -1:]</code> 取出，保留这一维，写入状态时用。补出来的位置 $g=0$，不改变累计值。
+                $$\bar{\mathbf{k}}^{(\of{h})}={{ kd[h] | slices:3 }}$$
+              backward:
+                label: '$\partial\hat{\mathbf{k}},\ \partial\mathbf{c}$'
+                title: 穿过衰减
+                text: $c_t$ 和块尾的 $c_C$ 都从这里收到梯度，块尾这一项把块内每个位置的梯度都加到最后一个位置上。
+            - id: chunk_decay
+              show: ['cg[h]', 'ce[h]', 'ceu[h]', 'cd[h]']
+              label: '$\boldsymbol{\gamma}$'
+              title: 每一块的整块衰减
+              text: |
+                <code>chunk_decay = cum_decay[..., -1].exp()[..., None, None]</code>：取每块最后一个位置的累计值，图中是 $\mathbf{c}_{\mathrm{end}}$，用 <code>[..., -1]</code> 取出，去掉这一维，再取 exp，再补两个大小为 1 的维度，形状 $(N, 1, 1)$，后面和 $d_k\times d_v$ 的状态广播相乘。
+                $$\boldsymbol{\gamma}^{(\of{h})}={{ cd[h] | slices:3 }}$$
+              backward:
+                label: '$\partial c_{C}$'
+                title: 穿过 exp 和取最后一个位置
+            - id: reshape
+              show: 'of[h]'
+              label: '$\of{of[h]}$'
+              title: 各块的输出按位置拼起来
+              text: |
+                <code>core_attn_out = core_attn_out.reshape(padded_output_shape)</code>，其中 <code>padded_output_shape = (batch_size, num_v_heads, -1, v_head_dim)</code>：$N$ 块各 $C$ 行接起来，回到 $\of{(T+chunk-1)//chunk*chunk}$ 个位置。
+                $$\mathbf{o}_{\mathrm{pad}}^{(\of{h})}={{ of[h] | matrix:3 }}$$
+              backward:
+                label: '$\partial\mathbf{o}_{i}$'
+                title: 按块拆开
+      - ou[h]: { op: 'unsqueeze(of[h], 0)', tex: '\mathbf{o}_{\mathrm{pad}}^{(\of{h})\downarrow}' }
+  - core: { op: 'cat(ou[1..H], dim=0)', tex: '\mathbf{o}_{\mathrm{pad}}' }
+  - cs:   { op: 'narrow(core, 1, 0, T)', tex: '\mathbf{o}^{\prime}' }
+  - o:    { op: 'transpose(cs, 0, 1)', dtype: v }
+steps:
+  - id: transpose
+    show: [qh, kh, vh, bh, gh]
+    label: '$\mathrm{transpose}$'
+    title: 转成按 head 排列，转成 float32
+    text: |
+      <code>x.transpose(1, 2).to(torch.float32, memory_format=torch.contiguous_format)</code>：HF 的张量带 batch 维，形状 $(B, T, H, d)$ 换成 $(B, H, T, d)$；这里没有 batch 维，换的是第 0 维和第 1 维，$(T, H, d)$ 换成 $(H, T, d)$，每一行是一个 head。$\boldsymbol{\beta}$ 和 $\mathbf{g}$ 从 $(T, H)$ 换成 $(H, T)$。之后都在 float32 里算。
+      $$\mathbf{v}^{\prime}={{ vh | slices:2 }}$$
+    backward:
+      label: '$\partial\of{q},\ \partial\of{k},\ \partial\of{v},\ \partial\of{beta},\ \partial\of{g}$'
+      title: 转回 $(T, H, d)$
+  - id: scale
+    show: qs
+    label: '$\of{qs}$'
+    title: query 乘 $d_k^{-1/2}$
+    text: |
+      <code>scaling = query.shape[-1] ** -0.5</code>，<code>query = query * scaling</code>：query 再乘 $1/\sqrt{d_k}$；<code>use_qk_l2norm_in_kernel</code> 为 True 时乘的是归一化以后的 query。
+      $$\tilde{\mathbf{q}}={{ qs | slices:2 }}$$
+    backward:
+      label: '$\partial\hat{\mathbf{q}}$'
+      title: 穿过缩放
+  - id: pad
+    show: [qp, kp, vp, bp, gp]
+    label: '$\mathrm{pad}$'
+    title: 序列补到块长的整数倍
+    text: |
+      <code>pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size</code>，然后 <code>F.pad(x, (0, 0, 0, pad_size))</code> 在位置维的末尾补 0，$\boldsymbol{\beta}$ 和 $\mathbf{g}$ 用 <code>F.pad(x, (0, pad_size))</code>。HF 调用时用默认的 <code>chunk_size: int = 64</code>；这一页用 $C=\of{chunk}$，让 $T=\of{T}$ 个位置分成 $N=\of{(T+chunk-1)//chunk}$ 块，跨块的状态传递和补位都能画出来。结果与块长无关，块长只改变计算的分组方式。这里补了 $\of{(T+chunk-1)//chunk*chunk-T}$ 个位置，图上多出来的行全是 0：补位的 $\mathbf{k}$、$\mathbf{v}$、$\beta$ 都是 0，什么也不写；$g=0$ 时衰减是 $e^{0}=1$，不改变状态；它们的输出最后被切掉。
+      $$\mathbf{v}_{\mathrm{pad}}={{ vp | slices:2 }}$$
+    backward:
+      label: '$\partial\tilde{\mathbf{q}},\ \partial\hat{\mathbf{k}},\ \partial\mathbf{v}^{\prime},\ \partial\boldsymbol{\beta}^{\prime},\ \partial\mathbf{g}^{\prime}$'
+      title: 去掉补位的梯度
+      text: 补出来的位置不对应任何输入，它们的梯度在这里丢掉，其余位置原样传回。
+  - id: beta
+    show: [bu, vb, kb]
+    label: '$\mathbf{v}_{\beta},\ \mathbf{k}_{\beta}$'
+    title: value 和 key 乘写入强度 $\beta$
+    text: |
+      <code>v_beta = value * beta.unsqueeze(-1)</code>，<code>k_beta = key * beta.unsqueeze(-1)</code>：$\beta$ 补一个大小为 1 的维度，每个位置的 $\mathbf{v}$ 和 $\hat{\mathbf{k}}$ 整行乘自己的 $\beta$。代码在两行里各写了一次 <code>beta.unsqueeze(-1)</code>，图里画一次。
+      $$\mathbf{v}_{\beta}={{ vb | slices:2 }}$$
+    backward:
+      label: '$\partial\mathbf{v},\ \partial\hat{\mathbf{k}},\ \partial\boldsymbol{\beta}$'
+      title: 穿过乘 $\beta$
+      text: $\beta_t$ 的梯度是 $\mathbf{v}_t$、$\hat{\mathbf{k}}_t$ 两行各自与梯度的点积之和。
+  - id: mask
+    show: [ones, M]
+    label: '$M_{\triangle}$'
+    title: 严格上三角的 mask
+    text: |
+      <code>strictly_upper_mask = torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device).triu(1)</code>：$C\times C$，对角线以上是 1，表示块内一个位置不能看到的后面的位置。HF 在切块之后才建它；它只由块长决定，图里放在按 head 拆开之前，所有 head 共用。
+      $$M_{\triangle}={{ M | matrix }}$$
+    backward:
+      label: '$M$'
+      title: mask 是常量
+      text: mask 是常量，没有梯度。
+  - id: heads
+    show: ['ou[1..H]', core]
+    label: '$\of{core}$'
+    title: 各 head 放回同一个张量
+    text: |
+      HF 的 <code>core_attn_out</code> 本来就是 $(B, H, N C, d_v)$ 的一个张量；图里把各 head 的结果补出 head 维，再按 head 拼回 $(H, \of{(T+chunk-1)//chunk*chunk}, d_v)$。
+    backward:
+      label: '$\partial\mathbf{o}^{(h)}$'
+      title: 按 head 拆开
+  - id: unpad
+    show: cs
+    label: '$\of{cs}$'
+    title: 去掉补出来的位置
+    text: |
+      <code>core_attn_out = core_attn_out[:, :, :sequence_length]</code>：只留前 $T=\of{T}$ 个位置。
+      $$\mathbf{o}^{\prime}={{ cs | slices:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o}_{\mathrm{pad}}$'
+      title: 补位的梯度是 0
+      text: 被切掉的位置不影响损失，梯度补 0。
+  - id: stack
+    show: o
+    label: '$\of{o}$'
+    title: 转回 $(T, H, d_v)$ 和输入的 dtype
+    text: |
+      <code>core_attn_out = core_attn_out.transpose(1, 2).to(initial_dtype, memory_format=torch.contiguous_format)</code>：换回位置在前，转回输入的 dtype。
+      $$\of{o}={{ o | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{o}^{\prime}$'
+      title: 转回按 head 排列

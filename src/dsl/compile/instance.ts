@@ -93,8 +93,8 @@ export function compileInstance(
     if (inline && use[key] !== undefined) fail(child(env.where, use, key), `an inline instance has no box of its own, so it cannot have '${key}'`);
   }
   const tree: LayoutTree = inline ? { kind: 'module', children: [] } : { kind: 'module', title: titleOf(c, use, braceTitle, env), children: [] };
-  if (!inline && typeof use.subtitle === 'string') tree.subtitle = use.subtitle;
-  else if (!inline && typeof decl.subtitle === 'string') tree.subtitle = decl.subtitle;
+  if (!inline && typeof use.subtitle === 'string') tree.subtitle = c.ofText(use.subtitle, { ...env, where: child(env.where, use, 'subtitle') });
+  else if (!inline && typeof decl.subtitle === 'string') tree.subtitle = c.ofText(decl.subtitle, { ...childEnv, where: child(childEnv.where, decl, 'subtitle') });
   entries.push(tree);
   const rec = inline ? undefined : openModule(c, scope.path, tree.title as string, tree.subtitle, use, env);
   if (rec !== undefined) rec.defaults = { decl, env: childEnv };

@@ -1,0 +1,117 @@
+module: GatedResidualMix
+subtitle: Qwen4ExpTextGatedResidual
+import:
+  GroupedRMSNorm: ./grouped-rmsnorm.yaml
+  Sigmoid:        vizflow/nn/sigmoid
+  SiLU:           vizflow/nn/silu
+formula: '\step{mean}{\of{m}=\operatorname{mean}_k\big(}\step{mix_sigmoid.*}{\sigma\big(}\step{up}{W_{up}}\step{mix_act.*}{\operatorname{SiLU}\big(}\step{down}{W_{down}}\step{hc_norm.*}{\hat{H}}\step{scale_down}{/\of{hc}}\step{mix_act.*}{\big)}\step{mix_sigmoid.*}{\big)_k}\step{mean}{\odot\hat{H}_k\big)}'
+params:
+  hc: { type: dim }
+  r:  { type: dim }
+inputs:
+  H: { shape: [T, n] }
+outputs: [m, Hn]
+weights:
+  Wdown: { shape: [r, n], tex: 'W_{down}' }
+  Wup:   { shape: [n, r], tex: 'W_{up}' }
+body:
+  - hc_norm:
+      use: GroupedRMSNorm
+      params: { g: n // hc, intro: '<code>hyper_input_normed = self.hc_norm(hyper_input)</code>。' }
+      inputs: { x: H }
+      outputs: { out: Hn }
+      tex: { out: '\hat{\of{H}}' }
+  - down: { op: Hn @ Wdown.T, tex: '\hat{\of{H}}W_{down}^{\top}' }
+  - ds: { op: down / hc, tex: '\mathbf{u}' }
+  - mix_act:
+      use: SiLU
+      inputs: { x: ds }
+      outputs: { out: sd }
+      tex: { out: '\operatorname{SiLU}(\mathbf{u})' }
+      steps:
+        sigmoid.neg:
+          append: 这里算的是 <code>F.silu(self.input_mix_weight_down(hyper_input_normed) / self.hc_count)</code>。
+  - up: { op: sd @ Wup.T, tex: '\mathbf{a}' }
+  - mix_sigmoid:
+      use: Sigmoid
+      inputs: { x: up }
+      outputs: { out: A }
+      tex: { out: 'A' }
+      steps:
+        neg:
+          append: 这里算的是 <code>torch.sigmoid(self.input_mix_weight_up(...))</code>：$A$ 在 0 和 1 之间，决定从每条流的每一维读出多少。$A$ 由当前位置的输入算出，所以每个位置的读法不同。
+  - A3: { op: 'view(A, T, hc, n // hc)', tex: 'A^{(k)}' }
+  - Hn3: { op: 'view(Hn, T, hc, n // hc)', tex: '\hat{\of{H}}^{(k)}' }
+  - prod: { op: A3 * Hn3, tex: 'A^{(k)}\odot\hat{\of{H}}^{(k)}' }
+  - m: { op: 'mean(prod, -2)', tex: '\mathbf{m}' }
+steps:
+  - id: down
+    show: [Wdown.T, down]
+    brace: { title: input_mix_weight_down, subtitle: 'nn.Linear，$\of{n}\to\of{r}$' }
+    label: '$\of{down}$'
+    title: 低秩投影：$\of{n}\to\of{r}$
+    text: |
+      <code>self.input_mix_weight_down(hyper_input_normed)</code>：把 $\of{hc}$ 条流拼成的一行（宽 $\of{n}$）投影到低秩 $r=\of{r}$，没有 bias。每个位置只看自己这一行，所有流的信息在这里混到一起。
+      $$\of{down}={{ down | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{down},\ \partial\of{Hn}$'
+      title: 传到 $W_{down}$ 和 $\of{Hn}$
+      text: |
+        $$\frac{\partial\ell}{\partial W_{down}}={{ Wdown.grad | matrix:3 }}$$
+  - id: scale_down
+    show: ds
+    label: '$/\,\of{hc}$'
+    title: 除以流数 $\of{hc}$
+    text: |
+      <code>... / self.hc_count</code>：低秩投影的结果先除以流数 $\of{hc}$，再进 SiLU。
+      $$\mathbf{u}={{ ds | matrix:3 }}$$
+    backward:
+      label: '$\partial\,\of{down}$'
+      title: 穿过除法
+      text: 局部导数是 $1/\of{hc}$。
+  - id: up
+    show: [Wup.T, up]
+    brace: { title: input_mix_weight_up, subtitle: 'nn.Linear，$\of{r}\to\of{n}$' }
+    label: '$\of{up}$'
+    title: 投影回 $\of{n}$
+    text: |
+      <code>self.input_mix_weight_up(...)</code>：从 $r=\of{r}$ 投影回 $\of{n}$，每条流、每一维各得到一个分数。
+      $$\mathbf{a}={{ up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{up},\ \partial\operatorname{SiLU}(\mathbf{u})$'
+      title: 传到 $W_{up}$
+      text: |
+        $$\frac{\partial\ell}{\partial W_{up}}={{ Wup.grad | matrix:3 }}$$
+  - id: unflatten
+    show: [A3, Hn3]
+    label: '$\mathrm{unflatten}$'
+    title: 按流拆开
+    text: |
+      <code>.unflatten(-1, (self.hc_count, self.hidden_size))</code>：$\of{A}$ 和 $\of{Hn}$ 都从 $(T, \of{n})$ 变成 $(T, \of{hc}, \of{n//hc})$，第 $k$ 行是第 $k$ 条流。
+      $$A^{(k)}={{ A3 | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{A},\ \partial\of{Hn}$'
+      title: 拼回一行
+  - id: weigh
+    show: prod
+    label: '$\of{prod}$'
+    title: 逐元素加权
+    text: |
+      <code>input_mix_weight * hyper_input_normed.unflatten(...)</code>：每条流按自己的权重逐元素缩放。
+      $$\of{prod}={{ prod | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{A3},\ \partial\of{Hn3}$'
+      title: 传到两个因子
+  - id: mean
+    show: m
+    label: '$\of{m}=\operatorname{mean}_k$'
+    title: 对流取平均
+    text: |
+      <code>.mean(dim=-2)</code>：$\of{hc}$ 条流的加权结果取平均，得到宽 $d=\of{n//hc}$ 的一行，作为子层（注意力或 MoE）的输入。
+      $$\mathbf{m}={{ m | matrix:2 }}$$
+    backward:
+      label: '$\partial(\of{prod})$'
+      title: 平均的反向：均分给每条流
+      text: |
+        每条流分到 $1/\of{hc}$。
+        $$\frac{\partial\ell}{\partial\mathbf{m}}={{ m.grad | matrix:3 }}$$

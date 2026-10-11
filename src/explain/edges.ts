@@ -1,5 +1,6 @@
-import { type Node, type OpCtx, type OpExplain, opDef } from '../autograd';
+import { type Node, type OpCtx, type OpExplain, inputDifferentiable, opDef } from '../autograd';
 import { broadcastIndex, forEachIndex, indexOf, normDim, normDims, reduceMap } from '../tensor';
+import { isBatched } from '../autograd/ops/matmul';
 import { type CellRef, type ElemRef, matmulOperands } from './elem';
 
 export interface FlowEdge {
@@ -17,8 +18,7 @@ export function contextOf(node: Node): OpCtx {
 
 function flowArgs(node: Node): number[] {
   const def = opDef(node.op as string);
-  const flags = def?.differentiable;
-  return node.inputs.map((_, arg) => arg).filter((arg) => (node.inputs[arg].grad !== null || node.inputs[arg].kind === 'buffer') && (flags === undefined || flags[arg]));
+  return node.inputs.map((_, arg) => arg).filter((arg) => (node.inputs[arg].grad !== null || node.inputs[arg].kind === 'buffer') && (def === undefined || inputDifferentiable(def, arg)));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
@@ -79,8 +79,26 @@ function denseEdges(op: Node, args: number[]): FlowEdge[] {
   return edges;
 }
 
-function contractEdges(op: Node): FlowEdge[] {
+function batchedContractEdges(op: Node, args: number[]): FlowEdge[] {
   const [A, B] = op.inputs;
+  const inner = B.shape[B.shape.length - 2];
+  const edges: FlowEdge[] = [];
+  forEachIndex(op.shape, (out) => {
+    const batch = out.slice(0, -2);
+    const row = out[out.length - 2];
+    const col = out[out.length - 1];
+    for (let k = 0; k < inner; k++) {
+      const suffix = `${out.join(',')}:${k}`;
+      if (args.includes(0)) edges.push(edge(op, 0, suffix, { node: A, index: [...broadcastIndex(batch, A.shape.slice(0, -2)), row, k] }, { node: op, index: out }));
+      if (args.includes(1)) edges.push(edge(op, 1, suffix, { node: B, index: [...broadcastIndex(batch, B.shape.slice(0, -2)), k, col] }, { node: op, index: out }));
+    }
+  });
+  return edges;
+}
+
+function contractEdges(op: Node, args: number[]): FlowEdge[] {
+  const [A, B] = op.inputs;
+  if (op.op === 'matmul' && isBatched(A.shape, B.shape)) return batchedContractEdges(op, args);
   const rows = A.shape.length === 1 ? 1 : A.shape[0];
   const inner = B.shape[0];
   const cols = B.shape.length === 1 ? 1 : B.shape[1];
@@ -126,7 +144,7 @@ export function edgesOf(op: Node, def: OpExplain): FlowEdge[] {
     case 'dense':
       return denseEdges(op, args);
     case 'contract':
-      return contractEdges(op);
+      return contractEdges(op, args);
     case 'select':
       return selectEdges(op, args, def, ctx);
   }

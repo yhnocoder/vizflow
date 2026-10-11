@@ -1,5 +1,5 @@
 import { Vector3 } from 'three';
-import type { Node } from '../autograd';
+import { type Node, isIntegerDtype } from '../autograd';
 import { render } from '../formula';
 import { isLeafLike } from '../steps';
 import { formatNumber } from '../tensor';
@@ -27,8 +27,8 @@ function texOf(label: Label, tex: string): void {
   label.setContent(tex, () => render(tex));
 }
 
-function valueOf(label: Label, v: number): void {
-  if (Number.isFinite(v)) label.setText(formatNumber(v));
+function valueOf(label: Label, v: number, integer: boolean): void {
+  if (Number.isFinite(v)) label.setText(formatNumber(v, integer ? { digits: 0 } : {}));
   else texOf(label, formatNumber(v, { tex: true }));
 }
 
@@ -146,6 +146,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const far = renderable.far;
   const clear = !renderable.seeThrough;
   const values = valuesOf(c, node);
+  const integer = !backward && isIntegerDtype(node.dtype);
   const scale = renderable.scale[dir];
   for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
   const heights = new Float64Array(block.elements.length);
@@ -173,7 +174,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
-      valueOf(label, values[i]);
+      valueOf(label, values[i], integer);
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       const rowShown = !c.follow || element.z === front || zoom >= VALUE_ALL_ROWS_ZOOM;
@@ -188,7 +189,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     title.anchor = 'above-right';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
-      valueOf(label, values[i]);
+      valueOf(label, values[i], integer);
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       label.pos = [element.x + NODE_VALUE_OFFSET, element.y + mesh.height / 2, element.z];
@@ -211,6 +212,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     const text = block.rowLabels[i];
     label.setText(text.text);
     label.pos = [text.x, text.y, text.z];
+    label.anchor = text.anchor === 'right' ? 'left-middle' : 'right-middle';
     label.visible = named;
   });
   const ticks = renderable.ticks[dir];
@@ -247,8 +249,9 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   const far = renderable.far;
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
-    colors.push(barColor(values[i], c.theme, { active: revealed && active, far, focused }));
-    outline.push(outlineOpacity({ active: active && revealed, far, tile: block.shape === 'tile' }));
+    const faded = far || block.slabs?.[element.index[0]]?.used === false;
+    colors.push(barColor(values[i], c.theme, { active: revealed && active, far: faded, focused }));
+    outline.push(outlineOpacity({ active: active && revealed, far: faded, tile: block.shape === 'tile' }));
     const label = renderable.values[i];
     if (label !== undefined) {
       const h = heights[i];

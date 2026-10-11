@@ -98,7 +98,7 @@ export class CompilerState {
   takeValue(path: string): Nested | undefined {
     if (!(path in this.values)) return undefined;
     this.usedValues.add(path);
-    return this.values[path] as Nested;
+    return exactStrings(this.values[path]);
   }
 
   initValues(kind: string, shape: number[]): Nested {
@@ -142,4 +142,10 @@ export class CompilerState {
   fail(env: Env, message: string, offset?: number): never {
     return fail(env.where, message, offset);
   }
+}
+
+function exactStrings(value: unknown): Nested {
+  if (Array.isArray(value)) return value.map(exactStrings);
+  if (typeof value === 'string' && /^-?\d+$/.test(value)) return BigInt(value);
+  return value as Nested;
 }

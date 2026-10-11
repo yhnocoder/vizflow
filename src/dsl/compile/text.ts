@@ -1,4 +1,5 @@
 import { Node } from '../../autograd';
+import { forEachIndex } from '../../tensor';
 import { trailingSubscript } from '../../explain';
 import type { BackwardOverride } from '../../steps';
 import { checkFigure, figureNames, figureTag } from '../../ui/figure-spec';
@@ -28,6 +29,18 @@ function matrixTemplate(name: string, shape: readonly number[], format: string):
     return heads === 1 ? block : `${block}_{h=${index.map((i) => i + 1).join(',')}}`;
   });
   return heads === 1 ? blocks[0] : `\\left[\\,${blocks.join('\\;\\;')}\\,\\right]`;
+}
+
+function slicesTemplate(name: string, shape: readonly number[], format: string): string {
+  if (shape.length <= 2) return matrixTemplate(name, shape, format);
+  const leading = shape.slice(0, -2);
+  const [rows, cols] = shape.slice(-2);
+  const blocks: string[] = [];
+  forEachIndex(leading, (index) => {
+    const lines = [...Array(rows).keys()].map((r) => [...Array(cols).keys()].map((c) => ` {{${name}[${[...index, r, c].join(', ')}]${format}}} `).join('&'));
+    blocks.push(`\\begin{pmatrix}${lines.join('\\\\')}\\end{pmatrix}_{[${index.map((i) => i + 1).join(',')}]}`);
+  });
+  return blocks.length === 1 ? blocks[0] : `\\left[\\,${blocks.join('\\;\\;')}\\,\\right]`;
 }
 
 export class Compiler extends ExpressionCompiler {
@@ -108,7 +121,7 @@ export class Compiler extends ExpressionCompiler {
     const pipe = source.lastIndexOf('|');
     if (pipe >= 0) {
       const filter = source.slice(pipe + 1).trim();
-      const match = /^matrix(?::(\d+))?$/.exec(filter);
+      const match = /^(matrix|slices)(?::(\d+))?$/.exec(filter);
       let target = source.slice(0, pipe).trim();
       if (match === null) {
         const [name, ...args] = filter.split(':').map((part) => part.trim());
@@ -124,7 +137,8 @@ export class Compiler extends ExpressionCompiler {
         target = target.slice(0, -5);
       }
       const node = this.node(target, env);
-      return matrixTemplate(`${node.name}${grad}`, node.shape, match[1] === undefined ? '' : `:${match[1]}`);
+      const layout = match[1] === 'slices' ? slicesTemplate : matrixTemplate;
+      return layout(`${node.name}${grad}`, node.shape, match[2] === undefined ? '' : `:${match[2]}`);
     }
     return `{{${this.rewriteNames(source, env)}}}`;
   }

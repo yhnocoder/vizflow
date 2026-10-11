@@ -11,14 +11,17 @@ params:
   dh:    { type: dim }
   rd:    { type: dim }
   theta: { type: float, default: 1e7 }
+  model: { type: text, default: Qwen3.5 }
+  norm_class: { type: text, default: Qwen3_5RMSNorm }
 inputs:
-  x: { shape: [T, d] }
+  x:    { shape: [T, d] }
+  mask: { shape: [T, T] }
 outputs: [att]
 fold:
   label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
   title: self_attn（已折叠）
   text: |
-    q/k/v 投影、q_norm/k_norm、部分维度的 RoPE、eager_attention_forward、输出门和 o_proj 都收进了盒子，对应 HF 里 <code>self.self_attn(hidden_states)</code>。位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以 Jacobian 是块下三角。
+    q/k/v 投影、q_norm/k_norm、部分维度的 RoPE、eager_attention_forward、输出门和 o_proj 都收进了盒子，对应 HF 里 <code>hidden_states, _ = self.self_attn(</code> 这一次调用。位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以 Jacobian 是块下三角。
     $$\of{att}={{ att | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\of{x}$'
@@ -30,8 +33,6 @@ weights:
   Wk: { shape: [Hkv*dh, d] }
   Wv: { shape: [Hkv*dh, d] }
   Wo: { shape: [d, H*dh] }
-buffers:
-  M: { value: causal_mask(T) }
 body:
   - qg: { op: 'view(x @ Wq.T, T, H, 2*dh)', tex: '[\mathbf{q}\,|\,\mathbf{g}_{o}]' }
   - q: 'narrow(qg, -1, 0, dh)'
@@ -40,7 +41,7 @@ body:
   - v: 'view(x @ Wv.T, T, Hkv, dh)'
   - qk_norm:
       title: q_norm $\cdot$ k_norm
-      subtitle: Qwen3_5RMSNorm，按 head_dim
+      subtitle: \of{norm_class}，按 head_dim
       fold:
         label: '$\of{qn},\ \of{kn}$'
         title: q_norm 和 k_norm（已折叠）
@@ -101,7 +102,7 @@ body:
           label: '$\mathrm{rot},\ \mathrm{pass}$'
           title: 每个 head 切成旋转和不旋转两段
           text: |
-            Qwen3.5 的 partial_rotary_factor 是 0.25：每个 head 只有前 $r=d_h/4$ 维参与 RoPE，真实模型里是 256 维里的前 64 维，这里是 \of{dh} 维里的前 \of{rd} 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。Qwen3.5 的 RoPE 是多模态的 mRoPE：<code>position_ids</code> 扩成时间、高、宽三份，按 <code>mrope_section</code> 交错分配频率；只有文本时三份位置相同，结果就是这里画的一维 RoPE。
+            \of{model} 的 partial_rotary_factor 是 0.25：每个 head 只有前 $r=d_h/4$ 维参与 RoPE，真实模型里是 256 维里的前 64 维，这里是 \of{dh} 维里的前 \of{rd} 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。Qwen3.5 的 RoPE 是多模态的 mRoPE：<code>position_ids</code> 扩成时间、高、宽三份，按 <code>mrope_section</code> 交错分配频率；只有文本时三份位置相同，结果就是这里画的一维 RoPE。
             $$\bar{\mathbf{q}}_{\mathrm{rot}}={{ q_rot | matrix:2 }}$$
           backward:
             label: '$\partial\bar{\mathbf{q}},\ \partial\bar{\mathbf{k}}$'
@@ -119,7 +120,7 @@ body:
   - eager_attention_forward:
       use: GQA
       inline: true
-      inputs: { q: qr, k: kr, v: v, mask: M }
+      inputs: { q: qr, k: kr, v: v, mask: mask }
       outputs: { o: o }
       brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
   - gate_sigmoid:

@@ -1,4 +1,4 @@
-import { type Node, moduleJacobian } from '../autograd';
+import { type Node, isIntegerDtype, moduleJacobian } from '../autograd';
 import { render, renderText } from '../formula';
 import type { StepModule } from '../steps';
 import { formatNumber, formatShape, offsetOf } from '../tensor';
@@ -92,7 +92,7 @@ export class ScenePopups {
     fragment.appendChild(head);
     const line = document.createElement('div');
     line.className = 'vf-m';
-    line.appendChild(render(`= ${value === -Infinity ? '-\\infty' : formatNumber(value, { digits: TIP_DIGITS, tex: true })}`));
+    line.appendChild(render(`= ${value === -Infinity ? '-\\infty' : formatNumber(value, { digits: !backward && isIntegerDtype(node.dtype) ? 0 : TIP_DIGITS, tex: true })}`));
     fragment.appendChild(line);
     const name = document.createElement('div');
     name.className = 'vf-s';
@@ -117,7 +117,8 @@ export class ScenePopups {
 
   private gridOf(node: Node): ValueGrid {
     const [, cols] = rowsCols(node.shape);
-    return { label: this.c.state.dir === 'backward' ? '梯度' : '当前值', values: valuesOf(this.c, node), cols, heads: node.shape.length === 3 ? node.shape[1] : undefined };
+    const backward = this.c.state.dir === 'backward';
+    return { label: backward ? '梯度' : '当前值', values: valuesOf(this.c, node), cols, heads: node.shape.length === 3 ? node.shape[1] : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
   }
 
   showNodeCard(node: Node, el: HTMLElement): void {

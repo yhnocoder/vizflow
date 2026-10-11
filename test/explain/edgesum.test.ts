@@ -226,6 +226,173 @@ const cases: Case[] = [
       return { out: g.where(keep, x, -1e9), inputs: [x] };
     },
   },
+  {
+    op: 'greater',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.greater(x, 0), inputs: [x] };
+    },
+  },
+  {
+    op: 'topk_indices',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.topk_indices(x, 2, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'one_hot',
+    build: (g) => {
+      const t = g.label('t', [[0, 2], [1, 0]]);
+      return { out: g.one_hot(t, 3), inputs: [] };
+    },
+  },
+  {
+    op: 'nonzero_static',
+    build: (g) => {
+      const m = g.label('m', [[0, 1, 1], [1, 0, 0]]);
+      return { out: g.nonzero_static(m, { size: 4 }), inputs: [] };
+    },
+  },
+  {
+    op: 'permute',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 4], randomValues(r, [2, 3, 4]));
+      return { out: g.permute(x, 2, 0, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'index',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const rows = g.label('rows', [2, 0, 2, 1, 2]);
+      return { out: g.index(x, [rows]), inputs: [x] };
+    },
+  },
+  {
+    op: 'index',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2], randomValues(r, [3, 2]));
+      const rows = g.label('rows', [2, 0, 2, 1]);
+      const cols = g.label('cols', [1, 1, 1, 0]);
+      return { out: g.index(x, [rows, cols]), inputs: [x] };
+    },
+  },
+  {
+    op: 'index_add',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2], randomValues(r, [3, 2]));
+      const index = g.label('index', [2, 0, 2, 2]);
+      const source = g.input('s', [4, 2], randomValues(r, [4, 2]));
+      return { out: g.index_add(x, 0, index, source), inputs: [x, source] };
+    },
+  },
+  {
+    op: 'grouped_linear',
+    build: (g, r) => {
+      const x = g.input('x', [5, 3], randomValues(r, [5, 3]));
+      const w = g.input('w', [4, 2, 3], randomValues(r, [4, 2, 3]));
+      const group = g.label('group', [0, 0, 1, 3, 3]);
+      return { out: g.grouped_linear(x, w, group), inputs: [x, w] };
+      },
+    },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [2, 4, 3]) },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [4, 2]) },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [3, 4], [2, 1, 4, 2]) },
+  {
+    op: 'cumsum',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.cumsum(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'cumsum',
+    build: (g, r) => {
+      const x = g.input('x', [2, 4], randomValues(r, [2, 4]));
+      return { out: g.cumsum(x, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'unsqueeze',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.unsqueeze(x, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'pad',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.pad(x, 0, 0, 1, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'triu',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.triu(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'masked_fill',
+    build: (g, r) => {
+      const mask = g.label('mask', [[0, 1, 1], [0, 0, 1], [0, 0, 0]]);
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.masked_fill(x, mask, -1e9), inputs: [x] };
+    },
+  },
+  {
+    op: 'solve_triangular',
+    build: (g, r) => {
+      const A = g.input('A', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      const B = g.input('B', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.solve_triangular(A, B, { upper: false, unitriangular: true }), inputs: [A, B] };
+    },
+  },
+  {
+    op: 'solve_triangular',
+    build: (g, r) => {
+      const A = g.input('A', [3, 3], randomValues(r, [3, 3], true));
+      const B = g.input('B', [3, 2], randomValues(r, [3, 2]));
+      return { out: g.solve_triangular(A, B, { upper: true }), inputs: [A, B] };
+      },
+    },
+  { op: 'remainder', build: (g, r) => binary(g, r, 'remainder', [2, 3], [3], true) },
+  { op: 'remainder', build: (g, r) => scalar(g, r, 'remainder', 0.7) },
+  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge'] as const).map((op) => ({
+    op,
+    build: (g: Graph) => {
+      const a = g.label('a', [[3, 1, 2], [0, 5, 4]]);
+      const b = g.label('b', [2, 1, 6]);
+      return { out: (g as unknown as Record<string, (...args: unknown[]) => Node>)[op](a, b), inputs: [] };
+    },
+  })),
+  { op: 'abs', build: (g, r) => unary(g, r, 'abs', [2, 3]) },
+  { op: 'sign', build: (g, r) => unary(g, r, 'sign', [2, 3]) },
+  { op: 'clamp_min', build: (g, r) => scalar(g, r, 'clamp_min', 0.3) },
+  {
+    op: 'repeat',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.repeat(x, 2, 1, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'cummax',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.cummax(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'causal_conv1d',
+    build: (g, r) => {
+      const x = g.input('x', [7, 2], randomValues(r, [7, 2]));
+      const w = g.input('w', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.causal_conv1d(x, w, { dilation: 2 }), inputs: [x, w] };
+    },
+  },
 ];
 
 function binary(g: Graph, r: () => number, op: string, a: number[], b: number[], positive = false) {

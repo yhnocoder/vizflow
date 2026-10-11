@@ -14,7 +14,7 @@ function scopeNodes(scope: Scope): Node[] {
 
 function resolvedNodes(text: string, found: Resolved, env: Env): Node[] | undefined {
   if (found instanceof Node) return [found];
-  if (Array.isArray(found)) return found;
+  if (Array.isArray(found) && found.every((n) => n instanceof Node)) return found;
   if (found instanceof Scope) {
     const nodes = scopeNodes(found).filter((n) => !isLeafLike(n));
     if (nodes.length === 0) fail(env.where, `module instance '${text}' has no computed tensors to point at`);
