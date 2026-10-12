@@ -40,21 +40,7 @@ body:
       tex: { out: '\mathbf{y}^{\mathrm{r}}' }
       steps:
         clamp_up:
-          text: |
-            <code>up = torch.clamp(up, min=-self.swiglu_limit, max=self.swiglu_limit)</code>：参考实现先截 up，两边都截，限制在 $[-L, L]$，$L=\of{limit}$。这一页用 $L=\of{limit}$，让截断在小数值上也能看到；真实模型里 swiglu_limit $=10$。参考实现的注释说明，截断来自训练，让 FP8、FP4 的激活值不越界。
-            $$\bar{\mathbf{up}}={{ experts.uc | matrix:2 }}$$
-        clamp_gate:
-          text: |
-            <code>gate = torch.clamp(gate, max=self.swiglu_limit)</code>：再截 gate，只截上界。
-            $$\bar{\mathbf{gate}}={{ experts.gc | matrix:2 }}$$
-        mul:
-          text: |
-            <code>x = F.silu(gate) * up</code>：激活后的 gate 和截断后的 up 逐元素相乘。
-            $$\mathbf{m}={{ experts.hidden | matrix:2 }}$$
-        weight:
-          text: |
-            每一行取出位置 ${ \mathbf{i}^{t}}_r$、槽位 ${ \mathbf{i}^{k}}_r$ 的路由权重，对应 <code>weights[idx, top, None]</code>。
-            $$\mathbf{w}^{s}={{ experts.weight | matrix:3 }}$$
+          append: 这一页用 $L=\of{limit}$，让截断在小数值上也能看到；真实模型里 swiglu_limit $=10$。
   - shared_experts:
       use: GLU
       subtitle: Expert，共享专家
@@ -68,10 +54,6 @@ body:
           text: |
             共享专家是同一个 <code>Expert</code> 类，只是调用时不传路由权重：<code>self.shared_experts(x)</code>。w1 把 $\of{x}$ 投影到 $f=\of{f}$ 维，没有 bias。
             $$\mathbf{gate}={{ shared_experts.gate | matrix:2 }}$$
-        clamp_gate:
-          text: |
-            先截 up，再截 gate 的上界，和路由专家相同。
-            $$\bar{\mathbf{gate}}={{ shared_experts.gc | matrix:2 }}$$
   - y: { op: routed + shared, tex: '\mathbf{y}' }
   - out: { op: identity(y), dtype: x, tex: '\mathbf{y}_{\mathrm{cast}}' }
 steps:
