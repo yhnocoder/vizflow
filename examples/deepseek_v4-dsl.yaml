@@ -33,7 +33,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。跨位置的梯度经过注意力权重和 compressor 的池化。indexer 只决定每个位置看哪些压缩条目，选择不可导，HF 也在 <code>torch.no_grad()</code> 下运行它，所以它没有梯度。MoE 里挑选专家的那部分计算同样没有梯度。
+      整条反向路径一起显示。跨位置的梯度经过注意力权重和 compressor 的池化。indexer 只决定每个位置看哪些压缩条目，它的输出是 top-k 的编号，编号不可导，所以 indexer 的参数收不到梯度。HF 没有把 indexer 放在 <code>torch.no_grad()</code> 里，梯度停在 topk 这一步。MoE 里挑选专家的那部分计算同样没有梯度。
       $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -320,7 +320,7 @@ steps:
     label: '$\of{X0}$'
     title: 复制成 \of{N} 条 stream
     text: |
-      embedding 先写成 $(T, 1, d)$，再复制成 $N=\of{N}$ 条相同的 residual stream，对应 <code>inputs_embeds.unsqueeze(2).expand(-1, -1, hc_mult, -1)</code>。真实模型里 hc_mult $=4$。之后每一层都在这 $N$ 条 stream 上计算，直到 hc_head 再把它们合成一条。
+      embedding 先写成 $(T, 1, d)$，再复制成 $N=\of{N}$ 条相同的 residual stream，对应 <code>inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()</code>。真实模型里 hc_mult $=4$。之后每一层都在这 $N$ 条 stream 上计算，直到 hc_head 再把它们合成一条。
       $$\of{X0}={{ X0 | matrix:2 }}$$
     backward:
       label: '$\partial\of{e}$'
@@ -373,16 +373,17 @@ panels:
     note: 行是 query 的位置。前 $T$ 列是滑动窗口里的 token，后面的列是压缩条目；窗口外的 token 和 indexer 没选中的条目，权重是 0。每一行的和小于 1，差的那一部分给了 sink。
   - title: 对应的 PyTorch
     code: |-
-      # transformers DeepseekV4，layer_types 从第 3 层起 CSA 和 HCA 交替
-      X = model.embed_tokens(input_ids).unsqueeze(2).expand(-1, -1, hc_mult, -1)
+      # transformers DeepseekV4；V4-Flash 的 compress_ratios 是 [0, 0, 4, 128, 4, 128, ...]：第 1、2 层只有滑动窗口，第 3 层起 CSA 和 HCA 交替
+      X = model.embed_tokens(input_ids).unsqueeze(2).expand(-1, -1, hc_mult, -1).contiguous()
+      dtype = X.dtype
       X = layers[:2](X)                                      # 图里是占位盒子
       for layer in model.layers[2:4]:                        # 第 3 层 CSA，第 4 层 HCA
           post, comb, x = layer.attn_hc(X)
           y = layer.self_attn(layer.input_layernorm(x))
-          X = post.unsqueeze(-1) * y.unsqueeze(-2) + comb.transpose(-1, -2) @ X
+          X = post.to(dtype).unsqueeze(-1) * y.unsqueeze(-2) + comb.to(dtype).transpose(-1, -2) @ X
           post, comb, x = layer.ffn_hc(X)
           y = layer.mlp(layer.post_attention_layernorm(x), input_ids)
-          X = post.unsqueeze(-1) * y.unsqueeze(-2) + comb.transpose(-1, -2) @ X
+          X = post.to(dtype).unsqueeze(-1) * y.unsqueeze(-2) + comb.to(dtype).transpose(-1, -2) @ X
       X = layers[4:](X)                                      # 图里是占位盒子
       logp = F.log_softmax(lm_head(model.norm(model.hc_head(X))).float(), -1)
       loss = F.nll_loss(logp.view(-1, V), labels.view(-1))

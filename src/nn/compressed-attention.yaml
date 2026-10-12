@@ -364,7 +364,7 @@ steps:
     label: '$\of{og}$'
     title: 把 head 分成 $g$ 组
     text: |
-      \of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维，对应 <code>attn_output.reshape(..., o_groups, -1)</code>。真实模型 64 个 head 分 8 组，每组 4096 维。
+      \of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维，对应 <code>attn_output.reshape(*input_shape, self.config.o_groups, -1)</code>。真实模型 64 个 head 分 8 组，每组 4096 维。
     backward:
       label: '$\partial\mathbf{o}''$'
       title: 拼回去

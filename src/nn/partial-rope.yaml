@@ -27,15 +27,15 @@ fold:
 body:
   - x_pass: { op: 'narrow(x, -1, 0, dh - rd)', tex: '{ \of{x}}_{\mathrm{pass}}' }
   - x_rot:  { op: 'narrow(x, -1, dh - rd, rd)', tex: '{ \of{x}}_{\mathrm{rot}}' }
-  - xc:     { op: x_rot * cos, tex: '\of{x_rot}\odot\cos' }
+  - xc:     { op: x_rot * cos, tex: '\of{x_rot}\odot\cos', dtype: fp32 }
   - xp:     { op: 'view(x_rot, N, Hx, rd // 2, 2)', tex: '\of{x_rot}^{\mathrm{pair}}' }
   - x1:     { op: 'select(xp, -1, 0)', tex: '{ \of{x_rot}}_{0::2}' }
   - x2:     { op: 'select(xp, -1, 1)', tex: '{ \of{x_rot}}_{1::2}' }
   - nx2:    { op: -x2, tex: '-{ \of{x_rot}}_{1::2}' }
   - st:     { op: 'cat([view(nx2, N, Hx, rd // 2, 1), view(x1, N, Hx, rd // 2, 1)], dim=-1)', tex: '\operatorname{stack}(-{ \of{x_rot}}_{1::2},{ \of{x_rot}}_{0::2})' }
   - xrh:    { op: 'view(st, N, Hx, rd)', tex: '\mathrm{rh}(\of{x_rot})' }
-  - xs:     { op: xrh * sin, tex: '\mathrm{rh}(\of{x_rot})\odot\sin' }
-  - rot:    { op: 'xc - xs if inverse else xc + xs', tex: "\\of{x_rot}'" }
+  - xs:     { op: xrh * sin, tex: '\mathrm{rh}(\of{x_rot})\odot\sin', dtype: fp32 }
+  - rot:    { op: 'xc - xs if inverse else xc + xs', tex: "\\of{x_rot}'", dtype: x }
   - out:    { op: 'cat([x_pass, rot], dim=-1)' }
 steps:
   - id: split
@@ -53,7 +53,7 @@ steps:
     label: '$\odot\cos$'
     title: 乘 cos
     text: |
-      cos 和 sin 表的第 $n$ 行对应位置 $p_n=n\cdot\of{stride}$（$n$ 从 0 开始），频率 $\omega_i=\theta^{-2i/d_r}$，$\theta=\of{theta}$。表是常量，不需要梯度。
+      cos 和 sin 表的第 $n$ 行对应位置 $p_n=n\cdot\of{stride}$（$n$ 从 0 开始），频率 $\omega_i=\theta^{-2i/d_r}$，$\theta=\of{theta}$。表是常量，不需要梯度。HF 在 float32 里算出表，再用 <code>cos.to(dtype=x.dtype)</code> 转成输入的 dtype；乘法写作 <code>rope.float() * cos</code>，在 float32 里做，旋转的结果最后用 <code>.to(x.dtype)</code> 转回输入的 dtype。
       $$\cos={{ cos | matrix:3 }}$$
     backward:
       label: '$\partial\of{x_rot}$'

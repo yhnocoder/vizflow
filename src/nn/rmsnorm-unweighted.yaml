@@ -22,8 +22,8 @@ body:
   - sq:  { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
   - ms:  { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
   - mse: { op: ms + eps, tex: '\mathrm{ms}+\epsilon' }
-  - r:   { op: rsqrt(mse), tex: r }
-  - out: { op: x * r, dtype: x }
+  - r:   { op: rsqrt(mse), tex: r, dtype: x }
+  - out: { op: x * r }
 steps:
   - id: square
     show: sq
@@ -64,6 +64,7 @@ steps:
     label: '$\of{r}$'
     title: 平方根的倒数
     text: |
+      HF 写的是 <code>x * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + self.eps).to(x.dtype)</code>：$r$ 在 float32 里算出来以后先转回 $\of{x}$ 的 dtype，下一步的乘法在 $\of{x}$ 的 dtype 里做。
       $$r=\frac{1}{\sqrt{\mathrm{ms}+\epsilon}}={{ r | matrix:3 }}$$
     backward:
       label: '$\partial(\mathrm{ms}+\epsilon)$'

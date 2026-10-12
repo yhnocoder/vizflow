@@ -1,6 +1,6 @@
 module: HyperConnectionMerge
 subtitle: 子层输出写回 stream，加上混合后的 stream
-formula: '\step{add}{\of{out}=}\step{expand}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack}{\of{comb}^{\top}\of{X}}'
+formula: '\step{add}{\of{out}=}\step{expand,cast}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack,cast}{\of{comb}^{\top}\of{X}}'
 inputs:
   X:    { shape: [T, N, d] }
   y:    { shape: [T, d] }
@@ -16,23 +16,35 @@ fold:
     label: '$\partial\of{X},\ \partial\of{y},\ \partial\of{post},\ \partial\of{comb}$'
     title: 穿过写回（已折叠）
 body:
-  - expanded: { op: 'view(post, T, N, 1) * view(y, T, 1, d)', tex: '\of{post}\otimes\of{y}' }
+  - post_c:   { op: identity(post), dtype: X, tex: '\of{post}' }
+  - comb_c:   { op: identity(comb), dtype: X, tex: '\of{comb}' }
+  - expanded: { op: 'view(post_c, T, N, 1) * view(y, T, 1, d)', tex: '\of{post}\otimes\of{y}' }
   - for: k
     in: 1..N
     brace: 'stream \of{k}'
     body:
-      - ck[k]:   { op: 'select(comb, 2, k-1)', tex: 'C_{:,\of{k}}' }
+      - ck[k]:   { op: 'select(comb_c, 2, k-1)', tex: 'C_{:,\of{k}}' }
       - prod[k]: { op: 'view(ck[k], T, N, 1) * X', tex: 'C_{:,\of{k}}\odot\of{X}' }
       - mixk[k]: { op: 'sum(prod[k], 1, keepdim=true)', tex: '(\of{comb}^{\top}\of{X})_{\of{k}}' }
   - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}' }
   - out: { op: expanded + mixed }
 steps:
+  - id: cast
+    show: [post_c, comb_c]
+    label: '$\of{post},\ \of{comb}$'
+    title: post 和 comb 转回 stream 的 dtype
+    text: |
+      mHC 在 float32 里算出 post 和 comb。写回之前，HF 先把它们转成 stream 的 dtype：<code>dtype = hidden_states.dtype</code>，再用 <code>post.to(dtype)</code> 和 <code>comb.to(dtype)</code>。之后的乘法和加法都在 stream 的 dtype 里做。
+      $$\of{comb}={{ comb_c | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{post},\ \partial\of{comb}$'
+      title: 梯度转回 float32
   - id: expand
     show: expanded
     label: '$\of{post}\otimes\of{y}$'
     title: 子层的输出按 post 写进每条 stream
     text: |
-      子层的输出 $\of{y}$ 只有一条，按每个 token 的 post 系数复制进 \of{N} 条 stream：第 $n$ 条 stream 得到 $w_{\mathrm{post},n}\,\of{y}$。对应 <code>post.unsqueeze(-1) * output.unsqueeze(-2)</code>。
+      子层的输出 $\of{y}$ 只有一条，按每个 token 的 post 系数复制进 \of{N} 条 stream：第 $n$ 条 stream 得到 $w_{\mathrm{post},n}\,\of{y}$。对应 <code>post.to(dtype).unsqueeze(-1) * attn_output.unsqueeze(-2)</code>，MLP 之后是 <code>mlp_output</code>。
       $$\of{post}\otimes\of{y}={{ expanded | matrix:2 }}$$
     backward:
       label: '$\partial\of{post},\ \partial\of{y}$'
@@ -45,7 +57,7 @@ steps:
     label: '$C_{:,k}\odot\of{X}$'
     title: comb 的第 $k$ 列给输入的 stream 加权
     text: |
-      HF 写的是 <code>torch.matmul(comb.transpose(-1, -2), hidden_states)</code>：输出的第 $k$ 条 stream 是 $\sum_j C_{j,k}\,{\of{X}}_j$，用的是 comb 的第 $k$ 列，所以要先转置。Sinkhorn 之后的 comb 不对称，转置不能省。这里按输出的 stream 分开画：取出 comb 的第 $k$ 列，逐个乘到输入的 \of{N} 条 stream 上。
+      HF 写的是 <code>torch.matmul(comb.to(dtype).transpose(-1, -2), hidden_states)</code>：输出的第 $k$ 条 stream 是 $\sum_j C_{j,k}\,{\of{X}}_j$，用的是 comb 的第 $k$ 列，所以要先转置。Sinkhorn 之后的 comb 不对称，转置不能省。这里按输出的 stream 分开画：取出 comb 的第 $k$ 列，逐个乘到输入的 \of{N} 条 stream 上。
     backward:
       label: '$\partial\of{comb},\ \partial\of{X}$'
       title: 传到 comb 的第 $k$ 列和输入的 stream

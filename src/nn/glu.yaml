@@ -105,7 +105,7 @@ steps:
     label: '$\bar{\mathbf{up}}$'
     title: 截断 up 的两侧
     text: |
-      up 两边都截，限制在 $[-L, L]$，对应 <code>up.clamp(min=-limit, max=limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
+      up 两边都截，限制在 $[-L, L]$，对应 <code>self.up_proj(x).clamp(min=-self.limit, max=self.limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
       $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
     backward:
       label: '$\partial\mathbf{up}$'
