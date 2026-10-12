@@ -4,6 +4,7 @@ import type { AnyOpDef } from '../op';
 import { defineOp } from '../registry';
 import {
   addOp,
+  clampOp,
   divOp,
   erfOp,
   expOp,
@@ -28,6 +29,7 @@ import {
   maskedFillOp,
   triuOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,
@@ -85,6 +87,11 @@ export interface RsqrtOptions extends OpOptions {
   eps?: number;
 }
 
+export interface ClampOptions extends OpOptions {
+  min?: number | null;
+  max?: number | null;
+}
+
 export interface ConvOptions extends OpOptions {
   dilation?: number | string;
 }
@@ -128,6 +135,8 @@ export interface BuiltinOps {
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
   rotate_half(input: Node, options?: OpOptions): Node;
+  clamp(input: Node, options?: ClampOptions): Node;
+  clamp(input: Node, min: number | null, max?: number | null, options?: ClampOptions): Node;
   transpose(input: Node, dim0: number, dim1: number, options?: OpOptions): Node;
   matmul(input: Node, other: Node, options?: OpOptions): Node;
   sum(input: Node, dim?: Dim | null | SumOptions, options?: SumOptions): Node;
@@ -148,6 +157,7 @@ export interface BuiltinOps {
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
   causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
   remainder(input: Node, other: Node | number, options?: OpOptions): Node;
+  floor_divide(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_xor(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_and(input: Node, other: Node | number, options?: OpOptions): Node;
   eq(input: Node, other: Node | number, options?: OpOptions): Node;
@@ -205,6 +215,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   geluOp,
   identityOp,
   rotateHalfOp,
+  clampOp,
   transposeOp,
   matmulOp,
   sumOp,
@@ -240,6 +251,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   maskedFillOp,
   solveTriangularOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,

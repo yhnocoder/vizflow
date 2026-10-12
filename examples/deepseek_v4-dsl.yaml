@@ -1,0 +1,393 @@
+title: DeepSeek V4：压缩注意力与 mHC，从 token 到损失
+lede: DeepSeek V4 的每一层有两处和 V3 不同。注意力的 key 除了滑动窗口里的 token，还有把更早的 token 压缩成的条目：CSA 层每 $m$ 个 token 压成一个条目，再由 indexer 为每个位置挑出少数几个；HCA 层压得更狠，所有压缩条目都看。残差不再是一条，而是 $N$ 条并行的 stream，由 mHC（manifold-constrained hyper-connection）在每个子层前合成一条、在子层后写回。这一页从 token id 开始，经过占位的第 1、2 层、第 3 层（CSA，hash 路由的 MoE）、第 4 层（HCA，top-k 路由的 MoE）、占位的第 5 到 43 层、hc_head、final norm、lm_head 和 nll_loss 得到损失，前向和反向都逐步画出来。点两侧的大括号可以折叠或展开一个模块。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  LogSoftmax:           vizflow/nn/log-softmax
+  NLLLoss:              vizflow/nn/nll-loss
+  RMSNorm:              vizflow/nn/rmsnorm
+  HyperConnection:      vizflow/nn/hyper-connection
+  HyperConnectionMerge: vizflow/nn/hyper-connection-merge
+  HyperHead:            vizflow/nn/hyper-head
+  CompressedAttention:  vizflow/nn/compressed-attention
+  MoE:                  ./deepseek_v4/moe.yaml
+dims: { T: 4, d: 4, V: 5, H: 2, D: 6, rd: 4, rq: 3, g: 2, dg: 2, sw: 2, m: 2, mh: 3, HI: 2, cI: 5, kI: 1, N: 2, Ne: 4, K: 2, f: 2 }
+dtype: bf16
+real: { name: DeepSeek-V4-Flash, d: 4096, V: 129280, H: 64, D: 512, rd: 64, rq: 1024, g: 8, dg: 1024, sw: 128, HI: 64, cI: 128, kI: 512, N: 4, Ne: 256, K: 6, f: 2048 }
+vocab: [on, mat, the, sat, cat]
+init: { seed: 20261011 }
+sequence: { tokens: [the, cat, sat, on, mat], input: ids, label: y }
+inputs: {}
+weights:
+  E: { shape: [V, d] }
+  W: { shape: [V, d] }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从 token id 一直画到损失。DeepSeek-V4-Flash 有 43 层，注意力按层分三种：第 1、2 层只有滑动窗口注意力；从第 3 层开始 CSA 和 HCA 交替，第 3 层是 CSA，第 4 层是 HCA，依此类推，第 43 层是 CSA。MoE 也分两种：第 1 到 3 层用 hash 路由，按 token id 查一张固定的表选专家；其余层用 top-k 路由。这里展开第 3 层和第 4 层，其余的层收成占位盒子。
+    每一层都有 $N=\of{N}$ 条 residual stream。每个子层之前，mHC 按每个 token 自己的系数把 $N$ 条 stream 合成一条，作为子层的输入；子层之后，输出按另一组系数写回每条 stream，再加上用一个经过 Sinkhorn 归一化的 $N\times N$ 矩阵混合过的 stream。
+    输入是 <span class="ctx">{{ids[0]:token}}</span> <span class="ctx">{{ids[1]:token}}</span> <span class="ctx">{{ids[2]:token}}</span> <span class="ctx">{{ids[3]:token}}</span>，标签右移一位。尺寸用 $d=4$、$V=5$、$T=4$；注意力有 2 个 head，每个宽 $D=6$，最后 $d_r=4$ 维按相邻两维一对做 RoPE，这样能看出 V4 的 RoPE 是相邻的两维一对，而且只转最后几维；滑动窗口 $W=2$；CSA 每 $m=2$ 个 token 压成一个条目，HCA 每 $m'=3$ 个，所以第 4 个 token 还凑不满第二个条目；indexer 每个位置只选 $k_I=1$ 个条目。MoE 有 4 个路由专家，每个位置选 2 个。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。跨位置的梯度经过注意力权重和 compressor 的池化。indexer 只决定每个位置看哪些压缩条目，它的输出是 top-k 的编号，编号不可导，所以 indexer 的参数收不到梯度。HF 没有把 indexer 放在 <code>torch.no_grad()</code> 里，梯度停在 topk 这一步。MoE 里挑选专家的那部分计算同样没有梯度。
+      $$\frac{\partial\ell}{\partial\mathbf{e}}={{ e.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入只有 token id，其余都是参数和常量。每一层有两个 mHC，各有一块 $W_{\mathrm{fn}}$、一个偏置和三个缩放；注意力有 q_a_proj、q_b_proj、kv_proj、o_a_proj、o_b_proj 五个投影、两个 RMSNorm 和每个 head 一个的 sink；compressor 有 kv_proj、gate_proj、position_bias 和 kv_norm；CSA 层的 indexer 另有一套 compressor 和 q_b_proj、weights_proj。MoE 的 gate 有一块 $W_r$；所有路由专家的权重存在两块三维的参数里，gate_up_proj 是 $(E, 2m_f, d)$，down_proj 是 $(E, d, m_f)$；共享专家有三块权重。hash 路由的表 tid2eid 和 top-k 路由的偏置是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和各种 mask 由形状决定，不需要梯度。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},{{ids[3]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},{{y[3]}})$$
+
+modules:
+  DecoderLayer:
+    subtitle: DeepseekV4DecoderLayer
+    params:
+      H: { type: dim }
+      D: { type: dim }
+      rd: { type: dim }
+      rq: { type: dim }
+      g: { type: dim }
+      dg: { type: dim }
+      W: { type: dim }
+      m: { type: dim }
+      sparse: { type: bool }
+      HI: { type: dim }
+      cI: { type: dim }
+      kI: { type: dim }
+      E: { type: dim }
+      V: { type: dim }
+      K: { type: dim }
+      f: { type: dim }
+      hash: { type: bool }
+      detail: { type: bool }
+    inputs:
+      X: { shape: [T, N, d] }
+      ids: { shape: [T] }
+    outputs: [X_out]
+    fold:
+      label: '$\of{X_out}=\mathrm{layer}(\of{X})$'
+      title: decoder 层（已折叠）
+      text: |
+        整个 decoder 层收成一个盒子，输入和输出都是 \of{N} 条 stream。
+        $$\of{X_out}={{ X_out | matrix:2 }}$$
+      backward:
+        label: '$\partial$参数, $\partial\of{X}$'
+        title: 穿过 decoder 层（已折叠）
+        text: |
+          $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+    body:
+      - attn_hc:
+          use: HyperConnection
+          title: attn_hc
+          subtitle: DeepseekV4HyperConnection，注意力之前
+          suffix: a
+          when: detail
+          params: { iters: 3 }
+          inputs: { X: X }
+          outputs: { post: post_a, comb: C_a, collapsed: x_a }
+      - attn_hc:
+          use: HyperConnection
+          title: attn_hc
+          subtitle: DeepseekV4HyperConnection，注意力之前
+          suffix: a
+          when: not detail
+          folded: true
+          params: { iters: 3 }
+          inputs: { X: X }
+          outputs: { post: post_a, comb: C_a, collapsed: x_a }
+          fold:
+            text: |
+              计算和第 3 层的 attn_hc 相同，那里展开画了每一步；参数是这一层自己的。
+              $$\of{x_a}={{ x_a | matrix:2 }}$$
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV4RMSNorm
+          suffix: a
+          when: detail
+          params: { intro: 'mHC 合成的一条输入先做一次 RMSNorm，也就是 input_layernorm。' }
+          inputs: { x: x_a }
+          outputs: { out: n_a }
+      - input_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV4RMSNorm
+          suffix: a
+          when: not detail
+          folded: true
+          inputs: { x: x_a }
+          outputs: { out: n_a }
+          fold:
+            text: |
+              计算和第 3 层的 input_layernorm 相同，那里展开画了每一步；权重是这一层自己的。
+              $$\of{n_a}={{ n_a | matrix:2 }}$$
+      - self_attn:
+          use: CompressedAttention
+          when: detail
+          params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: W, theta: 1.6e5, compress: true, sparse: sparse, m: m, HI: HI, cI: cI, kI: kI }
+          inputs: { x: n_a }
+          outputs: { att: att }
+      - self_attn:
+          use: CompressedAttention
+          when: not detail
+          folded: true
+          params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: W, theta: 1.6e5, compress: true, sparse: sparse, m: m, HI: HI, cI: cI, kI: kI }
+          inputs: { x: n_a }
+          outputs: { att: att }
+          fold:
+            text: |
+              HCA 的注意力和第 3 层的 CSA 用同一套计算，那里展开画了每一步。不同的是 HCA 没有 indexer，所有已经完整的压缩条目都看，压缩条目那几列的 mask 由位置和条目编号比较得到；每 $m'=\of{m}$ 个 token 压成一个条目，窗口之间不重叠。展开这个盒子可以看到 HCA 的每一步，包括建这张 mask 的每一行。
+              $$\of{att}={{ att | matrix:2 }}$$
+      - attn_merge:
+          use: HyperConnectionMerge
+          title: 写回 stream
+          subtitle: 注意力之后
+          suffix: a
+          when: detail
+          inputs: { X: X, y: att, post: post_a, comb: C_a }
+          outputs: { out: X_a }
+      - attn_merge:
+          use: HyperConnectionMerge
+          title: 写回 stream
+          subtitle: 注意力之后
+          suffix: a
+          when: not detail
+          folded: true
+          inputs: { X: X, y: att, post: post_a, comb: C_a }
+          outputs: { out: X_a }
+          fold:
+            text: |
+              计算和第 3 层注意力之后的写回相同，那里展开画了每一步。
+              $$\of{X_a}={{ X_a | matrix:2 }}$$
+      - ffn_hc:
+          use: HyperConnection
+          title: ffn_hc
+          subtitle: DeepseekV4HyperConnection，MLP 之前
+          suffix: f
+          folded: true
+          params: { iters: 3 }
+          inputs: { X: X_a }
+          outputs: { post: post_f, comb: C_f, collapsed: x_f }
+          fold:
+            text: |
+              计算和第 3 层的 attn_hc 相同，那里展开画了每一步；参数是这个实例自己的。
+              $$\of{x_f}={{ x_f | matrix:2 }}$$
+      - post_attention_layernorm:
+          use: RMSNorm
+          subtitle: DeepseekV4RMSNorm
+          suffix: f
+          inputs: { x: x_f }
+          outputs: { out: n_f }
+          folded: true
+          fold:
+            text: |
+              计算和第 3 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
+              $$\of{n_f}={{ n_f | matrix:2 }}$$
+      - mlp:
+          use: MoE
+          params: { E: E, V: V, K: K, f: f, rsf: 1.5, limit: 2.0, hash: hash, detail: detail }
+          inputs: { x: n_f, ids: ids }
+          outputs: { out: moe }
+      - ffn_merge:
+          use: HyperConnectionMerge
+          title: 写回 stream
+          subtitle: MLP 之后
+          suffix: f
+          folded: true
+          inputs: { X: X_a, y: moe, post: post_f, comb: C_f }
+          outputs: { out: X_out }
+          fold:
+            text: |
+              计算和第 3 层注意力之后的写回相同，那里展开画了每一步；写回的是 MLP 的输出。
+              $$\of{X_out}={{ X_out | matrix:2 }}$$
+
+body:
+  - e:  { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - X0: { op: 'repeat_interleave(view(e, T, 1, d), N, 1)', tex: '\mathbf{X}_{0}' }
+  - first_layers:
+      title: $\cdots$ 第 1、2 层
+      subtitle: DeepseekV4DecoderLayer $\times$ 2，只有滑动窗口
+      fixed: true
+      fold:
+        label: '$\of{Xp}$'
+        title: $\cdots$ 第 1、2 层（占位）
+        text: |
+          第 3 层之前还有两层。它们的注意力只有滑动窗口，没有 compressor 和 indexer，RoPE 的 $\theta=10^4$；MoE 和第 3 层一样用 hash 路由。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，\of{N} 条 stream 按恒等映射处理。这个盒子不能展开。
+          $$\of{Xp}=\mathrm{layers}_{1,2}(\of{X0})\;\approx\;\of{X0}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{X0}$'
+          title: 穿过占位的第 1、2 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{X0}}={{ X0.grad | matrix:3 }}$$
+      body:
+        - Xp: { op: identity(X0), tex: '\mathbf{X}_{2}' }
+  - csa_layer:
+      use: DecoderLayer
+      title: DeepseekV4DecoderLayer
+      subtitle: 第 3 层，CSA，hash 路由
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, m: m, sparse: true, HI: HI, cI: cI, kI: kI, E: Ne, V: V, K: K, f: f, hash: true, detail: true }
+      inputs: { X: Xp, ids: ids }
+      outputs: { X_out: X1 }
+      suffix: '3'
+      tex: { X_out: '\mathbf{X}_{3}' }
+  - hca_layer:
+      use: DecoderLayer
+      title: DeepseekV4DecoderLayer
+      subtitle: 第 4 层，HCA，top-k 路由
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, m: mh, sparse: false, HI: HI, cI: cI, kI: kI, E: Ne, V: V, K: K, f: f, hash: false, detail: false }
+      inputs: { X: X1, ids: ids }
+      outputs: { X_out: X2 }
+      suffix: '4'
+      tex: { X_out: '\mathbf{X}_{4}' }
+  - last_layers:
+      title: $\cdots$ 第 5 到 43 层
+      subtitle: DeepseekV4DecoderLayer $\times$ 39，CSA 和 HCA 交替
+      fixed: true
+      fold:
+        label: '$\of{Xl}$'
+        title: $\cdots$ 第 5 到 43 层（占位）
+        text: |
+          第 4 层之后还有 39 层，奇数层是 CSA，偶数层是 HCA，MoE 都用 top-k 路由。这里同样收成一个只用来示意的盒子，\of{N} 条 stream 按恒等映射处理。
+          $$\of{Xl}=\mathrm{layers}_{5..43}(\of{X2})\;\approx\;\of{X2}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{X2}$'
+          title: 穿过占位的第 5 到 43 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{X2}}={{ X2.grad | matrix:3 }}$$
+      body:
+        - Xl: { op: identity(X2), tex: '\mathbf{X}_{43}' }
+  - hc_head:
+      use: HyperHead
+      title: hc_head
+      subtitle: DeepseekV4HyperHead
+      inputs: { X: Xl }
+      outputs: { out: hh }
+  - norm:
+      use: RMSNorm
+      title: model.norm
+      subtitle: DeepseekV4RMSNorm
+      params:
+        name: final norm
+        intro: 从这里开始是 final norm（<code>model.norm</code>），在 hc_head 之后、lm_head 之前。
+        out_note: $\of{out}$ 是 lm_head 的输入。
+      inputs: { x: hh }
+      outputs: { out: h }
+      folded: true
+      fold:
+        text: |
+          计算和第 3 层的 input_layernorm 相同，那里展开画了每一步；权重是 final norm 自己的。
+          $$\of{h}={{ h | matrix:2 }}$$
+  - z:    h @ W.T
+  - zf:   { op: identity(z), tex: '\mathbf{z}_{\mathrm{fp32}}', dtype: fp32 }
+  - log_softmax:
+      use: LogSoftmax
+      subtitle: F.log_softmax(z.float(), -1)
+      inputs: { x: zf }
+      outputs: { out: logp }
+  - nll_loss:
+      use: NLLLoss
+      subtitle: "F.nll_loss(logp, labels)，reduction='mean'"
+      inputs: { logp: logp, y: y }
+      outputs: { loss: loss, lt: lt }
+      tex: { lt: '\ell_t' }
+      steps:
+        pick:
+          append: HF 的 <code>self.loss_function</code> 在内部把 labels 右移一位，并跳过标签为 -100 的位置（<code>ignore_index</code>）；这里直接给出右移好的标签，也没有要跳过的位置。
+steps:
+  - id: embed
+    show: [E, e]
+    segment: embed_tokens
+    brace: { title: embed_tokens, subtitle: nn.Embedding }
+    label: '$\of{e}=E[x]$'
+    title: embed_tokens
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。DeepSeek-V4-Flash 的词表有 129280 个 token，hidden size 是 4096。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: expand
+    show: X0
+    segment: 复制成 $N$ 条 stream
+    brace: { title: 复制成 $N$ 条 stream, subtitle: 'unsqueeze(2).expand' }
+    label: '$\of{X0}$'
+    title: 复制成 \of{N} 条 stream
+    text: |
+      embedding 先写成 $(T, 1, d)$，再复制成 $N=\of{N}$ 条相同的 residual stream，对应 <code>inputs_embeds.unsqueeze(2).expand(-1, -1, self.config.hc_mult, -1).contiguous()</code>。真实模型里 hc_mult $=4$。之后每一层都在这 $N$ 条 stream 上计算，直到 hc_head 再把它们合成一条。
+      $$\of{X0}={{ X0 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{e}$'
+      title: 各条 stream 的梯度加起来
+      text: |
+        复制的反向是求和：embedding 收到的梯度是 \of{N} 条 stream 的梯度之和。
+        $$\frac{\partial\ell}{\partial\of{X0}}={{ X0.grad | matrix:3 }}$$
+  - id: logits
+    show: [W.T, z]
+    segment: lm_head
+    brace: { title: lm_head, subtitle: h @ W.T }
+    label: '$\of{z}$'
+    title: lm_head
+    text: |
+      每个位置的 $\mathbf{h}_t$ 乘同一块 $W^{\top}$，得到下一个 token 的 logits。lm_head 不和 embedding 共享权重。
+      $$\mathbf{z}=\mathbf{h}W^{\top}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{h}$'
+      title: 传到 lm_head 权重和 $\of{h}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{h}}={{ h.grad | matrix:3 }}$$
+  - id: float
+    show: zf
+    segment: lm_head
+    label: '$\of{zf}$'
+    title: 转成 float32
+    text: |
+      HF 计算损失前先做 <code>logits.float()</code>，后面的 log_softmax 和 nll_loss 都在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{z}$'
+      title: 穿过类型转换
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
+  - sequence: true
+    title: 序列
+    labels: ['$x_1$', '$x_2$ $\cdot$ $y_1$', '$x_3$ $\cdot$ $y_2$', '$x_4$ $\cdot$ $y_3$', '$y_4$']
+    note: 前四个是输入，后四个是标签。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    random: true
+    reset: true
+  - attention: 'csa_layer.self_attn.eager_attention_forward.P[1]'
+    ids: ids
+    extra_keys: ['$\mathbf{C}_{1}$', '$\mathbf{C}_{2}$']
+    title: 第 3 层的注意力权重 P，head 1
+  - attention: 'csa_layer.self_attn.eager_attention_forward.P[2]'
+    ids: ids
+    extra_keys: ['$\mathbf{C}_{1}$', '$\mathbf{C}_{2}$']
+    title: 第 3 层的注意力权重 P，head 2
+    note: 行是 query 的位置。前 $T$ 列是滑动窗口里的 token，后面的列是压缩条目；窗口外的 token 和 indexer 没选中的条目，权重是 0。每一行的和小于 1，差的那一部分给了 sink。
+  - title: 对应的 PyTorch
+    code: |-
+      # transformers DeepseekV4；V4-Flash 的 compress_ratios 是 [0, 0, 4, 128, 4, 128, ...]：第 1、2 层只有滑动窗口，第 3 层起 CSA 和 HCA 交替
+      X = model.embed_tokens(input_ids).unsqueeze(2).expand(-1, -1, hc_mult, -1).contiguous()
+      dtype = X.dtype
+      X = layers[:2](X)                                      # 图里是占位盒子
+      for layer in model.layers[2:4]:                        # 第 3 层 CSA，第 4 层 HCA
+          post, comb, x = layer.attn_hc(X)
+          y = layer.self_attn(layer.input_layernorm(x))
+          X = post.to(dtype).unsqueeze(-1) * y.unsqueeze(-2) + comb.to(dtype).transpose(-1, -2) @ X
+          post, comb, x = layer.ffn_hc(X)
+          y = layer.mlp(layer.post_attention_layernorm(x), input_ids)
+          X = post.to(dtype).unsqueeze(-1) * y.unsqueeze(-2) + comb.to(dtype).transpose(-1, -2) @ X
+      X = layers[4:](X)                                      # 图里是占位盒子
+      logp = F.log_softmax(lm_head(model.norm(model.hc_head(X))).float(), -1)
+      loss = F.nll_loss(logp.view(-1, V), labels.view(-1))
+    note: DeepSeek-V4-Flash：d = 4096，43 层；注意力 64 个 head，head_dim = 512，其中最后 64 维做 RoPE，q_lora_rank = 1024，o_groups = 8，o_lora_rank = 1024，sliding_window = 128；CSA 的压缩率 4，HCA 的压缩率 128；indexer 有 64 个 head，index_head_dim = 128，index_topk = 512；滑动窗口层的 rope_theta = $10^4$，CSA 和 HCA 层的 compress_rope_theta = 160000，并用 YaRN（factor 16）扩展上下文，这一页不画 YaRN；hc_mult = 4，hc_sinkhorn_iters = 20；MoE 256 个路由专家，每个 token 选 6 个，另有 1 个共享专家，moe_intermediate_size = 2048，routed_scaling_factor = 1.5，swiglu_limit = 10；V = 129280。这一页用 Sinkhorn 3 轮、swiglu_limit = 2，让截断在小数值上也能看到。
+values:
+  hca_layer.mlp.gate.bias: [0, 0.1, -0.02, 0.03]
+  csa_layer.mlp.gate.tid2eid: [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]]

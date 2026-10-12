@@ -52,7 +52,8 @@ export function compileInstance(
   const texWhere = child(env.where, use, 'tex');
   for (const [key, tex] of Object.entries(record(use.tex, texWhere, 'tex'))) {
     if (typeof tex !== 'string') fail(child(texWhere, use.tex as object, key), 'tex must be a string');
-    scope.texOverride.set(key, c.ofText(tex, { ...env, where: child(texWhere, use.tex as object, key) }));
+    const texEnv = { ...env, where: child(texWhere, use.tex as object, key) };
+    scope.texOverride.set(key, marked(c.ofText(tex, texEnv), parent, c.ofRefersToNode(tex, texEnv)));
   }
   const declInputsWhere = child(where, decl, 'inputs');
   const declInputs = record(decl.inputs, declInputsWhere, 'inputs');
@@ -60,12 +61,13 @@ export function compileInstance(
   const givenInputs = record(use.inputs, inputsWhere, 'inputs');
   for (const key of Object.keys(givenInputs)) if (!(key in declInputs)) fail(child(inputsWhere, givenInputs, key), `module ${def.name} has no input '${key}'`);
   for (const [inputName, inputDecl] of Object.entries(declInputs)) {
+    const declWhere = child(declInputsWhere, declInputs, inputName);
+    const inputSpec = record(inputDecl, declWhere, `input '${inputName}'`);
+    checkKeys(inputSpec, new Set(['shape', 'tex', 'when']), declWhere);
+    if (!c.enabled(inputSpec, { ...childEnv, where: declWhere })) continue;
     if (!(inputName in givenInputs)) fail(inputsWhere, `input '${inputName}' of ${def.name} is not given`);
     const at = child(inputsWhere, givenInputs, inputName);
     const node = c.node(givenInputs[inputName], { ...env, where: at });
-    const declWhere = child(declInputsWhere, declInputs, inputName);
-    const inputSpec = record(inputDecl, declWhere, `input '${inputName}'`);
-    checkKeys(inputSpec, new Set(['shape', 'tex']), declWhere);
     if (typeof inputSpec.tex === 'string') scope.inputTex.set(inputName, inputSpec.tex);
     if (inputSpec.shape !== undefined) matchShape(c, scope, inputSpec.shape, node, childEnv, child(declWhere, inputSpec, 'shape'), at);
     scope.entries.set(inputName, node);

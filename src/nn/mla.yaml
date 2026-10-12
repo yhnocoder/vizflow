@@ -28,6 +28,7 @@ weights:
   Wo:   { shape: [d, H*dv] }
 buffers:
   M: { value: causal_mask(T) }
+  ones: { value: 'ones(T, T)', dtype: bool, tex: '\mathbf{1}', when: sparse }
 fold:
   label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
   title: self_attn（已折叠）
@@ -87,7 +88,9 @@ body:
       when: sparse
       params: { HI: HI, dI: dI, dr: dr, kI: kI, theta: theta }
       inputs: { x: x, qr: cqn, mask: M }
-      outputs: { out: M_sparse }
+      outputs: { idx: topk_idx }
+  - index_mask: { op: 'scatter(ones, -1, topk_idx, 0)', tex: '\mathbf{m}^{I}', dtype: bool, when: sparse }
+  - M_sparse: { op: 'masked_fill(M, index_mask, -inf)', tex: '\tilde{M}', when: sparse }
   - eager_attention_forward:
       use: GQA
       inline: true
@@ -112,7 +115,7 @@ body:
           when: sparse
           title: 稀疏的 mask
           text: |
-            这里加的是 indexer 给出的 mask：causal mask 之外，没被 indexer 选中的 key 也是 $-\infty$，取 exp 之后变成 0。
+            这里加的是前面拼出的稀疏 mask $\of{M_sparse}$：causal mask 之外，没被 indexer 选中的 key 也是 $-\infty$，取 exp 之后变成 0。
             $$\of{M_sparse}={{ M_sparse | matrix:2 }}$$
           backward:
             text: 加常量，梯度原样传下去。mask 来自 indexer 的 top-k 选择，选择不可导，HF 里 indexer 又在 <code>torch.no_grad</code> 下运行，所以损失的梯度不会进入 indexer，它的参数从这个损失得不到梯度。训练时 DeepSeek 另用一个 KL 损失训练 indexer，让 index score 接近主注意力的分布。
@@ -235,6 +238,30 @@ steps:
     backward:
       label: "$\\partial\\of{k_pass},\\ \\partial\\of{k_rep}$"
       title: 按列切回两段
+  - id: index_ones
+    when: sparse
+    show: [topk_idx, ones]
+    label: '$\of{ones}$'
+    title: 全是 true 的 bool 表
+    text: |
+      indexer 返回的是编号 $\of{topk_idx}$，eager 注意力要的是一张 mask，所以 self_attn 先用编号拼出 mask。第一步是 <code>topk_indices.new_ones((batch_size, seq_length, key_states.shape[2]), dtype=torch.bool)</code>：一张 $T\times T$ 的 bool 表，全是 true。true 表示这个 key 要被挡住。
+      $$\of{ones}={{ ones | matrix:2 }}$$
+  - id: index_mask
+    when: sparse
+    show: index_mask
+    label: '$\of{index_mask}$'
+    title: 选中的 key 写成 false
+    text: |
+      <code>.scatter(-1, topk_indices.long(), False)</code>：第 $t$ 行在 $\of{topk_idx}$ 第 $t$ 行列出的那几列写上 false。选中的 key 是 false，其余仍是 true，所以 true 标出的是要挡住的 key。HF 接着 <code>.unsqueeze(1)</code> 加出 head 这一维，所有 head 用同一张表；图上没有 batch 和 head 这两维，不画这一步。
+      $$\of{index_mask}={{ index_mask | matrix:2 }}$$
+  - id: sparse_mask
+    when: sparse
+    show: M_sparse
+    label: '$\of{M_sparse}$'
+    title: 没选中的 key 填成 $-\infty$
+    text: |
+      <code>attention_mask = attention_mask.masked_fill(index_mask, torch.finfo(hidden_states.dtype).min)</code>：$\of{index_mask}$ 为 true 的位置换成一个很大的负数，其余保留 causal mask 原来的值。HF 填的是 dtype 能表示的最小值，这里和 causal mask 一样填 $-\infty$，取 exp 之后两者都是 0。选中的 key 里如果有未来的位置（第 1 行能选的 key 不到 $k_I$ 个时），它在 causal mask 里本来就是 $-\infty$，所以仍然挡住。这张 mask 交给后面的注意力，代替原来的 causal mask，每个位置最多看 $k_I$ 个 key。
+      $$\of{M_sparse}={{ M_sparse | matrix:2 }}$$
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [Wo.T, att]

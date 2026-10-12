@@ -2,6 +2,7 @@ import type { OpExplain } from '../../autograd';
 import { registerExplain } from '../registry';
 import {
   addExplain,
+  clampExplain,
   divExplain,
   erfExplain,
   expExplain,
@@ -26,6 +27,7 @@ import {
   maskedFillExplain,
   triuExplain,
   remainderExplain,
+  floorDivideExplain,
   bitwiseXorExplain,
   bitwiseAndExplain,
   eqExplain,
@@ -84,6 +86,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   gelu: geluExplain,
   identity: identityExplain,
   rotate_half: rotateHalfExplain,
+  clamp: clampExplain,
   transpose: transposeExplain,
   matmul: matmulExplain,
   sum: sumExplain,
@@ -119,6 +122,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   masked_fill: maskedFillExplain,
   solve_triangular: solveTriangularExplain,
   remainder: remainderExplain,
+  floor_divide: floorDivideExplain,
   bitwise_xor: bitwiseXorExplain,
   bitwise_and: bitwiseAndExplain,
   eq: eqExplain,

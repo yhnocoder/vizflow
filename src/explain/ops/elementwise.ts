@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { SOFTPLUS_THRESHOLD, type TriuAttrs, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -127,6 +127,22 @@ export const rotateHalfExplain: OpExplain = {
   },
 };
 
+function clampTex(input: string, { min, max }: ClampAttrs): string {
+  const bound = (v: number) => (v < 0 ? `\\left(${formatNumber(v, { tex: true })}\\right)` : formatNumber(v, { tex: true }));
+  if (min === null) return `\\min(${input},${bound(max as number)})`;
+  if (max === null) return `\\max(${input},${bound(min)})`;
+  return `\\operatorname{clamp}(${input},${bound(min)},${bound(max)})`;
+}
+
+export const clampExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, _out, _arg, input) => (clampInside(ctx.inputs[0].get(input), ctx.attrs as ClampAttrs) ? 1 : 0),
+  tex: {
+    forward: (s) => clampTex(s.in[0], s.attrs as ClampAttrs),
+    local: (s) => (clampInside(s.ctx.inputs[0].get(s.inIndex), s.attrs as ClampAttrs) ? '1' : '0'),
+  },
+};
+
 const exponentOf =(attrs: object) => (attrs as { exponent: number }).exponent;
 
 export const powExplain: OpExplain = {
@@ -196,6 +212,7 @@ export const remainderExplain = binary(
   (a, b, arg) => (arg === 0 ? 1 : -Math.floor(a / b)),
   (a, b, arg) => (arg === 0 ? '1' : `-\\left\\lfloor ${a}/${b}\\right\\rfloor`),
 );
+export const floorDivideExplain = binary((a, b) => `\\left\\lfloor ${a}/${b}\\right\\rfloor`, () => 0, () => '0');
 export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
 export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
 export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0');

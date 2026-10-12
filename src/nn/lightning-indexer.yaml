@@ -13,21 +13,21 @@ inputs:
   x:    { shape: [T, d] }
   qr:   { shape: [T, rq] }
   mask: { shape: [T, T] }
-outputs: [out]
+outputs: [idx]
 weights:
   Wqb: { shape: [HI*dI, rq], tex: 'W^{I}_{qb}' }
   Wk:  { shape: [dI, d], tex: 'W^{I}_{k}' }
   Ww:  { shape: [HI, d], tex: 'W^{I}_{w}', dtype: fp32 }
 fold:
-  label: '$\of{out}=\mathrm{indexer}(\of{x},\ \of{qr})$'
+  label: '$\of{idx}=\mathrm{indexer}(\of{x},\ \of{qr})$'
   title: indexer（已折叠）
   text: |
-    indexer 给每个位置 $t$ 和它之前的每个位置 $s$ 打一个分 $I_{t,s}$，每一行只留下分数最高的 $k_I=\of{kI}$ 个 key，其余的 key 在 mask 里记成 $-\infty$。
-    $$\of{out}={{ out | matrix:2 }}$$
+    indexer 给每个位置 $t$ 和它之前的每个位置 $s$ 打一个分 $I_{t,s}$，每一行返回分数最高的 $k_I=\of{kI}$ 个 key 的编号。对应 HF 里 <code>topk_indices = self.indexer(...)</code>。
+    $$\of{idx}={{ idx | matrix:2 }}$$
   backward:
     label: indexer
     title: indexer 没有梯度
-    text: indexer 的输出只经过 top-k 选择，选择不可导，所以损失的梯度不会进入 indexer。
+    text: indexer 只输出选中的 key 的编号，选择不可导，所以损失的梯度不会进入 indexer。
 body:
   - q: { op: 'view(qr @ Wqb.T, T, HI, dI)', tex: '\mathbf{q}^{I}' }
   - q_rot: { op: 'narrow(q, -1, 0, dr)', tex: '\mathbf{q}^{I}_{\mathrm{rot}}' }
@@ -65,9 +65,8 @@ body:
   - Rw: { op: 'R * view(w, T, HI, 1)', tex: '\mathbf{w}^{I}\odot R' }
   - I: { op: 'sum(Rw, 1)', tex: 'I' }
   - Im: { op: I + mask, tex: '\bar{I}' }
-  - sel: { op: 'topk_mask(Im, min(kI, T), -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
-  - out: { op: 'where(sel, mask, -inf)', tex: '\tilde{M}' }
-formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index}{\textstyle\sum_{h}}\step{weights}{w_{h}}\step{scores}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{k}^{\top}}\step{scores}{/\sqrt{d_I}\big)}\step{topk}{+\of{mask}\big)}'
+  - idx: { op: 'topk_indices(Im, min(kI, T), -1)', tex: '\mathbf{i}^{I}' }
+formula: '\step{topk}{\of{idx}=\operatorname{argtop}_{k_I}\big(}\step{index}{\textstyle\sum_{h}}\step{weights}{w_{h}}\step{scores}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{k}^{\top}}\step{scores}{/\sqrt{d_I}\big)}\step{masked}{+\of{mask}}\step{topk}{\big)}'
 steps:
   - id: q_up
     show: [Wqb.T, q]
@@ -132,17 +131,17 @@ steps:
     text: |
       每个 head 的 ReLU 分数乘上这个位置给它的权重，再按 head 加起来，得到 $T\times T$ 的 index score。$I_{t,s}$ 表示位置 $t$ 的 query 有多需要位置 $s$ 的 key。
       $$I_{t,s}=\sum_{h}w_{t,h}\,R_{t,h,s},\qquad \of{I}={{ I | matrix:3 }}$$
+  - id: masked
+    show: Im
+    label: '$\of{Im}$'
+    title: 加上 causal mask
+    text: |
+      <code>index_scores = index_scores + attention_mask</code>：加上 causal mask，位置 $t$ 之后的 key 变成 $-\infty$，位置 $t$ 只能选自己和之前的位置。HF 传进来的 mask 是浮点的，所以走加法这一支；mask 是 bool 时 HF 改用 <code>masked_fill(~attention_mask, float("-inf"))</code>，结果相同。
+      $$\of{Im}={{ Im | matrix:3 }}$$
   - id: topk
-    show: [Im, sel]
-    label: '$\of{sel}$'
-    title: 'top-$k_I$：每个位置选出 $k_I$ 个 key'
+    show: idx
+    label: '$\of{idx}$'
+    title: 'top-$k_I$：每个位置选出 $k_I$ 个 key 的编号'
     text: |
-      先加上 causal mask，位置 $t$ 只能选自己和之前的位置，再在每一行选出分数最高的 $k_I=\of{kI}$ 个。一行里能选的 key 不到 $k_I$ 个时（例如第 1 行），top-k 会再选上被 causal mask 挡住的位置，这些位置在下一步仍是 $-\infty$，所以能选的 key 全部保留。真实模型里 $k_I=2048$，上下文短于 2048 时注意力仍然是稠密的。挑选只决定 0 和 1，没有梯度。
-      $$\of{sel}={{ sel | matrix:2 }}$$
-  - id: mask
-    show: out
-    label: '$\of{out}$'
-    title: 稀疏的 attention mask
-    text: |
-      选中的 key 保留 causal mask 原来的值，没选中的记成 $-\infty$。HF 的 eager 路径填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，取 exp 之后同样是 0。这张 mask 交给后面的注意力，代替原来的 causal mask，每个位置最多看 $k_I$ 个 key。
-      $$\of{out}={{ out | matrix:2 }}$$
+      <code>topk = min(self.index_topk, index_scores.shape[-1])</code>，然后 <code>return index_scores.topk(topk, dim=-1).indices.to(torch.int32)</code>：每一行取分数最高的 $\min(k_I, T)=\of{min(kI, T)}$ 个 key，返回它们的编号，按分数从大到小排。indexer 只输出这些编号，稀疏的 mask 由 self_attn 用编号拼出来。一行里能选的 key 不到 $k_I$ 个时（例如第 1 行），top-k 会再选上被 causal mask 挡住的位置，这些位置在 causal mask 里已经是 $-\infty$，所以注意力仍然看不到它们。真实模型里 $k_I=2048$，上下文短于 2048 时注意力仍然是稠密的。编号是整数，没有梯度。HF 把编号转成 int32，self_attn 用之前再用 <code>.long()</code> 转回 int64，两次转换不改变编号，图上的编号一直是 int64。
+      $$\of{idx}={{ idx | matrix:2 }}$$

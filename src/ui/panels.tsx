@@ -61,7 +61,7 @@ export type PanelItem =
   | { tokens: Node; columns?: TokenColumn[]; title?: string; sliders?: Node; min?: number; max?: number }
   | { matrix: MatrixSource; grad?: boolean; title?: string; highlight?: MatrixHighlight; note?: string; caption?: string; limit?: number; rows?: string }
   | { matrices: MatrixEntry[]; title?: string; highlight?: MatrixHighlight; note?: string; rows?: string }
-  | { attention: Node[]; ids: Node; title?: string; note?: string }
+  | { attention: Node[]; ids: Node; extra_keys?: string[]; title?: string; note?: string }
   | SequenceOptions
   | { code: string; title?: string; note?: string }
   | { note: string; title?: string };
@@ -338,9 +338,11 @@ function SequencePanel(props: { ctx: Context; item: SequenceOptions }) {
 
 function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attention: Node[] }> }) {
   const { ctx, item } = props;
+  const extra = item.extra_keys ?? [];
   for (const node of item.attention) {
-    if (node.shape.length !== 2 || node.shape[0] !== node.shape[1]) {
-      throw new Error(`attention panel: node '${node.name}' must be a square matrix, got shape ${formatShape(node.shape)}`);
+    if (node.shape.length !== 2 || node.shape[1] !== node.shape[0] + extra.length) {
+      const expected = extra.length === 0 ? 'a square matrix' : `a (T, T + ${extra.length}) matrix for ${extra.length} extra_keys`;
+      throw new Error(`attention panel: node '${node.name}' must be ${expected}, got shape ${formatShape(node.shape)}`);
     }
   }
   const tokens = createMemo(() => {
@@ -357,21 +359,22 @@ function AttentionPanel(props: { ctx: Context; item: Extract<PanelItem, { attent
               ctx.version();
               return node.value;
             });
-            const indices = Array.from({ length: size }, (_, i) => i);
+            const rows = Array.from({ length: size }, (_, i) => i);
+            const columns = Array.from({ length: node.shape[1] }, (_, i) => i);
             return (
-              <div class="vf-attn" style={{ 'grid-template-columns': `34px repeat(${size}, minmax(0, 1fr))` }}>
+              <div class="vf-attn" style={{ 'grid-template-columns': `34px repeat(${columns.length}, minmax(0, 1fr))` }}>
                 <div class="vf-h">
                   <Rich text={indexed('h', h() + 1)} />
                 </div>
-                <For each={indices}>{(c) => <div class="vf-h">{tokens()[c]}</div>}</For>
-                <For each={indices}>
+                <For each={columns}>{(c) => <div class="vf-h">{c < size ? tokens()[c] : <Rich text={extra[c - size]} />}</div>}</For>
+                <For each={rows}>
                   {(r) => (
                     <>
                       <div class="vf-h">{tokens()[r]}</div>
-                      <For each={indices}>
+                      <For each={columns}>
                         {(c) => {
                           const v = () => values().get([r, c]);
-                          return <div style={{ background: tint(v(), ATTENTION_LIMIT) }}>{c > r ? '·' : display(v(), CELL_DIGITS)}</div>;
+                          return <div style={{ background: tint(v(), ATTENTION_LIMIT) }}>{c > r && c < size ? '·' : display(v(), CELL_DIGITS)}</div>;
                         }}
                       </For>
                     </>

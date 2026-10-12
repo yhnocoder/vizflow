@@ -1,0 +1,86 @@
+module: UnweightedRMSNorm
+subtitle: RMSNorm，没有权重
+formula: '\step{normalize}{\of{out}=\of{x}\big/}\step{rms}{\sqrt{\step{mean}{\operatorname{mean}\big(}\step{square}{{\of{x}}^{2}}\step{mean}{\big)}\step{eps}{+\epsilon}}}'
+params:
+  eps:   { type: float, default: 1e-6 }
+  name:  { type: text, default_key: true }
+  intro: { type: text, default: '' }
+inputs:
+  x: { shape: [..., n] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: \of{name}（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 \of{name}（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - sq:  { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
+  - ms:  { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
+  - mse: { op: ms + eps, tex: '\mathrm{ms}+\epsilon' }
+  - r:   { op: rsqrt(mse), tex: r, dtype: x }
+  - out: { op: x * r }
+steps:
+  - id: square
+    show: sq
+    label: '$\of{sq}$'
+    title: \of{name}：逐元素平方
+    text: |
+      \of{intro}这是不带权重的 RMSNorm：只除以均方根，不乘可学习的 $\boldsymbol{\gamma}$。HF 先把输入转成 float32 再平方。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 传到输入
+      text: |
+        平方这一路的局部导数是 $2x$。两条路相加以后，交给输入的梯度和这一行的输入垂直，因为结果对整行的缩放不敏感。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: mean
+    show: ms
+    label: '$\of{ms}$'
+    title: 取平均
+    text: |
+      最后一维上的平方取平均得到 ms，最后一维之外的每个位置各有一个。
+      $$\mathrm{ms}={{ ms | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 平均值把梯度均分给每个平方
+      text: |
+        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+  - id: eps
+    show: mse
+    label: '$+\epsilon$'
+    title: 加上 $\epsilon$
+    text: |
+      加上 $\epsilon=\of{eps}$，防止全零的输入除以 0。
+    backward:
+      label: '$\partial\of{ms}$'
+      title: 加常数，梯度原样传下去
+  - id: rms
+    show: r
+    label: '$\of{r}$'
+    title: 平方根的倒数
+    text: |
+      HF 写的是 <code>x * torch.rsqrt(x.float().square().mean(-1, keepdim=True) + self.eps).to(x.dtype)</code>：$r$ 在 float32 里算出来以后先转回 $\of{x}$ 的 dtype，下一步的乘法在 $\of{x}$ 的 dtype 里做。
+      $$r=\frac{1}{\sqrt{\mathrm{ms}+\epsilon}}={{ r | matrix:3 }}$$
+    backward:
+      label: '$\partial(\mathrm{ms}+\epsilon)$'
+      title: 穿过 rsqrt
+      text: |
+        局部导数是 $-r^3/2$。
+        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }}$$
+  - id: normalize
+    show: out
+    label: '$\of{out}$'
+    title: 归一化
+    text: |
+      每个分量乘上自己所在那一组的 $r$，归一化以后每组的均方根接近 1。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial\of{x}$'
+      title: 传到 $r$，以及输入的直连那条
+      text: |
+        $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$

@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { CompiledPage } from '../../src/dsl';
+import { autoLayout } from '../../src/scene3d/auto';
+import { resolveLayout, targetColumn } from '../../src/scene3d/layout';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { expectRouting } from './deepseek_moe';
@@ -50,17 +52,32 @@ describe('deepseek_v3_2-dsl.yaml against transformers DeepseekV32Model in float6
     }
   });
 
-  it('selects the same keys as the HF indexer, at most kI per row inside the causal window', () => {
+  it('returns kI key indices per row from the indexer, the same causal keys as HF, and builds the sparse mask from them', () => {
     for (const layer of LAYERS) {
-      const sel = page.nodes.get(`${layer}.self_attn.indexer.sel`)!.value.toNested() as number[][];
+      const idx = page.nodes.get(`${layer}.self_attn.indexer.idx`)!.value.toNested() as number[][];
+      const indexMask = page.nodes.get(`${layer}.self_attn.index_mask`)!.value.toNested() as number[][];
       const mask = page.nodes.get(`${layer}.self_attn.M_sparse`)!.value.toNested() as number[][];
-      sel.forEach((row, t) => {
-        expect(row.reduce((a, b) => a + b, 0)).toBe(KI);
-        const kept = row.flatMap((v, s) => (v === 1 && s <= t ? [s] : []));
+      expect(page.nodes.get(`${layer}.self_attn.index_mask`)!.dtype).toBe('bool');
+      idx.forEach((row, t) => {
+        const chosen = new Set(row);
+        expect(row.length).toBe(KI);
+        expect(chosen.size).toBe(KI);
+        const kept = [...chosen].filter((s) => s <= t).sort((a, b) => a - b);
         expect(kept.length).toBe(Math.min(KI, t + 1));
         expect(kept).toEqual(fixture.selected[layer][t]);
+        indexMask[t].forEach((m, s) => expect(m).toBe(chosen.has(s) ? 0 : 1));
         mask[t].forEach((m, s) => expect(m).toBe(kept.includes(s) ? 0 : -Infinity));
       });
+    }
+  });
+
+  it('lays out the indexer output, whose kI columns do not divide T, at finite positions', () => {
+    const { layout, levels } = autoLayout(page.tree, page.steps);
+    const resolved = resolveLayout(layout, { visible: page.graph.nodes, aligned: new Map(), targetOf: targetColumn, focus: 0, folded: () => false, plan: levels });
+    const idx = resolved.blocks.filter((b) => b.node.name.endsWith('.indexer.idx'));
+    expect(idx.length).toBeGreaterThan(0);
+    for (const block of resolved.blocks) {
+      for (const e of block.elements) expect([e.x, e.y, e.z].every(Number.isFinite), block.node.name).toBe(true);
     }
   });
 
@@ -83,7 +100,7 @@ describe('deepseek_v3_2-dsl.yaml against transformers DeepseekV32Model in float6
     }
     const steps = createSteps(page.graph, page.steps);
     const titles = steps.list.map((s) => s.title);
-    expect(titles).toContain('top-$k_I$：每个位置选出 $k_I$ 个 key');
+    expect(titles).toContain('top-$k_I$：每个位置选出 $k_I$ 个 key 的编号');
     expect(steps.list.some((s) => s.dir === 'backward' && s.module?.includes('.indexer'))).toBe(false);
   });
 });

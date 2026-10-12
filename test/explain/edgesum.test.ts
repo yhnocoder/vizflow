@@ -119,6 +119,20 @@ const cases: Case[] = [
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
+  {
+    op: 'clamp',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.clamp(x, -0.5, 0.7), inputs: [x] };
+    },
+  },
+  {
+    op: 'clamp',
+    build: (g, r) => {
+      const x = g.input('x', [2, 5], randomValues(r, [2, 5]));
+      return { out: g.clamp(x, { max: 0.3 }), inputs: [x] };
+    },
+  },
   { op: 'mul', build: (g, r) => binary(g, r, 'mul', [3, 2, 4], [3, 1, 4]) },
   { op: 'mean', build: (g, r) => reduce(g, r, 'mean', [3, 2, 4], -1, true) },
   {
@@ -383,7 +397,7 @@ const cases: Case[] = [
     },
   { op: 'remainder', build: (g, r) => binary(g, r, 'remainder', [2, 3], [3], true) },
   { op: 'remainder', build: (g, r) => scalar(g, r, 'remainder', 0.7) },
-  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge'] as const).map((op) => ({
+  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge', 'floor_divide'] as const).map((op) => ({
     op,
     build: (g: Graph) => {
       const a = g.label('a', [[3, 1, 2], [0, 5, 4]]);

@@ -215,6 +215,17 @@ export const logicalNotOp: OpDef<NoAttrs> = {
 export const eqOp = compare('eq', (x, y) => x === y);
 export const geOp = compare('ge', (x, y) => x >= y);
 export const greaterOp = compare('greater', (x, y) => x > y);
+
+function floorDivExact(x: bigint, y: bigint): bigint {
+  if (y === 0n) throw new Error('floor_divide: integer division by zero');
+  const q = x / y;
+  return x % y !== 0n && x < 0n !== y < 0n ? q - 1n : q;
+}
+
+export const floorDivideOp = withInt64(
+  { ...binary('floor_divide', (x, y) => Math.floor(x / y), () => [0, 0], COMPARISON_COST), differentiable: [false, false], backward: () => [null, null] },
+  floorDivExact,
+);
 export const powOp = unary<{ exponent: number }>(
   'pow',
   (x, { exponent }) => x ** exponent,
@@ -282,6 +293,30 @@ export const rotateHalfOp: OpDef<NoAttrs> = {
   forward: ([a]) => rotateHalf(a, 1),
   backward: (gradOut) => [rotateHalf(gradOut, -1)],
   cost: pointwise(1, 1, [[]]),
+};
+
+export interface ClampAttrs {
+  min: number | null;
+  max: number | null;
+}
+
+export function clampInside(x: number, { min, max }: ClampAttrs): boolean {
+  return (min === null || x > min) && (max === null || x < max);
+}
+
+export const clampOp: OpDef<ClampAttrs> = {
+  name: 'clamp',
+  args: ['input', 'min', 'max'],
+  tensors: ['input'],
+  defaults: { min: null, max: null },
+  shape: ([a], { min, max }) => {
+    if (min === null && max === null) throw new Error('clamp: at least one of min and max must be given');
+    if (min !== null && max !== null && min > max) throw new Error(`clamp: min ${min} is larger than max ${max}`);
+    return [...a];
+  },
+  forward: ([a], attrs) => mapWith(a, (x) => Math.min(attrs.max ?? Infinity, Math.max(attrs.min ?? -Infinity, x))),
+  backward: (gradOut, [a], _out, attrs) => [new Tensor(a.shape, gradOut.data.map((g, i) => (clampInside(a.data[i], attrs) ? g : 0)))],
+  cost: nonlinear(0),
 };
 
 interface TransposeAttrs {

@@ -13,7 +13,7 @@ describe('LaTeX templates render with KaTeX', () => {
     const g = graph();
     const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
     const node = g.exp(x);
-    const attrs = { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, num_classes: 3, dims: [1, 0], value: -Infinity, diagonal: 1, upper: false, unitriangular: true, pad: [0, 1], min: 1e-6, sizes: [1, 2], dilation: 1 };
+    const attrs = { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, num_classes: 3, dims: [1, 0], value: -Infinity, diagonal: 1, upper: false, unitriangular: true, pad: [0, 1], min: 1e-6, max: 1, sizes: [1, 2], dilation: 1 };
     const grouped = { weight: Tensor.zeros([2, 3, 3]), group: Tensor.from([1, 0]) };
     for (const def of builtinOps) {
       const inputs = def.name === 'grouped_linear' ? [x.value, grouped.weight, grouped.group] : def.name === 'scatter' ? [x.value, Tensor.from([[0], [2]])] : [x.value, x.value];

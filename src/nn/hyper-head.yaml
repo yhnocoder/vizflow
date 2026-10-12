@@ -1,0 +1,125 @@
+module: HyperHead
+subtitle: 把 \of{N} 条 stream 合成一条
+import:
+  UnweightedRMSNorm: vizflow/nn/rmsnorm-unweighted
+  Sigmoid:           vizflow/nn/sigmoid
+formula: '\step{sum}{\of{out}=\textstyle\sum_n}\step{sigmoid.*,eps}{\big(\sigma(}\step{scale}{\alpha\,}\step{mix}{\tilde{\of{X}}W_{\mathrm{fn}}^{\top}}\step{base}{+\mathbf{b}}\step{sigmoid.*,eps}{)+\epsilon\big)_n}\step{weight}{\,{\of{X}}_{n}}'
+params:
+  hc_eps: { type: float, default: 1e-6 }
+  eps:    { type: float, default: 1e-6 }
+inputs:
+  X: { shape: [T, N, d] }
+outputs: [out]
+weights:
+  fn:    { shape: [N, N * d], dtype: fp32, tex: 'W_{\mathrm{fn}}' }
+  base:  { shape: [N], dtype: fp32, tex: '\mathbf{b}' }
+  scale: { shape: [1], dtype: fp32, tex: '\alpha' }
+fold:
+  label: '$\of{out}$'
+  title: hc_head（已折叠）
+  text: |
+    最后一层之后，\of{N} 条 stream 按每个 token 自己的权重加成一条，交给 final norm。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{X}$'
+    title: 穿过 hc_head（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+body:
+  - flat: { op: 'view(X, T, N * d)', tex: '\mathrm{flat}(\of{X})', dtype: fp32 }
+  - input_norm:
+      use: UnweightedRMSNorm
+      subtitle: DeepseekV4UnweightedRMSNorm
+      suffix: hc
+      params: { eps: eps }
+      inputs: { x: flat }
+      outputs: { out: xn }
+      tex: { out: '\tilde{\of{X}}' }
+      folded: true
+      fold:
+        text: |
+          计算和 mHC 的 input_norm 相同，那里展开画了每一步。
+          $$\tilde{\of{X}}={{ xn | matrix:2 }}$$
+  - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
+  - z:   { op: mix * scale, tex: '\alpha\,\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
+  - zb:  { op: z + base, tex: '\mathbf{u}' }
+  - sigmoid:
+      use: Sigmoid
+      inputs: { x: zb }
+      outputs: { out: sig }
+      tex: { out: '\sigma(\mathbf{u})' }
+      folded: true
+      fold:
+        text: |
+          计算和 mHC 里 pre 的 sigmoid 相同，那里展开画了每一步。
+          $$\sigma(\mathbf{u})={{ sig | matrix:3 }}$$
+  - pre: { op: sig + hc_eps, tex: '\mathbf{w}' }
+  - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}\odot\of{X}' }
+  - out: { op: 'sum(weighted, 1)', dtype: X }
+steps:
+  - id: flatten
+    show: flat
+    label: '$\of{flat}$'
+    title: 把 \of{N} 条 stream 摊平
+    text: |
+      和每一层的 mHC 一样，先把每个 token 的 \of{N} 条 stream 摊成一个 $Nd$ 维的向量，在 float32 里计算。
+    backward:
+      label: '$\partial\of{X}$'
+      title: 按原来的形状放回
+  - id: mix
+    show: [fn.T, mix]
+    label: '$\of{mix}$'
+    title: 每条 stream 一个分数
+    text: |
+      归一化后的向量乘 $W_{\mathrm{fn}}^{\top}$，每条 stream 得到一个数。hc_head 只有这一组系数，没有 post 和 comb，也没有 Sinkhorn。
+      $$\of{mix}={{ mix | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{fn}},\ \partial\tilde{\of{X}}$'
+      title: 传到 $W_{\mathrm{fn}}$
+  - id: scale
+    show: z
+    label: '$\times\alpha$'
+    title: 乘缩放 $\alpha$
+    text: |
+      $$\alpha={{ scale | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mix},\ \partial\alpha$'
+      title: 穿过缩放
+  - id: base
+    show: zb
+    label: '$+\mathbf{b}$'
+    title: 加偏置
+    text: |
+      $$\mathbf{u}={{ zb | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{b}$'
+      title: 穿过加偏置
+  - id: eps
+    show: pre
+    label: '$+\epsilon$'
+    title: 加 $\epsilon$
+    text: |
+      加上 hc_eps $=\of{hc_eps}$，得到每条 stream 的权重。
+      $$\mathbf{w}={{ pre | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma$'
+      title: 加常数，梯度原样传下去
+  - id: weight
+    show: weighted
+    label: '$\mathbf{w}\odot\of{X}$'
+    title: 每条 stream 乘自己的权重
+    text: |
+      $$\mathbf{w}\odot\of{X}={{ weighted | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{w},\ \partial\of{X}$'
+      title: 传到权重和 stream
+  - id: sum
+    show: out
+    label: '$\of{out}$'
+    title: 按 stream 相加
+    text: |
+      对应 <code>(pre.unsqueeze(-1) * x).sum(dim=2).to(x.dtype)</code>：在 float32 里求和，再转回输入 stream 的 dtype。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial(\mathbf{w}\odot\of{X})$'
+      title: 梯度复制给每条 stream

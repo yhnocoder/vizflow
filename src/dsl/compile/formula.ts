@@ -1,5 +1,5 @@
 import { DslError, child, fail } from '../source';
-import { markSteps } from '../tex';
+import { dropSteps, markSteps } from '../tex';
 import type { Compiler } from './text';
 import type { Env, StepRec } from './types';
 import { join } from './util';
@@ -44,8 +44,15 @@ export function markFormulas(c: Compiler, steps: StepRec[]): void {
       return [rec];
     };
     const mark = (spec: string): string => [...new Set(spec.split(',').flatMap((path) => recsOf(path.trim())).map(markOf))].join('.');
+    const switchedOff = (path: string): boolean => {
+      const dot = path.lastIndexOf('.');
+      const stepOwner = dot < 0 ? owner : join(owner, path.slice(0, dot));
+      const id = dot < 0 ? path : path.slice(dot + 1);
+      return c.switchedOffSteps.has(`${stepOwner}#${id}`) && !steps.some((s) => s.refs.some((ref) => ref.owner === stepOwner && ref.id === id));
+    };
     try {
-      target.formula = markSteps(c.ofText(tex, env), mark);
+      const kept = dropSteps(tex, (spec) => spec.split(',').every((path) => switchedOff(path.trim())));
+      target.formula = markSteps(c.ofText(kept, env), mark);
     } catch (error) {
       if (error instanceof DslError) throw error;
       fail(where, (error as Error).message);

@@ -1,0 +1,455 @@
+module: HyperConnection
+subtitle: manifold-constrained hyper-connection（mHC）
+import:
+  UnweightedRMSNorm: vizflow/nn/rmsnorm-unweighted
+  Sigmoid:           vizflow/nn/sigmoid
+formula: '\step{collapse,collapse_sum}{\of{collapsed}=\textstyle\sum_n}\step{pre_sigmoid.*,pre_eps}{\big(\sigma(}\step{pre_scale}{\alpha_{\mathrm{pre}}\,}\step{mix}{(\tilde{\of{X}}W_{\mathrm{fn}}^{\top})_{\mathrm{pre}}}\step{pre_base}{+\mathbf{b}_{\mathrm{pre}}}\step{pre_sigmoid.*,pre_eps}{)+\epsilon\big)_n}\step{collapse}{\,{\of{X}}_{n}}'
+params:
+  iters:  { type: int }
+  hc_eps: { type: float, default: 1e-6 }
+  eps:    { type: float, default: 1e-6 }
+inputs:
+  X: { shape: [T, N, d] }
+outputs: [post, comb, collapsed]
+weights:
+  fn:    { shape: [(2 + N) * N, N * d], dtype: fp32, tex: 'W_{\mathrm{fn}}' }
+  base:  { shape: [(2 + N) * N], dtype: fp32, tex: '\mathbf{b}' }
+  scale: { shape: [3], dtype: fp32, tex: '\boldsymbol{\alpha}' }
+fold:
+  label: '$\of{post},\ \of{comb},\ \of{collapsed}$'
+  title: mHC（已折叠）
+  text: |
+    \of{N} 条 residual stream 摊平、归一化后经过一个投影，得到三组系数：pre 把 \of{N} 条 stream 加权合成一条，作为这一个子层的输入；post 决定子层的输出写回每条 stream 的比例；comb 是 $N\times N$ 的混合矩阵，经过 Sinkhorn 归一化，行和列的和都接近 1。三组系数都随 token 变化。
+    $$\of{collapsed}={{ collapsed | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{X}$'
+    title: 穿过 mHC（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+body:
+  - flat: { op: 'view(X, T, N * d)', tex: '\mathrm{flat}(\of{X})', dtype: fp32 }
+  - input_norm:
+      use: UnweightedRMSNorm
+      subtitle: DeepseekV4UnweightedRMSNorm
+      suffix: hc
+      params: { eps: eps }
+      inputs: { x: flat }
+      outputs: { out: xn }
+      tex: { out: '\tilde{\of{X}}' }
+  - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
+  - pre_w:  { op: 'narrow(mix, -1, 0, N)', tex: '\mathbf{m}_{\mathrm{pre}}' }
+  - post_w: { op: 'narrow(mix, -1, N, N)', tex: '\mathbf{m}_{\mathrm{post}}' }
+  - comb_f: { op: 'narrow(mix, -1, 2 * N, N * N)', tex: '\mathbf{m}_{\mathrm{comb}}' }
+  - comb_w: { op: 'view(comb_f, T, N, N)', tex: 'M_{\mathrm{comb}}' }
+  - b_pre:  { op: 'narrow(base, 0, 0, N)', tex: '\mathbf{b}_{\mathrm{pre}}' }
+  - b_post: { op: 'narrow(base, 0, N, N)', tex: '\mathbf{b}_{\mathrm{post}}' }
+  - b_combf: { op: 'narrow(base, 0, 2 * N, N * N)', tex: '\mathbf{b}_{\mathrm{comb}}' }
+  - b_comb: { op: 'view(b_combf, N, N)', tex: 'B_{\mathrm{comb}}' }
+  - s_pre:  { op: 'narrow(scale, 0, 0, 1)', tex: '\alpha_{\mathrm{pre}}' }
+  - s_post: { op: 'narrow(scale, 0, 1, 1)', tex: '\alpha_{\mathrm{post}}' }
+  - s_comb: { op: 'narrow(scale, 0, 2, 1)', tex: '\alpha_{\mathrm{comb}}' }
+  - pre_branch:
+      title: pre
+      body:
+        - pre_z:   { op: pre_w * s_pre, tex: '\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}' }
+        - pre_zb:  { op: pre_z + b_pre, tex: '\mathbf{z}_{\mathrm{pre}}' }
+        - pre_sigmoid:
+            use: Sigmoid
+            inputs: { x: pre_zb }
+            outputs: { out: pre_sig }
+            tex: { out: '\sigma(\mathbf{z}_{\mathrm{pre}})' }
+            steps:
+              neg:
+                append: 这里算的是 <code>torch.sigmoid(pre_w * pre_scale + pre_b)</code>，sigmoid 让 pre 的系数落在 0 到 1 之间。
+        - pre:     { op: pre_sig + hc_eps, tex: '\mathbf{w}_{\mathrm{pre}}' }
+  - post_branch:
+      title: post
+      beside: pre_branch
+      body:
+        - post_z:   { op: post_w * s_post, tex: '\alpha_{\mathrm{post}}\mathbf{m}_{\mathrm{post}}' }
+        - post_zb:  { op: post_z + b_post, tex: '\mathbf{z}_{\mathrm{post}}' }
+        - post_sigmoid:
+            use: Sigmoid
+            inputs: { x: post_zb }
+            outputs: { out: post_sig }
+            tex: { out: '\sigma(\mathbf{z}_{\mathrm{post}})' }
+            folded: true
+            fold:
+              text: |
+                计算和 pre 的 sigmoid 相同，那里展开画了每一步。
+                $$\sigma(\mathbf{z}_{\mathrm{post}})={{ post_sig | matrix:3 }}$$
+        - post:     { op: post_sig * 2, tex: '\mathbf{w}_{\mathrm{post}}' }
+  - comb_branch:
+      title: comb
+      beside: post_branch
+      body:
+        - comb_z:  { op: comb_w * s_comb, tex: '\alpha_{\mathrm{comb}}M_{\mathrm{comb}}' }
+        - comb_zb: { op: comb_z + b_comb, tex: 'Z_{\mathrm{comb}}' }
+        - comb_ex: { op: exp(comb_zb), tex: 'e^{Z_{\mathrm{comb}}}' }
+        - comb_Z:  { op: 'sum(comb_ex, -1, keepdim=true)', tex: 'e^{Z_{\mathrm{comb}}}\mathbf{1}' }
+        - comb_sm: { op: comb_ex / comb_Z, tex: '\operatorname{softmax}(Z_{\mathrm{comb}})' }
+        - comb0:   { op: comb_sm + hc_eps, tex: 'C^{\mathrm{init}}' }
+  - sinkhorn:
+      title: Sinkhorn
+      subtitle: 先按列归一化，再交替按行、按列
+      body:
+        - first_col:
+            title: 按列归一化
+            body:
+              - cs0:    { op: 'sum(comb0, -2, keepdim=true)', tex: '\mathbf{1}^{\top}C^{\mathrm{init}}' }
+              - cse0:   { op: cs0 + hc_eps, tex: '\mathbf{1}^{\top}C^{\mathrm{init}}+\epsilon' }
+              - 'C[0]': { op: comb0 / cse0, tex: 'C^{(0)}' }
+        - for: i
+          in: 1..iters-2
+          sequential: true
+          body:
+            - round[i]:
+                title: 第 $\of{i}$ 轮行列归一化
+                body:
+                  - rs[i]:  { op: 'sum(C[i-1], -1, keepdim=true)', tex: 'C^{(\of{i-1})}\mathbf{1}' }
+                  - rse[i]: { op: 'rs[i] + hc_eps', tex: 'C^{(\of{i-1})}\mathbf{1}+\epsilon' }
+                  - R[i]:   { op: 'C[i-1] / rse[i]', tex: 'R^{(\of{i})}' }
+                  - cs[i]:  { op: 'sum(R[i], -2, keepdim=true)', tex: '\mathbf{1}^{\top}R^{(\of{i})}' }
+                  - cse[i]: { op: 'cs[i] + hc_eps', tex: '\mathbf{1}^{\top}R^{(\of{i})}+\epsilon' }
+                  - C[i]:   { op: 'R[i] / cse[i]', tex: 'C^{(\of{i})}' }
+                steps:
+                  - id: row_sum
+                    show: 'rs[i]'
+                    label: '$\of{rs[i]}$'
+                    title: 第 $\of{i}$ 轮：每行求和
+                    text: |
+                      对每个 token 的 $N\times N$ 矩阵按行求和（<code>sum(dim=-1)</code>）。
+                      $$\of{rs[i]}={{ rs[i] | matrix:3 }}$$
+                    backward:
+                      label: '$\partial C^{(\of{i-1})}$'
+                      title: 第 $\of{i}$ 轮：行和的梯度复制给这一行
+                  - id: row_eps
+                    show: 'rse[i]'
+                    label: '$+\epsilon$'
+                    title: 第 $\of{i}$ 轮：行和加 $\epsilon$
+                    text: 每个行和加上 hc_eps $=\of{hc_eps}$。
+                    backward:
+                      label: '$\partial\of{rs[i]}$'
+                      title: 第 $\of{i}$ 轮：加常数，梯度原样传下去
+                  - id: row_div
+                    show: 'R[i]'
+                    label: '$\of{R[i]}$'
+                    title: 第 $\of{i}$ 轮：每行除以行和
+                    text: |
+                      除完以后每一行的和接近 1，列和又会偏离 1。
+                      $$\of{R[i]}={{ R[i] | matrix:3 }}$$
+                    backward:
+                      label: '$\partial C^{(\of{i-1})},\ \partial(\cdot+\epsilon)$'
+                      title: 第 $\of{i}$ 轮：穿过按行相除
+                  - id: col_sum
+                    show: 'cs[i]'
+                    label: '$\of{cs[i]}$'
+                    title: 第 $\of{i}$ 轮：每列求和
+                    text: |
+                      再按列求和（<code>sum(dim=-2)</code>）。
+                      $$\of{cs[i]}={{ cs[i] | matrix:3 }}$$
+                    backward:
+                      label: '$\partial\of{R[i]}$'
+                      title: 第 $\of{i}$ 轮：列和的梯度复制给这一列
+                  - id: col_eps
+                    show: 'cse[i]'
+                    label: '$+\epsilon$'
+                    title: 第 $\of{i}$ 轮：列和加 $\epsilon$
+                    text: 每个列和加上 hc_eps。
+                    backward:
+                      label: '$\partial\of{cs[i]}$'
+                      title: 第 $\of{i}$ 轮：加常数，梯度原样传下去
+                  - id: col_div
+                    show: 'C[i]'
+                    label: '$\of{C[i]}$'
+                    title: 第 $\of{i}$ 轮：每列除以列和
+                    text: |
+                      $$\of{C[i]}={{ C[i] | matrix:3 }}$$
+                    backward:
+                      label: '$\partial\of{R[i]},\ \partial(\cdot+\epsilon)$'
+                      title: 第 $\of{i}$ 轮：穿过按列相除
+        - last_round:
+            title: 最后一轮行列归一化
+            body:
+              - rs_last:  { op: 'sum(C[iters-2], -1, keepdim=true)', tex: 'C^{(\of{iters-2})}\mathbf{1}' }
+              - rse_last: { op: rs_last + hc_eps, tex: 'C^{(\of{iters-2})}\mathbf{1}+\epsilon' }
+              - R_last:   { op: 'C[iters-2] / rse_last', tex: 'R^{(\of{iters-1})}' }
+              - cs_last:  { op: 'sum(R_last, -2, keepdim=true)', tex: '\mathbf{1}^{\top}R^{(\of{iters-1})}' }
+              - cse_last: { op: cs_last + hc_eps, tex: '\mathbf{1}^{\top}R^{(\of{iters-1})}+\epsilon' }
+              - comb:     { op: R_last / cse_last, tex: 'C' }
+  - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}_{\mathrm{pre}}\odot\of{X}' }
+  - collapsed: { op: 'sum(weighted, 1)', dtype: X }
+steps:
+  - id: flatten
+    show: flat
+    label: '$\of{flat}$'
+    title: 把 \of{N} 条 stream 摊平
+    text: |
+      每个 token 的 \of{N} 条 stream 首尾相接，摊成一个 $Nd=\of{N*d}$ 维的向量，对应 <code>hidden_streams.view(batch_size, seq_len, -1).float()</code>。mHC 的系数在 float32 里计算。
+      $$\of{flat}={{ flat | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{X}$'
+      title: 按原来的形状放回 \of{N} 条 stream
+  - id: mix
+    show: [fn.T, mix]
+    label: '$\of{mix}$'
+    title: 一个投影同时算出三组系数
+    text: |
+      归一化后的向量乘 $W_{\mathrm{fn}}^{\top}$，输出 $(2+N)N=\of{(2+N)*N}$ 个数：前 \of{N} 个给 pre，接着 \of{N} 个给 post，最后 $N^2=\of{N*N}$ 个给 comb。投影没有偏置，偏置 $\mathbf{b}$ 在下一步分开加。
+      $$\of{mix}={{ mix | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{fn}},\ \partial\tilde{\of{X}}$'
+      title: 传到 $W_{\mathrm{fn}}$ 和归一化的输入
+      text: |
+        $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
+  - id: split
+    show: [pre_w, post_w, comb_f, comb_w]
+    label: '$\mathbf{m}_{\mathrm{pre}},\ \mathbf{m}_{\mathrm{post}},\ M_{\mathrm{comb}}$'
+    title: 切成 pre、post、comb 三段
+    text: |
+      对应 <code>flattened.split([hc, hc, hc * hc], dim=-1)</code>；comb 那一段再排成每个 token 一个 $N\times N$ 矩阵。
+      $$M_{\mathrm{comb}}={{ comb_w | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mix}$'
+      title: 三段梯度拼回去
+  - id: base_split
+    show: [base, b_pre, b_post, b_combf, b_comb]
+    label: '$\mathbf{b}_{\mathrm{pre}},\ \mathbf{b}_{\mathrm{post}},\ B_{\mathrm{comb}}$'
+    title: 偏置按同样的长度切成三段
+    text: |
+      偏置 $\mathbf{b}$ 也切成 \of{N}、\of{N}、$N^2$ 三段，comb 的一段排成 $N\times N$。
+      $$\mathbf{b}={{ base | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{b}$'
+      title: 三段梯度拼回 $\mathbf{b}$
+      text: |
+        $$\frac{\partial\ell}{\partial\mathbf{b}}={{ base.grad | matrix:3 }}$$
+  - id: scale_split
+    show: [scale, s_pre, s_post, s_comb]
+    label: '$\alpha_{\mathrm{pre}},\ \alpha_{\mathrm{post}},\ \alpha_{\mathrm{comb}}$'
+    title: 三个缩放分开
+    text: |
+      缩放 $\boldsymbol{\alpha}$ 有 3 个数，pre、post、comb 各用一个，对应 <code>scale.unbind(0)</code>。
+      $$\boldsymbol{\alpha}={{ scale | matrix:3 }}$$
+    backward:
+      label: '$\partial\boldsymbol{\alpha}$'
+      title: 梯度放回 $\boldsymbol{\alpha}$
+      text: |
+        $$\frac{\partial\ell}{\partial\boldsymbol{\alpha}}={{ scale.grad | matrix:3 }}$$
+  - id: pre_scale
+    show: pre_z
+    label: '$\times\alpha_{\mathrm{pre}}$'
+    title: pre：乘缩放
+    text: |
+      $$\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}={{ pre_z | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{m}_{\mathrm{pre}},\ \partial\alpha_{\mathrm{pre}}$'
+      title: pre：穿过缩放
+  - id: pre_base
+    show: pre_zb
+    label: '$+\mathbf{b}_{\mathrm{pre}}$'
+    title: pre：加偏置
+    text: |
+      $$\mathbf{z}_{\mathrm{pre}}={{ pre_zb | matrix:3 }}$$
+    backward:
+      label: '$\partial(\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}),\ \partial\mathbf{b}_{\mathrm{pre}}$'
+      title: pre：穿过加偏置
+  - id: pre_eps
+    show: pre
+    label: '$\of{pre}$'
+    title: pre：加 $\epsilon$
+    text: |
+      加上 hc_eps $=\of{hc_eps}$，得到 pre 的系数。
+      $$\mathbf{w}_{\mathrm{pre}}={{ pre | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma(\mathbf{z}_{\mathrm{pre}})$'
+      title: pre：加常数，梯度原样传下去
+  - id: post_scale
+    show: post_z
+    label: '$\times\alpha_{\mathrm{post}}$'
+    title: post：乘缩放
+    text: |
+      $$\alpha_{\mathrm{post}}\mathbf{m}_{\mathrm{post}}={{ post_z | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{m}_{\mathrm{post}},\ \partial\alpha_{\mathrm{post}}$'
+      title: post：穿过缩放
+  - id: post_base
+    show: post_zb
+    label: '$+\mathbf{b}_{\mathrm{post}}$'
+    title: post：加偏置
+    text: |
+      $$\mathbf{z}_{\mathrm{post}}={{ post_zb | matrix:3 }}$$
+    backward:
+      label: '$\partial(\alpha_{\mathrm{post}}\mathbf{m}_{\mathrm{post}}),\ \partial\mathbf{b}_{\mathrm{post}}$'
+      title: post：穿过加偏置
+  - id: post_double
+    show: post
+    label: '$\of{post}$'
+    title: post：乘 2
+    text: |
+      post 乘 2，范围变成 0 到 2，没有加 $\epsilon$。
+      $$\mathbf{w}_{\mathrm{post}}={{ post | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma(\mathbf{z}_{\mathrm{post}})$'
+      title: post：乘常数
+  - id: comb_scale
+    show: comb_z
+    label: '$\times\alpha_{\mathrm{comb}}$'
+    title: comb：乘缩放
+    text: |
+      $$\alpha_{\mathrm{comb}}M_{\mathrm{comb}}={{ comb_z | matrix:3 }}$$
+    backward:
+      label: '$\partial M_{\mathrm{comb}},\ \partial\alpha_{\mathrm{comb}}$'
+      title: comb：穿过缩放
+  - id: comb_base
+    show: comb_zb
+    label: '$+B_{\mathrm{comb}}$'
+    title: comb：加偏置
+    text: |
+      $$Z_{\mathrm{comb}}={{ comb_zb | matrix:3 }}$$
+    backward:
+      label: '$\partial(\alpha_{\mathrm{comb}}M_{\mathrm{comb}}),\ \partial B_{\mathrm{comb}}$'
+      title: comb：穿过加偏置
+  - id: comb_exp
+    show: comb_ex
+    label: '$e^{Z_{\mathrm{comb}}}$'
+    title: comb：softmax 的 exp
+    text: |
+      comb 的每一行做 softmax（<code>dim=-1</code>）。softmax 按定义拆成三步画：取 exp、按行求和、相除。softmax 的 kernel 会先减去每行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      $$e^{Z_{\mathrm{comb}}}={{ comb_ex | matrix:3 }}$$
+    backward:
+      label: '$\partial Z_{\mathrm{comb}}$'
+      title: comb：穿过 exp
+      text: exp 的导数是它自己。
+  - id: comb_sum
+    show: comb_Z
+    label: '$e^{Z_{\mathrm{comb}}}\mathbf{1}$'
+    title: comb：softmax 按行求和
+    text: |
+      $$e^{Z_{\mathrm{comb}}}\mathbf{1}={{ comb_Z | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{Z_{\mathrm{comb}}}$'
+      title: comb：行和的梯度复制给这一行
+  - id: comb_div
+    show: comb_sm
+    label: '$\operatorname{softmax}$'
+    title: comb：softmax 相除
+    text: |
+      每个元素除以它所在行的和，每行加起来是 1，所有元素都是正数。
+      $$\operatorname{softmax}(Z_{\mathrm{comb}})={{ comb_sm | matrix:3 }}$$
+    backward:
+      label: '$\partial\,e^{Z_{\mathrm{comb}}},\ \partial(e^{Z_{\mathrm{comb}}}\mathbf{1})$'
+      title: comb：穿过相除
+  - id: comb_eps
+    show: comb0
+    label: '$C^{\mathrm{init}}$'
+    title: comb：加 $\epsilon$
+    text: |
+      加上 hc_eps，作为 Sinkhorn 的起点。
+      $$C^{\mathrm{init}}={{ comb0 | matrix:3 }}$$
+    backward:
+      label: '$\partial\operatorname{softmax}(Z_{\mathrm{comb}})$'
+      title: comb：加常数，梯度原样传下去
+  - id: first_col_sum
+    show: cs0
+    label: '$\of{cs0}$'
+    title: Sinkhorn：先按列求和
+    text: |
+      HF 的 Sinkhorn 先做一次按列归一化，再做 hc_sinkhorn_iters $-1=\of{iters-1}$ 轮「按行、按列」；这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。模块把最后一轮单独画成一组，所以要求 iters 至少是 2；HF 在 iters 为 1 时只做开头那一次按列归一化。每个 token 的矩阵各自归一化。先按列求和（<code>sum(dim=-2)</code>）。
+      $$\of{cs0}={{ cs0 | matrix:3 }}$$
+    backward:
+      label: '$\partial C^{\mathrm{init}}$'
+      title: 列和的梯度复制给这一列
+  - id: first_col_eps
+    show: cse0
+    label: '$+\epsilon$'
+    title: Sinkhorn：列和加 $\epsilon$
+    text: 每个列和加上 hc_eps，防止除以 0。
+    backward:
+      label: '$\partial\of{cs0}$'
+      title: 加常数，梯度原样传下去
+  - id: first_col_div
+    show: 'C[0]'
+    label: '$\of{C[0]}$'
+    title: Sinkhorn：每列除以列和
+    text: |
+      $$C^{(0)}={{ C[0] | matrix:3 }}$$
+    backward:
+      label: '$\partial C^{\mathrm{init}},\ \partial(\cdot+\epsilon)$'
+      title: 穿过按列相除
+  - id: last_row_sum
+    show: rs_last
+    label: '$\of{rs_last}$'
+    title: 最后一轮：每行求和
+    text: |
+      $$\of{rs_last}={{ rs_last | matrix:3 }}$$
+    backward:
+      label: '$\partial C$'
+      title: 最后一轮：行和的梯度复制给这一行
+  - id: last_row_eps
+    show: rse_last
+    label: '$+\epsilon$'
+    title: 最后一轮：行和加 $\epsilon$
+    text: 每个行和加上 hc_eps。
+    backward:
+      label: '$\partial\of{rs_last}$'
+      title: 最后一轮：加常数
+  - id: last_row_div
+    show: R_last
+    label: '$\of{R_last}$'
+    title: 最后一轮：每行除以行和
+    text: |
+      $$\of{R_last}={{ R_last | matrix:3 }}$$
+    backward:
+      label: '$\partial C,\ \partial(\cdot+\epsilon)$'
+      title: 最后一轮：穿过按行相除
+  - id: last_col_sum
+    show: cs_last
+    label: '$\of{cs_last}$'
+    title: 最后一轮：每列求和
+    text: |
+      $$\of{cs_last}={{ cs_last | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{R_last}$'
+      title: 最后一轮：列和的梯度复制给这一列
+  - id: last_col_eps
+    show: cse_last
+    label: '$+\epsilon$'
+    title: 最后一轮：列和加 $\epsilon$
+    text: 每个列和加上 hc_eps。
+    backward:
+      label: '$\partial\of{cs_last}$'
+      title: 最后一轮：加常数
+  - id: last_col_div
+    show: comb
+    label: '$\of{comb}$'
+    title: 最后一轮：每列除以列和，得到 comb
+    text: |
+      最后一步是按列归一化，所以每一列的和与 1 只差 $\epsilon$ 带来的误差，行和只是接近 1，comb 并不严格是双随机矩阵。真实模型迭代 20 次，行和更接近 1；这里只迭代 $\of{iters}$ 次，偏差更大。
+      $$C={{ comb | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{R_last},\ \partial(\cdot+\epsilon)$'
+      title: 最后一轮：穿过按列相除
+      text: |
+        Sinkhorn 的每一次除法都可导，梯度沿着各轮依次传回 softmax 之前的 $Z_{\mathrm{comb}}$。
+        $$\frac{\partial\ell}{\partial C}={{ comb.grad | matrix:3 }}$$
+  - id: collapse
+    show: weighted
+    label: '$\mathbf{w}_{\mathrm{pre}}\odot\of{X}$'
+    title: 用 pre 给每条 stream 加权
+    text: |
+      每个 token 的第 $n$ 条 stream 乘上自己的 $w_{\mathrm{pre},n}$。pre 写成 $(T, N, 1)$，沿 $d$ 维广播，对应 <code>pre.unsqueeze(-1) * hidden_streams</code>。
+      $$\mathbf{w}_{\mathrm{pre}}\odot\of{X}={{ weighted | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{w}_{\mathrm{pre}},\ \partial\of{X}$'
+      title: 传到 pre 和输入的 stream
+  - id: collapse_sum
+    show: collapsed
+    label: '$\of{collapsed}$'
+    title: \of{N} 条 stream 加成一条
+    text: |
+      按 stream 求和，得到这一个子层的输入，对应 <code>.sum(dim=2).to(hidden_streams.dtype)</code>。pre 是 float32，乘积和求和也在 float32 里，求和以后转回输入 stream 的 dtype。
+      $$\of{collapsed}={{ collapsed | matrix:2 }}$$
+    backward:
+      label: '$\partial(\mathbf{w}_{\mathrm{pre}}\odot\of{X})$'
+      title: 梯度复制给每条 stream

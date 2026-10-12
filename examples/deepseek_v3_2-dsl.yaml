@@ -158,7 +158,7 @@ modules:
           folded: true
           fold:
             text: |
-              和第 3 层的 self_attn 结构相同：MLA 加上 lightning indexer，indexer 给出的稀疏 mask 代替 causal mask。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
+              和第 3 层的 self_attn 结构相同：MLA 加上 lightning indexer，由 indexer 选出的编号拼成的稀疏 mask 代替 causal mask。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
               $$\of{att}={{ att | matrix:2 }}$$
       - a: { op: x + att, tex: '\mathbf{a}_{2}' }
       - post_attention_layernorm:

@@ -1,0 +1,141 @@
+module: PartialRoPE
+subtitle: 只转最后 $d_r$ 维的 RoPE
+formula: '\step{cat}{ \of{out}=\big[\,\of{x_pass},\ }\step{cos}{ \of{x_rot}\odot\cos}\step{add}{+}\step{sub}{-}\step{sin}{\step{flatten}{\mathrm{rh}(\of{x_rot})}\odot\sin}\step{cat}{\,\big]}'
+params:
+  rd:          { type: dim }
+  theta:       { type: float, default: 1e4 }
+  stride:      { type: int, default: 1 }
+  inverse:     { type: bool, default: false }
+inputs:
+  x: { shape: [N, Hx, dh] }
+outputs: [out]
+buffers:
+  cos: { value: 'rope_cos(N, rd, theta, stride=stride, interleaved=true)', shape: [N, 1, rd], tex: '\cos' }
+  sin: { value: 'rope_sin(N, rd, theta, stride=stride, interleaved=true)', shape: [N, 1, rd], tex: '\sin' }
+fold:
+  label: '$\of{out}$'
+  title: RoPE（已折叠）
+  text: |
+    每个 head 的前 $d_h-d_r$ 维不动，最后 $d_r=\of{rd}$ 维两两成对，每一对转过一个角度。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 RoPE（已折叠）
+    text: |
+      旋转矩阵的转置就是反方向的旋转，反向把梯度转回去，不转的那几维梯度原样传回。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - x_pass: { op: 'narrow(x, -1, 0, dh - rd)', tex: '{ \of{x}}_{\mathrm{pass}}' }
+  - x_rot:  { op: 'narrow(x, -1, dh - rd, rd)', tex: '{ \of{x}}_{\mathrm{rot}}' }
+  - xc:     { op: x_rot * cos, tex: '\of{x_rot}\odot\cos', dtype: fp32 }
+  - xp:     { op: 'view(x_rot, N, Hx, rd // 2, 2)', tex: '\of{x_rot}^{\mathrm{pair}}' }
+  - x1:     { op: 'select(xp, -1, 0)', tex: '{ \of{x_rot}}_{0::2}' }
+  - x2:     { op: 'select(xp, -1, 1)', tex: '{ \of{x_rot}}_{1::2}' }
+  - nx2:    { op: -x2, tex: '-{ \of{x_rot}}_{1::2}' }
+  - st:     { op: 'cat([view(nx2, N, Hx, rd // 2, 1), view(x1, N, Hx, rd // 2, 1)], dim=-1)', tex: '\operatorname{stack}(-{ \of{x_rot}}_{1::2},{ \of{x_rot}}_{0::2})' }
+  - xrh:    { op: 'view(st, N, Hx, rd)', tex: '\mathrm{rh}(\of{x_rot})' }
+  - xs:     { op: xrh * sin, tex: '\mathrm{rh}(\of{x_rot})\odot\sin', dtype: fp32 }
+  - rot:    { op: 'xc - xs if inverse else xc + xs', tex: "\\of{x_rot}'", dtype: x }
+  - out:    { op: 'cat([x_pass, rot], dim=-1)' }
+steps:
+  - id: split
+    show: [x_pass, x_rot]
+    label: '$\of{x_pass},\ \of{x_rot}$'
+    title: 切出不转的一段和要转的一段
+    text: |
+      每个 head 宽 $d_h=\of{dh}$，前 $d_h-d_r=\of{dh-rd}$ 维不带位置，最后 $d_r=\of{rd}$ 维做 RoPE，对应 HF 的 <code>x[..., :-rope_dim]</code> 和 <code>x[..., -rope_dim:]</code>。
+      $$\of{x_rot}={{ x_rot | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 两段拼回一个 head
+  - id: cos
+    show: [cos, xc]
+    label: '$\odot\cos$'
+    title: 乘 cos
+    text: |
+      cos 和 sin 表的第 $n$ 行对应位置 $p_n=n\cdot\of{stride}$（$n$ 从 0 开始），频率 $\omega_i=\theta^{-2i/d_r}$，$\theta=\of{theta}$。表是常量，不需要梯度。HF 在 float32 里算出表，再用 <code>cos.to(dtype=x.dtype)</code> 转成输入的 dtype；乘法写作 <code>rope.float() * cos</code>，在 float32 里做，旋转的结果最后用 <code>.to(x.dtype)</code> 转回输入的 dtype。
+      $$\cos={{ cos | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x_rot}$'
+      title: 穿过乘 cos
+  - id: pair
+    show: [xp, x1, x2]
+    label: '${ \of{x_rot}}_{0::2},\ { \of{x_rot}}_{1::2}$'
+    title: rotate_half：取出偶数位和奇数位
+    text: |
+      这里的 RoPE 把相邻的两维 $(x_0,x_1),(x_2,x_3),\dots$ 配成一对。HF 的 <code>rotate_half</code> 有三行：<code>x1 = x[..., 0::2]</code>、<code>x2 = x[..., 1::2]</code>、<code>torch.stack((-x2, x1), dim=-1).flatten(-2)</code>，这里一行画一步。隔一个取一个等于先把最后一维排成 $(\of{rd//2}, 2)$，再取第 0 列和第 1 列。取元素的局部导数是 1。
+      $${ \of{x_rot}}_{0::2}={{ x1 | matrix:2 }},\qquad { \of{x_rot}}_{1::2}={{ x2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x_rot}$'
+      title: 梯度放回偶数位和奇数位
+  - id: neg
+    show: nx2
+    label: '$-{ \of{x_rot}}_{1::2}$'
+    title: rotate_half：奇数位取负
+    text: |
+      奇数位的每个元素取负号，局部导数是 $-1$。
+      $$-{ \of{x_rot}}_{1::2}={{ nx2 | matrix:2 }}$$
+    backward:
+      label: '$\partial{ \of{x_rot}}_{1::2}$'
+      title: 穿过取负
+  - id: stack
+    show: st
+    label: stack
+    title: rotate_half：两两并排
+    text: |
+      <code>torch.stack((-x2, x1), dim=-1)</code> 在最后加一维，把取负的奇数位放在每一对的前面，偶数位放在后面，形状是 $(\of{rd//2}, 2)$。这里写成两个 view 各加一维再拼接，只是搬动元素。
+    backward:
+      label: '$\partial(-{ \of{x_rot}}_{1::2}),\ \partial{ \of{x_rot}}_{0::2}$'
+      title: 穿过 stack
+  - id: flatten
+    show: xrh
+    label: rotate_half
+    title: rotate_half：展平
+    text: |
+      <code>flatten(-2)</code> 把每一对依次排回 $d_r=\of{rd}$ 维。合起来 $\mathrm{rh}(x_0,x_1,x_2,x_3)=(-x_1,x_0,-x_3,x_2)$。cos 和 sin 表的每个频率也连着写两遍，与这种配对一致。
+      $$\mathrm{rh}(\of{x_rot})={{ xrh | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{stack}$'
+      title: 穿过 flatten
+  - id: sin
+    show: [sin, xs]
+    label: '$\odot\sin$'
+    title: 乘 sin
+    text: |
+      位置 0 的 sin 全是 0，所以第一行在这一步全部变成 0。
+      $$\sin={{ sin | matrix:3 }}$$
+    backward:
+      label: '$\partial\,\mathrm{rh}$'
+      title: 穿过乘 sin
+  - id: add
+    when: not inverse
+    show: rot
+    label: '$\of{rot}$'
+    title: 相加
+    text: |
+      每一对分量一起转过角度 $p_n\omega_i$。两个向量各自按自己的位置转过以后，它们的点积只依赖位置差。
+      $$\of{rot}={{ rot | matrix:2 }}$$
+    backward:
+      label: '$\partial(\cdot\cos),\ \partial(\cdot\sin)$'
+      title: 穿过相加
+  - id: sub
+    when: inverse
+    show: rot
+    label: '$\of{rot}$'
+    title: 相减：反方向转回去
+    text: |
+      这里转的是反方向：HF 调用 <code>apply_rotary_pos_emb(x, cos, -sin)</code>，sin 取负号，等于减去 $\mathrm{rh}(\of{x_rot})\odot\sin$。每一对分量转过 $-p_n\omega_i$，把同一位置上转过 $+p_n\omega_i$ 的向量转回原处。
+      $$\of{rot}={{ rot | matrix:2 }}$$
+    backward:
+      label: '$\partial(\cdot\cos),\ \partial(\cdot\sin)$'
+      title: 穿过相减
+  - id: cat
+    show: out
+    label: '$\of{out}$'
+    title: 拼回一个 head
+    text: |
+      不转的一段在前，转过的一段在后，对应 <code>torch.cat([nope, rotated], dim=-1)</code>。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x_pass},\ \partial\of{rot}$'
+      title: 按列切回两段

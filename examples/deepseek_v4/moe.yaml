@@ -1,0 +1,96 @@
+module: DeepseekV4MoE
+subtitle: DeepseekV4SparseMoeBlock
+import:
+  GLU: vizflow/nn/glu
+  Experts: vizflow/nn/experts
+  Router: ./router.yaml
+params:
+  E:     { type: dim }
+  V:     { type: dim }
+  K:     { type: dim }
+  f:     { type: dim }
+  rsf:   { type: float, default: 1.5 }
+  limit: { type: float }
+  hash:  { type: bool, default: false }
+  detail: { type: bool, default: true }
+inputs:
+  x:   { shape: [T, d] }
+  ids: { shape: [T], when: hash }
+outputs: [out]
+fold:
+  label: '$\of{out}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    路由、\of{E} 个路由专家和共享专家都收进了盒子，对应 HF 里 <code>self.mlp(self.post_attention_layernorm(collapsed), input_ids=input_ids)</code>。每个位置只经过 $K=\of{K}$ 个路由专家和 1 个共享专家。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 mlp（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - gate:
+      use: Router
+      title: gate
+      params: { E: E, V: V, K: K, rsf: rsf, hash: hash, detail: detail }
+      inputs: { x: x, ids: ids }
+      outputs: { idx: idx, rw: rw }
+  - experts:
+      use: Experts
+      subtitle: DeepseekV4Experts，带截断的 SwiGLU
+      when: detail
+      params: { E: E, mf: f, clamped: true, limit: limit }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      steps:
+        gate_up:
+          append: 上面引用的是通用的 <code>Experts</code> 写法。DeepSeek V4 的 <code>DeepseekV4Experts</code> 写的是 <code>current = self._apply_gate(F.linear(hidden_states[token_idx], self.gate_up_proj[expert_idx]))</code>，chunk、两次截断和激活都在 <code>_apply_gate</code> 里；之后是 <code>current = F.linear(current, self.down_proj[expert_idx]) * top_k_weights[token_idx, top_k_pos, None]</code> 和 <code>final.index_add_(0, token_idx, current.to(final.dtype))</code>。变量名不同，计算和下面各步相同。
+  - experts:
+      use: Experts
+      subtitle: DeepseekV4Experts，带截断的 SwiGLU
+      when: not detail
+      folded: true
+      params: { E: E, mf: f, clamped: true, limit: limit }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      fold:
+        text: |
+          计算和第 3 层的 experts 相同，那里展开画了每一步；权重是这一层自己的，选中的专家来自这一层的 top-$K$ 路由。
+          $$\of{routed}={{ routed | matrix:2 }}$$
+  - shared_experts:
+      use: GLU
+      subtitle: DeepseekV4MLP，共享专家
+      suffix: s
+      when: detail
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
+  - shared_experts:
+      use: GLU
+      subtitle: DeepseekV4MLP，共享专家
+      suffix: s
+      when: not detail
+      folded: true
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
+      fold:
+        text: |
+          计算和第 3 层的 shared_experts 相同，那里展开画了每一步；权重是这一层自己的。
+          $$\of{shared}={{ shared | matrix:2 }}$$
+  - out: { op: routed + shared, tex: '\mathbf{moe}' }
+steps:
+  - id: add
+    show: out
+    label: '$\of{out}=\of{routed}+\of{shared}$'
+    title: 加上共享专家
+    text: |
+      <code>routed + self.shared_experts(residual)</code>：共享专家每个位置都要经过，权重固定是 1，它和路由专家一样用带截断的 SwiGLU。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{routed},\ \partial\of{shared}$'
+      title: 梯度分给路由专家和共享专家

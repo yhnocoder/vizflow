@@ -1,6 +1,6 @@
 module: GLU
 subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
-formula: '\step{down}{\of{down}=\big(}\step{act_fn.*}{\of{act}\big(}\step{gate_proj}{\of{x}{\of{Wg}}^{\top}}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{up_proj}{\of{x}{\of{Wu}}^{\top}}\step{down}{\big){\of{Wd}}^{\top}}'
+formula: '\step{down}{\of{down}=\big(}\step{act_fn.*}{\of{act}\big(}\step{clamp_gate}{\min\big(}\step{gate_proj}{\of{x}{\of{Wg}}^{\top}}\step{clamp_gate}{,\,\of{limit}\big)}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{clamp_up}{\operatorname{clamp}\big(}\step{up_proj}{\of{x}{\of{Wu}}^{\top}}\step{clamp_up}{,\,-\of{limit},\,\of{limit}\big)}\step{down}{\big){\of{Wd}}^{\top}}'
 import:
   Sigmoid: vizflow/nn/sigmoid
   ReLU:    vizflow/nn/relu
@@ -10,6 +10,8 @@ params:
   act:  { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
   f:    { type: dim }
   name: { type: text, default_key: true }
+  clamped: { type: bool, default: false }
+  limit: { type: float }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -29,13 +31,22 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
+  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
   - act_fn:
       use: act
+      when: not clamped
       inputs: { x: gate }
       outputs: { out: a }
       tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
-  - m:    a * up
+  - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - act_fn:
+      use: act
+      when: clamped
+      inputs: { x: gc }
+      outputs: { out: a }
+      tex: { out: '\of{act}(\bar{\mathbf{gate}})' }
+  - m:    { op: 'a * uc if clamped else a * up' }
   - down: m @ Wd.T
 steps:
   - id: gate_proj
@@ -48,6 +59,18 @@ steps:
     backward:
       label: '$\partial W_g,\ \partial\of{x}$'
       title: 传到 gate_proj 权重和 $\of{x}$
+  - id: clamp_gate
+    when: clamped
+    show: gc
+    label: '$\bar{\mathbf{gate}}$'
+    title: 截断 gate 的上界
+    text: |
+      进入激活之前，gate 只截上界：大于 $L=\of{limit}$ 的值变成 $L$，对应 <code>self.gate_proj(x).clamp(max=self.limit)</code>。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断。
+      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过截断
+      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
   - id: up_proj
     show: [Wu.T, up]
     label: '$\mathbf{up}$'
@@ -55,19 +78,55 @@ steps:
     text: |
       up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 写的是 <code>self.act_fn(self.gate_proj(x)) * self.up_proj(x)</code>，先算 gate_proj 和激活，再算 up_proj。
       $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
+    when: not clamped
     backward:
       label: '$\partial W_u,\ \partial\of{x}$'
       title: 传到 up_proj 权重和 $\of{x}$
       text: |
         $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: up_proj
+    when: clamped
+    show: [Wu.T, up]
+    label: '$\mathbf{up}$'
+    title: up_proj
+    text: |
+      up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断，激活放在两个截断之后。
+      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_u,\ \partial\of{x}$'
+      title: 传到 up_proj 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: clamp_up
+    when: clamped
+    show: uc
+    label: '$\bar{\mathbf{up}}$'
+    title: 截断 up 的两侧
+    text: |
+      up 两边都截，限制在 $[-L, L]$，对应 <code>self.up_proj(x).clamp(min=-self.limit, max=self.limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
+      $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{up}$'
+      title: 穿过截断
+      text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
   - id: gate
+    when: not clamped
     show: m
     label: '$\of{a}\odot\mathbf{up}$'
     title: 门控相乘
     text: 激活后的 gate 和 up 逐元素相乘，决定 up 的每个分量放行多少。
     backward:
       label: '$\partial\of{a},\ \partial\mathbf{up}$'
+  - id: gate
+    when: clamped
+    show: m
+    label: '$\of{a}\odot\bar{\mathbf{up}}$'
+    title: 门控相乘
+    text: 激活后的 gate 和截断后的 up 逐元素相乘，决定 up 的每个分量放行多少。
+    backward:
+      label: '$\partial\of{a},\ \partial\bar{\mathbf{up}}$'
   - id: down
     show: [Wd.T, down]
     label: '$\of{down}$'
