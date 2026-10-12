@@ -41,11 +41,11 @@ body:
       outputs: { out: xn }
       tex: { out: '\tilde{\of{X}}' }
   - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}', when: not project_first }
-  - mixp: { op: flat @ fn.T, tex: '\mathrm{flat}(\of{X})W_{\mathrm{fn}}^{\top}', when: project_first }
   - sq:   { op: flat ** 2, tex: '\mathrm{flat}(\of{X})^{2}', when: project_first }
   - ms:   { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}^{\mathrm{hc}}', when: project_first }
   - mse:  { op: ms + eps, tex: '(\mathrm{ms}^{\mathrm{hc}}+\epsilon)', when: project_first }
   - rsq:  { op: rsqrt(mse), tex: 'r^{\mathrm{hc}}', when: project_first }
+  - mixp: { op: flat @ fn.T, tex: '\mathrm{flat}(\of{X})W_{\mathrm{fn}}^{\top}', when: project_first }
   - mix:  { op: mixp * rsq, tex: '\mathbf{m}', when: project_first }
   - pre_w:  { op: 'narrow(mix, -1, 0, N)', tex: '\mathbf{m}_{\mathrm{pre}}' }
   - post_w: { op: 'narrow(mix, -1, N, N)', tex: '\mathbf{m}_{\mathrm{post}}' }
@@ -70,6 +70,7 @@ body:
             tex: { out: '\sigma(\mathbf{z}_{\mathrm{pre}})' }
             steps:
               neg:
+                when: not project_first
                 append: 这里算的是 <code>torch.sigmoid(pre_w * pre_scale + pre_b)</code>，sigmoid 让 pre 的系数落在 0 到 1 之间。
         - pre:     { op: pre_sig + hc_eps, tex: '\mathbf{w}_{\mathrm{pre}}' }
   - post_branch:
@@ -192,11 +193,23 @@ body:
   - collapsed: { op: 'sum(weighted, 1)', dtype: X }
 steps:
   - id: flatten
+    when: not project_first
     show: flat
     label: '$\of{flat}$'
     title: 把 \of{N} 条 stream 摊平
     text: |
       每个 token 的 \of{N} 条 stream 首尾相接，摊成一个 $Nd=\of{N*d}$ 维的向量，对应 <code>hidden_streams.view(batch_size, seq_len, -1).float()</code>。mHC 的系数在 float32 里计算。
+      $$\of{flat}={{ flat | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{X}$'
+      title: 按原来的形状放回 \of{N} 条 stream
+  - id: flatten
+    when: project_first
+    show: flat
+    label: '$\of{flat}$'
+    title: 把 \of{N} 条 stream 摊平
+    text: |
+      <code>x = x.flatten(2).float()</code>：每个 token 的 \of{N} 条 stream 首尾相接，摊成一个 $Nd=\of{N*d}$ 维的向量。mHC 的系数在 float32 里计算。
       $$\of{flat}={{ flat | matrix:2 }}$$
     backward:
       label: '$\partial\of{X}$'
@@ -214,26 +227,13 @@ steps:
       title: 传到 $W_{\mathrm{fn}}$ 和归一化的输入
       text: |
         $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
-  - id: mix_first
-    when: project_first
-    show: [fn.T, mixp]
-    label: '$\of{mixp}$'
-    title: 先乘 $W_{\mathrm{fn}}$，一次投影出三组系数
-    text: |
-      参考实现的 <code>hc_mixes</code> 写的是 <code>F.linear(x, hc_fn) * rsqrt</code>：摊平的向量先直接乘 $W_{\mathrm{fn}}^{\top}$，均方根的倒数放在后面乘。投影输出 $(2+N)N=\of{(2+N)*N}$ 个数：前 \of{N} 个给 pre，接着 \of{N} 个给 post，最后 $N^2=\of{N*N}$ 个给 comb。
-      $$\of{mixp}={{ mixp | matrix:3 }}$$
-    backward:
-      label: '$\partial W_{\mathrm{fn}},\ \partial\,\mathrm{flat}$'
-      title: 传到 $W_{\mathrm{fn}}$ 和摊平的 stream
-      text: |
-        $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
   - id: square
     when: project_first
     show: sq
     label: '$\of{sq}$'
     title: 逐元素平方
     text: |
-      <code>x.square()</code>：摊平的 $Nd=\of{N*d}$ 个数逐个平方。这一份统计量对 \of{N} 条 stream 一起算，每个 token 只有一个。
+      参考实现的 <code>hc_mixes</code> 先算 <code>rsqrt = torch.rsqrt(x.square().mean(-1, keepdim=True) + self.norm_eps)</code>，再算投影。<code>x.square()</code>：摊平的 $Nd=\of{N*d}$ 个数逐个平方。这一份统计量对 \of{N} 条 stream 一起算，每个 token 只有一个。
       $$\of{sq}={{ sq | matrix:2 }}$$
     backward:
       label: '$\partial\,\mathrm{flat}$'
@@ -254,7 +254,7 @@ steps:
     show: mse
     label: '$+\epsilon$'
     title: 加 $\epsilon$
-    text: 加上 $\epsilon=\of{eps}$，防止全 0 的输入除以 0。
+    text: 加上 <code>self.norm_eps</code> $=\of{eps}$，防止全 0 的输入除以 0。
     backward:
       label: '$\partial\of{ms}$'
       title: 加常数，梯度原样传下去
@@ -270,23 +270,48 @@ steps:
       label: '$\partial\of{mse}$'
       title: 穿过 rsqrt
       text: $\frac{d}{du}u^{-1/2}=-\tfrac{1}{2}u^{-3/2}$。
+  - id: mix_first
+    when: project_first
+    show: [fn.T, mixp]
+    label: '$\of{mixp}$'
+    title: 乘 $W_{\mathrm{fn}}$，一次投影出三组系数
+    text: |
+      <code>mixes = F.linear(x, hc_fn) * rsqrt</code> 里的 <code>F.linear(x, hc_fn)</code>：摊平的向量没有归一化，直接乘 $W_{\mathrm{fn}}^{\top}$，上面算好的 $r^{\mathrm{hc}}$ 在下一步乘。投影输出 $(2+N)N=\of{(2+N)*N}$ 个数：前 \of{N} 个给 pre，接着 \of{N} 个给 post，最后 $N^2=\of{N*N}$ 个给 comb。
+      $$\of{mixp}={{ mixp | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{fn}},\ \partial\,\mathrm{flat}$'
+      title: 传到 $W_{\mathrm{fn}}$ 和摊平的 stream
+      text: |
+        $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
   - id: scale
     when: project_first
     show: mix
     label: '$\of{mix}$'
     title: 投影的结果乘 $r^{\mathrm{hc}}$
     text: |
-      先投影再乘 $r^{\mathrm{hc}}$，和先归一化再投影的结果相同，因为 $r^{\mathrm{hc}}$ 对一个 token 是一个数。参考实现把乘法放在投影之后。
+      <code>* rsqrt</code>：投影的结果乘 $r^{\mathrm{hc}}$。$r^{\mathrm{hc}}$ 对一个 token 是一个数，所以先投影再乘和先归一化再投影的结果相同。
       $$\of{mix}={{ mix | matrix:3 }}$$
     backward:
       label: '$\partial\of{mixp},\ \partial\of{rsq}$'
       title: 梯度分给投影和 $r^{\mathrm{hc}}$
   - id: split
+    when: not project_first
     show: [pre_w, post_w, comb_f, comb_w]
     label: '$\mathbf{m}_{\mathrm{pre}},\ \mathbf{m}_{\mathrm{post}},\ M_{\mathrm{comb}}$'
     title: 切成 pre、post、comb 三段
     text: |
       对应 <code>flattened.split([hc, hc, hc * hc], dim=-1)</code>；comb 那一段再排成每个 token 一个 $N\times N$ 矩阵。
+      $$M_{\mathrm{comb}}={{ comb_w | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mix}$'
+      title: 三段梯度拼回去
+  - id: split
+    when: project_first
+    show: [pre_w, post_w, comb_f, comb_w]
+    label: '$\mathbf{m}_{\mathrm{pre}},\ \mathbf{m}_{\mathrm{post}},\ M_{\mathrm{comb}}$'
+    title: 切成 pre、post、comb 三段
+    text: |
+      <code>hc_split_sinkhorn(mixes, hc_scale, hc_base, self.hc_mult, self.hc_sinkhorn_iters, self.hc_eps)</code> 是一个 kernel，从这一步到 Sinkhorn 结束都在里面。kernel 按下标取三段：pre 用 <code>mixes_shared[j]</code>，post 用 <code>mixes_shared[j + hc]</code>，comb 用 <code>mixes_shared[j * hc + k + hc * 2]</code>，排成每个 token 一个 $N\times N$ 矩阵。
       $$M_{\mathrm{comb}}={{ comb_w | matrix:3 }}$$
     backward:
       label: '$\partial\of{mix}$'
@@ -304,11 +329,25 @@ steps:
       text: |
         $$\frac{\partial\ell}{\partial\mathbf{b}}={{ base.grad | matrix:3 }}$$
   - id: scale_split
+    when: not project_first
     show: [scale, s_pre, s_post, s_comb]
     label: '$\alpha_{\mathrm{pre}},\ \alpha_{\mathrm{post}},\ \alpha_{\mathrm{comb}}$'
     title: 三个缩放分开
     text: |
       缩放 $\boldsymbol{\alpha}$ 有 3 个数，pre、post、comb 各用一个，对应 <code>scale.unbind(0)</code>。
+      $$\boldsymbol{\alpha}={{ scale | matrix:3 }}$$
+    backward:
+      label: '$\partial\boldsymbol{\alpha}$'
+      title: 梯度放回 $\boldsymbol{\alpha}$
+      text: |
+        $$\frac{\partial\ell}{\partial\boldsymbol{\alpha}}={{ scale.grad | matrix:3 }}$$
+  - id: scale_split
+    when: project_first
+    show: [scale, s_pre, s_post, s_comb]
+    label: '$\alpha_{\mathrm{pre}},\ \alpha_{\mathrm{post}},\ \alpha_{\mathrm{comb}}$'
+    title: 三个缩放分开
+    text: |
+      缩放 $\boldsymbol{\alpha}$ 有 3 个数，kernel 里 pre、post、comb 分别用 <code>hc_scale[0]</code>、<code>hc_scale[1]</code>、<code>hc_scale[2]</code>。
       $$\boldsymbol{\alpha}={{ scale | matrix:3 }}$$
     backward:
       label: '$\partial\boldsymbol{\alpha}$'
@@ -334,11 +373,23 @@ steps:
       label: '$\partial(\alpha_{\mathrm{pre}}\mathbf{m}_{\mathrm{pre}}),\ \partial\mathbf{b}_{\mathrm{pre}}$'
       title: pre：穿过加偏置
   - id: pre_eps
+    when: not project_first
     show: pre
     label: '$\of{pre}$'
     title: pre：加 $\epsilon$
     text: |
       加上 hc_eps $=\of{hc_eps}$，得到 pre 的系数。
+      $$\mathbf{w}_{\mathrm{pre}}={{ pre | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma(\mathbf{z}_{\mathrm{pre}})$'
+      title: pre：加常数，梯度原样传下去
+  - id: pre_eps
+    when: project_first
+    show: pre
+    label: '$\of{pre}$'
+    title: pre：加 $\epsilon$
+    text: |
+      加上 hc_eps $=\of{hc_eps}$，得到 pre 的系数。kernel 里 pre 这一组是一行 <code>pre[i, j] = T.sigmoid(mixes_shared[j] * hc_scale[0] + hc_base[j]) + eps</code>，上面几步按它的顺序画：乘缩放、加偏置、sigmoid、加 $\epsilon$。sigmoid 让 pre 的系数落在 0 到 1 之间。
       $$\mathbf{w}_{\mathrm{pre}}={{ pre | matrix:3 }}$$
     backward:
       label: '$\partial\sigma(\mathbf{z}_{\mathrm{pre}})$'
@@ -535,11 +586,23 @@ steps:
       label: '$\partial\mathbf{w}_{\mathrm{pre}},\ \partial\of{X}$'
       title: 传到 pre 和输入的 stream
   - id: collapse_sum
+    when: not single_pass
     show: collapsed
     label: '$\of{collapsed}$'
     title: \of{N} 条 stream 加成一条
     text: |
       按 stream 求和，得到这一个子层的输入，对应 <code>.sum(dim=2).to(hidden_streams.dtype)</code>。pre 是 float32，乘积和求和也在 float32 里，求和以后转回输入 stream 的 dtype。
+      $$\of{collapsed}={{ collapsed | matrix:2 }}$$
+    backward:
+      label: '$\partial(\mathbf{w}_{\mathrm{pre}}\odot\of{X})$'
+      title: 梯度复制给每条 stream
+  - id: collapse_sum
+    when: single_pass
+    show: collapsed
+    label: '$\of{collapsed}$'
+    title: \of{N} 条 stream 加成一条
+    text: |
+      按 stream 求和，得到这一个子层的输入，对应 <code>y = torch.sum(pre_mix.unsqueeze(-1) * x.float(), dim=2)</code> 的求和和 <code>return y.to(x.dtype)</code>。乘积和求和在 float32 里，求和以后转回输入 stream 的 dtype。
       $$\of{collapsed}={{ collapsed | matrix:2 }}$$
     backward:
       label: '$\partial(\mathbf{w}_{\mathrm{pre}}\odot\of{X})$'

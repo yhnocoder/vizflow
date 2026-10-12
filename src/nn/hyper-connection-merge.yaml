@@ -146,7 +146,7 @@ steps:
     label: '$\of{summed}$'
     title: 两部分相加
     text: |
-      这就是这一子层之后的 \of{N} 条 stream。这里没有普通的 $\mathbf{x}+\mathrm{attn}(\mathbf{x})$ 残差，残差这一路是 comb 混合过的输入 stream。comb 的每一列加起来接近 1，所以每条输出 stream 里来自输入的部分是输入 stream 的加权平均，HF 的注释说明这是为了让 stream 的大小不随层数增大。
+      这就是这一子层之后的 \of{N} 条 stream。这里没有普通的 $\mathbf{x}+\mathrm{attn}(\mathbf{x})$ 残差，残差这一路是 comb 混合过的输入 stream。comb 的元素都是正数，每一列加起来接近 1，所以每条输出 stream 里来自输入的部分是输入 stream 的加权平均，它的大小不超过最大的一条输入 stream。
       $$\of{summed}={{ summed | matrix:2 }}$$
     backward:
       label: '$\partial\,\mathrm{expanded},\ \partial\,\mathrm{mixed}$'
