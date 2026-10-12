@@ -89,6 +89,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 - 迭代时运行 `npm run check:fast`：tsgo 类型检查，加上与未提交改动相关的单元测试。可以传一个 git 版本，例如 `sh scripts/check_fast.sh origin/main`，检查相对这个版本的全部改动。
 - 提交 PR 前运行一次 `scripts/test.sh`：注释检查、代码地图检查、tsc 和全部单元测试。
+- 调试 3D 场景时运行 `npm run shots -- examples/qwen3-dsl.html --steps 0,back+6 --hover 0.2,0.6 --edge 0.5,0.45`：自动启动 vite，截取指定步骤的画布，`--hover` 和 `--edge` 在给定的画布比例位置附近搜索并截取柱子悬停卡片与连线卡片；`--help` 列出全部选项，浏览器路径取自 `VIZFLOW_CHROMIUM`。
 
 ## 代码规范
 
