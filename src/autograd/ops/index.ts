@@ -29,6 +29,7 @@ import {
   maskedFillOp,
   triuOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,
@@ -38,7 +39,6 @@ import {
   clampMinOp,
   ltOp,
   bitwiseOrOp,
-  floorDivideOp,
   logicalNotOp,
   copysignOp,
 } from './elementwise';
@@ -47,6 +47,7 @@ import {
   causalConv1dOp,
   cummaxOp,
   embeddingOp,
+  expandOp,
   gatherOp,
   indexAddOp,
   indexOp,
@@ -57,13 +58,14 @@ import {
   permuteOp,
   repeatInterleaveOp,
   repeatOp,
+  reshapeOp,
+  scatterOp,
   selectOp,
   topkIndicesOp,
   topkMaskOp,
   unsqueezeOp,
   viewOp,
   sortOp,
-  scatterOp,
   indexPutOp,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
@@ -164,6 +166,7 @@ export interface BuiltinOps {
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
   causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
   remainder(input: Node, other: Node | number, options?: OpOptions): Node;
+  floor_divide(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_xor(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_and(input: Node, other: Node | number, options?: OpOptions): Node;
   eq(input: Node, other: Node | number, options?: OpOptions): Node;
@@ -192,14 +195,17 @@ export interface BuiltinOps {
   pad(input: Node, ...pad: (number | string)[]): Node;
   triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
   masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
+  expand(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
+  expand(input: Node, ...sizes: (number | string)[]): Node;
+  reshape(input: Node, shape: (number | string)[], options?: OpOptions): Node;
+  reshape(input: Node, ...shape: (number | string)[]): Node;
   solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
   lt(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_or(input: Node, other: Node | number, options?: OpOptions): Node;
-  floor_divide(input: Node, other: Node | number, options?: OpOptions): Node;
   logical_not(input: Node, options?: OpOptions): Node;
   copysign(input: Node, other: Node | number, options?: OpOptions): Node;
   sort(input: Node, dim?: number, options?: OpOptions): Node;
-  scatter(input: Node, dim: number, index: Node, src: Node, options?: OpOptions): Node;
+  scatter(input: Node, dim: number, index: Node, src: Node | number, options?: OpOptions): Node;
   index_put(input: Node, mask: Node, values: Node, options?: OpOptions): Node;
 }
 
@@ -259,6 +265,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   maskedFillOp,
   solveTriangularOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,
@@ -270,12 +277,13 @@ export const builtinOps: readonly AnyOpDef[] = [
   cummaxOp,
   ltOp,
   bitwiseOrOp,
-  floorDivideOp,
   logicalNotOp,
   copysignOp,
   sortOp,
   scatterOp,
   indexPutOp,
+  expandOp,
+  reshapeOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

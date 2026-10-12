@@ -1,8 +1,9 @@
 module: DeepseekV3MoE
-subtitle: DeepseekV3MoE
+subtitle: \of{hf_prefix}MoE
 import:
   GLU: vizflow/nn/glu
   Sigmoid: vizflow/nn/sigmoid
+  Experts: vizflow/nn/experts
 params:
   E:   { type: dim }
   G:   { type: dim }
@@ -11,6 +12,7 @@ params:
   mf:  { type: dim }
   Sh:  { type: dim }
   rsf: { type: float, default: 2.5 }
+  hf_prefix: { type: text, default: DeepseekV3 }
 inputs:
   x: { shape: [T, d] }
 outputs: [out]
@@ -18,6 +20,7 @@ weights:
   Wr: { shape: [E, d], tex: 'W_{r}' }
 buffers:
   bias: { value: zeros(E), tex: '\mathbf{b}', dtype: fp32 }
+  group_zeros: { value: 'zeros(T, G)', tex: '\mathbf{0}^{\mathrm{grp}}', dtype: fp32 }
 fold:
   label: '$\of{out}=\mathrm{mlp}(\of{x})$'
   title: mlp（已折叠）
@@ -32,130 +35,278 @@ fold:
 body:
   - gate:
       title: gate
-      subtitle: DeepseekV3TopkRouter
+      subtitle: \of{hf_prefix}TopkRouter
       body:
-        - logits: { op: x @ Wr.T, tex: '\mathbf{r}', dtype: fp32 }
-        - scores:
+        - x32: { op: identity(x), dtype: fp32, tex: '\mathbf{x}_{32}' }
+        - Wr32: { op: identity(Wr), dtype: fp32, tex: 'W_{r,32}' }
+        - logits: { op: x32 @ Wr32.T, tex: '\mathbf{r}' }
+        - sigmoid:
             use: Sigmoid
             inputs: { x: logits }
-            outputs: { out: s }
+            outputs: { out: scores }
             tex: { out: '\mathbf{s}' }
             steps:
               neg:
-                append: 这里算的是 <code>scores = router_logits.sigmoid()</code>。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度 $\of{s}$，各个专家互不影响；V2 和很多别的 MoE 用的是 softmax。
+                append: 这里算的是 <code>scores = router_logits.sigmoid()</code>。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度 $\of{scores}$，各个专家互不影响；V2 和很多别的 MoE 用的是 softmax。
               recip:
                 backward:
                   text: |
-                    只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。取倒数的局部导数是 $-\of{s}^{2}$。
-                    $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
-        - sc: { op: s + bias, tex: '\tilde{\mathbf{s}}' }
-        - sg: { op: 'view(sc, T, G, E // G)', tex: '\tilde{\mathbf{s}}^{\mathrm{grp}}' }
-        - top2: { op: 'sg * topk_mask(sg, 2, -1)', tex: '\tilde{\mathbf{s}}^{\mathrm{top2}}' }
-        - gs: { op: 'sum(top2, -1)', tex: '\mathbf{g}' }
-        - gm: { op: 'topk_mask(gs, TG, -1)', tex: '\mathbf{m}^{\mathrm{grp}}' }
-        - em: { op: 'repeat_interleave(gm, E // G, -1)', tex: '\mathbf{m}^{\mathrm{exp}}' }
-        - choice: { op: 'where(em, sc, -inf)', tex: '\tilde{\mathbf{s}}^{\mathrm{cand}}' }
-        - sel: { op: 'topk_mask(choice, K, -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
-        - w: { op: s * sel, tex: '\mathbf{w}' }
-        - den: { op: 'sum(w, -1, keepdim=true) + 1e-20', tex: '\textstyle\sum\mathbf{w}' }
-        - wn: { op: w / den, tex: '\bar{\mathbf{w}}' }
-        - rw: { op: wn * rsf, tex: '\mathbf{p}' }
-  - for: e
-    in: 1..E
-    body:
-      - expert[e]:
-          use: GLU
-          subtitle: DeepseekV3Experts，路由专家
-          folded: true
-          params: { act: SiLU, f: mf, name: expert }
-          inputs: { x: x }
-          outputs: { down: 'y[e]' }
-      - yv[e]: { op: 'view(y[e], T, 1, d)', tex: 'Y_{:,\of{e},:}' }
-  - Y: { op: 'cat(yv[1..E], dim=1)', tex: 'Y' }
-  - Yw: { op: 'Y * view(rw, T, E, 1)', tex: '\mathbf{p}\odot Y' }
-  - routed: { op: 'sum(Yw, 1)', tex: '\mathbf{y}^{\mathrm{r}}' }
+                    只有被选中的专家把梯度传回 $\of{scores}$，没选中的那几列梯度是 0。取倒数的局部导数是 $-\of{scores}^{2}$。
+                    $$\frac{\partial\ell}{\partial\of{scores}}={{ scores.grad | matrix:3 }}$$
+        - scores_for_choice: { op: scores + bias, tex: '\tilde{\mathbf{s}}' }
+        - grouped: { op: 'view(scores_for_choice, -1, G, E // G)', tex: '\tilde{\mathbf{s}}^{\mathrm{grp}}' }
+        - top2_idx: { op: 'topk_indices(grouped, 2, -1)', tex: '\mathbf{i}^{\mathrm{top2}}' }
+        - top2: { op: 'gather(grouped, -1, top2_idx)', tex: '\tilde{\mathbf{s}}^{\mathrm{top2}}' }
+        - group_scores: { op: 'sum(top2, -1)', tex: '\mathbf{g}' }
+        - group_idx: { op: 'topk_indices(group_scores, TG, -1)', tex: '\mathbf{i}^{\mathrm{grp}}' }
+        - group_mask: { op: 'scatter(group_zeros, 1, group_idx, 1)', tex: '\mathbf{m}^{\mathrm{grp}}' }
+        - group_mask_u: { op: 'unsqueeze(group_mask, -1)', tex: '\mathbf{m}^{\mathrm{grp}}_{:,:,1}' }
+        - group_mask_e: { op: 'expand(group_mask_u, -1, G, E // G)', tex: '\mathbf{m}^{\mathrm{grp}}_{\mathrm{exp}}' }
+        - score_mask: { op: 'reshape(group_mask_e, -1, E)', tex: '\mathbf{m}^{\mathrm{exp}}' }
+        - score_mask_b: { op: identity(score_mask), dtype: bool, tex: '\mathbf{m}^{\mathrm{exp}}_{\mathrm{bool}}' }
+        - not_mask: { op: logical_not(score_mask_b), tex: '\lnot\mathbf{m}^{\mathrm{exp}}' }
+        - masked_scores: { op: 'masked_fill(scores_for_choice, not_mask, -inf)', tex: '\tilde{\mathbf{s}}^{\mathrm{cand}}' }
+        - idx: { op: 'topk_indices(masked_scores, K, -1)', tex: '\mathbf{i}' }
+        - topk_weights: { op: 'gather(scores, 1, idx)', tex: '\mathbf{w}' }
+        - wsum: { op: 'sum(topk_weights, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{w}' }
+        - denominator: { op: wsum + 1e-20, tex: '\textstyle\sum\mathbf{w}+10^{-20}' }
+        - normed: { op: topk_weights / denominator, tex: '\bar{\mathbf{w}}' }
+        - rw: { op: normed * rsf, tex: '\mathbf{p}' }
+  - experts:
+      use: Experts
+      subtitle: \of{hf_prefix}Experts，路由专家，每个专家只算选中它的 token
+      suffix: r
+      params: { E: E, mf: mf }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      steps:
+        mask:
+          append: |
+            $\of{idx}$ 是 gate 返回的 <code>topk_indices</code>，HF 写的是 <code>_, topk_weights, topk_indices = self.gate(hidden_states)</code>，再调用 <code>self.experts(hidden_states, topk_indices, topk_weights)</code>。HF 在调用前还有一行 <code>hidden_states = hidden_states.view(-1, hidden_states.shape[-1])</code>，把 batch 和序列两维合成一维；这一页没有 batch 维，$\of{x}$ 本来就是 $(T, d)$，这一行不改变任何东西。
+        weight:
+          append: |
+            DeepSeek 的路由在 float32 里算，所以 $\of{rw}$ 和 $\of{experts.weight}$ 都是 float32。
+        cast:
+          append: |
+            DeepSeek 的路由权重 $\of{rw}$ 是 float32，$\of{experts.down}$ 是模型的 dtype，按类型提升 $\of{experts.scaled}$ 是 float32；$\of{experts.final}$ 和 $\of{x}$ 一样是模型的 dtype，所以这一步把每一行舍入回模型的 dtype。这一页按 float64 计算，只在显示的 dtype 上体现这次转换。
   - shared_experts:
       use: GLU
-      subtitle: DeepseekV3MLP，共享专家
+      subtitle: \of{hf_prefix}MLP，共享专家
       suffix: s
       folded: true
       params: { act: SiLU, f: mf*Sh, name: shared }
       inputs: { x: x }
       outputs: { down: shared }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\mathbf{gate}_{s})' }
+      fold:
+        text: |
+          <code>self.shared_experts(residuals)</code>，<code>residuals</code> 是进入 MoE 时的 $\of{x}$。共享专家是一个普通的 SwiGLU MLP，<code>down_proj(act_fn(gate_proj(x)) * up_proj(x))</code>，中间维度是 moe_intermediate_size 乘 n_shared_experts $=\of{mf}\times\of{Sh}$。计算和第 3 层的 mlp 相同，那里展开画了每一步；权重是共享专家自己的。
+          $$\of{shared}={{ shared | matrix:2 }}$$
   - out: { op: routed + shared, tex: '\mathbf{moe}' }
 steps:
+  - id: cast_x
+    show: x32
+    label: '$\of{x32}$'
+    title: 输入转成 float32
+    text: |
+      <code>router_logits = F.linear(hidden_states.type(torch.float32), self.weight.type(torch.float32))</code> 里的 <code>hidden_states.type(torch.float32)</code>：gate 的输入先转成 float32，路由的分数都在 float32 里算。前一行 <code>hidden_states = hidden_states.view(-1, self.hidden_dim)</code> 把 batch 和序列两维合成一维；这一页没有 batch 维，$\of{x}$ 本来就是 $(T, d)$，这一行不改变任何东西。
+      $$\of{x32}={{ x32 | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 穿过类型转换
+      text: |
+        类型转换的局部导数是 1，梯度原样传回 $\of{x}$。
+        $$\frac{\partial\ell}{\partial\of{x32}}={{ x32.grad | matrix:3 }}$$
+  - id: cast_w
+    show: Wr32
+    label: '$\of{Wr32}$'
+    title: gate 的权重转成 float32
+    text: |
+      同一行里的 <code>self.weight.type(torch.float32)</code>：gate 的权重 $W_r$ 形状是 $(E, d)$，每行对应一个路由专家，也转成 float32。
+      $$\of{Wr32}={{ Wr32 | matrix:3 }}$$
+    backward:
+      label: '$\partial W_r$'
+      title: 传到 gate 的权重
+      text: |
+        类型转换的局部导数是 1，梯度原样传回 $W_r$。
+        $$\frac{\partial\ell}{\partial\of{Wr32}}={{ Wr32.grad | matrix:3 }}$$
   - id: router
-    show: [Wr.T, logits]
-    label: '$\of{logits}=\of{x}W_r^{\top}$'
+    show: [Wr32.T, logits]
+    label: '$\of{logits}=\of{x32}\,\of{Wr32}^{\top}$'
     title: 每个专家一个分数
     text: |
-      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数，HF 把输入和权重都转成 float32 再乘。
+      <code>F.linear</code> 算 $\of{x32}\,\of{Wr32}^{\top}$，给每个位置、每个路由专家一个分数 <code>router_logits</code>。
       $$\of{logits}={{ logits | matrix:3 }}$$
     backward:
-      label: '$\partial W_r,\ \partial\of{x}$'
-      title: 传到 gate 的权重和 $\of{x}$
+      label: '$\partial\of{Wr32},\ \partial\of{x32}$'
+      title: 传到 gate 的权重和输入
       text: |
         $$\frac{\partial\ell}{\partial\of{logits}}={{ logits.grad | matrix:3 }}$$
   - id: bias
-    show: [bias, sc]
-    label: '$\of{sc}=\of{s}+\of{bias}$'
+    show: [bias, scores_for_choice]
+    label: '$\of{scores_for_choice}=\of{scores}+\of{bias}$'
     title: 加上负载均衡的偏置
     text: |
-      <code>e_score_correction_bias</code> 是每个专家一个的偏置，只用来挑专家，不进入专家输出的权重。它是 buffer，不靠梯度更新：训练时哪个专家接的 token 太多就把它的偏置调低，太少就调高。DeepSeek V3 用它代替辅助的负载均衡损失。
-      $$\of{bias}={{ bias | matrix:3 }},\qquad \of{sc}={{ sc | matrix:3 }}$$
-  - id: group
-    show: [sg, top2, gs]
-    label: '$\of{gs}$'
+      <code>scores_for_choice = scores + self.e_score_correction_bias</code>。<code>e_score_correction_bias</code> 是每个专家一个的偏置，只用来挑专家，不进入专家输出的权重。它是 buffer，不靠梯度更新：训练时哪个专家接的 token 太多就把它的偏置调低，太少就调高。DeepSeek V3 用它代替辅助的负载均衡损失。
+      $$\of{bias}={{ bias | matrix:3 }},\qquad \of{scores_for_choice}={{ scores_for_choice | matrix:3 }}$$
+  - id: group_view
+    show: grouped
+    label: '$\of{grouped}$'
+    title: 按组排开
+    text: |
+      <code>scores_for_choice.view(-1, self.num_group, self.num_experts // self.num_group)</code>：\of{E} 个专家按编号分成 $G=\of{G}$ 组，每组 \of{E//G} 个，形状从 $(T, E)$ 变成 $(T, G, E/G)$。数值不变，只是换了形状。真实模型里 256 个专家分成 8 组，每组 32 个。
+      $$\of{grouped}={{ grouped | matrix:3 }}$$
+  - id: group_top2
+    show: top2_idx
+    label: '$\of{top2_idx}$'
+    title: 每组最大的两个专家
+    text: |
+      <code>.topk(2, dim=-1)</code>：每个位置、每一组里按 $\of{scores_for_choice}$ 选最大的两个专家。topk 一次给出值和编号两样，图上分两步画：这一步是编号（组内从 0 开始），下一步按编号取出值。编号没有梯度。
+      $$\of{top2_idx}={{ top2_idx | matrix }}$$
+  - id: group_top2_values
+    show: top2
+    label: '$\of{top2}$'
+    title: 取出每组最大的两个分数
+    text: |
+      <code>.topk(2, dim=-1)[0]</code> 是 topk 返回的值：按 $\of{top2_idx}$ 从 $\of{grouped}$ 里取出每组最大的两个分数。
+      $$\of{top2}={{ top2 | matrix:3 }}$$
+  - id: group_sum
+    show: group_scores
+    label: '$\of{group_scores}$'
     title: 每组专家的得分
     text: |
-      \of{E} 个专家按编号分成 $G=\of{G}$ 组，每组 \of{E//G} 个。每组取最大的两个 $\of{sc}$ 相加，作为这一组的得分。真实模型里 256 个专家分成 8 组，每组 32 个。
-      $$\of{gs}={{ gs | matrix:3 }}$$
-  - id: group_pick
-    show: [gm, em]
-    label: '$\of{em}$'
-    title: 每个位置只看得分最高的 \of{TG} 组
+      <code>.sum(dim=-1)</code>：每组最大的两个分数相加，作为这一组的得分 <code>group_scores</code>。
+      $$\of{group_scores}={{ group_scores | matrix:3 }}$$
+  - id: group_topk
+    show: group_idx
+    label: '$\of{group_idx}$'
+    title: 选出得分最高的 \of{TG} 组
     text: |
-      每个位置挑出得分最高的 $\of{TG}$ 组，其余组里的专家这一次都不能选。真实模型里每个 token 最多用 8 组里的 4 组，部署时专家按组放在不同的节点上，这样每个 token 最多发往 4 个节点，通信量有上限。挑选只决定 0 和 1，没有梯度。
-      $$\of{em}={{ em | matrix:2 }}$$
+      <code>group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]</code>：每个位置选出得分最高的 $\of{TG}$ 组的编号。HF 写 <code>sorted=False</code>，选出的编号在一行里的顺序没有规定；这里按得分从大到小排，下一步只用到选中了哪些组，结果和顺序无关。真实模型里每个 token 从 8 组里选 4 组，部署时专家按组放在不同的节点上，这样每个 token 最多发往 4 个节点，通信量有上限。
+      $$\of{group_idx}={{ group_idx | matrix }}$$
+  - id: group_mask
+    show: [group_zeros, group_mask]
+    label: '$\of{group_mask}$'
+    title: 组的掩码
+    text: |
+      <code>group_mask = torch.zeros_like(group_scores)</code> 建一个形状 $(T, G)$ 的全 0 张量 $\of{group_zeros}$，再 <code>group_mask.scatter_(1, group_idx, 1)</code>：每个位置在 $\of{group_idx}$ 列出的那几组写上 1。选中的组是 1，其余是 0。
+      $$\of{group_mask}={{ group_mask | matrix }}$$
+  - id: unsqueeze
+    show: group_mask_u
+    label: '$\of{group_mask_u}$'
+    title: 加一个长度为 1 的维度
+    text: |
+      <code>score_mask = group_mask.unsqueeze(-1)</code>：在最后加一维，形状从 $(T, G)$ 变成 $(T, G, 1)$，数值不变，为下一步按组展开做准备。
+  - id: expand
+    show: group_mask_e
+    label: '$\of{group_mask_e}$'
+    title: 每组的掩码复制给组里的每个专家
+    text: |
+      <code>.expand(-1, self.num_group, self.num_experts // self.num_group)</code>：长度为 1 的最后一维展开成 $E/G=\of{E//G}$，组的 0 或 1 复制给这一组的每个专家。$-1$ 表示这一维保持原来的长度。expand 不复制数据，展开出来的元素都指向同一个值。
+      $$\of{group_mask_e}={{ group_mask_e | matrix }}$$
+  - id: reshape
+    show: score_mask
+    label: '$\of{score_mask}$'
+    title: 合并成每个专家一列
+    text: |
+      <code>.reshape(-1, self.num_experts)</code>：组和组内两维按行优先合成一维，形状变成 $(T, E)$，第 $e$ 列对应第 $e$ 个专家。expand 的结果在内存里不连续，所以 HF 用 reshape，它在这里会复制出一份连续的数据；数值和 view 相同。
+      $$\of{score_mask}={{ score_mask | matrix }}$$
+  - id: bool
+    show: score_mask_b
+    label: '$\of{score_mask_b}$'
+    title: 掩码转成 bool
+    text: |
+      <code>scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))</code> 里的 <code>score_mask.bool()</code>：浮点的 0 和 1 转成 bool 的 false 和 true。
+      $$\of{score_mask_b}={{ score_mask_b | matrix }}$$
+  - id: invert
+    show: not_mask
+    label: '$\of{not_mask}$'
+    title: 取反：不能选的专家
+    text: |
+      同一行里的 <code>~</code>：bool 张量上的 <code>~</code> 是逐元素的逻辑非，和 <code>torch.logical_not</code> 相同。取反以后，true 标出的是落在没选中的组里、这一次不能选的专家。
+      $$\of{not_mask}={{ not_mask | matrix }}$$
+  - id: masked_fill
+    show: masked_scores
+    label: '$\of{masked_scores}$'
+    title: 不能选的专家记成 $-\infty$
+    text: |
+      <code>masked_fill(..., float("-inf"))</code>：$\of{not_mask}$ 为 true 的位置填 $-\infty$，其余保留 $\of{scores_for_choice}$。HF 把结果赋回 <code>scores_for_choice</code>，图上另起一个名字。
+      $$\of{masked_scores}={{ masked_scores | matrix:3 }}$$
   - id: topk
-    show: [choice, sel]
-    label: '$\of{sel}$'
-    title: 'top-$\of{K}$：选出 $K$ 个专家'
+    show: idx
+    label: '$\of{idx}$'
+    title: 'top-$\of{K}$：选出 $K$ 个专家的编号'
     text: |
-      不能选的专家记成 $-\infty$，再在剩下的专家里按 $\of{sc}$ 选最大的 $K=\of{K}$ 个。真实模型里每个 token 从 256 个路由专家里选 8 个。
-      $$\of{sel}={{ sel | matrix:2 }}$$
-  - id: weights
-    show: [w, den, wn, rw]
-    label: '$\of{rw}$'
-    title: 专家的权重
+      <code>topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]</code>：每个位置在 $\of{masked_scores}$ 里选最大的 $K=\of{K}$ 个，记成 $-\infty$ 的专家不会被选中。$\of{idx}$ 是专家的编号（从 0 开始）。HF 写 <code>sorted=False</code>，一行里 $K$ 个编号的顺序没有规定；这里按分数从大到小排。后面每个位置的输出是 $K$ 个专家输出的和，和这个顺序无关。真实模型里每个 token 从 256 个路由专家里选 8 个。编号没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
+  - id: gather
+    show: topk_weights
+    label: '$\of{topk_weights}$'
+    title: 按编号取出亲和度
     text: |
-      权重用不带偏置的 $\of{s}$：选中的那几个亲和度除以它们的和，再乘 routed_scaling_factor $=\of{rsf}$。没选中的专家权重是 0。
-      $$\of{rw}=\of{rsf}\cdot\frac{\of{s}\odot\of{sel}}{\sum\of{s}\odot\of{sel}}={{ rw | matrix:3 }}$$
+      <code>topk_weights = scores.gather(1, topk_indices)</code>：权重用不带偏置的 $\of{scores}$，按 $\of{idx}$ 从每一行取出 $K$ 个。偏置只影响选哪几个专家，不影响权重。
+      $$\of{topk_weights}={{ topk_weights | matrix:3 }}$$
     backward:
-      label: '$\partial\of{s}$'
-      title: 穿过归一化，传到亲和度
+      label: '$\partial\of{scores}$'
+      title: 传回选中的亲和度
+      text: |
+        gather 的反向把梯度放回被选中的那 $K$ 个亲和度，没选中的专家拿到 0。
+        $$\frac{\partial\ell}{\partial\of{topk_weights}}={{ topk_weights.grad | matrix:3 }}$$
+  - id: wsum
+    show: wsum
+    label: '$\of{wsum}$'
+    title: 选中的亲和度求和
+    text: |
+      DeepSeek V3 的配置里 norm_topk_prob 是 true，<code>if self.norm_topk_prob:</code> 成立，执行 <code>denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20</code>。这一步先算求和，每个位置一个和。
+      $$\of{wsum}={{ wsum | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{topk_weights}$'
+      title: 传回选中的亲和度
+      text: 求和的局部导数是 1。
+  - id: eps
+    show: denominator
+    label: '$\of{denominator}$'
+    title: 加上 $10^{-20}$
+    text: |
+      同一行里的 <code>+ 1e-20</code>，防止和为 0 时除以 0。sigmoid 的值都大于 0，所以这里的和总是正的，加上的数不改变显示的数值。
+      $$\of{denominator}={{ denominator | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{wsum}$'
+      title: 穿过加常数
+      text: 加常数的局部导数是 1，梯度原样传回。
+  - id: normalize
+    show: normed
+    label: '$\of{normed}$'
+    title: 归一化
+    text: |
+      <code>topk_weights /= denominator</code>：选中的 $K$ 个亲和度除以它们的和，每行加起来是 1。
+      $$\of{normed}=\frac{\of{topk_weights}}{\of{denominator}}={{ normed | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{topk_weights},\ \partial\of{denominator}$'
+      title: 穿过归一化
       text: |
         归一化让被选中的几个亲和度互相影响：一个专家的亲和度变大，其他被选中的专家的权重就变小。
-        $$\frac{\partial\ell}{\partial\of{w}}={{ w.grad | matrix:3 }}$$
-  - id: combine
-    show: ['yv[1..E]', Y, Yw, routed]
-    label: '$\of{routed}$'
-    title: 按权重加起来
+        $$\frac{\partial\ell}{\partial\of{normed}}={{ normed.grad | matrix:3 }}$$
+  - id: scale
+    show: rw
+    label: '$\of{rw}=\of{normed}\cdot\of{rsf}$'
+    title: 乘 routed_scaling_factor
     text: |
-      每个专家的输出乘上自己的权重，再按专家加起来。这里为了画图，每个专家对所有位置都算了一遍，权重是 0 的那些行不起作用；HF 的实现只把每个专家被选中的那些 token 送进去算。
-      $$\of{routed}=\sum_e p_{e}\,\mathbf{y}^{(e)}={{ routed | matrix:2 }}$$
+      <code>topk_weights = topk_weights * self.routed_scaling_factor</code>，routed_scaling_factor $=\of{rsf}$。gate 返回 <code>router_logits, topk_weights, topk_indices</code>，MoE 用的是后两个：$\of{rw}$ 和 $\of{idx}$。
+      $$\of{rw}={{ rw | matrix:3 }}$$
     backward:
-      label: '$\partial\mathbf{y}^{(e)},\ \partial\of{rw}$'
-      title: 传到各个专家的输出和权重
+      label: '$\partial\of{normed}$'
+      title: 穿过乘常数
       text: |
-        专家 $e$ 的输出收到的梯度是 $p_e\,\partial\ell/\partial\of{routed}$，没选中这个专家的位置梯度是 0，所以这个专家的参数只从选中它的 token 学习。
+        乘常数的局部导数是 $\of{rsf}$。
+        $$\frac{\partial\ell}{\partial\of{rw}}={{ rw.grad | matrix:3 }}$$
   - id: add
     show: out
     label: '$\of{out}=\of{routed}+\of{shared}$'
     title: 加上共享专家
     text: |
-      共享专家每个位置都要经过，权重固定是 1，学所有 token 共有的部分；路由专家可以更专门。
+      <code>hidden_states = hidden_states + self.shared_experts(residuals)</code>。共享专家每个位置都要经过，权重固定是 1，学所有 token 共有的部分；路由专家可以更专门。HF 在相加之前把专家的输出 <code>.view(*orig_shape)</code> 变回输入的形状；这一页没有 batch 维，这一步不改变任何东西。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{routed},\ \partial\of{shared}$'

@@ -34,7 +34,7 @@ body:
   - experts:
       use: Experts
       subtitle: Expert $\times E$，按专家循环
-      params: { E: E, mf: f, clamped: true, limit: limit, up_first: true, fused: false, token_major: true, scale_hidden: true }
+      params: { E: E, mf: f, clamped: true, limit: limit, up_first: true, fused: false, token_major: true, scale_hidden: true, float_act: true }
       inputs: { x: x, idx: idx, w: rw }
       outputs: { out: routed }
       tex: { out: '\mathbf{y}^{\mathrm{r}}' }
@@ -59,7 +59,7 @@ body:
       use: GLU
       subtitle: Expert，共享专家
       suffix: s
-      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit, up_first: true }
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit, up_first: true, float_act: true }
       inputs: { x: x }
       outputs: { down: shared }
       tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
@@ -72,15 +72,27 @@ body:
           text: |
             先截 up，再截 gate 的上界，和路由专家相同。
             $$\bar{\mathbf{gate}}={{ shared_experts.gc | matrix:2 }}$$
-  - out: { op: routed + shared, tex: '\mathbf{y}' }
+  - y: { op: routed + shared, tex: '\mathbf{y}' }
+  - out: { op: identity(y), dtype: x, tex: '\mathbf{y}_{\mathrm{cast}}' }
 steps:
   - id: add
-    show: out
-    label: '$\of{out}=\of{routed}+\of{shared}$'
+    show: y
+    label: '$\of{y}=\of{routed}+\of{shared}$'
     title: 加上共享专家
     text: |
-      <code>y += self.shared_experts(x)</code>：共享专家每个位置都要经过，权重固定是 1。
-      $$\of{out}={{ out | matrix:2 }}$$
+      <code>y += self.shared_experts(x)</code>：共享专家每个位置都要经过，权重固定是 1。$\of{y}$ 是 <code>torch.zeros_like(x, dtype=torch.float32)</code> 建的 float32 张量，加法在 float32 里做。
+      $$\of{y}={{ y | matrix:2 }}$$
     backward:
       label: '$\partial\of{routed},\ \partial\of{shared}$'
       title: 梯度分给路由专家和共享专家
+  - id: cast
+    show: out
+    label: '$\of{out}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return y.type_as(x).view(shape)</code>：float32 的结果转回输入 $\of{x}$ 的 dtype，交给 hc_post。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{y}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。

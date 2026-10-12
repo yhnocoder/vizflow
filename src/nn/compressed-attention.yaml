@@ -36,6 +36,10 @@ weights:
   sinks: { shape: [H], dtype: fp32, tex: '\mathbf{s}^{\mathrm{sink}}' }
 buffers:
   Mw: { value: 'causal_mask(T, W)', tex: 'M_{\mathrm{sw}}' }
+  entry_indices: { value: 'arange(T // m)', dtype: int64, tex: '\mathrm{ent}^{\mathrm{HCA}}', when: 'false if sparse else compress' }
+  position_ids:  { value: 'arange(T)', dtype: int64, tex: '\mathrm{pos}^{\mathrm{HCA}}', when: 'false if sparse else compress' }
+  block_zeros:   { value: 'zeros(T, T // m)', tex: '\mathbf{0}_{T\times\lfloor T/m\rfloor}', when: 'false if sparse else compress' }
+  block_bias: { value: 'full(T, T // m + 1, -inf)', tex: '(-\infty)_{T\times(\lfloor T/m\rfloor+1)}', when: sparse }
 fold:
   label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
   title: self_attn（已折叠）
@@ -121,14 +125,24 @@ body:
       subtitle: '每 $m$ 个 token 压成一个条目'
       params: { m: m, c: D, rd: rd, theta: theta, overlap: sparse, eps: eps }
       inputs: { x: x }
-      outputs: { C: C, mask: Mc }
-      tex: { C: '\mathbf{C}', mask: 'M_{\mathrm{c}}' }
+      outputs: { C: C }
+      tex: { C: '\mathbf{C}' }
+  - entry_row:     { op: 'view(entry_indices, 1, T // m)', tex: '(\mathrm{ent}^{\mathrm{HCA}})^{\top}', when: 'false if sparse else compress' }
+  - pos1:          { op: position_ids + 1, tex: '\mathrm{pos}^{\mathrm{HCA}}+1', when: 'false if sparse else compress' }
+  - threshold:     { op: pos1 // m, tex: '\boldsymbol{\tau}', when: 'false if sparse else compress' }
+  - threshold_col: { op: 'unsqueeze(threshold, -1)', tex: '\boldsymbol{\tau}_{:,1}', when: 'false if sparse else compress' }
+  - future_mask:   { op: 'ge(entry_row, threshold_col)', tex: '\mathbf{m}^{\mathrm{fut}}', when: 'false if sparse else compress' }
+  - Mc:            { op: 'masked_fill(block_zeros, future_mask, -inf)', tex: 'M_{\mathrm{c}}', when: 'false if sparse else compress' }
   - indexer:
       use: CompressedIndexer
       when: sparse
       params: { HI: HI, cI: cI, kI: kI, m: m, rd: rd, theta: theta, eps: eps }
       inputs: { x: x, qr: cqn }
-      outputs: { out: Ms }
+      outputs: { idx: top_k_indices }
+  - valid:       { op: 'ge(top_k_indices, 0)', tex: '\mathbf{m}^{\mathrm{valid}}', when: sparse }
+  - safe_indices: { op: 'where(valid, top_k_indices, T // m)', tex: '\mathbf{i}^{\mathrm{safe}}', when: sparse }
+  - block_s:     { op: 'scatter(block_bias, -1, safe_indices, 0)', tex: 'B^{\mathrm{blk}}', when: sparse }
+  - Ms:          { op: 'narrow(block_s, -1, 0, T // m)', tex: '\tilde{M}_{\mathrm{c}}', when: sparse }
   - keys: { op: 'cat([kvr, C], 0)', tex: '[\,\mathbf{kv}'';\,\mathbf{C}\,]', when: compress }
   - mask: { op: 'cat([Mw, Ms if sparse else Mc], 1)', tex: 'M', when: compress }
   - eager_attention_forward:
@@ -228,6 +242,94 @@ steps:
     backward:
       label: '$\partial\of{kvn}$'
       title: 去掉 head 维
+  - id: hca_entries
+    when: 'false if sparse else compress'
+    show: [entry_indices, entry_row]
+    label: '$\of{entry_row}$'
+    title: 压缩条目的编号排成一行
+    text: |
+      HCA 层压缩条目那几列的 mask 由 HF <code>DeepseekV4HCACompressor.forward</code> 的最后几行建出，这里逐行画出。第一行是 <code>entry_indices = torch.arange(compressed_len)</code>：条目编号 $0,1,\dots,\lfloor T/m\rfloor-1$。后面的比较里写成 <code>entry_indices.view(1, 1, 1, -1)</code>，排成一行；图上没有 batch 和 head 维，view 成 $(1, \lfloor T/m\rfloor)$。
+      $$\of{entry_row}={{ entry_row | matrix:2 }}$$
+  - id: hca_positions
+    when: 'false if sparse else compress'
+    show: [position_ids, pos1]
+    label: '$\of{pos1}$'
+    title: 每个位置的编号加 1
+    text: |
+      <code>causal_threshold = (position_ids + 1) // self.compress_rate</code> 的第一步：$\of{position_ids}$ 是每个 token 的位置 $0,1,\dots,T-1$（没有缓存时 HF 的 <code>position_ids</code> 就是 <code>arange(T)</code>），先加 1，得到位置 $t$ 之前（含 $t$）一共有几个 token。
+      $$\of{pos1}={{ pos1 | matrix:2 }}$$
+  - id: hca_threshold
+    when: 'false if sparse else compress'
+    show: threshold
+    label: '$\of{threshold}$'
+    title: 每个位置能看到几个完整的条目
+    text: |
+      <code>// self.compress_rate</code>：再按 $m=\of{m}$ 向下取整。$\tau_t=\lfloor (t+1)/m\rfloor$ 是到位置 $t$ 为止已经压缩完的条目个数，编号小于 $\tau_t$ 的条目只包含不晚于 $t$ 的 token。
+      $$\of{threshold}={{ threshold | matrix:2 }}$$
+  - id: hca_threshold_col
+    when: 'false if sparse else compress'
+    show: threshold_col
+    label: '$\of{threshold_col}$'
+    title: 阈值排成一列
+    text: |
+      <code>causal_threshold.unsqueeze(1).unsqueeze(-1)</code>：$\tau$ 排成一列，和上面那一行广播成 $T\times\lfloor T/m\rfloor$ 的表。HF 的第一个 <code>unsqueeze(1)</code> 加的是 head 维，图上没有这一维。
+      $$\of{threshold_col}={{ threshold_col | matrix:2 }}$$
+  - id: hca_future
+    when: 'false if sparse else compress'
+    show: future_mask
+    label: '$\of{future_mask}$'
+    title: 标出还没压缩完的条目
+    text: |
+      <code>entry_indices.view(1, 1, 1, -1) &gt;= causal_threshold.unsqueeze(1).unsqueeze(-1)</code>：第 $t$ 行第 $w$ 列在 $w\ge\tau_t$ 时是 true，表示第 $w$ 个条目包含位置 $t$ 之后的 token，位置 $t$ 不能看它。第 $w$ 个条目压缩了 token $wm$ 到 $wm+m-1$，所以条件等价于 $(w+1)m&gt;t+1$。
+      $$\of{future_mask}={{ future_mask | matrix:2 }}$$
+  - id: hca_fill
+    when: 'false if sparse else compress'
+    show: [block_zeros, Mc]
+    label: '$\of{Mc}$'
+    title: 还没压缩完的条目记成 $-\infty$
+    text: |
+      <code>block_bias = compressed_kv.new_zeros((batch, 1, seq_len, compressed_len))</code> 建一张全 0 的表 $\of{block_zeros}$，然后 <code>block_bias = block_bias.masked_fill(..., float("-inf"))</code>：$\of{future_mask}$ 为 true 的位置换成 $-\infty$，其余是 0。HCA 层没有 indexer，这张表就是压缩条目那几列的 mask。
+      $$\of{Mc}={{ Mc | matrix:2 }}$$
+  - id: index_valid
+    when: sparse
+    show: valid
+    label: '$\of{valid}$'
+    title: 标出有效的编号
+    text: |
+      indexer 返回的是条目编号，注意力要的是一张 mask。HF 在 <code>DeepseekV4CSACompressor.forward</code> 里用编号拼出这张 mask，第一步是 <code>valid = top_k_indices &gt;= 0</code>：indexer 把选错的编号写成了 $-1$，这里标出其余的编号。
+      $$\of{valid}={{ valid | matrix:2 }}$$
+  - id: index_safe
+    when: sparse
+    show: safe_indices
+    label: '$\of{safe_indices}$'
+    title: 无效的编号指到多出来的一列
+    text: |
+      <code>safe_indices = torch.where(valid, top_k_indices, torch.full_like(top_k_indices, compressed_len))</code>：无效的编号换成 $\lfloor T/m\rfloor=\of{T // m}$，也就是最后一个条目之后的那一列。下一步往这一列写的 0 最后会被切掉，不影响结果。
+      $$\of{safe_indices}={{ safe_indices | matrix:2 }}$$
+  - id: block_bias
+    when: sparse
+    show: block_bias
+    label: '$\of{block_bias}$'
+    title: 一张全是 $-\infty$ 的表
+    text: |
+      <code>block_bias = compressed_kv.new_full((batch, 1, seq_len, compressed_len + 1), float("-inf"))</code>：$T$ 行，每行 $\lfloor T/m\rfloor+1$ 列，全是 $-\infty$。多出来的最后一列接收无效的编号。图上没有 batch 和 head 这两维。
+      $$\of{block_bias}={{ block_bias | matrix:2 }}$$
+  - id: block_scatter
+    when: sparse
+    show: block_s
+    label: '$\of{block_s}$'
+    title: 选中的条目写成 0
+    text: |
+      <code>block_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)</code>：第 $t$ 行在 $\of{safe_indices}$ 第 $t$ 行列出的那几列写上 0。选中且已经压缩完的条目是 0，其余仍是 $-\infty$。HF 原地改写 <code>block_bias</code>，图上另起一个名字。
+      $$\of{block_s}={{ block_s | matrix:2 }}$$
+  - id: block_narrow
+    when: sparse
+    show: Ms
+    label: '$\of{Ms}$'
+    title: 切掉多出来的一列
+    text: |
+      <code>return compressed_kv, block_bias[..., :compressed_len]</code>：去掉最后一列，剩下每个压缩条目一列。这就是 CSA 层压缩条目那几列的 mask，没选中的条目是 $-\infty$。
+      $$\of{Ms}={{ Ms | matrix:2 }}$$
   - id: keys
     when: compress
     show: keys
@@ -247,7 +349,7 @@ steps:
     text: |
       前 $T$ 列是滑动窗口的 causal mask：位置 $t$ 只看 $t-W<s\le t$，$W=\of{W}$。
       $$M_{\mathrm{sw}}={{ Mw | matrix:2 }}$$
-      后面接上压缩条目那几列。第 $w$ 个条目压缩了 token $wm$ 到 $wm+m-1$，位置 $t$ 只有在这些 token 都不晚于自己时才能看到它，即 $(w+1)m\le t+1$，否则是 $-\infty$，对应 HF 里 <code>entry_indices &gt;= (position_ids + 1) // compress_rate</code> 的那张 mask。HCA 层直接用这张 mask；CSA 层用 indexer 在它的基础上挑过的 mask，没选中的条目也是 $-\infty$。
+      后面接上压缩条目那几列，对应 HF 的 <code>torch.cat([attention_mask, block_bias.to(attention_mask.dtype)], dim=-1)</code>。HCA 层接的是上面由位置和条目编号比较得到的 mask，还没压缩完的条目是 $-\infty$；CSA 层接的是上面由 indexer 的编号拼出的 mask，没选中的条目也是 $-\infty$。
       $$\of{mask}={{ mask | matrix:2 }}$$
   - id: o_heads
     show: o3
@@ -262,7 +364,7 @@ steps:
     label: '$\of{og}$'
     title: 把 head 分成 $g$ 组
     text: |
-      \of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维，对应 <code>attn_output.reshape(..., o_groups, -1)</code>。真实模型 64 个 head 分 8 组，每组 4096 维。
+      \of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维，对应 <code>attn_output.reshape(*input_shape, self.config.o_groups, -1)</code>。真实模型 64 个 head 分 8 组，每组 4096 维。
     backward:
       label: '$\partial\mathbf{o}''$'
       title: 拼回去

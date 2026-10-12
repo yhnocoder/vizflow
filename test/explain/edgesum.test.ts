@@ -209,6 +209,29 @@ const cases: Case[] = [
       return { out: g.repeat_interleave(x, 3, 1), inputs: [x] };
     },
   },
+  { op: 'logical_not', build: (g, r) => unary(g, r, 'logical_not', [2, 3]) },
+  {
+    op: 'scatter',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const i = g.label('i', [[2, 0], [1, 1], [3, 2]]);
+      return { out: g.scatter(x, 1, i, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'expand',
+    build: (g, r) => {
+      const x = g.input('x', [2, 1, 3], randomValues(r, [2, 1, 3]));
+      return { out: g.expand(x, 2, 2, 4, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'reshape',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.reshape(x, -1, 4), inputs: [x] };
+    },
+  },
   {
     op: 'causal_conv1d',
     build: (g, r) => {

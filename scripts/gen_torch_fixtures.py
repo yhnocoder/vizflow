@@ -543,6 +543,19 @@ def transformer_op_fixtures():
     cases += hash_and_mask_cases()
     cases += pointwise_cases("reciprocal", torch.reciprocal, positive)
     cases += pointwise_cases("erf", torch.erf, lambda *shape: randn(*shape) * 2)
+    cases += group_mask_cases()
+    return cases
+
+
+def group_mask_cases():
+    cases = []
+    for shape, dim, index in [((3, 4), 1, [[2, 0], [1, 3], [3, 2]]), ((4, 3), 0, [[1, 0, 3]]), ((2, 3, 2), -1, [[[1], [0], [1]], [[0], [0], [1]]])]:
+        cases.append(op_case("scatter", f"{shape} dim {dim} index {index} value 1", lambda x, i, dim=dim: x.scatter(dim, i, 1.0), [("input", randn(*shape)), ("label", torch.tensor(index))], [tensor_arg(0), dim, tensor_arg(1), 1.0]))
+    for shape, sizes in [((3, 1), (-1, 4)), ((2, 1, 3), (2, 2, 5, 3)), ((3, 2, 1), (-1, -1, 4))]:
+        cases.append(op_case("expand", f"{shape} to {sizes}", lambda x, sizes=sizes: x.expand(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    for shape, sizes in [((3, 2, 4), (-1, 8)), ((2, 6), (3, 2, 2))]:
+        cases.append(op_case("reshape", f"{shape} to {sizes}", lambda x, sizes=sizes: x.reshape(*sizes), [("input", randn(*shape))], [tensor_arg(0), *sizes]))
+    cases.append(op_case("logical_not", "bool (3, 4)", torch.logical_not, [("label", randint(2, (3, 4)).bool())], [tensor_arg(0)]))
     return cases
 
 
@@ -782,6 +795,16 @@ def integer_and_scatter_cases():
                 [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
             )
         )
+    for shape, dim, index, value in [((3, 5), 1, [[4, 0], [1, 2], [3, 1]], 0.0), ((4, 2), 0, [[2, 0], [0, 3]], -1.5)]:
+        cases.append(
+            op_case(
+                "scatter",
+                f"{shape} dim {dim} index {index} value {value}",
+                lambda x, i, dim=dim, value=value: torch.scatter(x, dim, i, value),
+                [("input", randn(*shape)), ("label", torch.tensor(index))],
+                [tensor_arg(0), dim, tensor_arg(1), value],
+            )
+        )
     mask = torch.tensor([True, False, True, True])
     grid = torch.tensor([[True, False, False], [False, True, True]])
     for title, shape, picked, values in [
@@ -806,6 +829,17 @@ def integer_and_scatter_cases():
     return cases
 
 
+def floor_divide_cases():
+    positions = torch.arange(1, 10).unsqueeze(-1)
+    ints = randint(1 << 20, (4, 3)) - (1 << 19)
+    return [
+        op_case("floor_divide", "int64 positions 1..9 by 4", lambda x: torch.floor_divide(x, 4), [("label", positions)], [tensor_arg(0), 4]),
+        op_case("floor_divide", "int64 (4, 3) by a scalar", lambda x: torch.floor_divide(x, 7), [("label", ints)], [tensor_arg(0), 7]),
+        op_case("floor_divide", "int64 (4, 3) by (3,)", torch.floor_divide, [("label", ints), ("label", torch.tensor([3, -5, 11]))], [tensor_arg(0), tensor_arg(1)]),
+        op_case("floor_divide", "float (3, 4) by a scalar", lambda x: torch.floor_divide(x, 0.7), [("label", randn(3, 4) * 4)], [tensor_arg(0), 0.7]),
+    ]
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -821,7 +855,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + integer_and_scatter_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases())
     write("pages.json", pages + stable_pages)
 
 

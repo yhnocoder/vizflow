@@ -15,6 +15,7 @@ params:
   fused: { type: bool, default: true }
   token_major: { type: bool, default: false }
   scale_hidden: { type: bool, default: false }
+  float_act: { type: bool, default: false }
 inputs:
   x:   { shape: [T, d] }
   idx: { shape: [T, K] }
@@ -27,7 +28,8 @@ weights:
   W3:  { shape: [E, mf, d], tex: 'W_{3}', when: not fused }
   W2:  { shape: [E, d, mf], tex: 'W_{2}', when: not fused }
 buffers:
-  final: { value: 'zeros(T, d)', tex: '\mathbf{0}' }
+  final: { value: 'zeros(T, d)', tex: '\mathbf{0}', when: not float_act }
+  final32: { value: 'zeros(T, d)', dtype: fp32, tex: '\mathbf{0}', when: float_act }
 fold:
   label: '$\of{out}=\mathrm{experts}(\of{x},\of{idx},\of{w})$'
   title: experts（已折叠）
@@ -54,13 +56,15 @@ body:
   - up:            { op: 'narrow(gate_up, -1, mf, mf)', tex: '\mathbf{up}', when: fused }
   - gate:          { op: 'grouped_linear(current_state, W1, expert_idx)', tex: '\mathbf{gate}', when: not fused }
   - up:            { op: 'grouped_linear(current_state, W3, expert_idx)', tex: '\mathbf{up}', when: not fused }
-  - uc:            { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: up_first }
-  - gc:            { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
-  - uc:            { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: 'false if up_first else clamped' }
+  - gate32:        { op: identity(gate), tex: '\mathbf{gate}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - up32:          { op: identity(up), tex: '\mathbf{up}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - uc:            { op: 'clamp(up32 if float_act else up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: up_first }
+  - gc:            { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
+  - uc:            { op: 'clamp(up32 if float_act else up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: 'false if up_first else clamped' }
   - act:
       use: act_fn
       when: not clamped
-      inputs: { x: gate }
+      inputs: { x: 'gate32 if float_act else gate' }
       outputs: { out: hact }
       tex: { out: '\of{act_fn}(\mathbf{gate})' }
   - act:
@@ -69,14 +73,16 @@ body:
       inputs: { x: gc }
       outputs: { out: hact }
       tex: { out: '\of{act_fn}(\bar{\mathbf{gate}})' }
-  - hidden:        { op: 'hact * uc if clamped else hact * up', tex: '\mathbf{m}' }
+  - hidden:        { op: 'hact * uc if clamped else hact * up32 if float_act else hact * up', tex: '\mathbf{m}' }
   - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}', when: scale_hidden }
   - hidden_w:      { op: 'view(weight, T*K, 1) * hidden', tex: '\mathbf{m}^{w}', when: scale_hidden }
-  - down:          { op: 'grouped_linear(hidden_w, W2, expert_idx) if scale_hidden else grouped_linear(hidden, W2, expert_idx)', tex: '\mathbf{d}', when: not fused }
-  - down:          { op: 'grouped_linear(hidden_w, Wd, expert_idx) if scale_hidden else grouped_linear(hidden, Wd, expert_idx)', tex: '\mathbf{d}', when: fused }
+  - hidden_c:      { op: identity(hidden_w), tex: '\mathbf{m}^{w}_{\mathrm{cast}}', dtype: x, when: float_act }
+  - down:          { op: 'grouped_linear(hidden_c if float_act else hidden_w if scale_hidden else hidden, W2, expert_idx)', tex: '\mathbf{d}', when: not fused }
+  - down:          { op: 'grouped_linear(hidden_c if float_act else hidden_w if scale_hidden else hidden, Wd, expert_idx)', tex: '\mathbf{d}', when: fused }
   - weight:        { op: 'index(w, [token_idx, top_k_pos])', tex: '\mathbf{w}^{s}', when: not scale_hidden }
   - scaled:        { op: 'down * view(weight, T*K, 1)', tex: '\mathbf{d}^{w}', when: not scale_hidden }
-  - out:           { op: 'index_add(final, 0, token_idx, down if scale_hidden else scaled)', tex: '\mathbf{o}' }
+  - cast:          { op: identity(scaled), dtype: final, tex: '\mathbf{d}^{w}_{\mathrm{cast}}', when: not scale_hidden }
+  - out:           { op: 'index_add(final32 if float_act else final, 0, token_idx, down if scale_hidden else cast)', tex: '\mathbf{o}' }
 steps:
   - id: mask
     when: not token_major
@@ -253,20 +259,32 @@ steps:
       text: |
         每一行的梯度乘这一行的路由权重，传给 $\of{down}$；这一行 $d$ 个元素的梯度与 $\of{down}$ 对应元素的乘积加起来，传给这一行的权重。
         $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: cast
+    when: not scale_hidden
+    show: cast
+    label: '$\of{cast}$'
+    title: 转成累加张量的 dtype
+    text: |
+      <code>current_hidden_states.to(final_hidden_states.dtype)</code>：加进 $\of{final}$ 之前，先转成 $\of{final}$ 的 dtype。<code>final_hidden_states = torch.zeros_like(hidden_states)</code>，所以 $\of{final}$ 的 dtype 和输入 $\of{x}$ 相同；$\of{scaled}$ 的 dtype 由 $\of{down}$ 和路由权重 $\of{w}$ 按类型提升得到。两者相同时这一步不改变数值。
+      $$\of{cast}={{ cast | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{scaled}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度原样传回 $\of{scaled}$。
   - id: index_add
     when: not scale_hidden
     show: [final, out]
     label: '$\of{out}$'
     title: 加回各个位置
     text: |
-      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>，然后每个专家 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))</code>：第 $r$ 行加到第 ${ \of{token_idx}}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同；<code>.to(final_hidden_states.dtype)</code> 在两边 dtype 相同时不改变数值。
+      $\of{final}$ 是 <code>final_hidden_states = torch.zeros_like(hidden_states)</code> 建的全 0 张量。每个专家执行 <code>final_hidden_states.index_add_(0, token_idx, current_hidden_states.to(final_hidden_states.dtype))</code>，括号里的类型转换是上一步：第 $r$ 行加到第 ${ \of{token_idx}}_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同。
       $$\of{out}={{ out | matrix:3 }}$$
     backward:
-      label: '$\partial\of{scaled}$'
+      label: '$\partial\of{cast}$'
       title: 从各个位置取回梯度
       text: |
         index_add 的反向是按 $\of{token_idx}$ 取行：第 $r$ 行收到的梯度就是位置 ${ \of{token_idx}}_r$ 的输出梯度。$\of{final}$ 是常量全 0，没有梯度。
-        $$\frac{\partial\ell}{\partial\of{scaled}}={{ scaled.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial\of{cast}}={{ cast.grad | matrix:3 }}$$
   - id: mask
     when: token_major
     show: expert_mask
@@ -313,6 +331,18 @@ steps:
       text: |
         每一行的梯度只进入它自己那个专家的那一块。没被选中的专家没有行，它那一块的梯度是 0。
         $$\frac{\partial\ell}{\partial\of{gate}}={{ gate.grad | matrix:3 }}$$
+  - id: float
+    when: float_act
+    show: [gate32, up32]
+    label: '$\of{gate32},\ \of{up32}$'
+    title: 转成 float32
+    text: |
+      <code>gate = self.w1(x).float()</code>，<code>up = self.w3(x).float()</code>：两个投影的结果先转成 float32，后面的截断、激活和相乘都在 float32 里算。
+      $$\of{gate32}={{ gate32 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gate},\ \partial\of{up}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
   - id: scale_hidden
     when: scale_hidden
     show: hidden_w
@@ -327,6 +357,18 @@ steps:
       text: |
         这一行 $m_f$ 个元素的梯度与 $\of{hidden}$ 对应元素的乘积加起来，传给这一行的路由权重。
         $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: cast_hidden
+    when: float_act
+    show: hidden_c
+    label: '$\of{hidden_c}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return self.w2(x.to(dtype))</code>：<code>dtype</code> 是 <code>Expert.forward</code> 开头记下的输入 dtype。乘过路由权重的 float32 结果先转回这个 dtype，再进 w2。
+      $$\of{hidden_c}={{ hidden_c | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{hidden_w}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32 传给乘路由权重的那一步。
   - id: down
     when: not fused
     show: [W2, down]
@@ -341,12 +383,26 @@ steps:
       text: |
         $$\frac{\partial\ell}{\partial\of{down}}={{ down.grad | matrix:3 }}$$
   - id: index_add
-    when: scale_hidden
-    show: [final, out]
+    when: 'float_act if scale_hidden else false'
+    show: [final32, out]
     label: '$\of{out}$'
     title: 加回各个位置
     text: |
       参考实现先建 <code>y = torch.zeros_like(x, dtype=torch.float32)</code>，每个专家做 <code>y[idx] += expert(x[idx], ...)</code>：第 $r$ 行加到第 ${ \of{token_idx}}_r$ 个位置上。同一个专家不会在一个位置出现两次，所以每次 <code>+=</code> 写的位置互不相同；这里用 <code>index_add</code> 按行的顺序一次加完，每个位置上加法的次序和逐个专家循环相同。
+      $$\of{out}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{down}$'
+      title: 从各个位置取回梯度
+      text: |
+        index_add 的反向是按 $\of{token_idx}$ 取行，第 $r$ 行收到位置 ${ \of{token_idx}}_r$ 的输出梯度。$\of{final32}$ 是常量全 0，没有梯度。
+        $$\frac{\partial\ell}{\partial\of{down}}={{ down.grad | matrix:3 }}$$
+  - id: index_add
+    when: 'false if float_act else scale_hidden'
+    show: [final, out]
+    label: '$\of{out}$'
+    title: 加回各个位置
+    text: |
+      每个专家做 <code>y[idx] += expert(x[idx], ...)</code>：第 $r$ 行加到第 ${ \of{token_idx}}_r$ 个位置上。同一个专家不会在一个位置出现两次，所以每次 <code>+=</code> 写的位置互不相同；这里用 <code>index_add</code> 按行的顺序一次加完，每个位置上加法的次序和逐个专家循环相同。
       $$\of{out}={{ out | matrix:3 }}$$
     backward:
       label: '$\partial\of{down}$'

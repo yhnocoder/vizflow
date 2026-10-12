@@ -8,26 +8,26 @@ export interface GatherAttrs {
   dim: number;
 }
 
-function gatherShape(input: readonly number[], index: readonly number[], attrs: GatherAttrs): number[] {
+function gatherShape(input: readonly number[], index: readonly number[], attrs: GatherAttrs, name = 'gather'): number[] {
   if (input.length !== index.length) {
-    throw new Error(`gather: index ${formatShape(index)} must have the same number of dimensions as input ${formatShape(input)}`);
+    throw new Error(`${name}: index ${formatShape(index)} must have the same number of dimensions as input ${formatShape(input)}`);
   }
   const dim = normDim(attrs.dim, input.length);
   index.forEach((size, d) => {
     if (d !== dim && size > input[d]) {
-      throw new Error(`gather: index ${formatShape(index)} is larger than input ${formatShape(input)} along dim ${d}`);
+      throw new Error(`${name}: index ${formatShape(index)} is larger than input ${formatShape(input)} along dim ${d}`);
     }
   });
   return [...index];
 }
 
-function sourceOffsets(input: Tensor, index: Tensor, attrs: GatherAttrs): Int32Array {
+function sourceOffsets(input: Tensor, index: Tensor, attrs: GatherAttrs, name = 'gather'): Int32Array {
   const dim = normDim(attrs.dim, input.ndim);
   const offsets = new Int32Array(index.size);
   forEachIndex(index.shape, (position, offset) => {
     const picked = Math.round(index.data[offset]);
     if (picked < 0 || picked >= input.shape[dim]) {
-      throw new Error(`gather: index ${picked} at [${position.join(', ')}] is out of range for input ${formatShape(input.shape)} along dim ${dim}`);
+      throw new Error(`${name}: index ${picked} at [${position.join(', ')}] is out of range for input ${formatShape(input.shape)} along dim ${dim}`);
     }
     const source = [...position];
     source[dim] = picked;
@@ -218,11 +218,11 @@ export interface ViewAttrs {
   shape: number[];
 }
 
-export function viewShape(input: readonly number[], attrs: ViewAttrs): number[] {
+export function viewShape(input: readonly number[], attrs: ViewAttrs, name = 'view'): number[] {
   const size = input.reduce((a, b) => a * b, 1);
   const free = attrs.shape.filter((d) => d === -1).length;
   const known = attrs.shape.filter((d) => d !== -1).reduce((a, b) => a * b, 1);
-  const fail = () => new Error(`view: shape (${attrs.shape.join(', ')}) is invalid for input ${formatShape(input)} of size ${size}`);
+  const fail = () => new Error(`${name}: shape (${attrs.shape.join(', ')}) is invalid for input ${formatShape(input)} of size ${size}`);
   if (free > 1 || attrs.shape.some((d) => !Number.isInteger(d) || (d < 0 && d !== -1))) throw fail();
   if (free === 0 ? known !== size : known === 0 || size % known !== 0) throw fail();
   return attrs.shape.map((d) => (d === -1 ? size / known : d));
@@ -239,6 +239,13 @@ export const viewOp: OpDef<ViewAttrs> = {
   forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
   cost: VIEW_COST,
+};
+
+export const reshapeOp: OpDef<ViewAttrs> = {
+  ...viewOp,
+  name: 'reshape',
+  shape: ([input], attrs) => viewShape(input, attrs, 'reshape'),
+  forward: ([input], attrs) => new Tensor(viewShape(input.shape, attrs, 'reshape'), input.data.slice(), input.int64?.slice()),
 };
 
 export interface SelectAttrs {
@@ -793,6 +800,14 @@ export function repeatSourceIndex(inputShape: readonly number[], out: readonly n
   return inputShape.map((d, i) => out[lead + i] % d);
 }
 
+function tiled(input: Tensor, shape: number[]): Tensor {
+  const out = new Tensor(shape);
+  forEachIndex(out.shape, (index, offset) => {
+    out.data[offset] = input.get(repeatSourceIndex(input.shape, index));
+  });
+  return out;
+}
+
 export const repeatOp: OpDef<RepeatAttrs> = {
   name: 'repeat',
   args: ['input', 'sizes'],
@@ -800,13 +815,7 @@ export const repeatOp: OpDef<RepeatAttrs> = {
   rest: 'sizes',
   sizes: ['sizes'],
   shape: ([input], attrs) => repeatedShape(input, attrs),
-  forward: ([input], attrs) => {
-    const out = new Tensor(repeatedShape(input.shape, attrs));
-    forEachIndex(out.shape, (index, offset) => {
-      out.data[offset] = input.get(repeatSourceIndex(input.shape, index));
-    });
-    return out;
-  },
+  forward: ([input], attrs) => tiled(input, repeatedShape(input.shape, attrs)),
   backward: (gradOut, [input]) => {
     const grad = new Tensor(input.shape);
     forEachIndex(gradOut.shape, (index, offset) => {
@@ -815,6 +824,32 @@ export const repeatOp: OpDef<RepeatAttrs> = {
     return [grad];
   },
   cost: movement(true, [[]]),
+};
+
+export interface ExpandAttrs {
+  sizes: number[];
+}
+
+function expandedShape(input: readonly number[], attrs: ExpandAttrs): number[] {
+  const { sizes } = attrs;
+  const lead = sizes.length - input.length;
+  const fail = () => new Error(`expand: sizes (${sizes.join(', ')}) do not expand input ${formatShape(input)}`);
+  if (lead < 0) throw fail();
+  return sizes.map((size, i) => {
+    const d = i - lead;
+    if (size === -1 && d >= 0) return input[d];
+    if (!Number.isInteger(size) || size < 1) throw fail();
+    if (d >= 0 && input[d] !== 1 && input[d] !== size) throw fail();
+    return size;
+  });
+}
+
+export const expandOp: OpDef<ExpandAttrs> = {
+  ...repeatOp,
+  name: 'expand',
+  shape: ([input], attrs) => expandedShape(input, attrs),
+  forward: ([input], attrs) => tiled(input, expandedShape(input.shape, attrs)),
+  cost: { ...movement(true, [[]]), view: true },
 };
 
 export interface CummaxAttrs {
@@ -899,29 +934,23 @@ export const sortOp: OpDef<SortAttrs> = {
 
 export interface ScatterAttrs {
   dim: number;
+  src?: number;
 }
 
-function scatterLayout(input: readonly number[], index: readonly number[], src: readonly number[], attrs: ScatterAttrs): number {
-  if (index.length !== input.length || src.length !== input.length) {
-    throw new Error(`scatter: index ${formatShape(index)} and src ${formatShape(src)} must have as many dimensions as input ${formatShape(input)}`);
-  }
-  const dim = normDim(attrs.dim, input.length);
+function scatterLayout(input: readonly number[], index: readonly number[], src: readonly number[] | undefined, attrs: ScatterAttrs): void {
+  gatherShape(input, index, attrs, 'scatter');
+  if (src === undefined) return;
+  if (src.length !== input.length) throw new Error(`scatter: src ${formatShape(src)} must have the same number of dimensions as input ${formatShape(input)}`);
   index.forEach((n, d) => {
-    if (n > src[d] || (d !== dim && n > input[d])) throw new Error(`scatter: index ${formatShape(index)} does not fit input ${formatShape(input)} and src ${formatShape(src)}`);
+    if (n > src[d]) throw new Error(`scatter: index ${formatShape(index)} is larger than src ${formatShape(src)} along dim ${d}`);
   });
-  return dim;
 }
 
-export function scatterPairs(input: Tensor, index: Tensor, src: Tensor, attrs: ScatterAttrs): [number, number][] {
-  const dim = scatterLayout(input.shape, index.shape, src.shape, attrs);
+export function scatterPairs(input: Tensor, index: Tensor, src: Tensor | undefined, attrs: ScatterAttrs): [number, number][] {
+  scatterLayout(input.shape, index.shape, src?.shape, attrs);
+  const targets = sourceOffsets(input, index, attrs, 'scatter');
   const pairs: [number, number][] = [];
-  forEachIndex(index.shape, (position, offset) => {
-    const picked = Math.round(index.data[offset]);
-    if (picked < 0 || picked >= input.shape[dim]) throw new Error(`scatter: index ${picked} at [${position.join(', ')}] is out of range for input ${formatShape(input.shape)} along dim ${dim}`);
-    const target = [...position];
-    target[dim] = picked;
-    pairs.push([offsetOf(input.shape, target), offsetOf(src.shape, position)]);
-  });
+  forEachIndex(index.shape, (position, k) => pairs.push([targets[k], src === undefined ? k : offsetOf(src.shape, position)]));
   return pairs;
 }
 
@@ -929,6 +958,7 @@ export const scatterOp: OpDef<ScatterAttrs> = {
   name: 'scatter',
   args: ['input', 'dim', 'index', 'src'],
   tensors: ['input', 'index', 'src'],
+  scalars: ['src'],
   differentiable: [true, false, true],
   shape: ([input, index, src], attrs) => {
     scatterLayout(input, index, src, attrs);
@@ -936,18 +966,19 @@ export const scatterOp: OpDef<ScatterAttrs> = {
   },
   forward: ([input, index, src], attrs) => {
     const out = input.clone();
-    for (const [to, from] of scatterPairs(input, index, src, attrs)) out.data[to] = src.data[from];
+    for (const [to, from] of scatterPairs(input, index, src, attrs)) out.data[to] = src === undefined ? attrs.src! : src.data[from];
     return out;
   },
   backward: (gradOut, [input, index, src], _out, attrs) => {
-    const gi = gradOut.clone();
-    const gs = new Tensor(src.shape);
     const pairs = scatterPairs(input, index, src, attrs);
+    const gi = gradOut.clone();
     for (const [to] of pairs) gi.data[to] = 0;
+    if (src === undefined) return [gi, null];
+    const gs = new Tensor(src.shape);
     for (const [to, from] of pairs) gs.data[from] = gradOut.data[to];
     return [gi, null, gs];
   },
-  cost: movement(true, [[], [], []]),
+  cost: movement(false, [[1], [], [1]]),
 };
 
 function indexPutLayout(input: readonly number[], mask: readonly number[], values: readonly number[]): number[] {

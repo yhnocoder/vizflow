@@ -27,6 +27,7 @@ import {
   maskedFillExplain,
   triuExplain,
   remainderExplain,
+  floorDivideExplain,
   bitwiseXorExplain,
   bitwiseAndExplain,
   eqExplain,
@@ -36,7 +37,6 @@ import {
   clampMinExplain,
   ltExplain,
   bitwiseOrExplain,
-  floorDivideExplain,
   logicalNotExplain,
   copysignExplain,
 } from './elementwise';
@@ -45,6 +45,7 @@ import {
   causalConv1dExplain,
   cummaxExplain,
   embeddingExplain,
+  expandExplain,
   gatherExplain,
   indexAddExplain,
   indexExplain,
@@ -55,13 +56,14 @@ import {
   permuteExplain,
   repeatExplain,
   repeatInterleaveExplain,
+  reshapeExplain,
+  scatterExplain,
   selectExplain,
   topkIndicesExplain,
   topkMaskExplain,
   unsqueezeExplain,
   viewExplain,
   sortExplain,
-  scatterExplain,
   indexPutExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
@@ -125,6 +127,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   masked_fill: maskedFillExplain,
   solve_triangular: solveTriangularExplain,
   remainder: remainderExplain,
+  floor_divide: floorDivideExplain,
   bitwise_xor: bitwiseXorExplain,
   bitwise_and: bitwiseAndExplain,
   eq: eqExplain,
@@ -136,12 +139,13 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   cummax: cummaxExplain,
   lt: ltExplain,
   bitwise_or: bitwiseOrExplain,
-  floor_divide: floorDivideExplain,
   logical_not: logicalNotExplain,
   copysign: copysignExplain,
   sort: sortExplain,
   scatter: scatterExplain,
   index_put: indexPutExplain,
+  expand: expandExplain,
+  reshape: reshapeExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

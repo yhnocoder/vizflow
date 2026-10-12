@@ -16,7 +16,8 @@ describe('LaTeX templates render with KaTeX', () => {
     const attrs = { dim: -1, keepdim: true, dim0: 0, dim1: 1, reduction: 'mean', ignore_index: -100, exponent: 0.5, start: 1, length: 2, size: 2, k: 2, other: -1, num_classes: 3, dims: [1, 0], value: -Infinity, diagonal: 1, upper: false, unitriangular: true, pad: [0, 1], min: 1e-6, max: 1, sizes: [1, 2], dilation: 1 };
     const grouped = { weight: Tensor.zeros([2, 3, 3]), group: Tensor.from([1, 0]) };
     for (const def of builtinOps) {
-      const ctx = { node, inputs: def.name === 'grouped_linear' ? [x.value, grouped.weight, grouped.group] : [x.value, x.value], out: node.value, attrs };
+      const inputs = def.name === 'grouped_linear' ? [x.value, grouped.weight, grouped.group] : def.name === 'scatter' ? [x.value, Tensor.from([[0], [2]])] : [x.value, x.value];
+      const ctx = { node, inputs, out: node.value, attrs };
       const ex = builtinExplains[def.name];
       expect(ex, def.name).toBeDefined();
       renders(`\\mathbf{y}=${ex.tex.forward({ out: '\\mathbf{y}', in: ['\\mathbf{a}', '\\mathbf{b}', '\\mathbf{c}'], attrs: ctx.attrs })}`);

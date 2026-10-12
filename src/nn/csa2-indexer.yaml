@@ -54,7 +54,7 @@ body:
       suffix: k
       subtitle: RMSNorm
       when: owns_k
-      params: { eps: eps }
+      params: { eps: eps, cast_last: true }
       inputs: { x: kp }
       outputs: { out: kn }
       tex: { out: '\bar{\mathbf{k}}^{I}' }

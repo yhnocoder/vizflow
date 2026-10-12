@@ -27,7 +27,8 @@ fold:
     title: 穿过 gate（已折叠）
 body:
   - xf:     { op: identity(x), tex: '{\of{x}}_{\mathrm{fp32}}', dtype: fp32 }
-  - logits: { op: xf @ Wr.T, tex: '\mathbf{r}' }
+  - Wrf:    { op: identity(Wr), tex: '{W_{r}}_{\mathrm{fp32}}', dtype: fp32 }
+  - logits: { op: xf @ Wrf.T, tex: '\mathbf{r}' }
   - lt:     { op: logits / temp, tex: '\mathbf{r}/\tau' }
   - softplus:
       use: Softplus
@@ -46,22 +47,22 @@ body:
   - rw:     { op: wn * rsf, tex: '\mathbf{p}' }
 steps:
   - id: float
-    show: xf
-    label: '$\of{xf}$'
+    show: [xf, Wrf]
+    label: '$\of{xf},\ \of{Wrf}$'
     title: 转成 float32
     text: <code>linear(x.float(), self.weight.float())</code>：gate 的输入和权重都先转成 float32，打分在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
     backward:
-      label: '$\partial\of{x}$'
+      label: '$\partial\of{x},\ \partial W_r$'
       title: 穿过类型转换
   - id: logits
-    show: [Wr.T, logits]
+    show: [Wrf.T, logits]
     label: '$\of{logits}$'
     title: 每个专家一个分数
     text: |
       gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
       $$\mathbf{r}={{ logits | matrix:3 }}$$
     backward:
-      label: '$\partial W_r,\ \partial\of{xf}$'
+      label: '$\partial\of{Wrf},\ \partial\of{xf}$'
       title: 传到 gate 的权重和 $\of{x}$
   - id: temp
     show: lt

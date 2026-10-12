@@ -55,7 +55,7 @@ body:
           $$\sigma(\mathbf{u})={{ sig | matrix:3 }}$$
   - pre: { op: sig + hc_eps, tex: '\mathbf{w}' }
   - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}\odot\of{X}' }
-  - out: { op: 'sum(weighted, 1)' }
+  - out: { op: 'sum(weighted, 1)', dtype: X }
 steps:
   - id: flatten
     show: flat
@@ -118,6 +118,7 @@ steps:
     label: '$\of{out}$'
     title: 按 stream 相加
     text: |
+      对应 <code>(pre.unsqueeze(-1) * x).sum(dim=2).to(x.dtype)</code>：在 float32 里求和，再转回输入 stream 的 dtype。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial(\mathbf{w}\odot\of{X})$'

@@ -17,8 +17,8 @@ weights:
   Wpe: { shape: [dv, 3 * p * p], tex: 'W_{pe}' }
   bpe: { shape: [dv], tex: '\mathbf{b}_{pe}' }
 buffers:
-  cos: { value: 'rope2d_cos(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], tex: '\cos^{2\mathrm{D}}' }
-  sin: { value: 'rope2d_sin(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], tex: '\sin^{2\mathrm{D}}' }
+  cos: { value: 'rope2d_cos(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], dtype: fp32, tex: '\cos^{2\mathrm{D}}' }
+  sin: { value: 'rope2d_sin(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], dtype: fp32, tex: '\sin^{2\mathrm{D}}' }
 fold:
   label: '$\of{out}=\mathrm{vision}(\of{patches})$'
   title: vision（已折叠）
@@ -59,6 +59,7 @@ body:
       use: RMSNorm
       subtitle: RMSNorm，$\epsilon=10^{-6}$
       folded: true
+      params: { cast_last: true }
       inputs: { x: zl }
       outputs: { out: out }
       fold:

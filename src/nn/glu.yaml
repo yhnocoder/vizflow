@@ -13,6 +13,7 @@ params:
   clamped: { type: bool, default: false }
   limit: { type: float }
   up_first: { type: bool, default: false }
+  float_act: { type: bool, default: false }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -32,24 +33,27 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
-  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: 'false if up_first else clamped' }
+  - gate32: { op: identity(gate), tex: '\mathbf{gate}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: 'false if up_first else clamped' }
   - act_fn:
       use: act
       when: not clamped
-      inputs: { x: gate }
+      inputs: { x: 'gate32 if float_act else gate' }
       outputs: { out: a }
       tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
-  - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
-  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: up_first }
+  - up32: { op: identity(up), tex: '\mathbf{up}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - uc:   { op: 'clamp(up32 if float_act else up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: up_first }
   - act_fn:
       use: act
       when: clamped
       inputs: { x: gc }
       outputs: { out: a }
       tex: { out: '\of{act}(\bar{\mathbf{gate}})' }
-  - m:    { op: 'a * uc if clamped else a * up' }
-  - down: m @ Wd.T
+  - m:    { op: 'a * uc if clamped else a * up32 if float_act else a * up' }
+  - mc:   { op: identity(m), tex: '\mathbf{m}_{\mathrm{cast}}', dtype: x, when: float_act }
+  - down: { op: 'mc @ Wd.T if float_act else m @ Wd.T' }
 steps:
   - id: gate_proj
     show: [Wg.T, gate]
@@ -61,6 +65,17 @@ steps:
     backward:
       label: '$\partial W_g,\ \partial\of{x}$'
       title: 传到 gate_proj 权重和 $\of{x}$
+  - id: gate_float
+    when: float_act
+    show: gate32
+    label: '$\of{gate32}$'
+    title: gate 转成 float32
+    text: |
+      <code>gate = self.w1(x).float()</code>：投影的结果先转成 float32，截断和激活在 float32 里算。
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
   - id: clamp_gate
     when: clamped
     show: gc
@@ -101,13 +116,24 @@ steps:
       text: |
         $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: up_float
+    when: float_act
+    show: up32
+    label: '$\of{up32}$'
+    title: up 转成 float32
+    text: |
+      <code>up = self.w3(x).float()</code>：up 也先转成 float32。
+    backward:
+      label: '$\partial\mathbf{up}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
   - id: clamp_up
     when: clamped
     show: uc
     label: '$\bar{\mathbf{up}}$'
     title: 截断 up 的两侧
     text: |
-      up 两边都截，限制在 $[-L, L]$，对应 <code>up.clamp(min=-limit, max=limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
+      up 两边都截，限制在 $[-L, L]$，对应 <code>self.up_proj(x).clamp(min=-self.limit, max=self.limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
       $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
     backward:
       label: '$\partial\mathbf{up}$'
@@ -129,6 +155,18 @@ steps:
     text: 激活后的 gate 和截断后的 up 逐元素相乘，决定 up 的每个分量放行多少。
     backward:
       label: '$\partial\of{a},\ \partial\bar{\mathbf{up}}$'
+  - id: cast
+    when: float_act
+    show: mc
+    label: '$\of{mc}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return self.w2(x.to(dtype))</code>：float32 里算出的乘积先转回输入的 dtype，<code>dtype</code> 是开头记下的 <code>x.dtype</code>，再进 w2。
+      $$\of{mc}={{ mc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{m}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。
   - id: down
     show: [Wd.T, down]
     label: '$\of{down}$'

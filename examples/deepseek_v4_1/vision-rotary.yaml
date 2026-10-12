@@ -16,22 +16,22 @@ fold:
     label: '$\partial\of{x}$'
     title: 穿过 apply_rotary（已折叠）
 body:
-  - x1:     { op: 'narrow(x, -1, 0, hv // 2)', tex: '{\of{x}}_{1}' }
-  - x2:     { op: 'narrow(x, -1, hv // 2, hv // 2)', tex: '{\of{x}}_{2}' }
+  - x1:     { op: 'narrow(x, -1, 0, hv // 2)', tex: '{\of{x}}_{1}', dtype: fp32 }
+  - x2:     { op: 'narrow(x, -1, hv // 2, hv // 2)', tex: '{\of{x}}_{2}', dtype: fp32 }
   - x1c:    { op: x1 * cos, tex: '{\of{x}}_{1}\cos' }
   - x2s:    { op: x2 * sin, tex: '{\of{x}}_{2}\sin' }
   - first:  { op: x1c - x2s, tex: '{\of{x}}_{1}\cos-{\of{x}}_{2}\sin' }
   - x2c:    { op: x2 * cos, tex: '{\of{x}}_{2}\cos' }
   - x1s:    { op: x1 * sin, tex: '{\of{x}}_{1}\sin' }
   - second: { op: x2c + x1s, tex: '{\of{x}}_{2}\cos+{\of{x}}_{1}\sin' }
-  - out:    { op: 'cat([first, second], dim=-1)' }
+  - out:    { op: 'cat([first, second], dim=-1)', dtype: x }
 steps:
   - id: chunk
     show: [x1, x2]
     label: '${\of{x}}_{1},\ {\of{x}}_{2}$'
     title: 切成前后两半
     text: |
-      <code>x1, x2 = x.float().chunk(2, dim=-1)</code>：每个 head 宽 $\of{hv}$，前一半和后一半各 $\of{hv//2}$ 维，第 $c$ 维和第 $c+\of{hv//2}$ 维成一对。语言模型里的 apply_rotary_emb 是相邻两维一对，ViT 的配对方式不同。
+      <code>x1, x2 = x.float().chunk(2, dim=-1)</code>：先转成 float32，再切开。每个 head 宽 $\of{hv}$，前一半和后一半各 $\of{hv//2}$ 维，第 $c$ 维和第 $c+\of{hv//2}$ 维成一对。语言模型里的 apply_rotary_emb 是相邻两维一对，ViT 的配对方式不同。
       $${\of{x}}_{1}={{ x1 | matrix:2 }},\qquad {\of{x}}_{2}={{ x2 | matrix:2 }}$$
     backward:
       label: '$\partial\of{x}$'
@@ -61,7 +61,7 @@ steps:
     label: '$\of{out}$'
     title: 拼回一个 head
     text: |
-      <code>torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)</code>。
+      <code>torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1).to(dtype)</code>：两半在 float32 里算，拼好后转回输入的 dtype，<code>dtype</code> 是开头记下的 <code>x.dtype</code>。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{first},\ \partial\of{second}$'

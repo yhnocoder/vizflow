@@ -15,16 +15,16 @@ params:
   bias:    { type: bool, default: true }
   rotate:  { type: bool, default: true }
   float_input: { type: bool, default: false }
+  norm_cast_last: { type: bool, default: false }
   norm_ref: { type: text, default: decoder 层的 input_layernorm }
 inputs:
   x: { shape: [T, d] }
-outputs: [C, mask]
+outputs: [C]
 weights:
   Wkv:           { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{kv}}' }
   Wgate:         { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{gate}}', when: gated }
   position_bias: { shape: [m, '2 * c if overlap else c'], dtype: fp32, tex: 'B', when: bias }
 buffers:
-  mask: { value: 'block_causal_mask(T, m)', tex: 'M_{\mathrm{c}}' }
   zero: { value: 'zeros(1, m, c)', tex: '\mathbf{0}_{\of{m}\times\of{c}}', when: overlap }
   ninf: { value: 'full(1, m, c, -inf)', tex: '(-\infty)_{\of{m}\times\of{c}}', when: overlap }
 fold:
@@ -59,16 +59,17 @@ body:
   - g_s:     { op: 'cat([g_prevp, g_b], 1)', tex: '\mathbf{z}^{\mathrm{slot}}', when: overlap }
   - ge:      { op: 'exp(g_s) if overlap else exp(gate_w) if bias else exp(gate_w0)', tex: 'e^{\mathbf{z}}', dtype: fp32, when: gated }
   - Zw:      { op: 'sum(ge, 1, keepdim=true)', tex: '\textstyle\sum_j e^{\mathbf{z}_j}', when: gated }
-  - w:       { op: ge / Zw, tex: '\boldsymbol{\omega}', when: gated }
+  - w:       { op: ge / Zw, tex: '\boldsymbol{\omega}', dtype: kv_w, when: gated }
   - wk:      { op: 'kv_s * w if overlap else kv_w * w', tex: '\boldsymbol{\omega}\odot\mathbf{c}', when: gated }
   - pooled:  { op: 'sum(wk, 1)', tex: '\textstyle\sum_j\boldsymbol{\omega}_j\odot\mathbf{c}_j', when: gated }
+  - pooled_c: { op: identity(pooled), tex: '\mathbf{p}_{\mathrm{cast}}', dtype: x, when: float_input }
   - kv_norm:
       use: RMSNorm
       suffix: c
       subtitle: DeepseekV4RMSNorm
       when: not rotate
-      params: { eps: eps }
-      inputs: { x: pooled if gated else kv }
+      params: { eps: eps, cast_last: norm_cast_last }
+      inputs: { x: 'pooled_c if float_input else pooled if gated else kv' }
       outputs: { out: C }
       tex: { out: '\bar{\mathbf{c}}' }
       folded: true
@@ -81,8 +82,8 @@ body:
       suffix: c
       subtitle: DeepseekV4RMSNorm
       when: rotate
-      params: { eps: eps }
-      inputs: { x: pooled if gated else kv }
+      params: { eps: eps, cast_last: norm_cast_last }
+      inputs: { x: 'pooled_c if float_input else pooled if gated else kv' }
       outputs: { out: pn }
       tex: { out: '\bar{\mathbf{c}}' }
       folded: true
@@ -208,7 +209,7 @@ steps:
     label: '$e^{\mathbf{z}}$'
     title: softmax：转成 float32，取 exp
     text: |
-      <code>gate.softmax(dim=2, dtype=torch.float32)</code> 沿窗口内的 token 这一维，每个通道各做一次 softmax。softmax 按定义拆成三步画：取 exp、求和、相除。这一步先转成 float32，再逐元素取 exp；补齐用的 $-\infty$ 取 exp 后是 0。softmax 的 kernel 会先减去最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      <code>chunk_gate.softmax(dim=2, dtype=torch.float32)</code> 沿窗口内的 token 这一维，每个通道各做一次 softmax。softmax 按定义拆成三步画：取 exp、求和、相除。这一步先转成 float32，再逐元素取 exp；补齐用的 $-\infty$ 取 exp 后是 0。softmax 的 kernel 会先减去最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
       $$e^{\mathbf{z}}={{ ge | matrix:3 }}$$
     backward:
       label: '$\partial\mathbf{z}$'
@@ -231,7 +232,7 @@ steps:
     label: '$\of{w}$'
     title: softmax：相除
     text: |
-      每个 $e^{z}$ 除以它所在窗口、所在通道的和，一个窗口里每个通道的权重加起来是 1。
+      每个 $e^{z}$ 除以它所在窗口、所在通道的和，一个窗口里每个通道的权重加起来是 1。HF 写的是 <code>chunk_gate.softmax(dim=2, dtype=torch.float32).to(chunk_kv.dtype)</code>：相除在 float32 里做，结果转回内容 $\mathbf{c}$ 的 dtype，下一步的乘法在这个 dtype 里做。
       $$\of{w}={{ w | matrix:3 }}$$
     backward:
       label: '$\partial\,e^{\mathbf{z}},\ \partial\sum$'
@@ -257,6 +258,18 @@ steps:
     backward:
       label: '$\partial(\boldsymbol{\omega}\odot\mathbf{c})$'
       title: 梯度复制给窗口里的每个 token
+  - id: cast
+    when: float_input
+    show: pooled_c
+    label: '$\of{pooled_c}$'
+    title: 转回输入的 dtype
+    text: |
+      参考实现的 compressor 最后是 <code>return self.norm(kv.to(dtype))</code>，<code>dtype</code> 是进来时 <code>x</code> 的 dtype。float32 里加权求和得到的条目先转回这个 dtype，再做 RMSNorm。
+      $$\of{pooled_c}={{ pooled_c | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{pooled}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32 传给加权求和。
   - id: unsqueeze
     when: rotate
     show: pn3

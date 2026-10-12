@@ -92,6 +92,60 @@ describe('ops that route tokens to experts, with hand-computed values', () => {
     expect(() => g.grouped_linear(x, W, g.label('wide', [0, 2, 1]))).toThrow('grouped_linear: group 2 of row 1 is out of range for weight (2, 1, 2)');
   });
 
+  it('scatter writes a value at the indices along dim and passes no gradient to the overwritten elements', () => {
+    const g = graph({ check: true });
+    const z = g.input('z', [2, 3], [[5, 6, 7], [8, 9, 10]]);
+    const idx = g.label('idx', [[2], [0]]);
+    const m = g.scatter(z, 1, idx, 1);
+    expect(values(m.value)).toEqual([5, 6, 1, 1, 9, 10]);
+    g.loss(g.sum(m));
+    expect(values(z.grad)).toEqual([1, 1, 0, 0, 1, 1]);
+    expect(() => g.scatter(z, 1, g.label('far', [[3], [0]]), 1)).toThrow('scatter: index 3 at [0, 0] is out of range for input (2, 3) along dim 1');
+    expect(() => g.scatter(z, 1, g.label('flat', [0, 1]), 1)).toThrow('scatter: index (2,) must have the same number of dimensions as input (2, 3)');
+  });
+
+  it('scatter copies src at the indices along dim and gives src the gradient of the positions it wrote', () => {
+    const g = graph({ check: true });
+    const z = g.input('z', [2, 3], [[5, 6, 7], [8, 9, 10]]);
+    const src = g.input('src', [2, 2], [[1, 2], [3, 4]]);
+    const m = g.scatter(z, 1, g.label('idx', [[2], [0]]), src);
+    expect(values(m.value)).toEqual([5, 6, 1, 3, 9, 10]);
+    g.loss(g.sum(g.mul(m, g.input('w', [2, 3], [[1, 2, 3], [4, 5, 6]]))));
+    expect(values(z.grad)).toEqual([1, 2, 0, 0, 5, 6]);
+    expect(values(src.grad)).toEqual([3, 0, 4, 0]);
+    expect(() => g.scatter(z, 1, g.label('wide', [[0, 1, 2], [0, 1, 2]]), src)).toThrow('scatter: index (2, 3) is larger than src (2, 2) along dim 1');
+  });
+
+  it('expand repeats dimensions of size 1, keeps -1 dimensions and sums the gradient back', () => {
+    const g = graph({ check: true });
+    const m = g.input('m', [2, 1], [[1], [0]]);
+    const e = g.expand(m, -1, 3);
+    expect(e.shape).toEqual([2, 3]);
+    expect(values(e.value)).toEqual([1, 1, 1, 0, 0, 0]);
+    expect(g.expand(m, 4, 2, 3).shape).toEqual([4, 2, 3]);
+    g.loss(g.sum(e));
+    expect(values(m.grad)).toEqual([3, 3]);
+    expect(() => g.expand(m, 3, 3)).toThrow('expand: sizes (3, 3) do not expand input (2, 1)');
+    expect(() => g.expand(m, 2)).toThrow('expand: sizes (2) do not expand input (2, 1)');
+  });
+
+  it('reshape gives the same values as view in row-major order', () => {
+    const g = graph();
+    const x = g.input('x', [2, 2, 2], [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
+    const r = g.reshape(x, -1, 4);
+    expect(r.shape).toEqual([2, 4]);
+    expect(values(r.value)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(() => g.reshape(x, 3, -1)).toThrow('reshape: shape (3, -1) is invalid for input (2, 2, 2) of size 8');
+  });
+
+  it('logical_not turns zero into true and anything else into false, with no gradient', () => {
+    const g = graph();
+    const m = g.input('m', [4], [1, 0, 0, 2]);
+    const n = g.logical_not(m);
+    expect(values(n.value)).toEqual([0, 1, 1, 0]);
+    expect(n.dtype).toBe('bool');
+  });
+
   it('passes the finite-difference check on random values', () => {
     const r = (shape: number[], seed: number) => new T(shape, Float64Array.from({ length: shape.reduce((a, b) => a * b, 1) }, (_, i) => Math.sin(seed + i * 1.7)));
     checkOp(opDef('grouped_linear')!, [r([5, 3], 1), r([4, 2, 3], 2), T.from([0, 3, 3, 1, 0])], {});
@@ -99,6 +153,9 @@ describe('ops that route tokens to experts, with hand-computed values', () => {
     checkOp(opDef('index_add')!, [r([2, 3], 5), T.from([2, 2]), r([2, 2], 6)], { dim: 1 });
     checkOp(opDef('index')!, [r([3, 2, 2], 7), T.from([2, 0, 2]), T.from([1, 1, 0])], {});
     checkOp(opDef('permute')!, [r([2, 3, 4], 8)], { dims: [2, 0, 1] });
+    checkOp(opDef('scatter')!, [r([3, 4], 9), T.from([[1, 3], [0, 0], [2, 1]])], { dim: 1, src: 1 });
+    checkOp(opDef('scatter')!, [r([3, 4], 11), T.from([[1, 3], [0, 2], [2, 1]]), r([3, 2], 12)], { dim: 1 });
+    checkOp(opDef('expand')!, [r([3, 1], 10)], { sizes: [2, 3, 4] });
   });
 });
 

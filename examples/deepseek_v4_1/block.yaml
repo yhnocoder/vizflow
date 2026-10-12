@@ -105,7 +105,7 @@ body:
       subtitle: RMSNorm
       suffix: a
       folded: true
-      params: { eps: 1e-20 }
+      params: { eps: 1e-20, cast_last: true }
       inputs: { x: x_a }
       outputs: { out: n_a }
       fold:
@@ -153,7 +153,7 @@ body:
       subtitle: RMSNorm
       suffix: f
       folded: true
-      params: { eps: 1e-20 }
+      params: { eps: 1e-20, cast_last: true }
       inputs: { x: x_f }
       outputs: { out: n_f }
       fold:

@@ -7,6 +7,7 @@ params:
   intro:    { type: text, default: '' }
   out_note: { type: text, default: '' }
   in_note:  { type: text, default: '' }
+  cast_last: { type: bool, default: false }
 inputs:
   x: { shape: [..., n] }
 outputs: [out]
@@ -27,8 +28,11 @@ body:
   - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
   - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
   - r:  { op: rsqrt(mse), tex: r }
-  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
-  - out: xh * weight
+  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x, when: not cast_last }
+  - xh: { op: x * r, tex: '\hat{\of{x}}', when: cast_last }
+  - out: { op: xh * weight, when: not cast_last }
+  - wx: { op: weight * xh, tex: '\of{weight}\odot\hat{\of{x}}', when: cast_last }
+  - out: { op: identity(wx), dtype: x, when: cast_last }
 steps:
   - id: square
     show: sq
@@ -83,6 +87,7 @@ steps:
         $\frac{d}{dv}v^{-1/2}=-\frac{1}{2}v^{-3/2}$，所以局部导数是 $-r^{3}/2$。
         $$\frac{\partial\ell}{\partial\of{mse}}={{ mse.grad | matrix:3 }}$$
   - id: normalize
+    when: not cast_last
     show: xh
     label: '$\of{xh}$'
     title: 归一化
@@ -95,7 +100,22 @@ steps:
       text: |
         $r_t$ 有 $d$ 条出边，局部导数各是这一行的输入分量，相加得到 $\partial\ell/\partial r_t=\mathbf{x}_t\cdot\mathbf{u}_t$。输入沿直连那条边拿到 $r_t u_{t,k}$。
         $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$
+  - id: normalize
+    when: cast_last
+    show: xh
+    label: '$\of{xh}$'
+    title: 归一化
+    text: |
+      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。输入先用 <code>x.float()</code> 转成 float32，乘完以后仍是 float32，乘权重也在 float32 里做。
+      $$\of{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{r},\ \partial\of{x}$'
+      title: 传到 r，以及输入的直连那条
+      text: |
+        $r_t$ 有 $d$ 条出边，局部导数各是这一行的输入分量，相加得到 $\partial\ell/\partial r_t=\mathbf{x}_t\cdot\mathbf{u}_t$。输入沿直连那条边拿到 $r_t u_{t,k}$。
+        $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$
   - id: scale
+    when: not cast_last
     show: [weight, out]
     label: '$\of{out}$'
     title: 乘上权重 $\of{weight}$
@@ -108,3 +128,29 @@ steps:
       text: |
         逐元素乘的两个输入互为对方的局部导数。$\of{weight}$ 被所有位置共用，所以它的梯度要把 $T$ 行加起来。
         $$\frac{\partial\ell}{\partial\of{weight}}=\sum_t\frac{\partial\ell}{\partial{\of{out}}_t}\odot{\of{xh}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial\of{out}}\odot\of{weight}={{ xh.grad | matrix:3 }}$$
+  - id: scale
+    when: cast_last
+    show: [weight, wx]
+    label: '$\of{wx}$'
+    title: 乘上权重 $\of{weight}$
+    text: |
+      $\of{weight}$ 是长度为 $d$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。
+      $$\of{wx}=\of{weight}\odot\of{xh}={{ wx | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weight},\ \partial\of{xh}$'
+      title: 传到 $\of{weight}$ 和 $\of{xh}$
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。$\of{weight}$ 被所有位置共用，所以它的梯度要把 $T$ 行加起来。
+        $$\frac{\partial\ell}{\partial\of{weight}}=\sum_t\frac{\partial\ell}{\partial{\of{wx}}_t}\odot{\of{xh}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial\of{wx}}\odot\of{weight}={{ xh.grad | matrix:3 }}$$
+  - id: cast
+    when: cast_last
+    show: out
+    label: '$\of{out}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return (self.weight * x).to(dtype)</code>：乘过权重的 float32 结果转回输入的 dtype，<code>dtype</code> 是开头记下的 <code>x.dtype</code>。\of{out_note}
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{wx}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。

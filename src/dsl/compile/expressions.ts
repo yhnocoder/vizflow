@@ -177,8 +177,7 @@ export class ExpressionCompiler extends CompilerState {
       if (!(a instanceof Node) || !isNum(b)) this.fail(env, "'**' needs a node and a number", at);
       return this.apply('pow', [a, b], {}, env, make, top, at);
     }
-    if (ast.op === '//') this.fail(env, "'//' only applies to numbers", at);
-    const name = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div' }[ast.op];
+    const name = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '//': 'floor_divide' }[ast.op];
     if (a instanceof Node && (b instanceof Node || isNum(b))) return this.apply(name, [a, b], {}, env, make, top, at);
     if (isNum(a) && b instanceof Node && (ast.op === '+' || ast.op === '*')) return this.apply(name, [b, a], {}, env, make, top, at);
     return this.fail(env, `'${ast.op}' cannot combine these operands; put the node on the left`, at);

@@ -27,10 +27,10 @@ weights:
   image_start:   { shape: [d], tex: '\mathbf{e}_{\mathrm{start}}' }
   image_newline: { shape: [d], tex: '\mathbf{e}_{\mathrm{nl}}' }
   image_end:     { shape: [d], tex: '\mathbf{e}_{\mathrm{end}}' }
-  W:             { shape: [V, d] }
+  W:             { shape: [V, d], dtype: fp32 }
 buffers:
-  pre_first: { value: 'ones(T, 1)', tex: '\mathbf{1}' }
-  pre_rest:  { value: 'zeros(T, N - 1)', tex: '\mathbf{0}' }
+  pre_first: { value: 'ones(T, 1)', dtype: fp32, tex: '\mathbf{1}' }
+  pre_rest:  { value: 'zeros(T, N - 1)', dtype: fp32, tex: '\mathbf{0}' }
 overview:
   label: 总览
   title: 整张图
@@ -222,14 +222,15 @@ body:
       subtitle: 最后一次合成一条
       body:
         - pre_col: { op: 'view(pre39, T, N, 1)', tex: '\mathbf{pre}_{39}^{\mathrm{col}}' }
-        - weighted: { op: pre_col * X39, tex: '\mathbf{pre}\odot\mathbf{X}' }
-        - collapsed: { op: 'sum(weighted, 1)', tex: '\mathbf{x}_{\mathrm{out}}' }
+        - weighted: { op: pre_col * X39, tex: '\mathbf{pre}\odot\mathbf{X}', dtype: fp32 }
+        - collapsed: { op: 'sum(weighted, 1)', tex: '\mathbf{x}_{\mathrm{out}}', dtype: X39 }
   - norm:
       use: RMSNorm
       title: norm
       subtitle: RMSNorm，$\epsilon=10^{-20}$
       params:
         eps: 1e-20
+        cast_last: true
         name: final norm
         intro: 从这里开始是 final norm（<code>self.norm</code>），在最后一次 hc_pre 之后、head 之前。
         out_note: $\of{out}$ 是 head 的输入。
@@ -386,7 +387,7 @@ steps:
     label: '$\of{weighted}$'
     title: 用最后一组 pre 合成一条
     text: |
-      <code>h = layer.hc_pre(h, pre_mix)</code>：最后一层 FFN 的那组 mHC 算出的 pre 没有下一个子层用，交给 head 之前的这次合成：$\sum_n \mathrm{pre}_n\,\mathbf{X}_n$。V4 用一个单独的 hc_head 模块，V4.1 直接用这组 pre。
+      <code>h = layer.hc_pre(h, pre_mix)</code>：最后一层 FFN 的那组 mHC 算出的 pre 没有下一个子层用，交给 head 之前的这次合成：$\sum_n \mathrm{pre}_n\,\mathbf{X}_n$。V4 用一个单独的 hc_head 模块，V4.1 直接用这组 pre。乘法写作 <code>pre_mix.unsqueeze(-1) * x.float()</code>，在 float32 里做。
     backward:
       label: '$\partial\of{pre39},\ \partial\of{X39}$'
       title: 梯度分给 pre 和每条 stream
@@ -396,6 +397,7 @@ steps:
     label: '$\of{collapsed}$'
     title: 对 stream 求和
     text: |
+      <code>torch.sum(..., dim=2)</code> 在 float32 里求和，<code>y.to(x.dtype)</code> 再转回 stream 的 dtype。
       $$\of{collapsed}={{ collapsed | matrix:2 }}$$
     backward:
       label: '$\partial\of{weighted}$'

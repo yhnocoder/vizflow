@@ -678,7 +678,7 @@ class Plan implements LevelPlan {
     }
     if (e.cols > 1) {
       const size = main.cols / e.cols;
-      return Array.from({ length: e.cols }, (_, g) => mainXs[Math.min(mainXs.length - 1, (g + 1) * size - 1)] + DISC_GROUP_SIDE);
+      return Array.from({ length: e.cols }, (_, g) => mainXs[Math.min(mainXs.length - 1, Math.ceil((g + 1) * size) - 1)] + DISC_GROUP_SIDE);
     }
     const group = main.lane === undefined ? 0 : this.groupSize(main.lane);
     const side = group > 0 && main.cols < group ? DISC_NEAR_SIDE : DISC_SIDE;

@@ -72,7 +72,7 @@ body:
       use: RMSNorm
       suffix: q
       subtitle: RMSNorm
-      params: { eps: eps }
+      params: { eps: eps, cast_last: true }
       inputs: { x: cq }
       outputs: { out: qr }
       tex: { out: '\bar{\mathbf{c}}_{q}' }
@@ -102,7 +102,7 @@ body:
       use: RMSNorm
       suffix: kv
       subtitle: RMSNorm
-      params: { eps: eps }
+      params: { eps: eps, cast_last: true }
       inputs: { x: kvp }
       outputs: { out: kvn }
       tex: { out: '\bar{\mathbf{kv}}' }
@@ -129,7 +129,7 @@ body:
       use: Compressor
       when: kv_source
       subtitle: '每 $m$ 个 token 压成一个 latent'
-      params: { m: m, c: D, gated: gated, bias: false, rotate: false, float_input: gated, eps: eps, norm_ref: norm_ref }
+      params: { m: m, c: D, gated: gated, bias: false, rotate: false, float_input: gated, norm_cast_last: true, eps: eps, norm_ref: norm_ref }
       inputs: { x: x }
       outputs: { C: latent }
       tex: { C: '\mathbf{c}^{\mathrm{lat}}' }

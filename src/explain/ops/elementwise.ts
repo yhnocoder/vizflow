@@ -217,15 +217,15 @@ export const remainderExplain = binary(
   (a, b, arg) => (arg === 0 ? 1 : -Math.floor(a / b)),
   (a, b, arg) => (arg === 0 ? '1' : `-\\left\\lfloor ${a}/${b}\\right\\rfloor`),
 );
+export const floorDivideExplain = binary((a, b) => `\\left\\lfloor ${a}/${b}\\right\\rfloor`, () => 0, () => '0');
 export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
 export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
+export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0');
 export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
 export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
 export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');
 export const ltExplain = binary((a, b) => `\\mathbf{1}[${a}<${b}]`, () => 0, () => '0');
 export const bitwiseOrExplain = binary((a, b) => `${a}\\vee ${b}`, () => 0, () => '0');
-export const floorDivideExplain = binary((a, b) => `\\left\\lfloor ${a}/${b}\\right\\rfloor`, () => 0, () => '0');
-export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0');
 export const copysignExplain = binary(
   (a, b) => `\\operatorname{copysign}(${a},${b})`,
   (a, b, arg) => (arg === 0 ? copysignLocal(a, b) : 0),

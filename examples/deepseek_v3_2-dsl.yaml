@@ -35,7 +35,7 @@ leaves:
   label: 输入
   title: 输入和参数
   text: |
-    输入只有 token id，其余都是参数和常量。MLA 有五个投影和两个 RMSNorm；indexer 有三个投影 wq_b、wk、weights_proj 和一个带偏置的 LayerNorm。MoE 层的 gate 有一块 $W_r$，每个路由专家和共享专家各有三块权重。gate 的偏置 $\mathbf{b}$ 是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和 causal mask 由形状决定，不需要梯度。
+    输入只有 token id，其余都是参数和常量。MLA 有五个投影和两个 RMSNorm；indexer 有三个投影 wq_b、wk、weights_proj 和一个带偏置的 LayerNorm。MoE 层的 gate 有一块 $W_r$；路由专家的权重像 HF 一样存成两块，<code>experts.gate_up_proj</code> 是 $(E, 2m_f, d)$，<code>experts.down_proj</code> 是 $(E, d, m_f)$，第一维是专家；共享专家有 gate_proj、up_proj、down_proj 三块。gate 的偏置 $\mathbf{b}$ 是 buffer，不靠梯度更新。RoPE 的 cos/sin 表和 causal mask 由形状决定，不需要梯度。
     $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}}),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}})$$
 
 modules:
@@ -158,7 +158,7 @@ modules:
           folded: true
           fold:
             text: |
-              和第 3 层的 self_attn 结构相同：MLA 加上 lightning indexer，indexer 给出的稀疏 mask 代替 causal mask。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
+              和第 3 层的 self_attn 结构相同：MLA 加上 lightning indexer，由 indexer 选出的编号拼成的稀疏 mask 代替 causal mask。对应 HF 里 <code>self.self_attn(hidden_states)</code>。
               $$\of{att}={{ att | matrix:2 }}$$
       - a: { op: x + att, tex: '\mathbf{a}_{2}' }
       - post_attention_layernorm:
@@ -175,8 +175,7 @@ modules:
               $$\of{n}={{ n | matrix:2 }}$$
       - mlp:
           use: MoE
-          subtitle: DeepseekV32MoE
-          params: { E: E, G: G, TG: TG, K: K, mf: mf, Sh: Sh }
+          params: { E: E, G: G, TG: TG, K: K, mf: mf, Sh: Sh, hf_prefix: DeepseekV32 }
           inputs: { x: n }
           outputs: { out: moe }
       - x_out: { op: a + moe, tex: '\mathbf{x}' }

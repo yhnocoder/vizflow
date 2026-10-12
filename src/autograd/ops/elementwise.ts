@@ -207,26 +207,6 @@ export const bitwiseXorOp = bitwise('bitwise_xor', (x, y) => x ^ y);
 export const bitwiseAndOp = bitwise('bitwise_and', (x, y) => x & y);
 export const bitwiseOrOp = bitwise('bitwise_or', (x, y) => x | y);
 
-function floorDivExact(x: bigint, y: bigint): bigint {
-  if (y === 0n) throw new Error('floor_divide: integer division by zero');
-  const q = x / y;
-  return q * y !== x && x < 0n !== y < 0n ? q - 1n : q;
-}
-
-export const floorDivideOp = bitwise('floor_divide', floorDivExact);
-
-export const logicalNotOp: OpDef<NoAttrs> = {
-  name: 'logical_not',
-  args: ['input'],
-  tensors: ['input'],
-  differentiable: [false],
-  dtype: 'bool',
-  cost: pointwise(1, 0, [[]]),
-  shape: ([a]) => [...a],
-  forward: ([a]) => mapWith(a, (x) => (x === 0 ? 1 : 0)),
-  backward: () => [null],
-};
-
 export function signBit(y: number): number {
   return y < 0 || Object.is(y, -0) ? -1 : 1;
 }
@@ -270,10 +250,32 @@ function compare(name: string, fn: (x: number, y: number) => boolean): OpDef<Sca
   };
 }
 
+export const logicalNotOp: OpDef<NoAttrs> = {
+  name: 'logical_not',
+  args: ['input'],
+  tensors: ['input'],
+  differentiable: [false],
+  dtype: 'bool',
+  cost: COMPARISON_COST,
+  shape: ([a]) => [...a],
+  forward: ([a]) => mapWith(a, (x) => (x === 0 ? 1 : 0)),
+  backward: () => [null],
+};
 export const eqOp = compare('eq', (x, y) => x === y);
 export const geOp = compare('ge', (x, y) => x >= y);
 export const ltOp = compare('lt', (x, y) => x < y);
 export const greaterOp = compare('greater', (x, y) => x > y);
+
+function floorDivExact(x: bigint, y: bigint): bigint {
+  if (y === 0n) throw new Error('floor_divide: integer division by zero');
+  const q = x / y;
+  return x % y !== 0n && x < 0n !== y < 0n ? q - 1n : q;
+}
+
+export const floorDivideOp = withInt64(
+  { ...binary('floor_divide', (x, y) => Math.floor(x / y), () => [0, 0], COMPARISON_COST), differentiable: [false, false], backward: () => [null, null] },
+  floorDivExact,
+);
 export const powOp = unary<{ exponent: number }>(
   'pow',
   (x, { exponent }) => x ** exponent,

@@ -70,7 +70,7 @@ body:
             tex: { out: '\sigma(\mathbf{z}_{\mathrm{pre}})' }
             steps:
               neg:
-                append: 这里算的是 <code>torch.sigmoid(pre)</code>，sigmoid 让 pre 的系数落在 0 到 1 之间。
+                append: 这里算的是 <code>torch.sigmoid(pre_w * pre_scale + pre_b)</code>，sigmoid 让 pre 的系数落在 0 到 1 之间。
         - pre:     { op: pre_sig + hc_eps, tex: '\mathbf{w}_{\mathrm{pre}}' }
   - post_branch:
       title: post
@@ -188,15 +188,15 @@ body:
               - cse_last: { op: cs_last + hc_eps, tex: '\mathbf{1}^{\top}R^{(\of{iters-1})}+\epsilon' }
               - comb:     { op: R_last / cse_last, tex: 'C' }
   - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}_{\mathrm{pre}}\odot\of{X}', when: not single_pass }
-  - weighted: { op: 'view(pre_in, T, N, 1) * X', tex: '\of{pre_in}\odot\of{X}', when: single_pass }
-  - collapsed: { op: 'sum(weighted, 1)' }
+  - weighted: { op: 'view(pre_in, T, N, 1) * X', tex: '\of{pre_in}\odot\of{X}', dtype: fp32, when: single_pass }
+  - collapsed: { op: 'sum(weighted, 1)', dtype: X }
 steps:
   - id: flatten
     show: flat
     label: '$\of{flat}$'
     title: 把 \of{N} 条 stream 摊平
     text: |
-      每个 token 的 \of{N} 条 stream 首尾相接，摊成一个 $Nd=\of{N*d}$ 维的向量，对应 <code>hidden_streams.view(B, T, -1).float()</code>。mHC 的系数在 float32 里计算。
+      每个 token 的 \of{N} 条 stream 首尾相接，摊成一个 $Nd=\of{N*d}$ 维的向量，对应 <code>hidden_streams.view(batch_size, seq_len, -1).float()</code>。mHC 的系数在 float32 里计算。
       $$\of{flat}={{ flat | matrix:2 }}$$
     backward:
       label: '$\partial\of{X}$'
@@ -286,7 +286,7 @@ steps:
     label: '$\mathbf{m}_{\mathrm{pre}},\ \mathbf{m}_{\mathrm{post}},\ M_{\mathrm{comb}}$'
     title: 切成 pre、post、comb 三段
     text: |
-      对应 <code>flattened.split([N, N, N * N], dim=-1)</code>；comb 那一段再排成每个 token 一个 $N\times N$ 矩阵。
+      对应 <code>flattened.split([hc, hc, hc * hc], dim=-1)</code>；comb 那一段再排成每个 token 一个 $N\times N$ 矩阵。
       $$M_{\mathrm{comb}}={{ comb_w | matrix:3 }}$$
     backward:
       label: '$\partial\of{mix}$'
@@ -434,7 +434,7 @@ steps:
     label: '$\of{cs0}$'
     title: Sinkhorn：先按列求和
     text: |
-      HF 的 Sinkhorn 先做一次按列归一化，再做 hc_sinkhorn_iters $-1=\of{iters-1}$ 轮「按行、按列」；这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。每个 token 的矩阵各自归一化。先按列求和（<code>sum(dim=-2)</code>）。
+      HF 的 Sinkhorn 先做一次按列归一化，再做 hc_sinkhorn_iters $-1=\of{iters-1}$ 轮「按行、按列」；这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。模块把最后一轮单独画成一组，所以要求 iters 至少是 2；HF 在 iters 为 1 时只做开头那一次按列归一化。每个 token 的矩阵各自归一化。先按列求和（<code>sum(dim=-2)</code>）。
       $$\of{cs0}={{ cs0 | matrix:3 }}$$
     backward:
       label: '$\partial C^{\mathrm{init}}$'
@@ -539,7 +539,7 @@ steps:
     label: '$\of{collapsed}$'
     title: \of{N} 条 stream 加成一条
     text: |
-      按 stream 求和，得到这一个子层的输入，对应 <code>.sum(dim=2)</code>。
+      按 stream 求和，得到这一个子层的输入，对应 <code>.sum(dim=2).to(hidden_streams.dtype)</code>。pre 是 float32，乘积和求和也在 float32 里，求和以后转回输入 stream 的 dtype。
       $$\of{collapsed}={{ collapsed | matrix:2 }}$$
     backward:
       label: '$\partial(\mathbf{w}_{\mathrm{pre}}\odot\of{X})$'
