@@ -195,7 +195,7 @@ body:
       params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 160000, yarn_factor: 16, yarn_original: 65536, compress: true, m: 1, index_source: true, use_cand: true, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, attn_open: true, index_detail: true }
       inputs: { X: X23, pre_in: pre23, image_mask: image_mask, C_in: C20, K_in: K20, cand_in: cand20 }
       outputs: { X_out: X24, pre: pre24, idx: idx24 }
-      tex: { X_out: '\mathbf{X}_{24}', pre: '\mathbf{pre}_{24}', idx: '\mathbf{i}_{24}' }
+      tex: { X_out: '\mathbf{X}_{24}', pre: '\mathbf{pre}_{24}', idx: '\mathbf{i}^{I}_{24}' }
   - layer25:
       use: Block
       suffix: '25'
