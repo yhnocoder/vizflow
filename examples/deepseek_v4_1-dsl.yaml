@@ -110,6 +110,7 @@ body:
   - pre_id: { op: 'cat([pre_first, pre_rest], -1)', tex: '\mathbf{pre}_{\mathrm{init}}' }
   - layer0:
       use: Block
+      suffix: '0'
       title: Block
       subtitle: 第 0 层，只有滑动窗口
       split: true
@@ -119,6 +120,7 @@ body:
       tex: { X_out: '\mathbf{X}_{0}', pre: '\mathbf{pre}_{0}' }
   - layer1:
       use: Block
+      suffix: '1'
       title: Block
       subtitle: 第 1 层，Engram 和滑动窗口
       split: true
@@ -128,6 +130,7 @@ body:
       tex: { X_out: '\mathbf{X}_{1}', pre: '\mathbf{pre}_{1}' }
   - layer2:
       use: Block
+      suffix: '2'
       title: Block
       subtitle: 第 2 层，Full，每 2 个 token 压成一个条目
       split: true
@@ -156,6 +159,7 @@ body:
         - pre19: { op: identity(pre2), tex: '\mathbf{pre}_{19}' }
   - layer20:
       use: Block
+      suffix: '20'
       title: Block
       subtitle: 第 20 层，Full，每个 token 一个条目，挑出候选块
       split: true
@@ -184,6 +188,7 @@ body:
         - pre23: { op: identity(pre20), tex: '\mathbf{pre}_{23}' }
   - layer24:
       use: Block
+      suffix: '24'
       title: Block
       subtitle: 第 24 层，Reindex，只在候选块里重新选条目
       split: true
@@ -193,6 +198,7 @@ body:
       tex: { X_out: '\mathbf{X}_{24}', pre: '\mathbf{pre}_{24}', idx: '\mathbf{i}_{24}' }
   - layer25:
       use: Block
+      suffix: '25'
       title: Block
       subtitle: 第 25 层，Reuse，沿用第 24 层选好的条目
       split: true

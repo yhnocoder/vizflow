@@ -208,6 +208,7 @@ steps:
   - id: restrict
     when: use_cand
     show: [noncand, Ic]
+    active: [Im, noncand, Ic]
     label: '$\of{Ic}$'
     title: 只在候选范围里选
     text: |

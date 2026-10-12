@@ -251,6 +251,7 @@ steps:
   - id: idx_cat
     when: compress
     show: idx_all
+    active: [idx_all]
     label: '$\of{idx_all}$'
     title: 每个位置要看的行号
     text: |
