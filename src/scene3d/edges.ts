@@ -201,14 +201,15 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     if (origR === undefined || copyR === undefined || !shown(link.original) || !shown(link.copy) || (origR.far && copyR.far)) continue;
     const node = link.original.node;
     const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
-    link.copy.elements.forEach((element) => {
-      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index: element.index }, to: { node, index: element.index } };
+    link.copy.elements.forEach((element, i) => {
+      const index = link.original.elements[i].index;
+      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index }, to: { node, index } };
       drawn.push({
         edge,
         fromNode: node,
         toNode: node,
         contract: false,
-        endpoints: () => [anchorOut(c, node, element.index, origR)!, anchorIn(c, node, element.index, copyR)!],
+        endpoints: () => [anchorOut(c, node, index, origR)!, anchorIn(c, link.copy.node, element.index, copyR)!],
         flat: false,
         link: true,
         points: [],

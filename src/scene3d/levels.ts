@@ -430,7 +430,8 @@ class Plan implements LevelPlan {
       this.consumers(n).some((u) => {
         if (u.inputs[0] === n && u.shape.join() === n.shape.join() && this.isDisc(u)) return true;
         const main = u.inputs[0];
-        return main !== n && u.inputs.slice(1).includes(n) && main.shape.join() === u.shape.join() && this.shapeOf(u)[1] > cols;
+        const broadcasts = explainOf(u.op as string)?.pattern === 'elementwise' && n.shape.length <= u.shape.length && n.shape.every((size, i) => size === 1 || size === u.shape[u.shape.length - n.shape.length + i]);
+        return main !== n && u.inputs.slice(1).includes(n) && main.shape.join() === u.shape.join() && broadcasts && this.shapeOf(u)[1] > cols;
       });
     this.discMemo.set(n, result);
     return result;
