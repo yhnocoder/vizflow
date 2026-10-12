@@ -219,7 +219,7 @@ steps:
     label: '$\of{top}$'
     title: 'top-$k_I$：每个位置选出 $k_I$ 个'
     text: |
-      <code>index_score.topk(topk, dim=-1, sorted=False).indices</code>，$\mathrm{topk}=\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$。能选的位置不到这么多时，top-k 会选上 $-\infty$ 的位置，下一步把它们改成 $-1$。真实模型里 $k_I=512$。挑选只决定编号，没有梯度。
+      <code>index_score.topk(topk, dim=-1, sorted=False).indices</code>，$\mathrm{topk}=\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$。能选的位置不到这么多时，top-k 会选上 $-\infty$ 的位置。其中超出可见范围的位置在下一步改成 $-1$。Reindex 层里，可见但不在候选块里的位置也是 $-\infty$，它们被选上时编号小于 <code>compress_lens</code>，下一步不改，注意力照常看这一项；这一页和真实模型的尺寸下，候选块里的位置总是够选，不会出现这种情况。真实模型里 $k_I=512$。挑选只决定编号，没有梯度。
       $$\of{top}={{ top | matrix }}$$
   - id: sort
     show: srt
