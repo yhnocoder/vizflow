@@ -89,7 +89,7 @@ steps:
     label: '$\of{kv}$'
     title: wkv：每条 stream 一个 key，加一个共用的 value
     text: |
-      <code>kv = self.wkv(...)</code> 输出 $(N+1)d$ 维：前 $Nd$ 维是 \of{N} 条 stream 各自的 key，最后 $d$ 维是所有 stream 共用的 value。
+      <code>kv = self.wkv(self.embed(hash_ids).flatten(-2))</code> 输出 $(N+1)d$ 维：前 $Nd$ 维是 \of{N} 条 stream 各自的 key，最后 $d$ 维是所有 stream 共用的 value。
       $$\of{kv}={{ kv | matrix:2 }}$$
     backward:
       label: '$\partial W_{kv}^{g},\ \partial\of{flat}$'
@@ -99,7 +99,7 @@ steps:
     label: '$\mathbf{k},\ \mathbf{v}$'
     title: 切成 key 和 value
     text: |
-      <code>key, value = kv.split([hc_mult * dim, dim], dim=-1)</code>，key 再转成 float32、排成 $(T, N, d)$。
+      <code>key, value = kv.split([self.hc_mult * self.dim, self.dim], dim=-1)</code>，key 再转成 float32、排成 $(T, N, d)$。
       $$\mathbf{k}={{ key | matrix:2 }}$$
     backward:
       label: '$\partial\of{kv}$'
@@ -118,7 +118,7 @@ steps:
     show: h
     label: '$\of{h}$'
     title: stream 转成 float32
-    text: <code>h = x.float()</code>，局部导数是 1。
+    text: <code>h, eps = x.float(), self.eps</code>，局部导数是 1。
     backward:
       label: '$\partial\of{X}$'
       title: 穿过类型转换
@@ -176,7 +176,7 @@ steps:
     label: '$\operatorname{sign}(s)\sqrt{|s|}$'
     title: 带符号的平方根
     text: |
-      <code>torch.copysign(dot.abs().clamp_min(1e-6).sqrt(), dot)</code>：先取绝对值，下限截到 $\of{clamp}$，开平方，再把符号加回去。参考实现的注释说明这和训练用的 kernel 一致。$|s|$ 小于 $\of{clamp}$ 时被截断，局部导数是 0。
+      <code>torch.copysign(dot.abs().clamp_min(self.clamp_value).sqrt(), dot)</code>：先取绝对值，下限截到 $\of{clamp}$，开平方，再把符号加回去。参考实现的注释说明这和训练用的 kernel 一致。$|s|$ 小于 $\of{clamp}$ 时被截断，局部导数是 0。
       $$\operatorname{sign}(s)\sqrt{|s|}={{ signed | matrix:3 }}$$
     backward:
       label: '$\partial s$'
@@ -207,7 +207,7 @@ steps:
     label: '$\of{out}$'
     title: 加回 stream
     text: |
-      <code>(h + gate.unsqueeze(-1) * value...).to(x.dtype)</code>：结果转回 stream 的 dtype，交给下一个 block。
+      <code>return (h + gate.unsqueeze(-1) * value.float().unsqueeze(-2)).to(x.dtype)</code>：结果转回 stream 的 dtype，交给下一个 block。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{h},\ \partial\of{gv}$'

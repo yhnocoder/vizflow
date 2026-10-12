@@ -149,7 +149,7 @@ steps:
     label: '$\of{q}$'
     title: 分成 $H_I$ 个 head
     text: |
-      <code>unflatten(-1, (n_heads, index_head_dim))</code>：$H_I=\of{HI}$ 个 head，每个宽 $c_I=\of{cI}$。真实模型里 $H_I=32$、$c_I=128$。
+      <code>q = self.wq_b(qr).unflatten(-1, (self.n_local_heads, self.index_head_dim))</code>：$H_I=\of{HI}$ 个 head，每个宽 $c_I=\of{cI}$。真实模型里 $H_I=32$、$c_I=128$。
   - id: weights
     show: [Ww.T, wx]
     label: '$\of{wx}$'
@@ -196,14 +196,14 @@ steps:
     label: '$\of{lens}$'
     title: 每个位置能看到几个压缩位置
     text: |
-      <code>compress_lens = (torch.arange(1, seqlen + 1) // ratio).unsqueeze(-1)</code>：第 $j$ 个压缩位置由 token $jm$ 到 $jm+m-1$ 合成，位置 $t$ 要等这 $m$ 个 token 都不晚于自己才能看到它，所以能看到 $\lfloor (t+1)/m\rfloor$ 个，$m=\of{m}$。
+      <code>compress_lens = (torch.arange(1, seqlen + 1, device=x.device) // ratio).unsqueeze(-1)</code>：第 $j$ 个压缩位置由 token $jm$ 到 $jm+m-1$ 合成，位置 $t$ 要等这 $m$ 个 token 都不晚于自己才能看到它，所以能看到 $\lfloor (t+1)/m\rfloor$ 个，$m=\of{m}$。
       $$\of{lens}={{ lens | matrix }}$$
   - id: future
     show: [cpos, fut, Im]
     label: '$\of{Im}$'
     title: 看不到的压缩位置记成 $-\infty$
     text: |
-      <code>index_score.masked_fill_(torch.arange(seqlen // ratio) &gt;= compress_lens, -inf)</code>。
+      <code>index_score.masked_fill_(torch.arange(seqlen // ratio, device=x.device) &gt;= compress_lens, -torch.inf)</code>。
       $$\of{Im}={{ Im | matrix:3 }}$$
   - id: restrict
     when: use_cand
@@ -211,7 +211,7 @@ steps:
     label: '$\of{Ic}$'
     title: 只在候选范围里选
     text: |
-      候选来源层之后的 Reindex 层用自己的 query 和权重打分，再把候选范围以外的位置记成 $-\infty$：<code>index_score.masked_fill(~shared_attn.candidates, -inf)</code>。这是两级 top-k 的第二级。
+      候选来源层之后的 Reindex 层用自己的 query 和权重打分，再把候选范围以外的位置记成 $-\infty$：<code>index_score = index_score.masked_fill(~shared_attn.candidates, -torch.inf)</code>。这是两级 top-k 的第二级。
       $$\of{Ic}={{ Ic | matrix:3 }}$$
   - id: topk
     show: top

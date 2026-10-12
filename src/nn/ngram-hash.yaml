@@ -82,14 +82,14 @@ steps:
     label: '$\mathbf{c}^{(s)}$'
     title: 往前第 $s$ 个 token
     text: |
-      <code>source = cache.gather(1, (positions - shift).clamp_min(0))</code>：shift 从 0 到 $\of{nmax}-1$，取出每个位置往前第 shift 个位置的编号。往前超出序列开头时先用位置 0 占位，下一步把它换掉。
+      <code>source = self.cache[:batch].gather(1, (positions - shift).clamp_min(0))</code>：shift 从 0 到 $\of{nmax}-1$，取出每个位置往前第 shift 个位置的编号。往前超出序列开头时先用位置 0 占位，下一步把它换掉。
       $$\mathbf{c}^{(2)}={{ src[2] | matrix:0 }}$$
   - id: blocked
     show: ['early[1..nmax]', 'dead[1..nmax]', 'b1[1..nmax]', 'blocked[1..nmax]', 'blocked[0]']
     label: '$\mathbf{b}^{(s)}$'
     title: 往前看到哪里为止
     text: |
-      <code>blocked = blocked | (positions &lt; shift) | (source == DEAD)</code>：超出序列开头或者遇到图片里的位置，这个位置往前的 n-gram 就到此为止，之后更远的位置也一直是 blocked。
+      <code>blocked = blocked | (positions &lt; shift) | (source == self.DEAD)</code>：超出序列开头或者遇到图片里的位置，这个位置往前的 n-gram 就到此为止，之后更远的位置也一直是 blocked。
       $$\mathbf{b}^{(\of{nmax})}={{ blocked[nmax] | matrix:0 }}$$
   - id: tokens
     show: [pad_id, 'tok[1..nmax]', 'col[1..nmax]', tokens]

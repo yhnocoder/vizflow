@@ -40,7 +40,7 @@ steps:
     label: '$\of{padded}$'
     title: 补齐到整块
     text: |
-      参考实现的 <code>select_candidate_blocks</code> 先用 <code>F.pad(logits, (0, -width % block_size), value=-inf)</code> 在最后补 $-\infty$，让压缩位置的个数 $T_c=\of{Tc}$ 凑成 $b_s=\of{bs}$ 的整数倍。输入的 index score 里，位置 $t$ 还看不到的压缩位置已经是 $-\infty$。
+      参考实现的 <code>select_candidate_blocks</code> 先用 <code>scores = F.pad(logits, (0, -width % block_size), value=-torch.inf)</code> 在最后补 $-\infty$，让压缩位置的个数 $T_c=\of{Tc}$ 凑成 $b_s=\of{bs}$ 的整数倍。输入的 index score 里，位置 $t$ 还看不到的压缩位置已经是 $-\infty$。
       $$\of{padded}={{ padded | matrix:3 }}$$
   - id: blocks
     show: blocks
@@ -66,7 +66,7 @@ steps:
     label: '$\of{forced}$'
     title: 最新的一块一定保留
     text: |
-      <code>scores.masked_fill(arange(num_blocks) == last, inf)</code>：最新的一块往往还没填满，分数可能比不过更早的整块，参考实现的注释说明把它强制留下，因为它装着最近的 token。
+      <code>scores = scores.masked_fill(torch.arange(num_blocks, device=logits.device) == last, torch.inf)</code>：最新的一块往往还没填满，分数可能比不过更早的整块，参考实现的注释说明把它强制留下，因为它装着最近的 token。
       $$\of{forced}={{ forced | matrix:3 }}$$
   - id: topk
     show: top
@@ -80,14 +80,14 @@ steps:
     label: '$\of{ok}$'
     title: 去掉 $-\infty$ 的块
     text: |
-      能看到的块不到 $B$ 块时，top-k 会选上分数是 $-\infty$ 的块。参考实现用 <code>top.values &gt; -inf</code> 把它们去掉。
+      能看到的块不到 $B$ 块时，top-k 会选上分数是 $-\infty$ 的块。参考实现用 <code>top.values &gt; -torch.inf</code> 把它们去掉。
       $$\of{ok}={{ ok | matrix }}$$
   - id: scatter
     show: [empty, kept]
     label: '$\of{kept}$'
     title: 写成每块一个的 bool
     text: |
-      <code>zeros_like(scores, dtype=bool).scatter_(-1, top.indices, top.values &gt; -inf)</code>：选中且有效的块是 1。
+      <code>keep = torch.zeros_like(scores, dtype=torch.bool).scatter_(-1, top.indices, top.values &gt; -torch.inf)</code>：选中且有效的块是 1。
       $$\of{kept}={{ kept | matrix }}$$
   - id: expand
     show: rep

@@ -66,7 +66,7 @@ steps:
     label: '$\operatorname{unfold}$'
     title: unfold：每 $r\times r$ 个 patch 一组
     text: |
-      <code>F.unfold(x.unsqueeze(0), r, stride=r)</code>：窗口 $r\times r$、步长 $r$，窗口不重叠。不重叠的 unfold 只是搬动元素，这里画成三步：把网格排成 (通道, 块行, 块内行, 块列, 块内列)，把块内的两维换到通道后面，再合成 $(d_v r^2, L)$。第 $c\cdot r^2+i\cdot r+j$ 行是通道 $c$、块内第 $i$ 行第 $j$ 列，和 <code>F.pixel_unshuffle</code> 的顺序相同；$L=\of{(nh + r - 1) // r * ((nw + r - 1) // r)}$ 列按块的行优先排列。
+      <code>F.unfold(x.unsqueeze(0), r, stride=r)</code>：窗口 $r\times r$、步长 $r$，窗口不重叠。不重叠的 unfold 只是搬动元素，这里画成三步：把网格排成 (通道, 块行, 块内行, 块列, 块内列)，把块内的两维换到通道后面，再合成 $(d_v r^2, L)$。第 $c\cdot r^2+i\cdot r+j$ 行是通道 $c$、块内第 $i$ 行第 $j$ 列；$L=\of{(nh + r - 1) // r * ((nw + r - 1) // r)}$ 列按块的行优先排列。
     backward:
       label: '$\partial\of{padded}$'
       title: 元素放回网格
@@ -85,7 +85,7 @@ steps:
     label: '$\of{a0}$'
     title: w1：投影到语言模型的宽度
     text: |
-      <code>self.w1 = nn.Linear(in_dim, dim)</code>，带偏置，从 $d_v r^2$ 维投影到 $d=\of{d}$ 维。
+      <code>self.w1 = nn.Linear(in_dim, args.dim)</code>，带偏置，从 $d_v r^2$ 维投影到 $d=\of{d}$ 维。
       $$\of{a0}={{ a0 | matrix:2 }}$$
     backward:
       label: '$\partial W_{1},\ \partial\of{rows}$'

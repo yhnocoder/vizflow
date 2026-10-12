@@ -91,7 +91,7 @@ steps:
     label: '$\of{sc}=\of{s}+\of{bsel}$'
     title: 加上负载均衡的偏置，图片 token 用另一组
     text: |
-      <code>bias = torch.where(image_mask.unsqueeze(-1), self.bias_vl, self.bias)</code>：文字 token 用 $\mathbf{b}_{\mathrm{text}}$，图片区间里的 token（包括起止和换行标记）用 $\mathbf{b}_{\mathrm{vl}}$。两组偏置都只用来挑专家，不进入权重；它们是参数，但 top-k 不可导，损失的梯度到不了它们，训练时按专家的负载另行调整。
+      <code>bias = torch.where(image_mask.unsqueeze(-1), self.bias_vl, bias)</code>，其中 <code>bias = self.bias</code>：文字 token 用 $\mathbf{b}_{\mathrm{text}}$，图片区间里的 token（包括起止和换行标记）用 $\mathbf{b}_{\mathrm{vl}}$。两组偏置都只用来挑专家，不进入权重；它们是参数，但 top-k 不可导，损失的梯度到不了它们，训练时按专家的负载另行调整。
       $$\mathbf{b}_{\mathrm{text}}={{ bias | matrix:3 }},\qquad \mathbf{b}_{\mathrm{vl}}={{ bias_vl | matrix:3 }}$$
       $$\of{sc}={{ sc | matrix:3 }}$$
   - id: topk

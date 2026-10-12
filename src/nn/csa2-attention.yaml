@@ -214,7 +214,7 @@ steps:
     label: '$\of{q}$'
     title: 按 head 分开
     text: |
-      <code>.unflatten(-1, (n_heads, head_dim))</code>：每个 head 宽 $D=\of{D}$，最后 $d_r=\of{rd}$ 维做 RoPE。真实模型里 $D=512$、$d_r=64$。
+      <code>q = self.wq_b(qr).unflatten(-1, (self.n_local_heads, self.head_dim))</code>：每个 head 宽 $D=\of{D}$，最后 $d_r=\of{rd}$ 维做 RoPE。真实模型里 $D=512$、$d_r=64$。
       $$\of{q}={{ q | matrix:2 }}$$
     backward:
       label: '$\partial\of{qp}$'
@@ -261,7 +261,7 @@ steps:
     label: '$\of{og}$'
     title: 把 head 分成 $g$ 组
     text: |
-      <code>o.view(bsz, seqlen, n_groups, -1)</code>：\of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维。真实模型 64 个 head 分 8 组，每组 4096 维。
+      <code>o = o.view(bsz, seqlen, self.n_local_groups, -1)</code>：\of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维。真实模型 64 个 head 分 8 组，每组 4096 维。
     backward:
       label: '$\partial\mathbf{o}''$'
       title: 拼回去
@@ -270,7 +270,7 @@ steps:
     label: '$\mathbf{z}_{j}=\mathbf{o}_{j}W_{a,j}^{\top}$'
     title: wo_a：每组单独投影
     text: |
-      <code>wo_a = self.wo_a.weight.view(n_groups, o_lora_rank, -1)</code>，<code>torch.einsum("bsgd,grd->bsgr", o, wo_a)</code>：第 $j$ 组只用 wo_a 的第 $j$ 段 $d_g=\of{dg}$ 行，组与组之间不混合。真实模型每组从 4096 维投影到 1024 维。
+      <code>wo_a = self.wo_a.weight.view(self.n_local_groups, self.o_lora_rank, -1)</code>，<code>torch.einsum("bsgd,grd->bsgr", o, wo_a)</code>：第 $j$ 组只用 wo_a 的第 $j$ 段 $d_g=\of{dg}$ 行，组与组之间不混合。真实模型每组从 4096 维投影到 1024 维。
       $$\of{z[1]}=\mathbf{o}_{1}W_{a,1}^{\top}={{ z[1] | matrix:2 }}$$
     backward:
       label: '$\partial W_{a},\ \partial\mathbf{o}^{\mathrm{grp}}$'

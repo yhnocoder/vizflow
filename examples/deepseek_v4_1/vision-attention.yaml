@@ -94,7 +94,7 @@ steps:
     label: '$\mathbf{q},\ \mathbf{k},\ \mathbf{v}$'
     title: 切成 q、k、v，按 head 分开
     text: |
-      <code>self.wqkv(x).chunk(3, dim=-1)</code>，每段 <code>view(n, n_heads, head_dim)</code>：$H_v=\of{Hv}$ 个 head，每个宽 $d_v/H_v=\of{dv//Hv}$。真实模型 16 个 head，每个 64 维。
+      <code>self.wqkv(x).chunk(3, dim=-1)</code>，每段 <code>t.view(n, self.n_heads, self.head_dim)</code>：$H_v=\of{Hv}$ 个 head，每个宽 $d_v/H_v=\of{dv//Hv}$。真实模型 16 个 head，每个 64 维。
     backward:
       label: '$\partial\of{qkv}$'
       title: 三段梯度拼回去

@@ -41,7 +41,7 @@ steps:
     label: '$\of{valid},\ \of{ic}$'
     title: 哪些编号有效
     text: |
-      参考实现里 <code>sparse_attn</code> 是一个 tilelang 写的 GPU kernel。这一页按它的定义画：先看每个编号是不是 $-1$（<code>topk_idxs &gt;= 0</code>），再把 $-1$ 换成 0（<code>clamp_min(0)</code>），这样取行时不越界，取出的那一行后面会被 mask 掉。编号是整数，没有梯度。
+      参考实现里 <code>sparse_attn</code> 是一个 tilelang 写的 GPU kernel。kernel 用 <code>T.if_then_else(idxs[i] != -1, kv[by, idxs[i], j], 0)</code> 取 kv 的行，编号是 $-1$ 时取 0。这一页按它的定义画：先看每个编号是不是 $-1$，再把 $-1$ 换成 0，这样取行时不越界，取出的那一行后面会被 mask 掉，结果与 kernel 相同。编号是整数，没有梯度。
       $$\of{idx}={{ idx | matrix }}$$
   - id: gather
     show: G
@@ -66,7 +66,7 @@ steps:
     label: '$\of{S}$'
     title: 每个 head 的 query 和取出的 key 做点积
     text: |
-      参考实现的写法是 <code>einsum("bmhd,bmkd->bmhk", q, gathered)</code>：位置 $t$ 的 \of{H} 个 head 都和这个位置取出的 $k$ 行做点积，形状 $(T, H, k)$。key 只有一个 head，所有 query head 共用。
+      kernel 里是 <code>T.gemm(q_shared, kv_shared, acc_s, transpose_B=True, policy=T.GemmWarpPolicy.FullRow)</code>：位置 $t$ 的 \of{H} 个 head 都和这个位置取出的 $k$ 行做点积，形状 $(T, H, k)$。key 只有一个 head，所有 query head 共用。
       $$\of{S}={{ S | matrix:3 }}$$
     backward:
       label: '$\partial\of{q},\ \partial\of{Gt}$'
@@ -86,7 +86,7 @@ steps:
     label: '$\of{Sm}$'
     title: 无效的格子记成 $-\infty$
     text: |
-      <code>scores.masked_fill(~valid.unsqueeze(2), -inf)</code>：编号是 $-1$ 的格子，所有 head 都改成 $-\infty$，取 exp 后是 0。
+      kernel 在相乘之前写好 <code>acc_s[i, j] = T.if_then_else(idxs[j] != -1, 0, -T.infinity(FP32))</code>：编号是 $-1$ 的格子，所有 head 都改成 $-\infty$，取 exp 后是 0。
       $$\of{Sm}={{ Sm | matrix:3 }}$$
     backward:
       label: '$\partial\of{Ss}$'
@@ -96,7 +96,7 @@ steps:
     label: '$[\bar{S},\mathbf{s}]$'
     title: 接上 sink 一列
     text: |
-      每个 head 有一个可学习的 <code>attn_sink</code>，形状 $(H)$。它 <code>view</code> 成 $(1, H, 1)$，<code>expand</code> 给每个位置一份，接在分数的最后一列，对应 <code>torch.cat([scores, sink], dim=-1)</code>。sink 这一列只进 softmax 的分母，没有对应的 value。
+      每个 head 有一个可学习的 <code>attn_sink</code>，形状 $(H)$。它 <code>view</code> 成 $(1, H, 1)$，<code>expand</code> 给每个位置一份，接在分数的最后一列。kernel 在分母上加 <code>sum_exp[i] += T.exp(attn_sink[i] - scores_max[i])</code>，sink 这一列只进 softmax 的分母，没有对应的 value。
       $$\of{sink}={{ sink | matrix:3 }}$$
     backward:
       label: '$\partial\of{sink},\ \partial\of{Sm}$'
@@ -109,7 +109,7 @@ steps:
     label: '$\of{ex}$'
     title: softmax：取 exp
     text: |
-      <code>torch.softmax(..., dim=-1)</code> 按定义拆成三步画：取 exp、求和、相除。softmax 会先减去每行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      kernel 分块计算 softmax：<code>acc_s[i, j] = T.exp(acc_s[i, j] - scores_max[i])</code>，<code>T.reduce_sum(acc_s, scores_sum, dim=1)</code>，最后 <code>acc_o[i, j] /= sum_exp[i]</code>。这里按定义拆成三步画：取 exp、求和、相除。kernel 减去的每行最大值在结果和梯度里都抵消，这里不画。
       $$\of{ex}={{ ex | matrix:3 }}$$
     backward:
       label: '$\partial\of{Sc}$'
@@ -138,7 +138,7 @@ steps:
     label: '$\of{Pk}$'
     title: 去掉 sink 那一列
     text: |
-      <code>[..., :-1]</code>：去掉最后一列，剩下的 $k$ 列和小于 1，差的部分给了 sink。一个位置没有任何有效编号时，所有权重都给了 sink，输出是 0。
+      去掉最后一列，剩下的 $k$ 列和小于 1，差的部分给了 sink。一个位置没有任何有效编号时，所有权重都给了 sink，输出是 0。
       $$\of{Pk}={{ Pk | matrix:3 }}$$
     backward:
       label: '$\partial\of{P}$'
@@ -148,7 +148,7 @@ steps:
     label: '$\of{o}$'
     title: 按权重加权取出的 kv
     text: |
-      <code>einsum("bmhk,bmkd->bmhd", probs, gathered)</code>：取出的 $k$ 行 kv 同时作 value，按权重相加，每个 head 得到一个 $D$ 维的输出。
+      kernel 里是 <code>T.gemm(acc_s_cast, kv_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)</code>：取出的 $k$ 行 kv 同时作 value，按权重相加，每个 head 得到一个 $D$ 维的输出。
       $$\of{o}={{ o | matrix:2 }}$$
     backward:
       label: '$\partial\of{Pk},\ \partial\of{G}$'

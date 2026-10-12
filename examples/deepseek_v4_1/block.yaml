@@ -98,7 +98,7 @@ body:
             $$\mathrm{flat}(\mathbf{X})={{ hc_attn.flat | matrix:2 }}$$
         first_col_sum:
           text: |
-            参考实现的 <code>hc_split_sinkhorn</code> 先做一次按列归一化，再做 hc_sinkhorn_iters $-1$ 轮「按行、按列」。这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。每个 token 的矩阵各自归一化。先按列求和（<code>sum(dim=-2)</code>）。
+            参考实现的 <code>hc_split_sinkhorn</code> 先做一次按列归一化，再做 hc_sinkhorn_iters $-1$ 轮「按行、按列」。这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。每个 token 的矩阵各自归一化。先按列求和（<code>comb.sum(-2)</code>）。
             $$\mathbf{1}^{\top}C^{\mathrm{init}}={{ hc_attn.cs0 | matrix:3 }}$$
   - attn_norm:
       use: RMSNorm

@@ -19,6 +19,7 @@ sequence: { tokens: ['<bos>', The, cat, '<image>', '<image>', '<image>', '<image
 inputs:
   pixels:
     value: [[[120, 216, 83], [11, 90, 30], [151, 43, 80], [243, 162, 231]], [[54, 242, 237], [110, 136, 199], [114, 188, 188], [203, 186, 200]], [[160, 3, 40], [8, 98, 157], [55, 85, 50], [127, 52, 1]], [[96, 204, 175], [127, 33, 155], [18, 107, 118], [179, 197, 162]], [[117, 54, 186], [81, 1, 158], [2, 146, 150], [239, 62, 34]], [[227, 176, 225], [178, 12, 27], [9, 206, 203], [6, 0, 93]], [[244, 190, 5], [197, 104, 171], [62, 246, 31], [235, 194, 149]], [[182, 126, 201], [5, 101, 136], [193, 101, 84], [70, 23, 42]]]
+    dtype: fp32
   types:
     value: [-1, -1, -1, 0, 1, 2, 1, 2, 3, -1, -1, -1, -1]
     dtype: int64
@@ -43,7 +44,7 @@ overview:
     label: 总览
     title: 反向总览
     text: |
-      整条反向路径一起显示。梯度从损失一路传回 ViT 的 patch_embed 和 embedding 表。indexer 和挑选候选块只决定每个位置看哪些压缩条目，参考实现在 <code>torch.no_grad()</code> 下运行它们，这里也没有梯度；MoE 里挑选专家的那部分计算、n-gram 哈希和 token 类型的判断同样没有梯度。
+      整条反向路径一起显示。梯度从损失一路传回 ViT 的 patch_embed 和 embedding 表。indexer 和挑选候选块只决定每个位置看哪些压缩条目，它们的输出是位置编号，top-k 不可导，这里没有梯度；MoE 里挑选专家的那部分计算、n-gram 哈希和 token 类型的判断同样没有梯度。
       $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
 leaves:
   label: 输入
@@ -61,7 +62,8 @@ body:
         - unit:    { op: chw / 255, tex: '\mathbf{I}/255' }
         - centered: { op: unit - 0.5, tex: '\mathbf{I}/255-0.5' }
         - scaled:  { op: centered / 0.5, tex: '\hat{\mathbf{I}}' }
-        - grid:    { op: 'view(scaled, 3, nh, p, nw, p)', tex: '\hat{\mathbf{I}}^{\mathrm{grid}}' }
+        - scaled_c: { op: identity(scaled), tex: '\hat{\mathbf{I}}_{\mathrm{bf16}}', dtype: bf16 }
+        - grid:    { op: 'view(scaled_c, 3, nh, p, nw, p)', tex: '\hat{\mathbf{I}}^{\mathrm{grid}}' }
         - moved:   { op: 'permute(grid, 1, 3, 0, 2, 4)', tex: '\hat{\mathbf{I}}^{\mathrm{perm}}' }
         - patches: { op: 'view(moved, nh * nw, 3, p, p)', tex: '\mathbf{P}' }
   - vision:
@@ -272,8 +274,17 @@ steps:
     label: '$\of{scaled}$'
     title: 归一化到 $[-1, 1]$
     text: |
-      <code>x = ... / 255</code>，再 <code>(x - 0.5) / 0.5</code>：先缩到 $[0, 1]$，减 0.5，再除以 0.5。参考实现随后把结果转成 bfloat16，这一页不画类型转换。
+      <code>.permute(2, 0, 1) / 255</code> 先缩到 $[0, 1]$，<code>x = ((x - 0.5) / 0.5).to(torch.bfloat16)</code> 里的 <code>(x - 0.5) / 0.5</code> 再减 0.5、除以 0.5，都在 float32 里算。
       $$\of{scaled}={{ scaled | matrix:2 }}$$
+    backward:
+      label: 像素没有梯度
+      title: 像素是输入
+  - id: cast
+    show: scaled_c
+    label: '$\of{scaled_c}$'
+    title: 转成 bfloat16
+    text: |
+      同一行末尾的 <code>.to(torch.bfloat16)</code> 把归一化后的像素转成 bfloat16，之后 ViT 在 bfloat16 里算。类型转换不改变这一页的数值。
     backward:
       label: 像素没有梯度
       title: 像素是输入
@@ -282,7 +293,7 @@ steps:
     label: '$\of{patches}$'
     title: 切成 $\of{p}\times\of{p}$ 的 patch
     text: |
-      <code>x.reshape(3, n_h, p, n_w, p).permute(1, 3, 0, 2, 4).reshape(n_h * n_w, 3, p, p)</code>：$n_h=\of{nh}$、$n_w=\of{nw}$，按行优先得到 $\of{nh*nw}$ 个 patch，每个 patch 是 $3\times\of{p}\times\of{p}$。
+      <code>patches = x.reshape(3, n_vit_h, p, n_vit_w, p).permute(1, 3, 0, 2, 4).reshape(n_vit_h * n_vit_w, 3, p, p)</code>：<code>n_vit_h</code> 是 $\of{nh}$，<code>n_vit_w</code> 是 $\of{nw}$，按行优先得到 $\of{nh*nw}$ 个 patch，每个 patch 是 $3\times\of{p}\times\of{p}$。
     backward:
       label: 像素没有梯度
       title: 像素是输入
@@ -346,7 +357,7 @@ steps:
     label: '$\of{image_mask},\ \of{engram_mask}$'
     title: 哪些位置是图片
     text: |
-      <code>image_mask = token_types &gt;= 0</code>，<code>engram_mask = ~image_mask</code>。图片位置不参与 n-gram，也不加 Engram；MoE 的 gate 在图片位置换用另一组偏置 bias_vl。
+      <code>image_mask = None if token_types is None else token_types &gt;= 0</code>，<code>engram_mask = None if image_mask is None else ~image_mask</code>。图片位置不参与 n-gram，也不加 Engram；MoE 的 gate 在图片位置换用另一组偏置 bias_vl。
     backward:
       label: 无梯度
       title: mask 是常量
@@ -397,7 +408,7 @@ steps:
     label: '$\of{collapsed}$'
     title: 对 stream 求和
     text: |
-      <code>torch.sum(..., dim=2)</code> 在 float32 里求和，<code>y.to(x.dtype)</code> 再转回 stream 的 dtype。
+      <code>y = torch.sum(pre_mix.unsqueeze(-1) * x.float(), dim=2)</code> 在 float32 里求和，<code>y.to(x.dtype)</code> 再转回 stream 的 dtype。
       $$\of{collapsed}={{ collapsed | matrix:2 }}$$
     backward:
       label: '$\partial\of{weighted}$'
@@ -408,7 +419,7 @@ steps:
     label: '$\of{hf}$'
     title: 转成 float32
     text: |
-      <code>ParallelHead.get_logits</code> 先做 <code>x.float()</code>，head 的矩阵乘法在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+      ParallelHead 的 <code>logits = F.linear(x.float(), self.weight)</code> 先做 <code>x.float()</code>，head 的矩阵乘法在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
     backward:
       label: '$\partial\of{hn}$'
       title: 穿过类型转换

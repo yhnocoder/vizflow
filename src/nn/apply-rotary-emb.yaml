@@ -52,7 +52,7 @@ steps:
     label: '$\of{x_pass},\ \of{x_rot}$'
     title: 只取最后 $d_r$ 维
     text: |
-      参考实现写的是 <code>apply_rotary_emb(x[..., -rd:], freqs_cis)</code>：只把最后 $d_r=\of{rd}$ 维交给 RoPE，原地改写，前 $d_h-d_r=\of{dh-rd}$ 维不动。原地改写在图上画成先切出两段、最后再拼回去。
+      参考实现的调用都是 <code>apply_rotary_emb(q[..., -rd:], freqs_cis)</code> 这样的写法：只把最后 $d_r=\of{rd}$ 维交给 RoPE，原地改写，前 $d_h-d_r=\of{dh-rd}$ 维不动。原地改写在图上画成先切出两段、最后再拼回去。
       $$\of{x_rot}={{ x_rot | matrix:2 }}$$
     backward:
       label: '$\partial\of{x}$'
@@ -88,13 +88,13 @@ steps:
     show: [fc, fs]
     label: '$\cos^{\mathrm{h}},\ \sin^{\mathrm{h}}$'
     title: 表加一个 head 维
-    text: 输入按 head 分好时，参考实现把表 <code>view(1, seqlen, 1, -1)</code>，多出的一维让同一个位置的所有 head 用同一行。
+    text: 输入按 head 分好时，参考实现把表 <code>freqs_cis = freqs_cis.view(1, x.size(1), 1, x.size(-1))</code>，多出的一维让同一个位置的所有 head 用同一行。
   - id: re
     show: [ac, bs, re]
     label: '$\mathrm{Re}$'
     title: 复数乘法的实部
     text: |
-      <code>x * freqs_cis</code> 是复数乘法。$(a+\mathrm{i}b)(\cos+\mathrm{i}\sin)$ 的实部是 $a\cos-b\sin$；<code>inverse=True</code> 时表先取共轭 <code>freqs_cis.conj()</code>，$\sin$ 变号，实部是 $a\cos+b\sin$。
+      <code>x * freqs_cis</code> 是复数乘法。$(a+\mathrm{i}b)(\cos+\mathrm{i}\sin)$ 的实部是 $a\cos-b\sin$；<code>inverse</code> 为真时表先取共轭 <code>freqs_cis = freqs_cis.conj()</code>，$\sin$ 变号，实部是 $a\cos+b\sin$。
       $$\mathrm{Re}={{ re | matrix:2 }}$$
     backward:
       label: '$\partial\mathbf{a},\ \partial\mathbf{b}$'
