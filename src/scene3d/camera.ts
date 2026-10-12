@@ -199,8 +199,9 @@ export class CameraRig {
   private platformGoal(keys: Renderable[], hh: number, base: Vector3): FollowGoal {
     const up = new Vector3().copy(UP).addScaledVector(this.direction, -this.direction.y).normalize();
     const side = this.sideAxis();
-    const drawn = this.c.renderables.filter((r) => r.block.hidden !== true);
-    const points = [...framingPoints(drawn.length > 0 ? drawn : keys), ...(this.c.platforms?.framePoints() ?? [])];
+    const involved = this.c.platforms?.involved();
+    const drawn = this.c.renderables.filter((r) => r.block.hidden !== true && (involved === undefined || involved.has(r.block.node)));
+    const points = [...framingPoints(drawn.length > 0 ? drawn : keys), ...(involved === undefined ? (this.c.platforms?.framePoints() ?? []) : [])];
     let lo = Infinity;
     let hi = -Infinity;
     let left = Infinity;

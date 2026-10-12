@@ -342,14 +342,8 @@ export class PlatformLayer {
     return set;
   }
 
-  foldStep(): string | undefined {
-    const info = this.c.currentInfo();
-    return info?.kind === 'module' ? info.id.replace(/^F:/, '') : undefined;
-  }
-
   expand(blocks: readonly Block[]): Block[] {
-    const involved = this.involved();
-    const drawn = (block: Block) => block.hidden !== true && (involved === undefined || involved.has(block.node));
+    const drawn = (block: Block) => block.hidden !== true;
     const { x, y, z } = this.c.rig.direction;
     const arrangement = arrangePlatforms(this.topology, this.slots, blockSpan(blocks.filter(drawn)), [x, y, z]);
     this.arrangement = arrangement;

@@ -33,8 +33,7 @@ export class FoldBoxes {
     const shown = new Set<string>();
     const platforms = this.c.platforms;
     const shifts = platforms?.shifts() ?? [[0, 0]];
-    const fold = platforms?.foldStep();
-    const boxes = (this.c.levelLayout?.boxes ?? []).filter((box) => platforms === undefined || platforms.involved() === undefined || box.module.id === fold);
+    const boxes = this.c.levelLayout?.boxes ?? [];
     for (const box of boxes) for (const [k, [dx, dy]] of shifts.entries()) {
       const id = k === 0 ? box.module.id : `${k}:${box.module.id}`;
       shown.add(id);
