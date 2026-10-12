@@ -16,7 +16,7 @@ buffers:
   primes:    { value: 'zeros(Le, nmax - 1, Hg)', dtype: int64, tex: '\boldsymbol{\pi}' }
   offsets:   { value: 'zeros(Le, (nmax - 1) * Hg)', dtype: int64, tex: '\boldsymbol{\omega}' }
   pos:       { value: 'arange(T)', dtype: int64, tex: '\mathbf{p}' }
-  pad_id:    { value: 'full(T, pad)', dtype: int64, tex: '\mathrm{pad}' }
+  pad_raw:   { value: 'full(T, pad)', dtype: int64, tex: '\mathrm{pad}' }
   'blocked[0]': { value: 'zeros(T)', dtype: bool, tex: '\mathbf{b}^{(0)}' }
 fold:
   label: '$\of{hashes}$'
@@ -28,6 +28,7 @@ fold:
     label: 无梯度
     title: 整数运算，没有梯度
 body:
+  - pad_id: { op: 'index(token_map, [pad_raw])', tex: '\mathrm{map}[\mathrm{pad}]' }
   - comp: { op: 'index(token_map, [ids])', tex: '\mathrm{map}[\of{ids}]' }
   - live: { op: 'where(mask, comp, -1)', tex: '\mathbf{c}' }
   - for: s
@@ -63,6 +64,13 @@ body:
   - joined: { op: 'cat(bucket[2..nmax], dim=-1)', tex: '[\,\mathbf{h}_{n}\bmod\boldsymbol{\pi}_{n}\,]' }
   - hashes: { op: joined + offsets, tex: '\mathbf{id}' }
 steps:
+  - id: pad_map
+    show: [pad_raw, pad_id]
+    label: '$\of{pad_id}$'
+    title: pad token 换成压缩编号
+    text: |
+      <code>self.pad_id = token_map[args.engram_pad_id]</code>：config 里的 engram_pad_id $=\of{pad}$ 先换成压缩词表里的编号。参考实现在建模块时算一次，得到一个数；这一页给每个位置写一份，后面换 pad 时直接按位置取。
+      $$\of{pad_id}={{ pad_id | matrix:0 }}$$
   - id: map
     show: [token_map, comp]
     label: '$\of{comp}$'
@@ -96,7 +104,7 @@ steps:
     label: '$\of{tokens}$'
     title: blocked 的位置换成 pad
     text: |
-      <code>torch.where(blocked, self.pad_id, source)</code>，pad_id 是 pad token（id 2）在压缩词表里的编号 $\of{pad}$。<code>torch.stack(tokens, dim=-1)</code> 把 $\of{nmax}$ 列并排，第 $s$ 列是往前第 $s-1$ 个 token。
+      <code>torch.where(blocked, self.pad_id, source)</code>，pad_id 是上面换好的压缩编号。<code>torch.stack(tokens, dim=-1)</code> 把 $\of{nmax}$ 列并排，第 $s$ 列是往前第 $s-1$ 个 token。
       $$\of{tokens}={{ tokens | matrix:0 }}$$
   - id: products
     show: [mult, products]

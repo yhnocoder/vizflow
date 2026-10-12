@@ -16,6 +16,7 @@ interface DeepseekV41Fixture {
   multipliers: EncodedTensor;
   primes: EncodedTensor;
   offsets: EncodedTensor;
+  pad_id: number;
   hashes: EncodedTensor;
   router_bias: number[];
   router_bias_vl: number[];
@@ -51,6 +52,7 @@ describe('deepseek_v4_1-dsl.yaml against the DeepSeek-V4.1 reference model in fl
     expect([...page.nodes.get('engram_hash.mult')!.value.int64!].map(String)).toEqual(fixture.multipliers.values);
     expect(Array.from(page.nodes.get('engram_hash.primes')!.value.data)).toEqual(ints(fixture.primes));
     expect(Array.from(page.nodes.get('engram_hash.offsets')!.value.data)).toEqual(ints(fixture.offsets));
+    expect(new Set(page.nodes.get('engram_hash.pad_id')!.value.data)).toEqual(new Set([fixture.pad_id]));
     expect(Array.from(page.nodes.get('hash1')!.value.data)).toEqual(ints(fixture.hashes));
   });
 
