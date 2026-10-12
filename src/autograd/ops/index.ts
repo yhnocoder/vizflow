@@ -29,6 +29,7 @@ import {
   maskedFillOp,
   triuOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,
@@ -156,6 +157,7 @@ export interface BuiltinOps {
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
   causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
   remainder(input: Node, other: Node | number, options?: OpOptions): Node;
+  floor_divide(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_xor(input: Node, other: Node | number, options?: OpOptions): Node;
   bitwise_and(input: Node, other: Node | number, options?: OpOptions): Node;
   eq(input: Node, other: Node | number, options?: OpOptions): Node;
@@ -249,6 +251,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   maskedFillOp,
   solveTriangularOp,
   remainderOp,
+  floorDivideOp,
   bitwiseXorOp,
   bitwiseAndOp,
   eqOp,

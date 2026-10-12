@@ -762,6 +762,17 @@ def clamp_cases():
     return cases
 
 
+def floor_divide_cases():
+    positions = torch.arange(1, 10).unsqueeze(-1)
+    ints = randint(1 << 20, (4, 3)) - (1 << 19)
+    return [
+        op_case("floor_divide", "int64 positions 1..9 by 4", lambda x: torch.floor_divide(x, 4), [("label", positions)], [tensor_arg(0), 4]),
+        op_case("floor_divide", "int64 (4, 3) by a scalar", lambda x: torch.floor_divide(x, 7), [("label", ints)], [tensor_arg(0), 7]),
+        op_case("floor_divide", "int64 (4, 3) by (3,)", torch.floor_divide, [("label", ints), ("label", torch.tensor([3, -5, 11]))], [tensor_arg(0), tensor_arg(1)]),
+        op_case("floor_divide", "float (3, 4) by a scalar", lambda x: torch.floor_divide(x, 0.7), [("label", randn(3, 4) * 4)], [tensor_arg(0), 0.7]),
+    ]
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -777,7 +788,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases())
     write("pages.json", pages + stable_pages)
 
 

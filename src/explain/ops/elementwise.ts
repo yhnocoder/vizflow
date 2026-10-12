@@ -212,6 +212,7 @@ export const remainderExplain = binary(
   (a, b, arg) => (arg === 0 ? 1 : -Math.floor(a / b)),
   (a, b, arg) => (arg === 0 ? '1' : `-\\left\\lfloor ${a}/${b}\\right\\rfloor`),
 );
+export const floorDivideExplain = binary((a, b) => `\\left\\lfloor ${a}/${b}\\right\\rfloor`, () => 0, () => '0');
 export const bitwiseXorExplain = binary((a, b) => `${a}\\oplus ${b}`, () => 0, () => '0');
 export const bitwiseAndExplain = binary((a, b) => `${a}\\wedge ${b}`, () => 0, () => '0');
 export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0');

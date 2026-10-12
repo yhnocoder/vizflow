@@ -397,7 +397,7 @@ const cases: Case[] = [
     },
   { op: 'remainder', build: (g, r) => binary(g, r, 'remainder', [2, 3], [3], true) },
   { op: 'remainder', build: (g, r) => scalar(g, r, 'remainder', 0.7) },
-  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge'] as const).map((op) => ({
+  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge', 'floor_divide'] as const).map((op) => ({
     op,
     build: (g: Graph) => {
       const a = g.label('a', [[3, 1, 2], [0, 5, 4]]);
