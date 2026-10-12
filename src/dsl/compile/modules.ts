@@ -1,15 +1,16 @@
 import type { Node } from '../../autograd';
-import { type ForwardStep, type StepModule, isLeafLike } from '../../steps';
+import { type StepModule, isLeafLike } from '../../steps';
 import { child, fail } from '../source';
 import { FOLD_KEYS, REPEAT_KEYS, TEXT_KEYS } from './keys';
 import type { Compiler } from './text';
-import type { Env, ModuleRec } from './types';
+import type { Env, ModuleRec, StepRec } from './types';
 import { checkKeys, join, list, record } from './util';
 
 export function openModule(c: Compiler, id: string, title: string, subtitle: string | undefined, decl: Record<string, unknown>, env: Env): ModuleRec {
   const flag = (key: string) => {
-    const value = decl[key];
-    if (value !== undefined && typeof value !== 'boolean') fail(child(env.where, decl, key), `${key} must be true or false`);
+    const at = child(env.where, decl, key);
+    const value = typeof decl[key] === 'string' ? c.expression(decl[key], { ...env, where: at }, undefined) : decl[key];
+    if (value !== undefined && typeof value !== 'boolean') fail(at, `${key} must be true or false`);
     return value === true;
   };
   const parent = c.moduleStack[c.moduleStack.length - 1];
@@ -113,14 +114,20 @@ export function pageModules(c: Compiler): StepModule[] {
   });
 }
 
-export function placeSteps(c: Compiler, forward: ForwardStep[], modules: StepModule[]): void {
+export function placeSteps(c: Compiler, steps: StepRec[], modules: StepModule[]): void {
   const recs = new Map(c.modules.map((m) => [m.id, m]));
   const depth = new Map<string, number>();
   for (const m of modules) depth.set(m.id, m.parent === null ? 0 : (depth.get(m.parent) ?? 0) + 1);
-  const innermost = (node: Node) => modules.filter((m) => m.nodes.includes(node)).sort((a, b) => depth.get(b.id)! - depth.get(a.id)!)[0];
-  for (const step of forward) {
-    const first = list(step.show).find((n) => !isLeafLike(n));
-    const module = first === undefined ? undefined : innermost(first);
+  const deepest = (found: StepModule[]) => found.sort((a, b) => depth.get(b.id)! - depth.get(a.id)!)[0];
+  for (const { refs, step } of steps) {
+    const shown = list(step.show);
+    const first = shown.find((n) => !isLeafLike(n));
+    const owner = refs[0].owner;
+    const buffersOnly = shown.length > 0 && shown.every((n) => n.kind === 'buffer');
+    const module =
+      first !== undefined ? deepest(modules.filter((m) => m.nodes.includes(first)))
+      : buffersOnly ? deepest(modules.filter((m) => owner === m.id || owner.startsWith(`${m.id}.`)))
+      : undefined;
     const chain: ModuleRec[] = [];
     for (let m = module === undefined ? undefined : recs.get(module.id); m !== undefined; m = m.parent === null ? undefined : recs.get(m.parent)) chain.unshift(m);
     const { segment, sub } = segmentOf(chain);

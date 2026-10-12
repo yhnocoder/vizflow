@@ -43,8 +43,15 @@ export function markFormulas(c: Compiler, steps: StepRec[]): void {
       }
       return [rec];
     };
-    const mark = (spec: string): string => [...new Set(spec.split(',').flatMap((path) => recsOf(path.trim())).map(markOf))].join('.');
+    const mark = (spec: string): string => {
+      const live = spec.split(',').map((path) => path.trim()).filter((path) => !switchedOff(path));
+      return [...new Set(live.flatMap(recsOf).map(markOf))].join('.');
+    };
     const switchedOff = (path: string): boolean => {
+      if (path.endsWith('.*')) {
+        const base = join(owner, path.slice(0, -2));
+        return c.switchedOffSteps.has(`${base}#*`) && !steps.some((s) => s.refs.some((ref) => ref.owner === base || ref.owner.startsWith(`${base}.`)));
+      }
       const dot = path.lastIndexOf('.');
       const stepOwner = dot < 0 ? owner : join(owner, path.slice(0, dot));
       const id = dot < 0 ? path : path.slice(dot + 1);

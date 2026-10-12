@@ -1117,6 +1117,100 @@ body:
     await expect(use('{ gate: true }')).rejects.toThrow(/parameter 'extra' has no value and no default, and module Gated uses it/);
   });
 
+  it('reads folded, fixed and split as conditions written with the parameters in scope', async () => {
+    const outer = `
+module: Outer
+import: { Norm: ./norm.yaml }
+params:
+  detail: { type: bool, default: true }
+inputs:
+  x: { shape: [T, n] }
+outputs: [out]
+body:
+  - norm: { use: Norm, folded: not detail, inputs: { x: x }, outputs: { out: out } }
+`;
+    const build = (params: string) => page(`
+title: t
+import: { Outer: ./outer.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2], [3, 4]] }
+body:
+  - a: { use: Outer, params: ${params}, inputs: { x: x }, outputs: { out: y } }
+`, { 'mem:/pages/outer.yaml': outer, 'mem:/pages/norm.yaml': NORM });
+    const folded = async (params: string) => (await build(params)).modules.find((m) => m.id === 'a.norm')!.folded;
+    expect(await folded('{}')).toBe(false);
+    expect(await folded('{ detail: false }')).toBe(true);
+    await expect(page(`
+title: t
+import: { Norm: ./norm.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - n: { use: Norm, folded: '2', inputs: { x: x }, outputs: { out: y } }
+`, { 'mem:/pages/norm.yaml': NORM })).rejects.toThrow(/folded must be true or false/);
+  });
+
+  it('declares an output with a condition and skips its binding when the condition is false', async () => {
+    const tapped = gated.replace('outputs: [out]', 'outputs: [out, { name: g, when: gate }]');
+    const tap = (params: string) => page(`
+title: t
+import: { Gated: ./gated.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2], [3, 4]] }
+body:
+  - m: { use: Gated, params: ${params}, inputs: { x: x }, outputs: { out: y, g: tapped } }
+`, { ...files, 'mem:/pages/gated.yaml': tapped });
+    expect((await tap('{ gate: true, extra: 3 }')).nodes.get('tapped')!.value.toNested()).toEqual([[6, 12], [18, 24]]);
+    const off = await tap('{}');
+    expect(off.nodes.get('y')!.value.toNested()).toEqual([[3, 5], [7, 9]]);
+    expect(off.nodes.has('tapped')).toBe(false);
+    await expect(page(`
+title: t
+import: { Gated: ./gated.yaml }
+dims: {}
+inputs:
+  x: { value: [[1, 2]] }
+body:
+  - m: { use: Gated, inputs: { x: x }, outputs: { out: y } }
+`, { ...files, 'mem:/pages/gated.yaml': gated.replace('outputs: [out]', 'outputs: [out, { name: g, when: gate, shape: 1 }]') })).rejects.toThrow(/unknown key 'shape'/);
+  });
+
+  it('places a step that shows only buffers in the module that uses them', async () => {
+    const shift = `
+module: Shift
+inputs:
+  x: { shape: [n] }
+outputs: [y]
+buffers:
+  b: { value: 'arange(n)', tex: '\\mathbf{b}' }
+body:
+  - y: x + b
+steps:
+  - { id: table, show: b, title: table }
+  - { id: add, show: y, title: add }
+`;
+    const result = await page(`
+title: t
+import: { Shift: ./shift.yaml }
+dims: {}
+inputs:
+  x: { value: [1, 2, 3] }
+body:
+  - s: { use: Shift, title: shift, inputs: { x: x }, outputs: { y: y } }
+  - t: { use: Shift, title: again, inputs: { x: y }, outputs: { y: z } }
+`, { 'mem:/pages/shift.yaml': shift });
+    expect(result.nodes.get('s.b')).toBe(result.nodes.get('t.b'));
+    expect(result.steps.forward.map((s) => [s.title, s.module, s.segment])).toEqual([
+      ['table', 's', 'shift'],
+      ['add', 's', 'shift'],
+      ['table', 't', 'again'],
+      ['add', 't', 'again'],
+    ]);
+  });
+
   it('applies a step patch only when its condition, read where the patch is written, holds', async () => {
     const patch = (when: string) => `, steps: { 'gn.rms': { when: ${when}, title: patched } }`;
     expect((await use('{ gate: true, extra: 3 }', patch('true'))).steps.forward.map((s) => s.title)).toContain('patched');

@@ -716,7 +716,8 @@ export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
   args: ['input', 'dim'],
   tensors: ['input'],
   shape: ([input], attrs) => unsqueezedShape(input, attrs),
-  forward: ([input], attrs) => new Tensor(unsqueezedShape(input.shape, attrs), input.data.slice()),
+  int64: true,
+  forward: ([input], attrs) => new Tensor(unsqueezedShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
   backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
   cost: VIEW_COST,
 };

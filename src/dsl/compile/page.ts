@@ -85,7 +85,7 @@ export function assemblePage(c: Compiler, sectionSources: SectionSources): Compi
   }
   markFormulas(c, steps);
   const modules = pageModules(c);
-  placeSteps(c, forward, modules);
+  placeSteps(c, steps, modules);
   const leaves = leavesStep(c, env);
   const overviewWhere = child(c.pageWhere, page, 'overview');
   const overview = page.overview === undefined ? undefined : record(page.overview, overviewWhere, 'overview');
