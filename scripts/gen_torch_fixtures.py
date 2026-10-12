@@ -749,6 +749,63 @@ def clamp_cases():
     return cases
 
 
+def integer_and_scatter_cases():
+    cases = []
+    small = randint(4, (3, 4))
+    cases.append(op_case("lt", "int64 with a scalar", lambda x: torch.lt(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("lt", "float (3, 4) and (3, 1)", torch.lt, [("label", randn(3, 4)), ("label", randn(3, 1))], [tensor_arg(0), tensor_arg(1)]))
+    p, q = randint(2, (3, 4)).bool(), randint(2, (4,)).bool()
+    left, right = randint(1 << 30, (4, 3)), randint(1 << 30, (4, 3))
+    cases.append(op_case("bitwise_or", "bool (3, 4) and (4,)", torch.bitwise_or, [("label", p), ("label", q)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_or", "int64 (4, 3)", torch.bitwise_or, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_or", "int64 with a scalar", lambda x: torch.bitwise_or(x, 5), [("label", left)], [tensor_arg(0), 5]))
+    signed = randint(1 << 20, (5, 1)) - (1 << 19)
+    cases.append(op_case("floor_divide", "negative and positive int64 by a scalar", lambda x: torch.floor_divide(x, 3), [("label", signed)], [tensor_arg(0), 3]))
+    cases.append(op_case("floor_divide", "int64 (5, 1) by (1, 3) with a negative divisor", torch.floor_divide, [("label", signed), ("label", torch.tensor([[7, -4, 13]]))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("logical_not", "int64 (3, 4)", torch.logical_not, [("label", small)], [tensor_arg(0)]))
+    cases.append(op_case("logical_not", "bool (4,)", torch.logical_not, [("label", q)], [tensor_arg(0)]))
+    a = torch.cat([randn(5), torch.zeros(1, dtype=torch.float64)]).reshape(2, 3)
+    cases.append(op_case("copysign", "(2, 3) with (2, 3), including a zero input", torch.copysign, [("input", a), ("label", randn(2, 3))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("copysign", "(2, 3) with (3,) including -0", torch.copysign, [("input", randn(2, 3)), ("label", torch.tensor([1.5, -0.0, -2.0], dtype=torch.float64))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("copysign", "(4,) with a scalar", lambda x: torch.copysign(x, -1.0), [("input", randn(4))], [tensor_arg(0), -1.0]))
+    for shape, dim in [((3, 5), -1), ((4, 3), 0)]:
+        cases.append(op_case("sort", f"{shape} dim {dim}", lambda x, dim=dim: torch.sort(x, dim=dim, stable=True).values, [("input", distinct(*shape))], [tensor_arg(0), dim]))
+    ties = torch.tensor([[3, 1, 3, 0, 1, 2], [5, 5, 4, 4, 5, 0]])
+    cases.append(op_case("sort", "int64 (2, 6) with ties, default dim", lambda x: torch.sort(x, stable=True).values, [("label", ties)], [tensor_arg(0)]))
+    for shape, dim, index, source in [((3, 5), 1, [[4, 0], [1, 2], [3, 1]], (3, 2)), ((4, 2), 0, [[2, 0], [0, 3]], (2, 2))]:
+        cases.append(
+            op_case(
+                "scatter",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, s, dim=dim: torch.scatter(x, dim, i, s),
+                [("input", randn(*shape)), ("label", torch.tensor(index)), ("input", randn(*source))],
+                [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    mask = torch.tensor([True, False, True, True])
+    grid = torch.tensor([[True, False, False], [False, True, True]])
+    for title, shape, picked, values in [
+        ("(4, 3) rows from (3, 3)", (4, 3), mask, (3, 3)),
+        ("(4, 3) one row (3,) broadcast", (4, 3), mask, (3,)),
+        ("(2, 3, 2) by a (2, 3) mask from (3, 2)", (2, 3, 2), grid, (3, 2)),
+        ("(2, 3, 2) by a (2, 3) mask from (1, 2)", (2, 3, 2), grid, (1, 2)),
+    ]:
+        cases.append(
+            op_case(
+                "index_put",
+                title,
+                lambda x, m, v: x.index_put((m.bool(),), v),
+                [("input", randn(*shape)), ("label", picked.clone()), ("input", randn(*values))],
+                [tensor_arg(0), tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    keep = (randn(3, 1) > 0).to(torch.float64)
+    cases.append(op_case("where", "condition (3, 1) input (3, 4) other tensor (4,)", lambda c, x, y: torch.where(c != 0, x, y), [("label", keep), ("input", randn(3, 4)), ("input", randn(4))], [tensor_arg(0), tensor_arg(1), tensor_arg(2)]))
+    cases.append(op_case("pad", "(2, 3) pad [0, 1] value 2.5", lambda x: F.pad(x, (0, 1), value=2.5), [("input", randn(2, 3))], [tensor_arg(0), [0, 1]], {"value": 2.5}))
+    cases.append(op_case("unsqueeze", "int64 (2, 3) dim 1", lambda x: torch.unsqueeze(x, 1), [("label", randint(1 << 40, (2, 3)))], [tensor_arg(0), 1]))
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -764,7 +821,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + integer_and_scatter_cases())
     write("pages.json", pages + stable_pages)
 
 
