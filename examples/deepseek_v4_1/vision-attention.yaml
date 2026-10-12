@@ -2,7 +2,7 @@ module: VisionAttention
 subtitle: Attention，双向，带偏置
 import:
   VisionRotary: ./vision-rotary.yaml
-formula: '\step{out_proj,out_bias}{\of{y}=}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{scores}{\mathbf{q}\mathbf{k}^{\top}}\step{scale}{/\sqrt{d_v}}\step{exp,sum,div}{\big)}\step{pv}{\mathbf{v}}\step{out_proj}{\,W_{o}^{\top}}\step{out_bias}{+\mathbf{b}_{o}}'
+formula: '\step{out_proj,out_bias}{\of{y}=}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{scores}{\mathbf{q}\mathbf{k}^{\top}}\step{scale}{/\sqrt{d_h}}\step{exp,sum,div}{\big)}\step{pv}{\mathbf{v}}\step{out_proj}{\,W_{o}^{\top}}\step{out_bias}{+\mathbf{b}_{o}}'
 params:
   Hv: { type: dim }
 inputs:
@@ -121,6 +121,7 @@ steps:
     label: '$/\sqrt{d_h}$'
     title: 乘 $1/\sqrt{d_h}$
     text: |
+      scaled_dot_product_attention 默认的缩放是 $1/\sqrt{d_h}$，$d_h$ 是每个 head 的宽度 $d_v/H_v=\of{dv//Hv}$，真实模型 $d_h=64$。
       $$\of{Ss}={{ Ss | matrix:3 }}$$
     backward:
       label: '$\partial\of{S}$'

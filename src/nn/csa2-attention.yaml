@@ -123,7 +123,7 @@ body:
       folded: true
       fold:
         text: |
-          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；kv 只有一个 head。
+          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；kv 只有一个 head。参考实现接着执行 <code>act_quant(kv, fp8_block_size, scale_fmt, scale_dtype, True)</code>，把转过的 kv 原地量化成 FP8，每 32 个数共用一个 scale，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步，kv 的数值没有量化误差，之后用到 kv 的注意力分数和输出与真实模型相差这部分误差。
           $$\mathbf{kv}'={{ kvr | matrix:2 }}$$
   - compressor:
       use: Compressor
@@ -152,7 +152,7 @@ body:
       folded: true
       fold:
         text: |
-          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；第 $j$ 个压缩位置的位置是 $j\cdot m$。indexer 用的是 RoPE 之前的 latent，所以这一步在 indexer 之后。
+          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；第 $j$ 个压缩位置的位置是 $j\cdot m$。indexer 用的是 RoPE 之前的 latent，所以这一步在 indexer 之后。参考实现接着执行 <code>fp4_act_quant(latent, 16, True, scale_dtype=torch.float8_e4m3fn)</code>，把压缩 KV 原地量化成 FP4，每 16 个数共用一个 scale，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步，压缩 KV 的数值没有量化误差。
           $$\mathbf{C}={{ C | matrix:2 }}$$
   - kv_all:  { op: 'cat([kvr, C], 0) if kv_source else cat([kvr, C_in], 0)', tex: '[\,\mathbf{kv}'';\,\mathbf{C}\,]', when: compress }
   - idx_all: { op: 'cat([win, idx], -1) if index_source else cat([win, idx_in], -1)', tex: '[\,\mathbf{i}^{\mathrm{win}},\,\mathbf{i}^{I}\,]', when: compress }

@@ -1,5 +1,5 @@
 title: DeepSeek V4.1：图片、Engram 和三种压缩注意力，从像素和 token 到损失
-lede: DeepSeek V4.1 在 V4 的基础上多了三样东西。一张图片先切成 patch，经过 ViT 和 aligner 变成几个图片 token，插进文字序列里。一部分层在注意力之前多一个 Engram：按每个位置结尾的 n-gram 查一张哈希表，把查到的向量门控后写进 residual stream。压缩注意力分成三种：自己压缩 KV 并且自己选条目的层、只重新选条目的层、直接沿用前面某一层选好的条目的层。这一页从像素和 token id 开始，经过 ViT、aligner、6 个展开的层和 3 个占位盒子、final norm、head 和 nll_loss 得到损失，前向和反向都逐步画出来，每一个运算都按参考实现的写法画成单独的节点。点两侧的大括号可以折叠或展开一个模块。
+lede: DeepSeek V4.1 在 V4 的基础上多了三样东西。一张图片先切成 patch，经过 ViT 和 aligner 变成几个图片 token，插进文字序列里。一部分层在注意力之前多一个 Engram：按每个位置结尾的 n-gram 查一张哈希表，把查到的向量门控后写进 residual stream。压缩注意力分成三种：自己压缩 KV 并且自己选条目的层、只重新选条目的层、直接沿用前面某一层选好的条目的层。这一页从像素和 token id 开始，经过 ViT、aligner、6 个展开的层和 3 个占位盒子、final norm、head 和 nll_loss 得到损失，前向和反向都逐步画出来，每一个运算都按参考实现的写法画成单独的节点。参考实现里的 FP8、FP4 量化不画，说明见总览。点两侧的大括号可以折叠或展开一个模块。
 hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
 camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
 import:
@@ -37,8 +37,9 @@ overview:
   title: 整张图
   text: |
     这一页从像素和 token id 一直画到损失。图片是 $8\times4$ 个像素，切成 $\of{nh}\times\of{nw}$ 个 $\of{p}\times\of{p}$ 的 patch，经过 ViT 后由 aligner 每 $\of{r}\times\of{r}$ 个 patch 合成一个 token，得到 2 个图片 token。序列里 <code>&lt;image&gt;</code> 占的 6 个位置依次是 [START]、IMAGE、[NEWLINE]、IMAGE、[NEWLINE]、[END]：两个 IMAGE 位置放 aligner 的输出，其余位置放学出来的向量。
-    DeepSeek-V4.1-Flash 有 40 层，按注意力分四种。第 0、1 层只有滑动窗口注意力。第 2 到 19 层每 2 个 token 压成一个条目；其中第 2、8、14 层自己压缩 KV、自己用 indexer 选条目（这一页叫 Full 层），其余 15 层沿用前面最近的 Full 层压好的 KV 和选好的条目（Reuse 层）。第 20 到 39 层每个 token 一个条目；第 20 层是 Full 层，并且从它的 indexer 分数里挑出候选块；第 24、28、32、36 层沿用第 20 层的 KV，只在候选块里重新选条目（Reindex 层）；其余 12 层是 Reuse 层。第 1 层和第 14 层在注意力之前有 Engram。真实模型的第 40 到 42 层是给投机解码用的 MTP 层，不参与这一页的损失。
+    DeepSeek-V4.1-Flash 有 40 层，按注意力分四种。第 0、1 层只有滑动窗口注意力。第 2 到 19 层每 2 个 token 压成一个条目；其中第 2、8、14 层自己压缩 KV、自己用 indexer 选条目（这一页叫 Full 层），其余 15 层沿用前面最近的 Full 层压好的 KV 和选好的条目（Reuse 层）。第 20 到 39 层每个 token 一个条目；第 20 层是 Full 层，并且从它的 indexer 分数里挑出候选块；第 24、28、32、36 层沿用第 20 层的 KV，只在候选块里重新选条目（Reindex 层）；其余 15 层是 Reuse 层。第 1 层和第 14 层在注意力之前有 Engram。真实模型的第 40 到 42 层是给投机解码用的 MTP 层，不参与这一页的损失。
     这一页展开第 0 层（滑动窗口）、第 1 层（Engram）、第 2 层（Full，$m=2$）、第 20 层（Full，$m=1$，挑候选块）、第 24 层（Reindex）和第 25 层（Reuse），每种机制都画一次；第 3 到 19 层、第 21 到 23 层、第 26 到 39 层收成占位盒子，按恒等映射处理。尺寸用 $d=\of{d}$、$V=\of{V}$、$T=\of{T}$；注意力 $\of{H}$ 个 head，每个宽 $D=\of{D}$，最后 $\of{rd}$ 维做 RoPE；滑动窗口 $\of{sw}$；indexer 每个位置选 $\of{kI}$ 个条目；MoE 有 $\of{Ne}$ 个路由专家，每个位置选 $\of{K}$ 个。
+    参考实现的 config.json 写的是 <code>"dtype": "fp8"</code> 和 <code>"expert_dtype": "fp4"</code>：Linear 的权重存成 FP8，路由专家的权重存成 FP4，各带分块的 scale；激活是 bf16，乘这些权重之前先用 <code>act_quant</code> 量化成 FP8。另外有四处量化在 <code>dtype</code> 是 bf16 时也执行：滑动窗口的 kv 量化成 FP8，压缩 KV、indexer 的 key 和 query 量化成 FP4。这一页不画这些量化：页面的 dtype 写 bf16，指激活的 dtype，权重也按 bf16 写，数值按 float64 算。所以这一页的数值和真实模型相差量化误差，显存面板里参数的字节数按 bf16 算，比真实模型多。四处量化的位置在对应的 apply_rotary_emb 盒子里说明。
     $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
   backward:
     label: 总览
