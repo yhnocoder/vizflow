@@ -94,12 +94,13 @@ function resolveStep(token, backStart, count) {
 
 const server = opts.url ? { base: opts.url.replace(/\/$/, ''), stop: () => {} } : await startVite();
 const executablePath = process.env.VIZFLOW_CHROMIUM;
-const browser = await chromium.launch({
-  ...(executablePath ? { executablePath } : {}),
-  args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
-});
+let browser;
 
 try {
+  browser = await chromium.launch({
+    ...(executablePath ? { executablePath } : {}),
+    args: ['--use-gl=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+  });
   const tab = await browser.newPage({ viewport: { width: 1440, height: 1000 }, colorScheme: 'light' });
   tab.on('console', (m) => { if (m.type() === 'error') console.log('console error:', m.text()); });
   tab.on('pageerror', (e) => console.log('page error:', e.message));
@@ -157,6 +158,6 @@ try {
   }
   console.log(out);
 } finally {
-  await browser.close();
+  await browser?.close();
   server.stop();
 }
