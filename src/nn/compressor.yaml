@@ -13,13 +13,12 @@ params:
   eps:     { type: float, default: 1e-6 }
 inputs:
   x: { shape: [T, d] }
-outputs: [C, mask]
+outputs: [C]
 weights:
   Wkv:           { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{kv}}' }
   Wgate:         { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{gate}}' }
   position_bias: { shape: [m, '2 * c if overlap else c'], dtype: fp32, tex: 'B' }
 buffers:
-  mask: { value: 'block_causal_mask(T, m)', tex: 'M_{\mathrm{c}}' }
   zero: { value: 'zeros(1, m, c)', tex: '\mathbf{0}_{\of{m}\times\of{c}}', when: overlap }
   ninf: { value: 'full(1, m, c, -inf)', tex: '(-\infty)_{\of{m}\times\of{c}}', when: overlap }
 fold:

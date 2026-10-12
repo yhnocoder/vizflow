@@ -62,6 +62,15 @@ describe('deepseek_v4-dsl.yaml against transformers DeepseekV4Model in float64',
     });
   });
 
+  it('builds the HCA entry mask from positions and entry indices as HF does, and the CSA layer builds none', () => {
+    const MH = 3;
+    const threshold = page.nodes.get('hca_layer.self_attn.threshold')!.value.toNested() as number[];
+    const mask = page.nodes.get('hca_layer.self_attn.Mc')!.value.toNested() as number[][];
+    expect(threshold).toEqual(threshold.map((_, t) => Math.floor((t + 1) / MH)));
+    mask.forEach((row, t) => row.forEach((v, w) => expect(v, `position ${t}, entry ${w}`).toBe(w >= Math.floor((t + 1) / MH) ? -Infinity : 0)));
+    expect(page.nodes.get('csa_layer.self_attn.Mc')).toBeUndefined();
+  });
+
   it('gives the indexer no gradient, as HF runs it under torch.no_grad', () => {
     for (const [path, grad] of Object.entries(fixture.grads)) {
       if (!isIndexer(path)) continue;

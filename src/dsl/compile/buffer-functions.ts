@@ -37,14 +37,6 @@ export const BUFFER_FUNCTIONS: Record<string, BufferFunction> = {
       values: grid(T.toy, T.toy, (t, s) => s > t || (window !== undefined && s <= t - window.toy)),
     }),
   },
-  block_causal_mask: {
-    args: [2, 2],
-    options: {},
-    make: ([T, m]) => {
-      const blocks = { toy: Math.floor(T.toy / m.toy), real: Math.floor(T.real / m.real) };
-      return { shape: [T, blocks], values: grid(T.toy, blocks.toy, (t, w) => (w + 1) * m.toy > t + 1) };
-    },
-  },
 };
 
 function grid(rows: number, cols: number, masked: (r: number, c: number) => boolean): number[][] {

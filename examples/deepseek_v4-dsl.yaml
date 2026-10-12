@@ -138,7 +138,7 @@ modules:
           outputs: { att: att }
           fold:
             text: |
-              HCA 的注意力和第 3 层的 CSA 用同一套计算，那里展开画了每一步。不同的是 HCA 没有 indexer，所有已经完整的压缩条目都看；每 $m'=\of{m}$ 个 token 压成一个条目，窗口之间不重叠。展开这个盒子可以看到 HCA 的每一步。
+              HCA 的注意力和第 3 层的 CSA 用同一套计算，那里展开画了每一步。不同的是 HCA 没有 indexer，所有已经完整的压缩条目都看，压缩条目那几列的 mask 由位置和条目编号比较得到；每 $m'=\of{m}$ 个 token 压成一个条目，窗口之间不重叠。展开这个盒子可以看到 HCA 的每一步，包括建这张 mask 的每一行。
               $$\of{att}={{ att | matrix:2 }}$$
       - attn_merge:
           use: HyperConnectionMerge
