@@ -67,7 +67,8 @@
     "e2e": "playwright test",
     "typecheck:fast": "tsgo --noEmit",
     "test:fast": "vitest run --changed --passWithNoTests",
-    "check:fast": "sh scripts/check_fast.sh"
+    "check:fast": "sh scripts/check_fast.sh",
+    "shots": "node scripts/shots.mjs"
   },
   "dependencies": {
     "@fontsource/geist": "^5.3.0",
