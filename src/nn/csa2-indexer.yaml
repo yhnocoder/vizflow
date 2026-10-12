@@ -76,7 +76,7 @@ body:
       folded: true
       fold:
         text: |
-          计算和注意力里 query 的 apply_rotary_emb 相同，那里展开画了每一步；第 $j$ 个压缩位置的位置是 $j\cdot m$。参考实现接着执行 <code>fp4_act_quant(k, fp4_block_size, True)</code>，把 index key 原地量化成 FP4，每 32 个数共用一个 scale，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步，index score 与真实模型相差这部分误差，误差大时选出的条目也可能不同。
+          计算步骤和频率表都和这一层注意力里 query 的 apply_rotary_emb 相同；第 $j$ 个压缩位置的位置是 $j\cdot m$。参考实现接着执行 <code>fp4_act_quant(k, fp4_block_size, True)</code>，把 index key 原地量化成 FP4，每 32 个数共用一个 scale，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步，index score 与真实模型相差这部分误差，误差大时选出的条目也可能不同。
           $$\mathbf{K}^{I}={{ K | matrix:2 }}$$
   - qp: { op: qr @ Wqb.T, tex: '\of{qr}{W^{I}_{qb}}^{\top}' }
   - q:  { op: 'view(qp, T, HI, cI)', tex: '\mathbf{q}^{I}' }
@@ -92,7 +92,7 @@ body:
       folded: true
       fold:
         text: |
-          计算和注意力里 query 的 apply_rotary_emb 相同，那里展开画了每一步。参考实现接着执行 <code>fp4_act_quant(q, fp4_block_size, True)</code>，把 index query 原地量化成 FP4，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步。
+          计算步骤和频率表都和这一层注意力里 query 的 apply_rotary_emb 相同。参考实现接着执行 <code>fp4_act_quant(q, fp4_block_size, True)</code>，把 index query 原地量化成 FP4，<code>dtype</code> 是 bf16 时也执行。这一页不画这一步。
           $${\mathbf{q}^{I}}'={{ qe | matrix:2 }}$$
   - wx: { op: x @ Ww.T, tex: '\of{x}{W^{I}_{w}}^{\top}' }
   - w:  { op: wx * (cI ** -0.5 * HI ** -0.5), tex: '\mathbf{w}^{I}' }

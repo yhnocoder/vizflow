@@ -81,7 +81,7 @@ steps:
     label: '$\cos,\ \sin$'
     title: freqs_cis 的实部和虚部
     text: |
-      <code>precompute_freqs_cis</code> 给每个位置算一行单位复数 $e^{\mathrm{i}p\omega_j}=\cos p\omega_j+\mathrm{i}\sin p\omega_j$，一共 $d_r/2=\of{rd//2}$ 个频率，$\omega_j=\theta^{-2j/d_r}$，$\theta=\of{theta}$。第 $n$ 行对应位置 $p=n\cdot\of{stride}$（$n$ 从 0 开始）。这里把它的实部和虚部画成两张表 $\cos$、$\sin$。表是常量，没有梯度。
+      <code>precompute_freqs_cis</code> 给每个位置算一行单位复数 $e^{\mathrm{i}p\omega_j}=\cos p\omega_j+\mathrm{i}\sin p\omega_j$，一共 $d_r/2=\of{rd//2}$ 个频率。<code>freqs = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))</code> 给出 $\omega_j=\theta^{-2j/d_r}$，$\theta=\of{theta}$。<code>original_seq_len</code> 大于 0 时再做 YaRN：<code>ramp = ((torch.arange(dim // 2, dtype=torch.float32) - low) / max(high - low, 1e-3)).clamp(0, 1)</code>，<code>smooth = 1 - ramp</code>，<code>freqs = freqs / factor * (1 - smooth) + freqs * smooth</code>。记 ramp 的第 $j$ 个值为 $\gamma_j$、factor 为 $s$，频率变成 $\omega_j\big((1-\gamma_j)+\gamma_j/s\big)$：$j\le\mathrm{low}$ 的频率不变，$j\ge\mathrm{high}$ 的频率除以 $s$，中间线性过渡。low 和 high 由 <code>corrected_dim(beta_fast)</code>、<code>corrected_dim(beta_slow)</code> 取整得到，是在 original_seq_len 个位置里分别转过 beta_fast $=\of{beta_fast}$ 圈和 beta_slow $=\of{beta_slow}$ 圈的维度。这个实例的 original_seq_len $=\of{yarn_original}$，factor $=\of{yarn_factor}$；original_seq_len 为 0 时不做 YaRN。第 $n$ 行对应位置 $p=n\cdot\of{stride}$（$n$ 从 0 开始）。这里把它的实部和虚部画成两张表 $\cos$、$\sin$。表是常量，没有梯度。
       $$\cos={{ cos | matrix:3 }}$$
   - id: freqs_view
     when: heads
