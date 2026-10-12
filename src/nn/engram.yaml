@@ -30,7 +30,8 @@ fold:
     text: |
       $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
 body:
-  - emb:   { op: 'embedding(hash, table)', tex: 'E_{g}[\of{hash}]' }
+  - emb0:  { op: 'embedding(hash, table)', tex: 'E_{g}[\of{hash}]' }
+  - emb:   { op: identity(emb0), tex: 'E_{g}[\of{hash}]^{\mathrm{bf16}}', dtype: bf16 }
   - flat:  { op: 'view(emb, T, C * dg)', tex: '\mathbf{e}' }
   - kv:    { op: flat @ Wkv.T, tex: '\mathbf{kv}' }
   - key0:  { op: 'narrow(kv, -1, 0, N * d)', tex: '\mathbf{k}^{\mathrm{flat}}' }
@@ -63,19 +64,30 @@ body:
       tex: { out: '\sigma' }
   - dead:  { op: 'logical_not(mask)', tex: '\neg\of{mask}' }
   - gate:  { op: 'masked_fill(gate0, unsqueeze(dead, -1), 0)', tex: '\mathbf{g}' }
-  - gv:    { op: 'unsqueeze(gate, -1) * unsqueeze(value, -2)', tex: '\mathbf{g}\otimes\mathbf{v}' }
+  - vf:    { op: identity(value), tex: '\mathbf{v}^{\mathrm{f}}', dtype: fp32 }
+  - gv:    { op: 'unsqueeze(gate, -1) * unsqueeze(vf, -2)', tex: '\mathbf{g}\otimes\mathbf{v}^{\mathrm{f}}' }
   - out:   { op: h + gv, dtype: X }
 steps:
   - id: lookup
-    show: [table, emb]
-    label: '$\of{emb}$'
+    show: [table, emb0]
+    label: '$\of{emb0}$'
     title: 按哈希行号查表
     text: |
-      <code>self.embed(hash_ids)</code>：每个位置有 $C=\of{C}$ 个行号（每种长度的 n-gram 每个 head 一个），从表 $E_g$ 里取出 $C$ 行，每行 $d_g=\of{dg}$ 维。真实模型的表有约 3.84 亿行，每行 256 维，以 FP8 存储，查表时再乘上每 32 个数一个的缩放还原；这一页的表直接存数值，不画量化。
-      $$\of{emb}={{ emb | matrix:2 }}$$
+      <code>self.embed(hash_ids)</code>：每个位置有 $C=\of{C}$ 个行号（每种长度的 n-gram 每个 head 一个），从表 $E_g$ 里取出 $C$ 行，每行 $d_g=\of{dg}$ 维。真实模型的表有约 3.84 亿行，每行 256 维，以 FP8 存储，查表时用 <code>values = values.float().unflatten(-1, (-1, self.block_size)) * scales.float().unsqueeze(-1)</code> 乘上每 32 个数一个的缩放还原；这一页的表直接存数值，不画量化。
+      $$\of{emb0}={{ emb0 | matrix:2 }}$$
     backward:
       label: '$\partial E_{g}$'
       title: 梯度加回被查到的行
+  - id: cast_lookup
+    show: emb
+    label: '$\of{emb}$'
+    title: 查到的行转成 bf16
+    text: |
+      <code>values = values.flatten(-2).to(torch.bfloat16)</code>：还原后的 float32 数值转成 bf16，参考实现在这里写死了 bf16。
+    backward:
+      label: '$\partial\of{emb0}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1。
   - id: flatten
     show: flat
     label: '$\of{flat}$'
@@ -192,6 +204,15 @@ steps:
     backward:
       label: '$\partial\sigma$'
       title: 被置 0 的门控没有梯度
+  - id: value_float
+    show: vf
+    label: '$\of{vf}$'
+    title: value 转成 float32
+    text: <code>value.float()</code>：wkv 输出的 value 是 bf16，转成 float32 再和 float32 的门控相乘。
+    backward:
+      label: '$\partial\mathbf{v}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 bf16。
   - id: write
     show: gv
     label: '$\of{gv}$'
@@ -200,14 +221,14 @@ steps:
       <code>gate.unsqueeze(-1) * value.float().unsqueeze(-2)</code>：共用的 value 按每条 stream 自己的门控缩放。
       $$\of{gv}={{ gv | matrix:2 }}$$
     backward:
-      label: '$\partial\of{gate},\ \partial\mathbf{v}$'
+      label: '$\partial\of{gate},\ \partial\of{vf}$'
       title: 传到门控和 value
   - id: add
     show: out
     label: '$\of{out}$'
     title: 加回 stream
     text: |
-      <code>return (h + gate.unsqueeze(-1) * value.float().unsqueeze(-2)).to(x.dtype)</code>：结果转回 stream 的 dtype，交给下一个 block。
+      <code>return (h + gate.unsqueeze(-1) * value.float().unsqueeze(-2)).to(x.dtype)</code>：结果转回 stream 的 dtype。<code>h = layer.engram(h, engram_hashes[:, :, layer.engram.layer_hash_index, :], engram_mask)</code> 之后紧接着是 <code>h, pre_mix = layer(h, start_pos, pre_mix, image_mask)</code>，所以结果交给这一层的 block，作为它的 mHC 的输入 stream。
       $$\of{out}={{ out | matrix:2 }}$$
     backward:
       label: '$\partial\of{h},\ \partial\of{gv}$'
