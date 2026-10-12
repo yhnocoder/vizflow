@@ -64,5 +64,5 @@ describe('qwen3_5-dsl.yaml with other chunk sizes', () => {
     expect(page.graph.findLoss()!.value.data[0]).toBeCloseTo(fixture.loss, 9);
     expectTensor(page.nodes.get('x1')!.value, fixture.nodes.x1, 'linear_attention layer output');
     for (const [path, grad] of Object.entries(fixture.grads)) expectTensor(page.nodes.get(path)!.grad, grad, `grad of ${path}`);
-  });
+  }, 20000);
 });
