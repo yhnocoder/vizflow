@@ -40,6 +40,7 @@ overview:
     DeepSeek-V4.1-Flash 有 40 层，按注意力分四种。第 0、1 层只有滑动窗口注意力。第 2 到 19 层每 2 个 token 压成一个条目；其中第 2、8、14 层自己压缩 KV、自己用 indexer 选条目（这一页叫 Full 层），其余 15 层沿用前面最近的 Full 层压好的 KV 和选好的条目（Reuse 层）。第 20 到 39 层每个 token 一个条目；第 20 层是 Full 层，并且从它的 indexer 分数里挑出候选块；第 24、28、32、36 层沿用第 20 层的 KV，只在候选块里重新选条目（Reindex 层）；其余 15 层是 Reuse 层。第 1 层和第 14 层在注意力之前有 Engram。真实模型的第 40 到 42 层是给投机解码用的 MTP 层，不参与这一页的损失。
     这一页展开第 0 层（滑动窗口）、第 1 层（Engram）、第 2 层（Full，$m=2$）、第 20 层（Full，$m=1$，挑候选块）、第 24 层（Reindex）和第 25 层（Reuse），每种机制都画一次；第 3 到 19 层、第 21 到 23 层、第 26 到 39 层收成占位盒子，按恒等映射处理。尺寸用 $d=\of{d}$、$V=\of{V}$、$T=\of{T}$；注意力 $\of{H}$ 个 head，每个宽 $D=\of{D}$，最后 $\of{rd}$ 维做 RoPE；滑动窗口 $\of{sw}$；indexer 每个位置选 $\of{kI}$ 个条目；MoE 有 $\of{Ne}$ 个路由专家，每个位置选 $\of{K}$ 个。
     参考实现的 config.json 写的是 <code>"dtype": "fp8"</code> 和 <code>"expert_dtype": "fp4"</code>：Linear 的权重存成 FP8，路由专家的权重存成 FP4，各带分块的 scale；激活是 bf16，乘这些权重之前先用 <code>act_quant</code> 量化成 FP8。另外有四处量化在 <code>dtype</code> 是 bf16 时也执行：滑动窗口的 kv 量化成 FP8，压缩 KV、indexer 的 key 和 query 量化成 FP4。这一页不画这些量化：页面的 dtype 写 bf16，指激活的 dtype，权重也按 bf16 写，数值按 float64 算。所以这一页的数值和真实模型相差量化误差，显存面板里参数的字节数按 bf16 算，比真实模型多。四处量化的位置在对应的 apply_rotary_emb 盒子里说明。
+    参考实现用 <code>torch.topk</code> 选专家、选压缩条目和候选块。分数相等时 <code>torch.topk</code> 不保证先选哪一个；这一页在分数相等时先选编号小的，相当于把 <code>torch.topk</code> 换成 <code>x.sort(dim=dim, descending=True, stable=True)</code> 后取前 $k$ 个，对照用的 PyTorch 结果也做了同样的替换。分数各不相同时两种写法选出的编号相同。
     $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
   backward:
     label: 总览
@@ -437,7 +438,7 @@ steps:
     label: '$\of{z}$'
     title: head
     text: |
-      每个位置的向量乘同一块 $W^{\top}$，得到下一个 token 的 logits。head 不和 embedding 共享权重。
+      每个位置的向量乘同一块 $W^{\top}$，得到下一个 token 的 logits。head 不和 embedding 共享权重。参考实现的 <code>ParallelHead.forward(x, full_logits=False)</code> 默认先做 <code>x = x[:, -1]</code>，只算最后一个位置，生成时只需要它；这一页对每个位置算损失，按 <code>full_logits=True</code> 画，所有位置都算 logits。
       $$\mathbf{z}={{ z | matrix:2 }}$$
     backward:
       label: '$\partial W,\ \partial\of{hf}$'
@@ -465,7 +466,7 @@ panels:
               h = layer.engram(h, hashes[:, :, layer.engram.layer_hash_index, :], engram_mask)
           h, pre_mix = layer(h, 0, pre_mix, image_mask)
       h = layer.hc_pre(h, pre_mix)
-      logits = self.head(self.norm(h))
+      logits = self.head(self.norm(h), full_logits=True)  # 默认只算最后一个位置
       loss = F.nll_loss(F.log_softmax(logits, -1), labels)  # 参考实现没有训练损失
     note: DeepSeek-V4.1-Flash：d = 5120，40 层，另有 3 个 MTP 层；注意力 64 个 head，head_dim = 512，其中最后 64 维做 RoPE，q_lora_rank = 1280，o_groups = 8，o_lora_rank = 1024，window_size = 128；压缩层的 rope_theta = 160000，并用 YaRN（factor 16）；indexer 32 个 head，index_head_dim = 128，index_topk = 512；候选块 2048 个，每块 8 个条目；hc_mult = 4，hc_sinkhorn_iters = 20；MoE 384 个路由专家，每个 token 选 6 个，另有 1 个共享专家，moe_inter_dim = 2304，route_scale = 1.5，swiglu_limit = 10；Engram 用最长 4-gram，8 个 head，每个 256 维；ViT 32 个 block，宽 1024，16 个 head，patch 14，aligner 每 $3\times3$ 个 patch 合成一个 token。这一页用 Sinkhorn 3 轮、swiglu_limit = 1，让截断在小数值上也能看到。
 values:
