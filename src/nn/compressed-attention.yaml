@@ -36,6 +36,7 @@ weights:
   sinks: { shape: [H], dtype: fp32, tex: '\mathbf{s}^{\mathrm{sink}}' }
 buffers:
   Mw: { value: 'causal_mask(T, W)', tex: 'M_{\mathrm{sw}}' }
+  block_bias: { value: 'full(T, T // m + 1, -inf)', tex: '(-\infty)_{T\times(\lfloor T/m\rfloor+1)}', when: sparse }
 fold:
   label: '$\of{att}=\mathrm{self\_attn}(\of{x})$'
   title: self_attn（已折叠）
@@ -128,7 +129,11 @@ body:
       when: sparse
       params: { HI: HI, cI: cI, kI: kI, m: m, rd: rd, theta: theta, eps: eps }
       inputs: { x: x, qr: cqn }
-      outputs: { out: Ms }
+      outputs: { idx: top_k_indices }
+  - valid:       { op: 'ge(top_k_indices, 0)', tex: '\mathbf{m}^{\mathrm{valid}}', when: sparse }
+  - safe_indices: { op: 'where(valid, top_k_indices, T // m)', tex: '\mathbf{i}^{\mathrm{safe}}', when: sparse }
+  - block_s:     { op: 'scatter(block_bias, -1, safe_indices, 0)', tex: 'B^{\mathrm{blk}}', when: sparse }
+  - Ms:          { op: 'narrow(block_s, -1, 0, T // m)', tex: '\tilde{M}_{\mathrm{c}}', when: sparse }
   - keys: { op: 'cat([kvr, C], 0)', tex: '[\,\mathbf{kv}'';\,\mathbf{C}\,]', when: compress }
   - mask: { op: 'cat([Mw, Ms if sparse else Mc], 1)', tex: 'M', when: compress }
   - eager_attention_forward:
@@ -228,6 +233,46 @@ steps:
     backward:
       label: '$\partial\of{kvn}$'
       title: 去掉 head 维
+  - id: index_valid
+    when: sparse
+    show: valid
+    label: '$\of{valid}$'
+    title: 标出有效的编号
+    text: |
+      indexer 返回的是条目编号，注意力要的是一张 mask。HF 在 <code>DeepseekV4CSACompressor.forward</code> 里用编号拼出这张 mask，第一步是 <code>valid = top_k_indices &gt;= 0</code>：indexer 把选错的编号写成了 $-1$，这里标出其余的编号。
+      $$\of{valid}={{ valid | matrix:2 }}$$
+  - id: index_safe
+    when: sparse
+    show: safe_indices
+    label: '$\of{safe_indices}$'
+    title: 无效的编号指到多出来的一列
+    text: |
+      <code>safe_indices = torch.where(valid, top_k_indices, torch.full_like(top_k_indices, compressed_len))</code>：无效的编号换成 $\lfloor T/m\rfloor=\of{T // m}$，也就是最后一个条目之后的那一列。下一步往这一列写的 0 最后会被切掉，不影响结果。
+      $$\of{safe_indices}={{ safe_indices | matrix:2 }}$$
+  - id: block_bias
+    when: sparse
+    show: block_bias
+    label: '$\of{block_bias}$'
+    title: 一张全是 $-\infty$ 的表
+    text: |
+      <code>block_bias = compressed_kv.new_full((batch, 1, seq_len, compressed_len + 1), float("-inf"))</code>：$T$ 行，每行 $\lfloor T/m\rfloor+1$ 列，全是 $-\infty$。多出来的最后一列接收无效的编号。图上没有 batch 和 head 这两维。
+      $$\of{block_bias}={{ block_bias | matrix:2 }}$$
+  - id: block_scatter
+    when: sparse
+    show: block_s
+    label: '$\of{block_s}$'
+    title: 选中的条目写成 0
+    text: |
+      <code>block_bias.scatter_(-1, safe_indices.unsqueeze(1), 0.0)</code>：第 $t$ 行在 $\of{safe_indices}$ 第 $t$ 行列出的那几列写上 0。选中且已经压缩完的条目是 0，其余仍是 $-\infty$。HF 原地改写 <code>block_bias</code>，图上另起一个名字。
+      $$\of{block_s}={{ block_s | matrix:2 }}$$
+  - id: block_narrow
+    when: sparse
+    show: Ms
+    label: '$\of{Ms}$'
+    title: 切掉多出来的一列
+    text: |
+      <code>return compressed_kv, block_bias[..., :compressed_len]</code>：去掉最后一列，剩下每个压缩条目一列。这就是 CSA 层压缩条目那几列的 mask，没选中的条目是 $-\infty$。
+      $$\of{Ms}={{ Ms | matrix:2 }}$$
   - id: keys
     when: compress
     show: keys
@@ -247,7 +292,7 @@ steps:
     text: |
       前 $T$ 列是滑动窗口的 causal mask：位置 $t$ 只看 $t-W<s\le t$，$W=\of{W}$。
       $$M_{\mathrm{sw}}={{ Mw | matrix:2 }}$$
-      后面接上压缩条目那几列。第 $w$ 个条目压缩了 token $wm$ 到 $wm+m-1$，位置 $t$ 只有在这些 token 都不晚于自己时才能看到它，即 $(w+1)m\le t+1$，否则是 $-\infty$，对应 HF 里 <code>entry_indices &gt;= (position_ids + 1) // compress_rate</code> 的那张 mask。HCA 层直接用这张 mask；CSA 层用 indexer 在它的基础上挑过的 mask，没选中的条目也是 $-\infty$。
+      后面接上压缩条目那几列。第 $w$ 个条目压缩了 token $wm$ 到 $wm+m-1$，位置 $t$ 只有在这些 token 都不晚于自己时才能看到它，即 $(w+1)m\le t+1$，否则是 $-\infty$，对应 HF 里 <code>entry_indices &gt;= (position_ids + 1) // compress_rate</code> 的那张 mask。HCA 层直接用这张 mask；CSA 层用上面由 indexer 的编号拼出的 mask，没选中的条目也是 $-\infty$。
       $$\of{mask}={{ mask | matrix:2 }}$$
   - id: o_heads
     show: o3

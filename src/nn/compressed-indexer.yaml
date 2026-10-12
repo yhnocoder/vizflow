@@ -4,7 +4,7 @@ import:
   Compressor: vizflow/nn/compressor
   PartialRoPE: vizflow/nn/partial-rope
   ReLU: vizflow/nn/relu
-formula: '\step{mask}{\of{out}=}\step{topk}{\operatorname{top}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu.*}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu.*}{\big)}\step{scale}{/\sqrt{c_I}}\step{topk}{+M_{\mathrm{c}}\big)}'
+formula: '\step{invalid_fill}{\of{idx}=}\step{topk}{\operatorname{argtop}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu.*}{\,\mathrm{ReLU}\big(}\step{dot}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu.*}{\big)}\step{scale}{/\sqrt{c_I}}\step{future_fill}{\text{ 未来条目记 }-\infty}\step{topk}{\big)}'
 params:
   HI:    { type: dim }
   cI:    { type: dim }
@@ -16,16 +16,19 @@ params:
 inputs:
   x:  { shape: [T, d] }
   qr: { shape: [T, rq] }
-outputs: [out]
+outputs: [idx]
+buffers:
+  position_ids:  { value: 'arange(T)', dtype: int64, tex: '\mathrm{pos}' }
+  entry_indices: { value: 'arange(T // m)', dtype: int64, tex: '\mathrm{ent}' }
 weights:
   Wqb: { shape: [HI * cI, rq], tex: 'W^{I}_{qb}' }
   Ww:  { shape: [HI, d], tex: 'W^{I}_{w}' }
 fold:
-  label: '$\of{out}=\mathrm{indexer}(\of{x},\ \of{qr})$'
+  label: '$\of{idx}=\mathrm{indexer}(\of{x},\ \of{qr})$'
   title: indexer（已折叠）
   text: |
-    indexer 用自己的一套 compressor 把 key 压缩成和外面相同的窗口，给每个位置和每个已经完整的压缩条目打一个分，每个位置只保留分数最高的 $k_I=\of{kI}$ 个条目，其余条目在 mask 里是 $-\infty$。
-    $$\of{out}={{ out | matrix:2 }}$$
+    indexer 用自己的一套 compressor 把 key 压缩成和外面相同的窗口，给每个位置和每个已经完整的压缩条目打一个分，每个位置返回分数最高的 $k_I=\of{kI}$ 个条目的编号；选到还没压缩完的条目时，编号换成 $-1$。对应 HF 里 <code>top_k_indices = self.indexer(...)</code>。
+    $$\of{idx}={{ idx | matrix:2 }}$$
   backward:
     label: indexer
     title: indexer 没有梯度
@@ -37,7 +40,7 @@ body:
       subtitle: indexer 自己的 compressor，宽 $c_I$
       params: { m: m, c: cI, rd: rd, theta: theta, overlap: true, eps: eps }
       inputs: { x: x }
-      outputs: { C: K, mask: Mc }
+      outputs: { C: K }
       tex: { C: '\mathbf{K}^{I}' }
       folded: true
       fold:
@@ -85,9 +88,15 @@ body:
         - w:  { op: wx * HI ** -0.5, tex: '\mathbf{w}^{I}' }
         - Rw: { op: 'Rs * view(w, T, HI, 1)', tex: '\mathbf{w}^{I}\odot\tilde{R}' }
         - I:  { op: 'sum(Rw, 1)', tex: 'I' }
-  - Im:  { op: I + Mc, tex: '\bar{I}' }
-  - sel: { op: 'topk_mask(Im, min(kI, T // m), -1)', tex: '\mathbf{m}^{\mathrm{sel}}' }
-  - out: { op: 'where(sel, Mc, -inf)', tex: '\tilde{M}_{\mathrm{c}}' }
+  - pos1:        { op: position_ids + 1, tex: '\mathrm{pos}+1' }
+  - threshold:   { op: pos1 // m, tex: '\boldsymbol{\tau}' }
+  - entry_row:   { op: 'view(entry_indices, 1, T // m)', tex: '\mathrm{ent}^{\top}' }
+  - threshold_col: { op: 'unsqueeze(threshold, -1)', tex: '\boldsymbol{\tau}_{:,1}' }
+  - future_mask: { op: 'ge(entry_row, threshold_col)', tex: '\mathbf{m}^{\mathrm{fut}}' }
+  - Im:          { op: 'masked_fill(I, future_mask, -inf)', tex: '\bar{I}' }
+  - top:         { op: 'topk_indices(Im, min(kI, T // m), -1)', tex: '\mathbf{i}^{\mathrm{top}}' }
+  - invalid:     { op: 'ge(top, threshold_col)', tex: '\mathbf{m}^{\mathrm{inv}}' }
+  - idx:         { op: 'masked_fill(top, invalid, -1)', tex: '\mathbf{i}^{I}' }
 steps:
   - id: q_up
     show: [Wqb.T, qp]
@@ -153,24 +162,66 @@ steps:
     text: |
       $I_{t,w}$ 表示位置 $t$ 有多需要第 $w$ 个压缩条目。
       $$I_{t,w}=\sum_h w_{t,h}\,\tilde{R}_{t,h,w},\qquad \of{I}={{ I | matrix:3 }}$$
-  - id: future
+  - id: positions
+    show: [position_ids, pos1]
+    label: '$\of{pos1}$'
+    title: 每个位置的编号加 1
+    text: |
+      <code>causal_threshold = (position_ids + 1) // self.compress_rate</code> 的第一步：$\of{position_ids}$ 是每个 token 的位置 $0,1,\dots,T-1$（没有缓存时 HF 的 <code>position_ids</code> 就是 <code>arange(T)</code>），先加 1，得到位置 $t$ 之前（含 $t$）一共有几个 token。
+      $$\of{pos1}={{ pos1 | matrix:2 }}$$
+  - id: threshold
+    show: threshold
+    label: '$\of{threshold}$'
+    title: 每个位置能看到几个完整的条目
+    text: |
+      <code>// self.compress_rate</code>：再按 $m=\of{m}$ 向下取整。$\tau_t=\lfloor (t+1)/m\rfloor$ 是到位置 $t$ 为止已经压缩完的条目个数，编号小于 $\tau_t$ 的条目只包含不晚于 $t$ 的 token。
+      $$\of{threshold}={{ threshold | matrix:2 }}$$
+  - id: entries
+    show: [entry_indices, entry_row]
+    label: '$\of{entry_row}$'
+    title: 压缩条目的编号排成一行
+    text: |
+      <code>entry_indices = torch.arange(compressed_len)</code>，再 <code>.view(1, 1, -1)</code>：条目编号 $0,1,\dots,\lfloor T/m\rfloor-1$ 排成一行，下一步和每个位置的 $\tau_t$ 逐个比较。图上没有 batch 维，view 成 $(1, \lfloor T/m\rfloor)$。
+      $$\of{entry_row}={{ entry_row | matrix:2 }}$$
+  - id: threshold_col
+    show: threshold_col
+    label: '$\of{threshold_col}$'
+    title: 阈值排成一列
+    text: |
+      <code>causal_threshold.unsqueeze(-1)</code>：$\tau$ 排成一列，和上面那一行广播成 $T\times\lfloor T/m\rfloor$ 的表。
+      $$\of{threshold_col}={{ threshold_col | matrix:2 }}$$
+  - id: future_mask
+    show: future_mask
+    label: '$\of{future_mask}$'
+    title: 标出还没压缩完的条目
+    text: |
+      <code>future_mask = entry_indices.view(1, 1, -1) &gt;= causal_threshold.unsqueeze(-1)</code>：第 $t$ 行第 $w$ 列在 $w\ge\tau_t$ 时是 true，表示第 $w$ 个条目包含位置 $t$ 之后的 token，位置 $t$ 不能选它。
+      $$\of{future_mask}={{ future_mask | matrix:2 }}$$
+  - id: future_fill
     show: Im
     label: '$\of{Im}$'
     title: 还没压缩完的条目记成 $-\infty$
     text: |
-      加上 compressor 的那张 mask $M_{\mathrm{c}}$：位置 $t$ 不能选还包含未来 token 的条目。对应 HF 的 <code>index_scores.masked_fill(future_mask, -inf)</code>。
+      <code>index_scores = index_scores.masked_fill(future_mask, float("-inf"))</code>：$\of{future_mask}$ 为 true 的分数换成 $-\infty$，其余保留。
       $$\of{Im}={{ Im | matrix:3 }}$$
   - id: topk
-    show: sel
-    label: '$\of{sel}$'
-    title: 'top-$k_I$：每个位置选出 $k_I$ 个条目'
+    show: top
+    label: '$\of{top}$'
+    title: 'top-$k_I$：每个位置选出 $k_I$ 个条目的编号'
     text: |
-      每一行选出分数最高的 $\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$ 个。能选的条目不到这么多时（例如位置 0，一个完整的条目都没有），top-k 会选上 $-\infty$ 的条目；HF 把这样的选择改成 $-1$，表示无效，下一步它们仍然是 $-\infty$。真实模型里 $k_I=512$。挑选只决定 0 和 1，没有梯度。
-      $$\of{sel}={{ sel | matrix:2 }}$$
-  - id: mask
-    show: out
-    label: '$\of{out}$'
-    title: 压缩条目的稀疏 mask
+      <code>top_k = min(self.index_topk, compressed_len)</code>，然后 <code>top_k_indices = index_scores.topk(top_k, dim=-1).indices</code>：每一行取分数最高的 $\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$ 个条目，返回它们的编号，按分数从大到小排。能选的条目不到这么多时（例如位置 0，一个完整的条目都没有），top-k 会选上 $-\infty$ 的条目。真实模型里 $k_I=512$。编号是整数，没有梯度。
+      $$\of{top}={{ top | matrix:2 }}$$
+  - id: invalid
+    show: invalid
+    label: '$\of{invalid}$'
+    title: 标出选错的编号
     text: |
-      选中且已经完整的条目是 0，其余是 $-\infty$。HF 用选中的编号把 0 写进一张全是 $-\infty$ 的表（<code>block_bias.scatter_</code>），结果相同。
-      $$\of{out}={{ out | matrix:2 }}$$
+      <code>invalid = top_k_indices &gt;= causal_threshold.unsqueeze(-1)</code>：编号不小于 $\tau_t$ 的选择指向还没压缩完的条目，是 top-k 在可选条目不够时补上的。
+      $$\of{invalid}={{ invalid | matrix:2 }}$$
+  - id: invalid_fill
+    show: idx
+    label: '$\of{idx}$'
+    title: 选错的编号换成 $-1$
+    text: |
+      <code>return torch.where(invalid, torch.full_like(top_k_indices, -1), top_k_indices)</code>：$\of{invalid}$ 为 true 的编号换成 $-1$，其余保留。图上写成 <code>masked_fill(top, invalid, -1)</code>，结果相同。indexer 的输出就是这些编号，mask 由 self_attn 用编号拼出来。
+      $$\of{idx}={{ idx | matrix:2 }}$$

@@ -50,11 +50,15 @@ describe('deepseek_v4-dsl.yaml against transformers DeepseekV4Model in float64',
     }
   });
 
-  it('keeps the same compressed entries as the HF indexer', () => {
-    const mask = page.nodes.get(`${INDEXER}out`)!.value.toNested() as number[][];
-    mask.forEach((row, t) => {
-      const kept = row.flatMap((v, w) => (v === 0 ? [w] : []));
-      expect(kept, `position ${t}`).toEqual(fixture.selected[t].filter((w) => w >= 0));
+  it('returns the same entry indices as the HF indexer, -1 for the invalid ones, and keeps those entries in the mask', () => {
+    const sorted = (row: number[]) => [...row].sort((a, b) => a - b);
+    const idx = page.nodes.get(`${INDEXER}idx`)!.value.toNested() as number[][];
+    const mask = page.nodes.get(`${INDEXER.replace('indexer.', '')}Ms`)!.value.toNested() as number[][];
+    idx.forEach((row, t) => {
+      expect(sorted(row), `position ${t}`).toEqual(sorted(fixture.selected[t]));
+      const kept = mask[t].flatMap((v, w) => (v === 0 ? [w] : []));
+      expect(kept, `position ${t}`).toEqual(sorted(fixture.selected[t].filter((w) => w >= 0)));
+      mask[t].forEach((v) => expect([0, -Infinity]).toContain(v));
     });
   });
 
