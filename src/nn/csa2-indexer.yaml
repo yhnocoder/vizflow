@@ -1,0 +1,236 @@
+module: CSA2Indexer
+subtitle: Indexer，给每个 query 选出 $k_I$ 个压缩位置
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  ApplyRotaryEmb: vizflow/nn/apply-rotary-emb
+  ReLU: vizflow/nn/relu
+  CandidateBlocks: vizflow/nn/candidate-blocks
+formula: '\step{shift}{\of{idx}=}\step{topk,sort}{\operatorname{sort}\operatorname{top}_{k_I}\big(}\step{index_sum}{\textstyle\sum_{h}}\step{weights,weights_scale}{w_{h}}\step{relu.*}{\,\mathrm{ReLU}\big(}\step{scores}{\mathbf{q}_{h}\mathbf{K}^{\top}}\step{relu.*}{\big)}\step{future}{+M_{\mathrm{c}}}\step{restrict}{+M_{\mathrm{cand}}}\step{topk,sort}{\big)}'
+params:
+  HI:        { type: dim }
+  cI:        { type: dim }
+  kI:        { type: dim }
+  m:         { type: dim }
+  rd:        { type: dim }
+  theta:     { type: float, default: 1e4 }
+  yarn_factor:   { type: float, default: 1 }
+  yarn_original: { type: int, default: 0 }
+  eps:       { type: float, default: 1e-6 }
+  owns_k:    { type: bool, default: true }
+  cand_source: { type: bool, default: false }
+  use_cand:  { type: bool, default: false }
+  B:         { type: dim }
+  bs:        { type: dim }
+  detail:    { type: bool, default: true }
+  norm_ref:  { type: text, default: attn_norm }
+inputs:
+  x:       { shape: [T, d] }
+  qr:      { shape: [T, rq] }
+  latent:  { shape: [Tc, c], when: owns_k }
+  K_in:    { shape: [Tc, cI], when: not owns_k }
+  cand_in: { shape: [T, Tc], when: use_cand }
+outputs: [idx, { name: K, when: owns_k }, { name: cand, when: cand_source }]
+weights:
+  Wqb: { shape: [HI * cI, rq], tex: 'W^{I}_{qb}' }
+  Ww:  { shape: [HI, d], tex: 'W^{I}_{w}' }
+  Wk:  { shape: [cI, c], tex: 'W^{I}_{k}', when: owns_k }
+buffers:
+  pos:  { value: 'arange(T)', dtype: int64, tex: '\mathbf{p}' }
+  cpos: { value: 'arange(Tc)', dtype: int64, tex: '\mathbf{j}' }
+fold:
+  label: '$\of{idx}=\mathrm{indexer}(\of{x},\ \of{qr})$'
+  title: indexer（已折叠）
+  text: |
+    indexer 给每个位置和每个已经完整的压缩位置打一个分，每个位置保留分数最高的 $k_I=\of{kI}$ 个，按位置排好，再加上滑动窗口的长度 $T$ 作为 kv 里的行号；凑不满的槽位是 $-1$。
+    $$\of{idx}={{ idx | matrix }}$$
+  backward:
+    label: indexer
+    title: indexer 没有梯度
+    text: indexer 只输出选中的编号，选择不可导，损失的梯度不会进入 indexer。
+body:
+  - kp: { op: latent @ Wk.T, tex: '(\of{latent}{W^{I}_{k}}^{\top})', when: owns_k }
+  - k_norm:
+      use: RMSNorm
+      suffix: k
+      subtitle: RMSNorm
+      when: owns_k
+      params: { eps: eps }
+      inputs: { x: kp }
+      outputs: { out: kn }
+      tex: { out: '\bar{\mathbf{k}}^{I}' }
+      folded: true
+      fold:
+        text: |
+          计算和 \of{norm_ref} 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{k}}^{I}={{ kn | matrix:2 }}$$
+  - k_rope:
+      use: ApplyRotaryEmb
+      suffix: kI
+      title: apply_rotary_emb
+      subtitle: 'index key，位置是 $j\cdot m$'
+      when: owns_k
+      params: { rd: rd, theta: theta, stride: m, heads: false, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: kn }
+      outputs: { out: K }
+      tex: { out: '\mathbf{K}^{I}' }
+      folded: true
+      fold:
+        text: |
+          计算和注意力里 query 的 apply_rotary_emb 相同，那里展开画了每一步；第 $j$ 个压缩位置的位置是 $j\cdot m$。
+          $$\mathbf{K}^{I}={{ K | matrix:2 }}$$
+  - qp: { op: qr @ Wqb.T, tex: '\of{qr}{W^{I}_{qb}}^{\top}' }
+  - q:  { op: 'view(qp, T, HI, cI)', tex: '\mathbf{q}^{I}' }
+  - q_rope:
+      use: ApplyRotaryEmb
+      suffix: qI
+      title: apply_rotary_emb
+      subtitle: index query，位置是 $t$
+      params: { rd: rd, theta: theta, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: q }
+      outputs: { out: qe }
+      tex: { out: "{\\mathbf{q}^{I}}'" }
+      folded: true
+      fold:
+        text: |
+          计算和注意力里 query 的 apply_rotary_emb 相同，那里展开画了每一步。
+          $${\mathbf{q}^{I}}'={{ qe | matrix:2 }}$$
+  - wx: { op: x @ Ww.T, tex: '\of{x}{W^{I}_{w}}^{\top}' }
+  - w:  { op: wx * (cI ** -0.5 * HI ** -0.5), tex: '\mathbf{w}^{I}' }
+  - kT: { op: K.T if owns_k else K_in.T, tex: '{\mathbf{K}^{I}}^{\top}' }
+  - S:  { op: qe @ kT, tex: 'S^{I}' }
+  - relu:
+      use: ReLU
+      folded: not detail
+      inputs: { x: S }
+      outputs: { out: R }
+      tex: { out: 'R' }
+      fold:
+        text: |
+          计算和第一个展开的 indexer 里的 ReLU 相同：负的点积变成 0。
+          $$R={{ R | matrix:3 }}$$
+  - Rw: { op: 'R * unsqueeze(w, -1)', tex: '\mathbf{w}^{I}\odot R' }
+  - I:  { op: 'sum(Rw, 1)', tex: 'I' }
+  - pos1: { op: pos + 1, tex: '\mathbf{p}+1' }
+  - lens: { op: 'unsqueeze(floor_divide(pos1, m), -1)', tex: '\mathbf{n}^{c}' }
+  - fut:  { op: 'ge(cpos, lens)', tex: 'F' }
+  - Im:   { op: 'masked_fill(I, fut, -inf)', tex: '\bar{I}' }
+  - candidates:
+      use: CandidateBlocks
+      when: cand_source
+      params: { B: B, bs: bs }
+      inputs: { logits: Im, lens: lens }
+      outputs: { keep: cand }
+      tex: { keep: 'M_{\mathrm{cand}}' }
+  - noncand: { op: 'logical_not(cand_in)', tex: '\neg M_{\mathrm{cand}}', when: use_cand }
+  - Ic:      { op: 'masked_fill(Im, noncand, -inf)', tex: '\hat{I}', when: use_cand }
+  - top:  { op: 'topk_indices(Ic, min(kI, T // m), -1) if use_cand else topk_indices(Im, min(kI, T // m), -1)', tex: '\mathbf{i}^{\mathrm{top}}' }
+  - srt:  { op: 'sort(top, -1)', tex: '\mathbf{i}^{\mathrm{sort}}' }
+  - vis:  { op: 'lt(srt, lens)', tex: '[\,\mathbf{i}<\mathbf{n}^{c}\,]' }
+  - shifted: { op: srt + T, tex: '\mathbf{i}+T' }
+  - idx:  { op: 'where(vis, shifted, -1)', tex: '\mathbf{i}^{I}', dtype: int32 }
+steps:
+  - id: k_proj
+    when: owns_k
+    show: [Wk.T, kp]
+    label: '$\of{kp}$'
+    title: wk：index key 来自压缩后的 latent
+    text: |
+      参考实现的 <code>Indexer</code> 只在自己压缩 KV 的层（Full 层）算 index key：<code>k = self.k_norm(self.wk(latent))</code>，<code>latent</code> 是 compressor 输出的、还没做 RoPE 的压缩 latent。index key 从 $D$ 维投影到 $c_I=\of{cI}$ 维。
+      $$\of{kp}={{ kp | matrix:2 }}$$
+  - id: q_up
+    show: [Wqb.T, qp]
+    label: '$\of{qp}$'
+    title: wq_b：index query
+    text: |
+      index query 来自注意力里归一化后的 q latent $\of{qr}$，乘 indexer 自己的 wq_b。
+      $$\of{qp}={{ qp | matrix:2 }}$$
+  - id: q_heads
+    show: q
+    label: '$\of{q}$'
+    title: 分成 $H_I$ 个 head
+    text: |
+      <code>unflatten(-1, (n_heads, index_head_dim))</code>：$H_I=\of{HI}$ 个 head，每个宽 $c_I=\of{cI}$。真实模型里 $H_I=32$、$c_I=128$。
+  - id: weights
+    show: [Ww.T, wx]
+    label: '$\of{wx}$'
+    title: weights_proj：每个位置给每个 head 一个权重
+    text: |
+      权重从 indexer 的输入 $\of{x}$ 算出，可以是负数，决定这个位置更相信哪几个 head 的打分。
+      $$\of{wx}={{ wx | matrix:3 }}$$
+  - id: weights_scale
+    show: w
+    label: '$\of{w}$'
+    title: 权重乘 $c_I^{-1/2}H_I^{-1/2}$
+    text: |
+      <code>self.weights_proj(x) * (self.softmax_scale * self.n_heads ** -0.5)</code>：两个缩放先乘成一个数，再乘到权重上。
+      $$\of{w}={{ w | matrix:3 }}$$
+  - id: key_t
+    show: kT
+    label: '${\mathbf{K}^{I}}^{\top}$'
+    title: index key 转置
+    text: |
+      所有 head 共用同一组 index key。不自己压缩 KV 的层读 Full 层留下的 index key（<code>shared_attn.index_k</code>）。
+  - id: scores
+    show: S
+    label: '$\of{S}$'
+    title: query 和每个压缩位置做点积
+    text: |
+      <code>torch.einsum("bshd,btd->bsht", q, index_k)</code>：每个位置、每个 head、每个压缩位置一个点积，形状 $(T, H_I, T_c)$。
+      $$\of{S}={{ S | matrix:3 }}$$
+  - id: index_weight
+    show: Rw
+    label: '$\of{Rw}$'
+    title: 每个 head 的分数乘上自己的权重
+    text: |
+      <code>index_score.relu_() * weights.unsqueeze(-1)</code>。
+      $$\of{Rw}={{ Rw | matrix:3 }}$$
+  - id: index_sum
+    show: I
+    label: '$\of{I}$'
+    title: 按 head 相加，得到 index score
+    text: |
+      <code>.sum(dim=2)</code> 对 head 求和。$I_{t,j}$ 表示位置 $t$ 有多需要第 $j$ 个压缩位置。
+      $$\of{I}={{ I | matrix:3 }}$$
+  - id: lens
+    show: [pos, pos1, lens]
+    label: '$\of{lens}$'
+    title: 每个位置能看到几个压缩位置
+    text: |
+      <code>compress_lens = (torch.arange(1, seqlen + 1) // ratio).unsqueeze(-1)</code>：第 $j$ 个压缩位置由 token $jm$ 到 $jm+m-1$ 合成，位置 $t$ 要等这 $m$ 个 token 都不晚于自己才能看到它，所以能看到 $\lfloor (t+1)/m\rfloor$ 个，$m=\of{m}$。
+      $$\of{lens}={{ lens | matrix }}$$
+  - id: future
+    show: [cpos, fut, Im]
+    label: '$\of{Im}$'
+    title: 看不到的压缩位置记成 $-\infty$
+    text: |
+      <code>index_score.masked_fill_(torch.arange(seqlen // ratio) &gt;= compress_lens, -inf)</code>。
+      $$\of{Im}={{ Im | matrix:3 }}$$
+  - id: restrict
+    when: use_cand
+    show: [noncand, Ic]
+    label: '$\of{Ic}$'
+    title: 只在候选范围里选
+    text: |
+      候选来源层之后的 Reindex 层用自己的 query 和权重打分，再把候选范围以外的位置记成 $-\infty$：<code>index_score.masked_fill(~shared_attn.candidates, -inf)</code>。这是两级 top-k 的第二级。
+      $$\of{Ic}={{ Ic | matrix:3 }}$$
+  - id: topk
+    show: top
+    label: '$\of{top}$'
+    title: 'top-$k_I$：每个位置选出 $k_I$ 个'
+    text: |
+      <code>index_score.topk(topk, dim=-1, sorted=False).indices</code>，$\mathrm{topk}=\min(k_I, \lfloor T/m\rfloor)=\of{min(kI, T // m)}$。能选的位置不到这么多时，top-k 会选上 $-\infty$ 的位置，下一步把它们改成 $-1$。真实模型里 $k_I=512$。挑选只决定编号，没有梯度。
+      $$\of{top}={{ top | matrix }}$$
+  - id: sort
+    show: srt
+    label: '$\of{srt}$'
+    title: 按位置排序
+    text: |
+      <code>.sort(dim=-1).values</code>：选出的编号按从小到大排好。<code>sparse_attn</code> 不在乎顺序，排序让同一行的编号按位置先后排列。
+      $$\of{srt}={{ srt | matrix }}$$
+  - id: shift
+    show: [vis, shifted, idx]
+    label: '$\of{idx}$'
+    title: 换成 kv 里的行号，看不到的改成 $-1$
+    text: |
+      <code>torch.where(idxs &lt; compress_lens, idxs + offset, -1)</code>：注意力的 kv 是滑动窗口的 $T$ 行在前、压缩位置在后，所以有效的编号加上 offset $=T=\of{T}$；看不到的编号改成 $-1$。
+      $$\of{idx}={{ idx | matrix }}$$

@@ -12,6 +12,7 @@ params:
   name: { type: text, default_key: true }
   clamped: { type: bool, default: false }
   limit: { type: float }
+  up_first: { type: bool, default: false }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -31,7 +32,7 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
-  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
+  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: 'false if up_first else clamped' }
   - act_fn:
       use: act
       when: not clamped
@@ -40,6 +41,7 @@ body:
       tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
   - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: up_first }
   - act_fn:
       use: act
       when: clamped

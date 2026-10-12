@@ -1,0 +1,214 @@
+module: Engram
+subtitle: 按 n-gram 查表，门控后写进每条 stream
+import:
+  Sigmoid: vizflow/nn/sigmoid
+formula: '\step{add}{\of{out}=\of{h}+}\step{gate_mask}{\step{sigmoid.*}{\sigma\big(}\step{signed_sqrt}{\operatorname{sign}(s)\sqrt{|s|}}\step{sigmoid.*}{\big)}}\step{write}{\,\mathbf{v}},\quad\step{dot,dot_scale}{s=\dfrac{\langle\of{h},\ \mathbf{w}\odot\mathbf{k}\rangle}{\sqrt{d}\,\mathrm{rms}(\of{h})\,\mathrm{rms}(\mathbf{k})}}'
+params:
+  Vg:    { type: dim }
+  dg:    { type: dim }
+  eps:   { type: float, default: 1e-6 }
+  clamp: { type: float, default: 1e-6 }
+inputs:
+  X:    { shape: [T, N, d] }
+  hash: { shape: [T, C] }
+  mask: { shape: [T] }
+outputs: [out]
+weights:
+  table:    { shape: [Vg, dg], tex: 'E_{g}' }
+  Wkv:      { shape: [(N + 1) * d, C * dg], tex: 'W^{g}_{kv}' }
+  q_weight: { shape: [N, d], init: ones, tex: '\mathbf{w}_{q}' }
+  k_weight: { shape: [N, d], init: ones, tex: '\mathbf{w}_{k}' }
+fold:
+  label: '$\of{out}=\mathrm{engram}(\of{X})$'
+  title: engram（已折叠）
+  text: |
+    按 n-gram 的哈希行号查表，得到每条 stream 一个 key 和所有 stream 共用的 value；key 和 stream 的归一化点积经过门控，决定 value 写进这条 stream 多少。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{X}$'
+    title: 穿过 engram（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+body:
+  - emb:   { op: 'embedding(hash, table)', tex: 'E_{g}[\of{hash}]' }
+  - flat:  { op: 'view(emb, T, C * dg)', tex: '\mathbf{e}' }
+  - kv:    { op: flat @ Wkv.T, tex: '\mathbf{kv}' }
+  - key0:  { op: 'narrow(kv, -1, 0, N * d)', tex: '\mathbf{k}^{\mathrm{flat}}' }
+  - value: { op: 'narrow(kv, -1, N * d, d)', tex: '\mathbf{v}' }
+  - key:   { op: 'view(key0, T, N, d)', tex: '\mathbf{k}', dtype: fp32 }
+  - weight: { op: q_weight * k_weight, tex: '\mathbf{w}', dtype: fp32 }
+  - h:     { op: identity(X), tex: '\mathbf{x}', dtype: fp32 }
+  - hsq:   { op: h ** 2, tex: '\mathbf{x}^{2}' }
+  - hms:   { op: 'mean(hsq, -1)', tex: '\mathrm{ms}_{h}' }
+  - hmse:  { op: hms + eps, tex: '\mathrm{ms}_{h}+\epsilon' }
+  - hr:    { op: rsqrt(hmse), tex: 'r_{h}' }
+  - ksq:   { op: key ** 2, tex: '\mathbf{k}^{2}' }
+  - kms:   { op: 'mean(ksq, -1)', tex: '\mathrm{ms}_{k}' }
+  - kmse:  { op: kms + eps, tex: '\mathrm{ms}_{k}+\epsilon' }
+  - kr:    { op: rsqrt(kmse), tex: 'r_{k}' }
+  - rstd:  { op: hr * kr, tex: 'r' }
+  - hw:    { op: h * weight, tex: '\mathbf{x}\odot\mathbf{w}' }
+  - hwk:   { op: hw * key, tex: '\mathbf{x}\odot\mathbf{w}\odot\mathbf{k}' }
+  - dsum:  { op: 'sum(hwk, -1)', tex: '\langle\mathbf{x},\mathbf{w}\odot\mathbf{k}\rangle' }
+  - dr:    { op: dsum * rstd, tex: '\langle\cdot\rangle r' }
+  - dot:   { op: dr * d ** -0.5, tex: 's' }
+  - mag:   { op: abs(dot), tex: '|s|' }
+  - magc:  { op: 'clamp_min(mag, clamp)', tex: '\max(|s|,\epsilon_{c})' }
+  - root:  { op: sqrt(magc), tex: '\sqrt{|s|}' }
+  - signed: { op: 'copysign(root, dot)', tex: '\operatorname{sign}(s)\sqrt{|s|}' }
+  - sigmoid:
+      use: Sigmoid
+      inputs: { x: signed }
+      outputs: { out: gate0 }
+      tex: { out: '\sigma' }
+  - dead:  { op: 'logical_not(mask)', tex: '\neg\of{mask}' }
+  - gate:  { op: 'masked_fill(gate0, unsqueeze(dead, -1), 0)', tex: '\mathbf{g}' }
+  - gv:    { op: 'unsqueeze(gate, -1) * unsqueeze(value, -2)', tex: '\mathbf{g}\otimes\mathbf{v}' }
+  - out:   { op: h + gv, dtype: X }
+steps:
+  - id: lookup
+    show: [table, emb]
+    label: '$\of{emb}$'
+    title: 按哈希行号查表
+    text: |
+      <code>self.embed(hash_ids)</code>：每个位置有 $C=\of{C}$ 个行号（每种长度的 n-gram 每个 head 一个），从表 $E_g$ 里取出 $C$ 行，每行 $d_g=\of{dg}$ 维。真实模型的表有约 3.84 亿行，每行 256 维，以 FP8 存储，查表时再乘上每 32 个数一个的缩放还原；这一页的表直接存数值，不画量化。
+      $$\of{emb}={{ emb | matrix:2 }}$$
+    backward:
+      label: '$\partial E_{g}$'
+      title: 梯度加回被查到的行
+  - id: flatten
+    show: flat
+    label: '$\of{flat}$'
+    title: 拼成一个向量
+    text: <code>.flatten(-2)</code>：$C$ 行首尾相接，得到 $C d_g=\of{C*dg}$ 维。
+    backward:
+      label: '$\partial\of{emb}$'
+      title: 切回 $C$ 行
+  - id: wkv
+    show: [Wkv.T, kv]
+    label: '$\of{kv}$'
+    title: wkv：每条 stream 一个 key，加一个共用的 value
+    text: |
+      <code>kv = self.wkv(...)</code> 输出 $(N+1)d$ 维：前 $Nd$ 维是 \of{N} 条 stream 各自的 key，最后 $d$ 维是所有 stream 共用的 value。
+      $$\of{kv}={{ kv | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{kv}^{g},\ \partial\of{flat}$'
+      title: 传到 wkv 的权重和查到的行
+  - id: split
+    show: [key0, value, key]
+    label: '$\mathbf{k},\ \mathbf{v}$'
+    title: 切成 key 和 value
+    text: |
+      <code>key, value = kv.split([hc_mult * dim, dim], dim=-1)</code>，key 再转成 float32、排成 $(T, N, d)$。
+      $$\mathbf{k}={{ key | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{kv}$'
+      title: 两段梯度拼回去
+  - id: weight
+    show: [q_weight, k_weight, weight]
+    label: '$\of{weight}$'
+    title: q_weight 和 k_weight 相乘
+    text: |
+      <code>weight = self.q_weight.float() * self.k_weight.float()</code>：参考实现的注释写明这两个参数只以乘积的形式出现。每条 stream 一行。
+      $$\of{weight}={{ weight | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{w}_{q},\ \partial\mathbf{w}_{k}$'
+      title: 传到 q_weight 和 k_weight
+  - id: float
+    show: h
+    label: '$\of{h}$'
+    title: stream 转成 float32
+    text: <code>h = x.float()</code>，局部导数是 1。
+    backward:
+      label: '$\partial\of{X}$'
+      title: 穿过类型转换
+  - id: h_rms
+    show: [hsq, hms, hmse, hr]
+    label: '$r_{h}$'
+    title: stream 的均方根倒数
+    text: |
+      <code>torch.rsqrt(h.square().mean(-1) + eps)</code>：每个 token 的每条 stream 单独算，参考实现的注释写明不是把几条 stream 合在一起归一化。$\epsilon=\of{eps}$。
+      $$r_{h}={{ hr | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{h}$'
+      title: 穿过均方根倒数
+  - id: k_rms
+    show: [ksq, kms, kmse, kr]
+    label: '$r_{k}$'
+    title: key 的均方根倒数
+    text: |
+      <code>torch.rsqrt(key.square().mean(-1) + eps)</code>。
+      $$r_{k}={{ kr | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{k}$'
+      title: 穿过均方根倒数
+  - id: rstd
+    show: rstd
+    label: '$\of{rstd}$'
+    title: 两个均方根倒数相乘
+    text: |
+      $$\of{rstd}={{ rstd | matrix:3 }}$$
+    backward:
+      label: '$\partial r_{h},\ \partial r_{k}$'
+      title: 梯度分给两边
+  - id: dot
+    show: [hw, hwk, dsum]
+    label: '$\of{dsum}$'
+    title: stream 和 key 的加权点积
+    text: |
+      <code>(h * weight * key).sum(-1)</code>：从左到右先乘 weight 再乘 key，最后对 $d$ 维求和。
+      $$\of{dsum}={{ dsum | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{h},\ \partial\of{weight},\ \partial\mathbf{k}$'
+      title: 传到 stream、权重和 key
+  - id: dot_scale
+    show: [dr, dot]
+    label: '$s$'
+    title: 归一化，再除以 $\sqrt{d}$
+    text: |
+      <code>* rstd * self.dim ** -0.5</code>：点积乘两个均方根的倒数，相当于两个向量都先归一化；再乘 $d^{-1/2}$。
+      $$s={{ dot | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{dsum},\ \partial\of{rstd}$'
+      title: 穿过两次缩放
+  - id: signed_sqrt
+    show: [mag, magc, root, signed]
+    label: '$\operatorname{sign}(s)\sqrt{|s|}$'
+    title: 带符号的平方根
+    text: |
+      <code>torch.copysign(dot.abs().clamp_min(1e-6).sqrt(), dot)</code>：先取绝对值，下限截到 $\of{clamp}$，开平方，再把符号加回去。参考实现的注释说明这和训练用的 kernel 一致。$|s|$ 小于 $\of{clamp}$ 时被截断，局部导数是 0。
+      $$\operatorname{sign}(s)\sqrt{|s|}={{ signed | matrix:3 }}$$
+    backward:
+      label: '$\partial s$'
+      title: 穿过带符号的平方根
+      text: copysign 只取第二个输入的符号，梯度只传给第一个输入；$s$ 的梯度经过开平方、截断和绝对值传回。
+  - id: gate_mask
+    show: [dead, gate]
+    label: '$\of{gate}$'
+    title: 图片里的位置门控为 0
+    text: |
+      <code>gate.masked_fill(~token_mask.unsqueeze(-1), 0)</code>：图片区间里的位置不加 Engram 的输出，原样通过。
+      $$\of{gate}={{ gate | matrix:3 }}$$
+    backward:
+      label: '$\partial\sigma$'
+      title: 被置 0 的门控没有梯度
+  - id: write
+    show: gv
+    label: '$\of{gv}$'
+    title: 门控乘 value
+    text: |
+      <code>gate.unsqueeze(-1) * value.float().unsqueeze(-2)</code>：共用的 value 按每条 stream 自己的门控缩放。
+      $$\of{gv}={{ gv | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{gate},\ \partial\mathbf{v}$'
+      title: 传到门控和 value
+  - id: add
+    show: out
+    label: '$\of{out}$'
+    title: 加回 stream
+    text: |
+      <code>(h + gate.unsqueeze(-1) * value...).to(x.dtype)</code>：结果转回 stream 的 dtype，交给下一个 block。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{h},\ \partial\of{gv}$'
+      title: 梯度分给 stream 和写进去的部分

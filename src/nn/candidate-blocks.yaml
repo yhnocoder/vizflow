@@ -1,0 +1,103 @@
+module: CandidateBlocks
+subtitle: select_candidate_blocks，按块选出候选范围
+formula: '\step{expand,cut}{\of{keep}=}\step{topk,top_values,scatter}{\operatorname{top}_{B}\big(}\step{pad,blocks,block_max}{\max_{j\in\text{块}}I_{t,j}}\step{last,force}{,\ \text{最新的块}=+\infty}\step{topk,top_values,scatter}{\big)}'
+params:
+  B:  { type: dim }
+  bs: { type: dim }
+inputs:
+  logits: { shape: [T, Tc] }
+  lens:   { shape: [T, 1] }
+outputs: [keep]
+buffers:
+  blk:   { value: 'arange((Tc + bs - 1) // bs)', dtype: int64, tex: '\mathbf{j}^{\mathrm{blk}}' }
+  empty: { value: 'zeros(T, (Tc + bs - 1) // bs)', dtype: bool, tex: '\mathbf{0}' }
+fold:
+  label: '$\of{keep}$'
+  title: select_candidate_blocks（已折叠）
+  text: |
+    每 $b_s=\of{bs}$ 个压缩位置是一块，块的分数取块内的最大值；每个位置保留分数最高的 $B=\of{B}$ 块，包含它最新可见位置的那一块一定保留。
+    $$\of{keep}={{ keep | matrix }}$$
+  backward:
+    label: 无梯度
+    title: 候选范围没有梯度
+body:
+  - padded: { op: 'pad(logits, [0, (Tc + bs - 1) // bs * bs - Tc], value=-inf)', tex: 'I^{\mathrm{pad}}' }
+  - blocks: { op: 'view(padded, T, -1, bs)', tex: 'I^{\mathrm{blk}}' }
+  - bmax:   { op: 'max(blocks, -1)', tex: '\mathbf{m}^{\mathrm{blk}}' }
+  - lm1:    { op: lens - 1, tex: '\of{lens}-1' }
+  - last:   { op: 'floor_divide(lm1, bs)', tex: 'j^{\mathrm{last}}' }
+  - is_last: { op: 'eq(blk, last)', tex: '[\mathbf{j}^{\mathrm{blk}}=j^{\mathrm{last}}]' }
+  - forced: { op: 'masked_fill(bmax, is_last, inf)', tex: '\tilde{\mathbf{m}}^{\mathrm{blk}}' }
+  - top:    { op: 'topk_indices(forced, min(B, (Tc + bs - 1) // bs), -1)', tex: '\mathbf{i}^{\mathrm{blk}}' }
+  - topv:   { op: 'gather(forced, -1, top)', tex: '\tilde{\mathbf{m}}^{\mathrm{blk}}_{\mathbf{i}}' }
+  - ok:     { op: 'greater(topv, -inf)', tex: '[\,\cdot>-\infty\,]' }
+  - kept:   { op: 'scatter(empty, -1, top, ok)', tex: '\mathbf{k}^{\mathrm{blk}}' }
+  - rep:    { op: 'repeat_interleave(kept, bs, -1)', tex: '\mathbf{k}^{\mathrm{rep}}' }
+  - keep:   { op: 'narrow(rep, -1, 0, Tc)', tex: '\mathbf{k}' }
+steps:
+  - id: pad
+    show: padded
+    label: '$\of{padded}$'
+    title: 补齐到整块
+    text: |
+      参考实现的 <code>select_candidate_blocks</code> 先用 <code>F.pad(logits, (0, -width % block_size), value=-inf)</code> 在最后补 $-\infty$，让压缩位置的个数 $T_c=\of{Tc}$ 凑成 $b_s=\of{bs}$ 的整数倍。输入的 index score 里，位置 $t$ 还看不到的压缩位置已经是 $-\infty$。
+      $$\of{padded}={{ padded | matrix:3 }}$$
+  - id: blocks
+    show: blocks
+    label: '$\of{blocks}$'
+    title: 每 $b_s$ 个位置一块
+    text: <code>unflatten(-1, (-1, block_size))</code>：最后一维排成 (块, 块内位置)。
+  - id: block_max
+    show: bmax
+    label: '$\of{bmax}$'
+    title: 块的分数取块内最大值
+    text: |
+      <code>amax(dim=-1)</code>：一块里只要有一个位置分数高，这一块就会被选中。一块里所有位置都看不到时，块的分数是 $-\infty$。
+      $$\of{bmax}={{ bmax | matrix:3 }}$$
+  - id: last
+    show: [lm1, last]
+    label: '$\of{last}$'
+    title: 最新的可见位置在哪一块
+    text: |
+      <code>last = (compress_lens - 1) // block_size</code>：位置 $t$ 能看到 $\of{lens}$ 个压缩位置，最新的一个在第 $\of{last}$ 块。
+      $$\of{last}={{ last | matrix }}$$
+  - id: force
+    show: [blk, is_last, forced]
+    label: '$\of{forced}$'
+    title: 最新的一块一定保留
+    text: |
+      <code>scores.masked_fill(arange(num_blocks) == last, inf)</code>：最新的一块往往还没填满，分数可能比不过更早的整块，参考实现的注释说明把它强制留下，因为它装着最近的 token。
+      $$\of{forced}={{ forced | matrix:3 }}$$
+  - id: topk
+    show: top
+    label: '$\of{top}$'
+    title: 每个位置选出 $B$ 块
+    text: |
+      <code>scores.topk(min(topk_blocks, num_blocks), dim=-1)</code>：每一行选出分数最高的 $\min(B, \lceil T_c/b_s\rceil)=\of{min(B, (Tc + bs - 1) // bs)}$ 块。真实模型里 $B=2048$，$b_s=8$。
+      $$\of{top}={{ top | matrix }}$$
+  - id: top_values
+    show: [topv, ok]
+    label: '$\of{ok}$'
+    title: 去掉 $-\infty$ 的块
+    text: |
+      能看到的块不到 $B$ 块时，top-k 会选上分数是 $-\infty$ 的块。参考实现用 <code>top.values &gt; -inf</code> 把它们去掉。
+      $$\of{ok}={{ ok | matrix }}$$
+  - id: scatter
+    show: [empty, kept]
+    label: '$\of{kept}$'
+    title: 写成每块一个的 bool
+    text: |
+      <code>zeros_like(scores, dtype=bool).scatter_(-1, top.indices, top.values &gt; -inf)</code>：选中且有效的块是 1。
+      $$\of{kept}={{ kept | matrix }}$$
+  - id: expand
+    show: rep
+    label: '$\of{rep}$'
+    title: 每块展开成 $b_s$ 个位置
+    text: <code>repeat_interleave(block_size, dim=-1)</code>：一块的结果复制给块里的每个位置。
+  - id: cut
+    show: keep
+    label: '$\of{keep}$'
+    title: 去掉补齐的位置
+    text: |
+      <code>[..., :width]</code> 去掉补出来的位置，得到每个位置的候选范围，形状和 index score 相同。之后的 Reindex 层只在这个范围里选。
+      $$\of{keep}={{ keep | matrix }}$$

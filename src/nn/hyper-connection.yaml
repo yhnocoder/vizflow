@@ -8,9 +8,12 @@ params:
   iters:  { type: int }
   hc_eps: { type: float, default: 1e-6 }
   eps:    { type: float, default: 1e-6 }
+  project_first: { type: bool, default: false }
+  single_pass:   { type: bool, default: false }
 inputs:
-  X: { shape: [T, N, d] }
-outputs: [post, comb, collapsed]
+  X:      { shape: [T, N, d] }
+  pre_in: { shape: [T, N], when: single_pass }
+outputs: [post, comb, collapsed, pre]
 weights:
   fn:    { shape: [(2 + N) * N, N * d], dtype: fp32, tex: 'W_{\mathrm{fn}}' }
   base:  { shape: [(2 + N) * N], dtype: fp32, tex: '\mathbf{b}' }
@@ -32,11 +35,18 @@ body:
       use: UnweightedRMSNorm
       subtitle: DeepseekV4UnweightedRMSNorm
       suffix: hc
+      when: not project_first
       params: { eps: eps }
       inputs: { x: flat }
       outputs: { out: xn }
       tex: { out: '\tilde{\of{X}}' }
-  - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}' }
+  - mix: { op: xn @ fn.T, tex: '\tilde{\of{X}}W_{\mathrm{fn}}^{\top}', when: not project_first }
+  - mixp: { op: flat @ fn.T, tex: '\mathrm{flat}(\of{X})W_{\mathrm{fn}}^{\top}', when: project_first }
+  - sq:   { op: flat ** 2, tex: '\mathrm{flat}(\of{X})^{2}', when: project_first }
+  - ms:   { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}^{\mathrm{hc}}', when: project_first }
+  - mse:  { op: ms + eps, tex: '(\mathrm{ms}^{\mathrm{hc}}+\epsilon)', when: project_first }
+  - rsq:  { op: rsqrt(mse), tex: 'r^{\mathrm{hc}}', when: project_first }
+  - mix:  { op: mixp * rsq, tex: '\mathbf{m}', when: project_first }
   - pre_w:  { op: 'narrow(mix, -1, 0, N)', tex: '\mathbf{m}_{\mathrm{pre}}' }
   - post_w: { op: 'narrow(mix, -1, N, N)', tex: '\mathbf{m}_{\mathrm{post}}' }
   - comb_f: { op: 'narrow(mix, -1, 2 * N, N * N)', tex: '\mathbf{m}_{\mathrm{comb}}' }
@@ -177,7 +187,8 @@ body:
               - cs_last:  { op: 'sum(R_last, -2, keepdim=true)', tex: '\mathbf{1}^{\top}R^{(\of{iters-1})}' }
               - cse_last: { op: cs_last + hc_eps, tex: '\mathbf{1}^{\top}R^{(\of{iters-1})}+\epsilon' }
               - comb:     { op: R_last / cse_last, tex: 'C' }
-  - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}_{\mathrm{pre}}\odot\of{X}' }
+  - weighted: { op: 'view(pre, T, N, 1) * X', tex: '\mathbf{w}_{\mathrm{pre}}\odot\of{X}', when: not single_pass }
+  - weighted: { op: 'view(pre_in, T, N, 1) * X', tex: '\of{pre_in}\odot\of{X}', when: single_pass }
   - collapsed: { op: 'sum(weighted, 1)' }
 steps:
   - id: flatten
@@ -191,6 +202,7 @@ steps:
       label: '$\partial\of{X}$'
       title: 按原来的形状放回 \of{N} 条 stream
   - id: mix
+    when: not project_first
     show: [fn.T, mix]
     label: '$\of{mix}$'
     title: 一个投影同时算出三组系数
@@ -202,6 +214,73 @@ steps:
       title: 传到 $W_{\mathrm{fn}}$ 和归一化的输入
       text: |
         $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
+  - id: mix_first
+    when: project_first
+    show: [fn.T, mixp]
+    label: '$\of{mixp}$'
+    title: 先乘 $W_{\mathrm{fn}}$，一次投影出三组系数
+    text: |
+      参考实现的 <code>hc_mixes</code> 写的是 <code>F.linear(x, hc_fn) * rsqrt</code>：摊平的向量先直接乘 $W_{\mathrm{fn}}^{\top}$，均方根的倒数放在后面乘。投影输出 $(2+N)N=\of{(2+N)*N}$ 个数：前 \of{N} 个给 pre，接着 \of{N} 个给 post，最后 $N^2=\of{N*N}$ 个给 comb。
+      $$\of{mixp}={{ mixp | matrix:3 }}$$
+    backward:
+      label: '$\partial W_{\mathrm{fn}},\ \partial\,\mathrm{flat}$'
+      title: 传到 $W_{\mathrm{fn}}$ 和摊平的 stream
+      text: |
+        $$\frac{\partial\ell}{\partial W_{\mathrm{fn}}}={{ fn.grad | matrix:3 }}$$
+  - id: square
+    when: project_first
+    show: sq
+    label: '$\of{sq}$'
+    title: 逐元素平方
+    text: |
+      <code>x.square()</code>：摊平的 $Nd=\of{N*d}$ 个数逐个平方。这一份统计量对 \of{N} 条 stream 一起算，每个 token 只有一个。
+      $$\of{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{flat}$'
+      title: 穿过平方
+  - id: mean
+    when: project_first
+    show: ms
+    label: '$\of{ms}$'
+    title: 求平均
+    text: |
+      <code>.mean(-1, keepdim=True)</code>：每个 token 的 $Nd$ 个平方取平均。
+      $$\of{ms}={{ ms | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sq}$'
+      title: 平均的梯度平分给每个元素
+  - id: eps
+    when: project_first
+    show: mse
+    label: '$+\epsilon$'
+    title: 加 $\epsilon$
+    text: 加上 $\epsilon=\of{eps}$，防止全 0 的输入除以 0。
+    backward:
+      label: '$\partial\of{ms}$'
+      title: 加常数，梯度原样传下去
+  - id: rsqrt
+    when: project_first
+    show: rsq
+    label: '$\of{rsq}$'
+    title: 取平方根的倒数
+    text: |
+      <code>torch.rsqrt</code>：$r^{\mathrm{hc}}=1/\sqrt{\mathrm{ms}^{\mathrm{hc}}+\epsilon}$，每个 token 一个数。
+      $$\of{rsq}={{ rsq | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mse}$'
+      title: 穿过 rsqrt
+      text: $\frac{d}{du}u^{-1/2}=-\tfrac{1}{2}u^{-3/2}$。
+  - id: scale
+    when: project_first
+    show: mix
+    label: '$\of{mix}$'
+    title: 投影的结果乘 $r^{\mathrm{hc}}$
+    text: |
+      先投影再乘 $r^{\mathrm{hc}}$，和先归一化再投影的结果相同，因为 $r^{\mathrm{hc}}$ 对一个 token 是一个数。参考实现把乘法放在投影之后。
+      $$\of{mix}={{ mix | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{mixp},\ \partial\of{rsq}$'
+      title: 梯度分给投影和 $r^{\mathrm{hc}}$
   - id: split
     show: [pre_w, post_w, comb_f, comb_w]
     label: '$\mathbf{m}_{\mathrm{pre}},\ \mathbf{m}_{\mathrm{post}},\ M_{\mathrm{comb}}$'
@@ -434,6 +513,18 @@ steps:
         Sinkhorn 的每一次除法都可导，梯度沿着各轮依次传回 softmax 之前的 $Z_{\mathrm{comb}}$。
         $$\frac{\partial\ell}{\partial C}={{ comb.grad | matrix:3 }}$$
   - id: collapse
+    when: single_pass
+    show: weighted
+    label: '$\of{pre_in}\odot\of{X}$'
+    title: 用前一个子层算出的 pre 给每条 stream 加权
+    text: |
+      Single-Pass mHC 里，这个子层用来合成输入的权重 $\of{pre_in}$ 来自前一个子层：注意力用前一层 FFN 那一组算出的 pre，FFN 用这一层注意力那一组算出的 pre，第 0 层的注意力用 one-hot，只取第 0 条 stream。这一组刚算出的 $\mathbf{w}_{\mathrm{pre}}$ 交给下一个子层。对应 <code>hc_pre(x, pre_mix)</code> 里的 <code>pre_mix.unsqueeze(-1) * x.float()</code>。
+      $$\of{pre_in}={{ pre_in | matrix:3 }},\qquad \of{pre_in}\odot\of{X}={{ weighted | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{pre_in},\ \partial\of{X}$'
+      title: 传到 pre_in 和输入的 stream
+  - id: collapse
+    when: not single_pass
     show: weighted
     label: '$\mathbf{w}_{\mathrm{pre}}\odot\of{X}$'
     title: 用 pre 给每条 stream 加权

@@ -1,0 +1,138 @@
+module: ApplyRotaryEmb
+subtitle: 最后 $d_r$ 维每相邻两维当作一个复数，乘 $e^{\mathrm{i}p\omega}$
+formula: '\step{cat}{\of{out}=\big[\,\of{x_pass},\ }\step{view_as_real,flatten}{\mathrm{real}\big(}\step{pair,view_as_complex}{(\mathbf{a}+\mathrm{i}\,\mathbf{b})}\step{freqs}{(\cos}\step{re,im}{\pm}\step{freqs}{\mathrm{i}\sin)}\step{view_as_real,flatten}{\big)}\step{cat}{\,\big]}'
+params:
+  rd:            { type: dim }
+  theta:         { type: float, default: 1e4 }
+  stride:        { type: int, default: 1 }
+  inverse:       { type: bool, default: false }
+  heads:         { type: bool, default: true }
+  yarn_factor:   { type: float, default: 1 }
+  yarn_original: { type: int, default: 0 }
+  beta_fast:     { type: float, default: 32 }
+  beta_slow:     { type: float, default: 1 }
+inputs:
+  x: { shape: [N, '...', dh] }
+outputs: [out]
+buffers:
+  cos: { value: 'rope_cos(N, rd, theta, stride=stride, half=true, yarn_factor=yarn_factor, yarn_original=yarn_original, beta_fast=beta_fast, beta_slow=beta_slow)', dtype: fp32, tex: '\cos' }
+  sin: { value: 'rope_sin(N, rd, theta, stride=stride, half=true, yarn_factor=yarn_factor, yarn_original=yarn_original, beta_fast=beta_fast, beta_slow=beta_slow)', dtype: fp32, tex: '\sin' }
+fold:
+  label: '$\of{out}$'
+  title: apply_rotary_emb（已折叠）
+  text: |
+    前 $d_h-d_r$ 维不动，最后 $d_r=\of{rd}$ 维每相邻两维 $(a,b)$ 当作复数 $a+\mathrm{i}b$，乘上单位复数 $e^{\mathrm{i}p\omega}$，也就是转过角度 $p\omega$。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 apply_rotary_emb（已折叠）
+    text: |
+      乘一个单位复数的反向是乘它的共轭，梯度转回 $-p\omega$；不转的几维梯度原样传回。
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - x_pass: { op: 'narrow(x, -1, 0, dh - rd)', tex: '{ \of{x}}_{\mathrm{pass}}' }
+  - x_rot:  { op: 'narrow(x, -1, dh - rd, rd)', tex: '{ \of{x}}_{\mathrm{rot}}' }
+  - xr:     { op: 'view(x_rot, N, -1, rd // 2, 2) if heads else view(x_rot, N, rd // 2, 2)', tex: '{\of{x_rot}}^{\mathrm{pair}}', dtype: fp32 }
+  - a:      { op: 'select(xr, -1, 0)', tex: '\mathbf{a}' }
+  - b:      { op: 'select(xr, -1, 1)', tex: '\mathbf{b}' }
+  - fc:     { op: 'view(cos, N, 1, rd // 2)', tex: '\cos^{\mathrm{h}}', when: heads }
+  - fs:     { op: 'view(sin, N, 1, rd // 2)', tex: '\sin^{\mathrm{h}}', when: heads }
+  - ac:     { op: 'a * fc if heads else a * cos', tex: '\mathbf{a}\cos' }
+  - bs:     { op: 'b * fs if heads else b * sin', tex: '\mathbf{b}\sin' }
+  - bc:     { op: 'b * fc if heads else b * cos', tex: '\mathbf{b}\cos' }
+  - as_:    { op: 'a * fs if heads else a * sin', tex: '\mathbf{a}\sin' }
+  - re:     { op: 'ac + bs if inverse else ac - bs', tex: '\mathrm{Re}' }
+  - im:     { op: 'bc - as_ if inverse else bc + as_', tex: '\mathrm{Im}' }
+  - st:     { op: 'cat([unsqueeze(re, -1), unsqueeze(im, -1)], dim=-1)', tex: '\operatorname{view\_as\_real}' }
+  - rot:    { op: 'view(st, N, -1, rd) if heads else view(st, N, rd)', tex: "\\of{x_rot}'", dtype: x }
+  - out:    { op: 'cat([x_pass, rot], dim=-1)' }
+steps:
+  - id: split
+    show: [x_pass, x_rot]
+    label: '$\of{x_pass},\ \of{x_rot}$'
+    title: 只取最后 $d_r$ 维
+    text: |
+      参考实现写的是 <code>apply_rotary_emb(x[..., -rd:], freqs_cis)</code>：只把最后 $d_r=\of{rd}$ 维交给 RoPE，原地改写，前 $d_h-d_r=\of{dh-rd}$ 维不动。原地改写在图上画成先切出两段、最后再拼回去。
+      $$\of{x_rot}={{ x_rot | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 两段梯度拼回去
+  - id: pair
+    show: xr
+    label: '$\of{xr}$'
+    title: 每相邻两维一对
+    text: |
+      <code>x.float().unflatten(-1, (-1, 2))</code>：先转成 float32，再把最后一维排成 $(\of{rd//2}, 2)$，相邻的两维 $(x_0,x_1),(x_2,x_3),\dots$ 成为一对。
+    backward:
+      label: '$\partial\of{x_rot}$'
+      title: 排回一行
+  - id: view_as_complex
+    show: [a, b]
+    label: '$\mathbf{a},\ \mathbf{b}$'
+    title: view_as_complex：实部和虚部
+    text: |
+      <code>torch.view_as_complex</code> 把每一对看成一个复数 $a+\mathrm{i}b$，第 0 个是实部 $\mathbf{a}$，第 1 个是虚部 $\mathbf{b}$。vizflow 没有复数类型，这里把实部和虚部分开取出，后面的复数乘法按定义拆成实数运算。
+      $$\mathbf{a}={{ a | matrix:2 }},\qquad \mathbf{b}={{ b | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{xr}$'
+      title: 实部和虚部的梯度放回每一对
+  - id: freqs
+    show: [cos, sin]
+    label: '$\cos,\ \sin$'
+    title: freqs_cis 的实部和虚部
+    text: |
+      <code>precompute_freqs_cis</code> 给每个位置算一行单位复数 $e^{\mathrm{i}p\omega_j}=\cos p\omega_j+\mathrm{i}\sin p\omega_j$，一共 $d_r/2=\of{rd//2}$ 个频率，$\omega_j=\theta^{-2j/d_r}$，$\theta=\of{theta}$。第 $n$ 行对应位置 $p=n\cdot\of{stride}$（$n$ 从 0 开始）。这里把它的实部和虚部画成两张表 $\cos$、$\sin$。表是常量，没有梯度。
+      $$\cos={{ cos | matrix:3 }}$$
+  - id: freqs_view
+    when: heads
+    show: [fc, fs]
+    label: '$\cos^{\mathrm{h}},\ \sin^{\mathrm{h}}$'
+    title: 表加一个 head 维
+    text: 输入按 head 分好时，参考实现把表 <code>view(1, seqlen, 1, -1)</code>，多出的一维让同一个位置的所有 head 用同一行。
+  - id: re
+    show: [ac, bs, re]
+    label: '$\mathrm{Re}$'
+    title: 复数乘法的实部
+    text: |
+      <code>x * freqs_cis</code> 是复数乘法。$(a+\mathrm{i}b)(\cos+\mathrm{i}\sin)$ 的实部是 $a\cos-b\sin$；<code>inverse=True</code> 时表先取共轭 <code>freqs_cis.conj()</code>，$\sin$ 变号，实部是 $a\cos+b\sin$。
+      $$\mathrm{Re}={{ re | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{a},\ \partial\mathbf{b}$'
+      title: 穿过实部
+  - id: im
+    show: [bc, as_, im]
+    label: '$\mathrm{Im}$'
+    title: 复数乘法的虚部
+    text: |
+      虚部是 $b\cos+a\sin$；取共轭时是 $b\cos-a\sin$。实部和虚部一起看，每一对 $(a,b)$ 转过了角度 $p\omega_j$（取共轭时转过 $-p\omega_j$），长度不变。
+      $$\mathrm{Im}={{ im | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{a},\ \partial\mathbf{b}$'
+      title: 穿过虚部
+  - id: view_as_real
+    show: st
+    label: view_as_real
+    title: view_as_real：实部、虚部并排
+    text: <code>torch.view_as_real</code> 把每个复数还原成并排的两个实数，实部在前，形状回到 $(\of{rd//2}, 2)$。图上写成两个 unsqueeze 再拼接，只是搬动元素。
+    backward:
+      label: '$\partial\mathrm{Re},\ \partial\mathrm{Im}$'
+      title: 按实部、虚部切开
+  - id: flatten
+    show: rot
+    label: '$\of{rot}$'
+    title: 展平，写回原来的位置
+    text: |
+      <code>.flatten(-2)</code> 把每一对依次排回 $d_r$ 维，<code>y.copy_(x)</code> 写回输入的最后 $d_r$ 维，dtype 也转回输入的 dtype。
+      $$\of{rot}={{ rot | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{view\_as\_real}$'
+      title: 穿过展平
+  - id: cat
+    show: out
+    label: '$\of{out}$'
+    title: 不转的一段在前，转过的一段在后
+    text: |
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x_pass},\ \partial\of{rot}$'
+      title: 按列切回两段

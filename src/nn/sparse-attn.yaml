@@ -1,0 +1,155 @@
+module: SparseAttn
+subtitle: 每个 query 只看 $\of{idx}$ 列出的那几行 kv
+formula: '\step{pv}{\of{o}=}\step{exp,sum,div,drop}{\operatorname{softmax}\big(}\step{sink}{\big[}\step{gather,scores}{\mathbf{q}\,\mathrm{kv}[\of{idx}]^{\top}}\step{scale}{/\sqrt{D}}\step{masked}{+M}\step{sink}{,\ s_h\big]}\step{exp,sum,div,drop}{\big)_{:,\,1..k}}\step{pv}{\,\mathrm{kv}[\of{idx}]}'
+inputs:
+  q:    { shape: [T, H, D] }
+  kv:   { shape: [Tk, D] }
+  sink: { shape: [H] }
+  idx:  { shape: [T, k] }
+outputs: [o]
+fold:
+  label: '$\of{o}$'
+  title: sparse_attn（已折叠）
+  text: |
+    每个位置按 $\of{idx}$ 取出 $k=\of{k}$ 行 kv，既作 key 也作 value；编号是 $-1$ 的格子不参与。softmax 的分母多一项每个 head 的 sink。
+    $$\of{o}={{ o | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{q},\ \partial\of{kv},\ \partial\of{sink}$'
+    title: 穿过 sparse_attn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{kv}}={{ kv.grad | matrix:3 }}$$
+body:
+  - valid:  { op: 'ge(idx, 0)', tex: '\mathbf{v}^{\mathrm{ok}}' }
+  - ic:     { op: 'clamp_min(idx, 0)', tex: '{\of{idx}}^{+}' }
+  - G:      { op: 'index(kv, [ic])', tex: '{\of{kv}}[\of{idx}]' }
+  - Gt:     { op: 'transpose(G, 1, 2)', tex: '{\of{kv}}[\of{idx}]^{\top}' }
+  - S:      { op: q @ Gt, tex: 'S', dtype: fp32 }
+  - Ss:     { op: S * D ** -0.5, tex: '\tilde{S}' }
+  - inval:  { op: 'logical_not(valid)', tex: '\neg\mathbf{v}^{\mathrm{ok}}' }
+  - Sm:     { op: 'masked_fill(Ss, unsqueeze(inval, 1), -inf)', tex: '\bar{S}' }
+  - sk:     { op: 'view(sink, 1, H, 1)', tex: '\mathbf{s}^{\mathrm{col}}' }
+  - skx:    { op: 'repeat(sk, T, 1, 1)', tex: '\mathbf{s}^{\mathrm{rep}}' }
+  - Sc:     { op: 'cat([Sm, skx], dim=-1)', tex: '[\bar{S},\mathbf{s}]' }
+  - ex:     { op: exp(Sc), tex: 'e^{[\bar{S},\mathbf{s}]}' }
+  - Z:      { op: 'sum(ex, -1, keepdim=true)', tex: 'Z' }
+  - P:      { op: ex / Z, tex: 'P^{+}' }
+  - Pk:     { op: 'narrow(P, -1, 0, k)', tex: 'P' }
+  - o:      { op: Pk @ G, tex: '\mathbf{o}', dtype: q }
+steps:
+  - id: valid
+    show: [valid, ic]
+    label: '$\of{valid},\ \of{ic}$'
+    title: 哪些编号有效
+    text: |
+      参考实现里 <code>sparse_attn</code> 是一个 tilelang 写的 GPU kernel。这一页按它的定义画：先看每个编号是不是 $-1$（<code>topk_idxs &gt;= 0</code>），再把 $-1$ 换成 0（<code>clamp_min(0)</code>），这样取行时不越界，取出的那一行后面会被 mask 掉。编号是整数，没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
+  - id: gather
+    show: G
+    label: '$\of{G}$'
+    title: 每个位置取出自己的 $k$ 行 kv
+    text: |
+      位置 $t$ 按 $\of{idx}$ 的第 $t$ 行从 $\of{kv}$ 里取出 $k=\of{k}$ 行，形状 $(T, k, D)$。不同位置取的行不同，所以每个位置有自己的一份 key。同一行 kv 被几个位置取到时，反向时它的梯度是这几份之和。
+      $$\of{G}={{ G | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{kv}$'
+      title: 梯度加回被取到的那几行
+  - id: transpose
+    show: Gt
+    label: '$\of{Gt}$'
+    title: 转置
+    text: 把 $D$ 换到中间一维，准备和 query 相乘。
+    backward:
+      label: '$\partial\of{G}$'
+      title: 转置回去
+  - id: scores
+    show: S
+    label: '$\of{S}$'
+    title: 每个 head 的 query 和取出的 key 做点积
+    text: |
+      参考实现的写法是 <code>einsum("bmhd,bmkd->bmhk", q, gathered)</code>：位置 $t$ 的 \of{H} 个 head 都和这个位置取出的 $k$ 行做点积，形状 $(T, H, k)$。key 只有一个 head，所有 query head 共用。
+      $$\of{S}={{ S | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{q},\ \partial\of{Gt}$'
+      title: 传到 query 和取出的 key
+  - id: scale
+    show: Ss
+    label: '$/\sqrt{D}$'
+    title: 乘 $1/\sqrt{D}$
+    text: |
+      <code>softmax_scale</code> 是 $D^{-1/2}$，$D=\of{D}$。
+      $$\of{Ss}={{ Ss | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{S}$'
+      title: 穿过缩放
+  - id: masked
+    show: [inval, Sm]
+    label: '$\of{Sm}$'
+    title: 无效的格子记成 $-\infty$
+    text: |
+      <code>scores.masked_fill(~valid.unsqueeze(2), -inf)</code>：编号是 $-1$ 的格子，所有 head 都改成 $-\infty$，取 exp 后是 0。
+      $$\of{Sm}={{ Sm | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{Ss}$'
+      title: 被 mask 的格子没有梯度
+  - id: sink
+    show: [sk, skx, Sc]
+    label: '$[\bar{S},\mathbf{s}]$'
+    title: 接上 sink 一列
+    text: |
+      每个 head 有一个可学习的 <code>attn_sink</code>，形状 $(H)$。它 <code>view</code> 成 $(1, H, 1)$，<code>expand</code> 给每个位置一份，接在分数的最后一列，对应 <code>torch.cat([scores, sink], dim=-1)</code>。sink 这一列只进 softmax 的分母，没有对应的 value。
+      $$\of{sink}={{ sink | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{sink},\ \partial\of{Sm}$'
+      title: 传到 sink
+      text: |
+        sink 被每个位置用了一次，它的梯度是各个位置的和。
+        $$\frac{\partial\ell}{\partial\of{sink}}={{ sink.grad | matrix:3 }}$$
+  - id: exp
+    show: ex
+    label: '$\of{ex}$'
+    title: softmax：取 exp
+    text: |
+      <code>torch.softmax(..., dim=-1)</code> 按定义拆成三步画：取 exp、求和、相除。softmax 会先减去每行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+      $$\of{ex}={{ ex | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{Sc}$'
+      title: 穿过 exp
+  - id: sum
+    show: Z
+    label: '$\of{Z}$'
+    title: softmax：每行求和
+    text: |
+      和里包含 sink 那一项 $e^{s_h}$。
+      $$\of{Z}={{ Z | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ex}$'
+      title: 行和的梯度复制给这一行
+  - id: div
+    show: P
+    label: '$\of{P}$'
+    title: softmax：相除
+    text: |
+      $$\of{P}={{ P | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ex},\ \partial\of{Z}$'
+      title: 穿过相除
+  - id: drop
+    show: Pk
+    label: '$\of{Pk}$'
+    title: 去掉 sink 那一列
+    text: |
+      <code>[..., :-1]</code>：去掉最后一列，剩下的 $k$ 列和小于 1，差的部分给了 sink。一个位置没有任何有效编号时，所有权重都给了 sink，输出是 0。
+      $$\of{Pk}={{ Pk | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{P}$'
+      title: sink 那一列梯度是 0
+  - id: pv
+    show: o
+    label: '$\of{o}$'
+    title: 按权重加权取出的 kv
+    text: |
+      <code>einsum("bmhk,bmkd->bmhd", probs, gathered)</code>：取出的 $k$ 行 kv 同时作 value，按权重相加，每个 head 得到一个 $D$ 维的输出。
+      $$\of{o}={{ o | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{Pk},\ \partial\of{G}$'
+      title: 传到权重和取出的 kv

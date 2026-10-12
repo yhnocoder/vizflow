@@ -1,0 +1,295 @@
+module: CSA2Attention
+subtitle: Attention，滑动窗口加上压缩后的全局 KV
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  ApplyRotaryEmb: vizflow/nn/apply-rotary-emb
+  Compressor: vizflow/nn/compressor
+  CSA2Indexer: vizflow/nn/csa2-indexer
+  SparseAttn: vizflow/nn/sparse-attn
+formula: '\step{o_b}{\of{att}=}\step{group_proj,concat_groups}{\big[\,\cdots\,\mathbf{o}_{g}W_{a,g}^{\top}\cdots\big]}\step{o_b}{\,W_{b}^{\top}},\quad\step{o_rope.*}{\mathbf{o}=\mathrm{RoPE}^{-1}\big(}\step{sparse_attn.*}{\operatorname{sparse\_attn}\big(\mathbf{q},\ }\step{kv_cat}{[\,}\step{kv_proj}{\mathbf{kv}}\step{kv_cat}{;\,\mathbf{C}\,]}\step{sparse_attn.*}{,\ }\step{window,idx_cat}{\mathbf{i}}\step{sparse_attn.*}{\big)}\step{o_rope.*}{\big)}'
+params:
+  H:     { type: dim }
+  D:     { type: dim }
+  rd:    { type: dim }
+  rq:    { type: dim }
+  g:     { type: dim }
+  dg:    { type: dim }
+  W:     { type: dim }
+  theta: { type: float, default: 1e4 }
+  yarn_factor:   { type: float, default: 1 }
+  yarn_original: { type: int, default: 0 }
+  eps:   { type: float, default: 1e-6 }
+  compress:     { type: bool, default: false }
+  m:            { type: dim }
+  gated:        { type: bool, default: false }
+  kv_source:    { type: bool, default: false }
+  index_source: { type: bool, default: false }
+  cand_source:  { type: bool, default: false }
+  use_cand:     { type: bool, default: false }
+  HI: { type: dim }
+  cI: { type: dim }
+  kI: { type: dim }
+  B:  { type: dim }
+  bs: { type: dim }
+  detail:       { type: bool, default: true }
+  index_detail: { type: bool, default: true }
+  norm_ref:     { type: text, default: attn_norm }
+inputs:
+  x:       { shape: [T, d] }
+  C_in:    { shape: [Tc, D], when: 'false if kv_source else compress' }
+  K_in:    { shape: [Tc, cI], when: 'false if kv_source else index_source' }
+  idx_in:  { shape: [T, kI], when: 'false if index_source else compress' }
+  cand_in: { shape: [T, Tc], when: use_cand }
+outputs:
+  - att
+  - { name: C, when: kv_source }
+  - { name: KI, when: kv_source }
+  - { name: idx, when: index_source }
+  - { name: cand, when: cand_source }
+weights:
+  Wqa:  { shape: [rq, d], tex: 'W_{qa}' }
+  Wqb:  { shape: [H * D, rq], tex: 'W_{qb}' }
+  Wkv:  { shape: [D, d], tex: 'W_{kv}' }
+  Woa:  { shape: [g * dg, H * D // g], tex: 'W_{a}' }
+  Wob:  { shape: [d, g * dg], tex: 'W_{b}' }
+  sink: { shape: [H], dtype: fp32, tex: '\mathbf{s}^{\mathrm{sink}}' }
+buffers:
+  win: { value: 'window_topk_idxs(T, W)', dtype: int32, tex: '\mathbf{i}^{\mathrm{win}}' }
+fold:
+  label: '$\of{att}=\mathrm{attn}(\of{x})$'
+  title: attn（已折叠）
+  text: |
+    query 经过低秩的 wq_a、wq_b；key 和 value 是同一个向量，只有一个 head。每个位置看滑动窗口里的 $W=\of{W}$ 个 token，压缩率大于 0 的层再加上 indexer 选出的压缩位置。输出转回 RoPE 之前的方向，再按组投影回 $d$ 维。
+    $$\of{att}={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 attn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - cq: { op: x @ Wqa.T, tex: '\mathbf{c}_{q}' }
+  - q_norm:
+      use: RMSNorm
+      suffix: q
+      subtitle: RMSNorm
+      params: { eps: eps }
+      inputs: { x: cq }
+      outputs: { out: qr }
+      tex: { out: '\bar{\mathbf{c}}_{q}' }
+      folded: true
+      fold:
+        text: |
+          计算和 \of{norm_ref} 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{c}}_{q}={{ qr | matrix:2 }}$$
+  - qp: { op: qr @ Wqb.T, tex: '\mathbf{q}_{\mathrm{b}}' }
+  - q: { op: 'view(qp, T, H, D)', tex: '\mathbf{q}' }
+  - q_rope:
+      use: ApplyRotaryEmb
+      suffix: q
+      title: apply_rotary_emb
+      subtitle: query
+      folded: not detail
+      params: { rd: rd, theta: theta, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: q }
+      outputs: { out: qe }
+      tex: { out: "\\mathbf{q}'" }
+      fold:
+        text: |
+          计算和第一个展开的 attn 里 query 的 apply_rotary_emb 相同，那里展开画了每一步。
+          $$\mathbf{q}'={{ qe | matrix:2 }}$$
+  - kvp: { op: x @ Wkv.T, tex: '\mathbf{kv}_{\mathrm{proj}}' }
+  - kv_norm:
+      use: RMSNorm
+      suffix: kv
+      subtitle: RMSNorm
+      params: { eps: eps }
+      inputs: { x: kvp }
+      outputs: { out: kvn }
+      tex: { out: '\bar{\mathbf{kv}}' }
+      folded: true
+      fold:
+        text: |
+          计算和 \of{norm_ref} 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{kv}}={{ kvn | matrix:2 }}$$
+  - kv_rope:
+      use: ApplyRotaryEmb
+      suffix: kv
+      title: apply_rotary_emb
+      subtitle: 滑动窗口的 kv
+      params: { rd: rd, theta: theta, heads: false, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: kvn }
+      outputs: { out: kvr }
+      tex: { out: "\\mathbf{kv}'" }
+      folded: true
+      fold:
+        text: |
+          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；kv 只有一个 head。
+          $$\mathbf{kv}'={{ kvr | matrix:2 }}$$
+  - compressor:
+      use: Compressor
+      when: kv_source
+      subtitle: '每 $m$ 个 token 压成一个 latent'
+      params: { m: m, c: D, gated: gated, bias: false, rotate: false, float_input: gated, eps: eps, norm_ref: norm_ref }
+      inputs: { x: x }
+      outputs: { C: latent }
+      tex: { C: '\mathbf{c}^{\mathrm{lat}}' }
+  - indexer:
+      use: CSA2Indexer
+      when: index_source
+      params: { HI: HI, cI: cI, kI: kI, m: m, rd: rd, theta: theta, yarn_factor: yarn_factor, yarn_original: yarn_original, eps: eps, owns_k: kv_source, cand_source: cand_source, use_cand: use_cand, B: B, bs: bs, detail: index_detail, norm_ref: norm_ref }
+      inputs: { x: x, qr: qr, latent: latent, K_in: K_in, cand_in: cand_in }
+      outputs: { idx: idx, K: KI, cand: cand }
+  - c_rope:
+      use: ApplyRotaryEmb
+      suffix: c
+      title: apply_rotary_emb
+      subtitle: '压缩 latent，位置是 $j\cdot m$'
+      when: kv_source
+      params: { rd: rd, theta: theta, stride: m, heads: false, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: latent }
+      outputs: { out: C }
+      tex: { out: '\mathbf{C}' }
+      folded: true
+      fold:
+        text: |
+          计算和上面 query 的 apply_rotary_emb 相同，那里展开画了每一步；第 $j$ 个压缩位置的位置是 $j\cdot m$。indexer 用的是 RoPE 之前的 latent，所以这一步在 indexer 之后。
+          $$\mathbf{C}={{ C | matrix:2 }}$$
+  - kv_all:  { op: 'cat([kvr, C], 0) if kv_source else cat([kvr, C_in], 0)', tex: '[\,\mathbf{kv}'';\,\mathbf{C}\,]', when: compress }
+  - idx_all: { op: 'cat([win, idx], -1) if index_source else cat([win, idx_in], -1)', tex: '[\,\mathbf{i}^{\mathrm{win}},\,\mathbf{i}^{I}\,]', when: compress }
+  - sparse_attn:
+      use: SparseAttn
+      folded: not detail
+      fold:
+        text: |
+          计算和第一个展开的 attn 里的 sparse_attn 相同，那里展开画了每一步：按行号取出 kv，打分、mask、接上 sink 做 softmax，再加权求和。
+          $$\of{o}={{ o | matrix:2 }}$$
+      inputs: { q: qe, kv: kv_all if compress else kvr, sink: sink, idx: idx_all if compress else win }
+      outputs: { o: o }
+  - o_rope:
+      use: ApplyRotaryEmb
+      suffix: o
+      title: apply_rotary_emb（inverse）
+      subtitle: 把 value 带的旋转转回去
+      params: { rd: rd, theta: theta, inverse: true, yarn_factor: yarn_factor, yarn_original: yarn_original }
+      inputs: { x: o }
+      outputs: { out: ou }
+      tex: { out: "\\mathbf{o}'" }
+      folded: true
+      fold:
+        text: |
+          计算和上面 query 的 apply_rotary_emb 相同，只是表先取共轭：每一对分量转过 $-p\omega$，实部变成 $a\cos+b\sin$，虚部变成 $b\cos-a\sin$。
+          $$\mathbf{o}'={{ ou | matrix:2 }}$$
+  - og: { op: 'view(ou, T, g, H * D // g)', tex: '\mathbf{o}^{\mathrm{grp}}' }
+  - for: j
+    in: 1..g
+    brace: 'group \of{j}'
+    body:
+      - Wa[j]: { op: 'narrow(Woa, 0, (j-1) * dg, dg)', tex: 'W_{a,\of{j}}' }
+      - z[j]:  { op: 'select_matmul(og, Wa[j].T, j-1)', tex: '\mathbf{z}_{\of{j}}' }
+  - zc: { op: 'cat(z[1..g], dim=1)', tex: '\mathbf{u}' }
+  - att: { op: zc @ Wob.T, tex: '\mathbf{att}' }
+steps:
+  - id: q_down
+    show: [Wqa.T, cq]
+    label: '$\of{cq}$'
+    title: wq_a：query 先压缩到 $r_q$ 维
+    text: |
+      <code>qr = self.q_norm(self.wq_a(x))</code>。$r_q=\of{rq}$，真实模型里 $d=5120$、$r_q=1280$。归一化后的 latent 也交给 indexer。
+      $$\of{cq}={{ cq | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{qa},\ \partial\of{x}$'
+      title: 传到 wq_a 的权重和 $\of{x}$
+  - id: q_up
+    show: [Wqb.T, qp]
+    label: '$\of{qp}$'
+    title: wq_b：展开成 \of{H} 个 head
+    text: |
+      <code>self.wq_b(qr)</code>，投影到 $HD=\of{H*D}$ 维。V4.1 在这之后没有每个 head 的 q norm，直接做 RoPE。
+      $$\of{qp}={{ qp | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{qb},\ \partial\of{qr}$'
+      title: 传到 wq_b 的权重和 latent
+  - id: q_heads
+    show: q
+    label: '$\of{q}$'
+    title: 按 head 分开
+    text: |
+      <code>.unflatten(-1, (n_heads, head_dim))</code>：每个 head 宽 $D=\of{D}$，最后 $d_r=\of{rd}$ 维做 RoPE。真实模型里 $D=512$、$d_r=64$。
+      $$\of{q}={{ q | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{qp}$'
+      title: 拼回一行
+  - id: kv_proj
+    show: [Wkv.T, kvp]
+    label: '$\of{kvp}$'
+    title: wkv：一个既是 key 又是 value 的向量
+    text: |
+      <code>kv = self.kv_norm(self.wkv(x))</code>：只有一个 head，所有 query head 共用；这个向量既作 key 也作 value。这是这一层自己的滑动窗口 KV，每一层都有。
+      $$\of{kvp}={{ kvp | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{kv},\ \partial\of{x}$'
+      title: 传到 wkv 的权重和 $\of{x}$
+  - id: window
+    show: win
+    label: '$\of{win}$'
+    title: 滑动窗口里的行号
+    text: |
+      <code>get_window_topk_idxs</code>：位置 $t$ 看 $\max(0,t-W+1)$ 到 $t$ 的 token，$W=\of{W}$，每行 $\min(T,W)$ 个行号；序列开头凑不满一个窗口时，多出的槽位是 $-1$。真实模型里 $W=128$。
+      $$\of{win}={{ win | matrix }}$$
+  - id: kv_cat
+    when: compress
+    show: kv_all
+    label: '$\of{kv_all}$'
+    title: 窗口的 kv 后面接上压缩后的 KV
+    text: |
+      <code>kv = torch.cat([kv, compress_kv], dim=1)</code>：前 $T$ 行是这一层自己的滑动窗口 kv，后面是压缩后的全局 KV。压缩 KV 只由 Full 层算出，Reuse 和 Reindex 层直接读最近一个 Full 层的结果。
+      $$\of{kv_all}={{ kv_all | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{kv}'',\ \partial\mathbf{C}$'
+      title: 按来源切开
+      text: 压缩 KV 那几行的梯度回到算出它的 Full 层；被几层共用时，梯度是这几层之和。
+  - id: idx_cat
+    when: compress
+    show: idx_all
+    label: '$\of{idx_all}$'
+    title: 每个位置要看的行号
+    text: |
+      <code>topk_idxs = torch.cat([topk_idxs, compress_idxs], dim=-1)</code>：前面是窗口的行号，后面是 indexer 选出的压缩位置的行号（已经加上 $T$）。Reuse 层没有自己的 indexer，用最近一个 Full 或 Reindex 层选出的行号。
+      $$\of{idx_all}={{ idx_all | matrix }}$$
+  - id: groups
+    show: og
+    label: '$\of{og}$'
+    title: 把 head 分成 $g$ 组
+    text: |
+      <code>o.view(bsz, seqlen, n_groups, -1)</code>：\of{H} 个 head 按顺序分成 $g=\of{g}$ 组，每组 $HD/g=\of{H * D // g}$ 维。真实模型 64 个 head 分 8 组，每组 4096 维。
+    backward:
+      label: '$\partial\mathbf{o}''$'
+      title: 拼回去
+  - id: group_proj
+    show: ['Wa[1..g]', 'z[1..g]']
+    label: '$\mathbf{z}_{j}=\mathbf{o}_{j}W_{a,j}^{\top}$'
+    title: wo_a：每组单独投影
+    text: |
+      <code>wo_a = self.wo_a.weight.view(n_groups, o_lora_rank, -1)</code>，<code>torch.einsum("bsgd,grd->bsgr", o, wo_a)</code>：第 $j$ 组只用 wo_a 的第 $j$ 段 $d_g=\of{dg}$ 行，组与组之间不混合。真实模型每组从 4096 维投影到 1024 维。
+      $$\of{z[1]}=\mathbf{o}_{1}W_{a,1}^{\top}={{ z[1] | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{a},\ \partial\mathbf{o}^{\mathrm{grp}}$'
+      title: 传到 wo_a 的权重和各组的输出
+  - id: concat_groups
+    show: zc
+    label: '$\of{zc}$'
+    title: 各组拼起来
+    text: |
+      对应 <code>o.flatten(2)</code>，得到 $g d_g=\of{g*dg}$ 维。
+    backward:
+      label: '$\partial\mathbf{z}_{j}$'
+      title: 按组切开
+  - id: o_b
+    show: [Wob.T, att]
+    label: '$\of{att}$'
+    title: wo_b：混合各组，回到 $d$ 维
+    text: |
+      $$\of{att}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{b},\ \partial\of{zc}$'
+      title: 传到 wo_b 的权重

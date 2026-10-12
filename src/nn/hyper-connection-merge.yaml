@@ -1,6 +1,8 @@
 module: HyperConnectionMerge
 subtitle: 子层输出写回 stream，加上混合后的 stream
-formula: '\step{add}{\of{out}=}\step{expand}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack}{\of{comb}^{\top}\of{X}}'
+formula: '\step{add}{\of{out}=}\step{expand}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack,outer,pair_sum}{\of{comb}^{\top}\of{X}}'
+params:
+  broadcast: { type: bool, default: false }
 inputs:
   X:    { shape: [T, N, d] }
   y:    { shape: [T, d] }
@@ -20,11 +22,14 @@ body:
   - for: k
     in: 1..N
     brace: 'stream \of{k}'
+    when: not broadcast
     body:
       - ck[k]:   { op: 'select(comb, 2, k-1)', tex: 'C_{:,\of{k}}' }
       - prod[k]: { op: 'view(ck[k], T, N, 1) * X', tex: 'C_{:,\of{k}}\odot\of{X}' }
       - mixk[k]: { op: 'sum(prod[k], 1, keepdim=true)', tex: '(\of{comb}^{\top}\of{X})_{\of{k}}' }
-  - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}' }
+  - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}', when: not broadcast }
+  - prod: { op: 'view(comb, T, N, N, 1) * view(X, T, N, 1, d)', tex: '\of{comb}\odot\of{X}', when: broadcast }
+  - mixed: { op: 'sum(prod, 1)', tex: '\of{comb}^{\top}\of{X}', when: broadcast }
   - out: { op: expanded + mixed }
 steps:
   - id: expand
@@ -41,6 +46,7 @@ steps:
         $\of{y}$ 收到的梯度是 \of{N} 条 stream 的梯度按 post 加权求和。
         $$\frac{\partial\ell}{\partial\of{y}}={{ y.grad | matrix:3 }}$$
   - id: column
+    when: not broadcast
     show: ['ck[1..N]', 'prod[1..N]']
     label: '$C_{:,k}\odot\of{X}$'
     title: comb 的第 $k$ 列给输入的 stream 加权
@@ -50,6 +56,7 @@ steps:
       label: '$\partial\of{comb},\ \partial\of{X}$'
       title: 传到 comb 的第 $k$ 列和输入的 stream
   - id: column_sum
+    when: not broadcast
     show: 'mixk[1..N]'
     label: '$(\of{comb}^{\top}\of{X})_k$'
     title: 加起来得到第 $k$ 条 stream
@@ -59,6 +66,7 @@ steps:
       label: '$\partial(C_{:,k}\odot\of{X})$'
       title: 梯度复制给每条输入的 stream
   - id: stack
+    when: not broadcast
     show: mixed
     label: '$\of{comb}^{\top}\of{X}$'
     title: \of{N} 条 stream 拼回去
@@ -67,6 +75,28 @@ steps:
     backward:
       label: '$\partial(\of{comb}^{\top}\of{X})_k$'
       title: 按 stream 切开
+  - id: outer
+    when: broadcast
+    show: prod
+    label: '$\of{prod}$'
+    title: comb 的每个元素乘对应的输入 stream
+    text: |
+      参考实现的 <code>hc_post</code> 写的是 <code>torch.sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=2)</code>。<code>comb.unsqueeze(-1)</code> 的形状是 $(T, N, N, 1)$，<code>residual.unsqueeze(-2)</code> 是 $(T, N, 1, d)$，相乘时广播成 $(T, N, N, d)$：第 $(j, k)$ 块是 $C_{j,k}\,{\of{X}}_j$，即输入的第 $j$ 条 stream 乘 comb 的第 $j$ 行第 $k$ 列。
+    backward:
+      label: '$\partial\of{comb},\ \partial\of{X}$'
+      title: 传到 comb 和输入的 stream
+      text: 广播的反向把复制出去的几份梯度加回来：$C_{j,k}$ 的梯度是第 $(j,k)$ 块的梯度与 ${\of{X}}_j$ 的点积，${\of{X}}_j$ 的梯度是 \of{N} 块按 $C_{j,k}$ 加权的和。
+  - id: pair_sum
+    when: broadcast
+    show: mixed
+    label: '$\of{comb}^{\top}\of{X}$'
+    title: 按输入的 stream 求和
+    text: |
+      <code>dim=2</code> 是输入 stream 的那一维 $j$，求和后输出的第 $k$ 条 stream 是 $\sum_j C_{j,k}\,{\of{X}}_j$，也就是 $\of{comb}^{\top}\of{X}$。用的是 comb 的第 $k$ 列，Sinkhorn 之后的 comb 不对称，下标的顺序不能换。
+      $$\of{comb}^{\top}\of{X}={{ mixed | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{prod}$'
+      title: 梯度复制给每条输入的 stream
   - id: add
     show: out
     label: '$\of{out}$'

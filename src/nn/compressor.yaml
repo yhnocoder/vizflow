@@ -11,13 +11,18 @@ params:
   theta:   { type: float, default: 1e4 }
   overlap: { type: bool, default: false }
   eps:     { type: float, default: 1e-6 }
+  gated:   { type: bool, default: true }
+  bias:    { type: bool, default: true }
+  rotate:  { type: bool, default: true }
+  float_input: { type: bool, default: false }
+  norm_ref: { type: text, default: decoder 层的 input_layernorm }
 inputs:
   x: { shape: [T, d] }
 outputs: [C, mask]
 weights:
   Wkv:           { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{kv}}' }
-  Wgate:         { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{gate}}' }
-  position_bias: { shape: [m, '2 * c if overlap else c'], dtype: fp32, tex: 'B' }
+  Wgate:         { shape: ['2 * c if overlap else c', d], tex: 'W_{\mathrm{gate}}', when: gated }
+  position_bias: { shape: [m, '2 * c if overlap else c'], dtype: fp32, tex: 'B', when: bias }
 buffers:
   mask: { value: 'block_causal_mask(T, m)', tex: 'M_{\mathrm{c}}' }
   zero: { value: 'zeros(1, m, c)', tex: '\mathbf{0}_{\of{m}\times\of{c}}', when: overlap }
@@ -34,13 +39,14 @@ fold:
     text: |
       $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
 body:
-  - kv:      { op: x @ Wkv.T, tex: '\mathbf{c}' }
-  - gate:    { op: x @ Wgate.T, tex: '\mathbf{z}' }
-  - kv_u:    { op: 'narrow(kv, 0, 0, (T // m) * m)', tex: '\mathbf{c}_{\mathrm{used}}' }
-  - gate_u:  { op: 'narrow(gate, 0, 0, (T // m) * m)', tex: '\mathbf{z}_{\mathrm{used}}' }
-  - kv_w:    { op: 'view(kv_u, T // m, m, -1)', tex: '\mathbf{c}^{\mathrm{win}}' }
-  - gate_w0: { op: 'view(gate_u, T // m, m, -1)', tex: '\mathbf{z}^{\mathrm{win}}' }
-  - gate_w:  { op: gate_w0 + position_bias, tex: '\mathbf{z}^{\mathrm{win}}+B' }
+  - xf:      { op: identity(x), tex: '{\of{x}}_{\mathrm{fp32}}', dtype: fp32, when: float_input }
+  - kv:      { op: 'xf @ Wkv.T if float_input else x @ Wkv.T', tex: '\mathbf{c}' }
+  - gate:    { op: 'xf @ Wgate.T if float_input else x @ Wgate.T', tex: '\mathbf{z}', when: gated }
+  - kv_u:    { op: 'narrow(kv, 0, 0, (T // m) * m)', tex: '\mathbf{c}_{\mathrm{used}}', when: gated }
+  - gate_u:  { op: 'narrow(gate, 0, 0, (T // m) * m)', tex: '\mathbf{z}_{\mathrm{used}}', when: gated }
+  - kv_w:    { op: 'view(kv_u, T // m, m, -1)', tex: '\mathbf{c}^{\mathrm{win}}', when: gated }
+  - gate_w0: { op: 'view(gate_u, T // m, m, -1)', tex: '\mathbf{z}^{\mathrm{win}}', when: gated }
+  - gate_w:  { op: gate_w0 + position_bias, tex: '\mathbf{z}^{\mathrm{win}}+B', when: bias }
   - kv_a:    { op: 'narrow(kv_w, 2, 0, c)', tex: '\mathbf{c}^{a}', when: overlap }
   - kv_b:    { op: 'narrow(kv_w, 2, c, c)', tex: '\mathbf{c}^{b}', when: overlap }
   - g_a:     { op: 'narrow(gate_w, 2, 0, c)', tex: '\mathbf{z}^{a}', when: overlap }
@@ -51,27 +57,43 @@ body:
   - g_prevp:  { op: 'cat([ninf, g_prev], 0)', tex: '[-\infty;\mathbf{z}^{a}_{w-1}]', when: overlap }
   - kv_s:    { op: 'cat([kv_prevp, kv_b], 1)', tex: '\mathbf{c}^{\mathrm{slot}}', when: overlap }
   - g_s:     { op: 'cat([g_prevp, g_b], 1)', tex: '\mathbf{z}^{\mathrm{slot}}', when: overlap }
-  - ge:      { op: 'exp(g_s) if overlap else exp(gate_w)', tex: 'e^{\mathbf{z}}', dtype: fp32 }
-  - Zw:      { op: 'sum(ge, 1, keepdim=true)', tex: '\textstyle\sum_j e^{\mathbf{z}_j}' }
-  - w:       { op: ge / Zw, tex: '\boldsymbol{\omega}' }
-  - wk:      { op: 'kv_s * w if overlap else kv_w * w', tex: '\boldsymbol{\omega}\odot\mathbf{c}' }
-  - pooled:  { op: 'sum(wk, 1)', tex: '\textstyle\sum_j\boldsymbol{\omega}_j\odot\mathbf{c}_j' }
+  - ge:      { op: 'exp(g_s) if overlap else exp(gate_w) if bias else exp(gate_w0)', tex: 'e^{\mathbf{z}}', dtype: fp32, when: gated }
+  - Zw:      { op: 'sum(ge, 1, keepdim=true)', tex: '\textstyle\sum_j e^{\mathbf{z}_j}', when: gated }
+  - w:       { op: ge / Zw, tex: '\boldsymbol{\omega}', when: gated }
+  - wk:      { op: 'kv_s * w if overlap else kv_w * w', tex: '\boldsymbol{\omega}\odot\mathbf{c}', when: gated }
+  - pooled:  { op: 'sum(wk, 1)', tex: '\textstyle\sum_j\boldsymbol{\omega}_j\odot\mathbf{c}_j', when: gated }
   - kv_norm:
       use: RMSNorm
       suffix: c
       subtitle: DeepseekV4RMSNorm
+      when: not rotate
       params: { eps: eps }
-      inputs: { x: pooled }
+      inputs: { x: pooled if gated else kv }
+      outputs: { out: C }
+      tex: { out: '\bar{\mathbf{c}}' }
+      folded: true
+      fold:
+        text: |
+          计算和 \of{norm_ref} 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\bar{\mathbf{c}}={{ C | matrix:2 }}$$
+  - kv_norm:
+      use: RMSNorm
+      suffix: c
+      subtitle: DeepseekV4RMSNorm
+      when: rotate
+      params: { eps: eps }
+      inputs: { x: pooled if gated else kv }
       outputs: { out: pn }
       tex: { out: '\bar{\mathbf{c}}' }
       folded: true
       fold:
         text: |
-          计算和 decoder 层的 input_layernorm 相同，那里展开画了每一步；权重是这个实例自己的。
+          计算和 \of{norm_ref} 相同，那里展开画了每一步；权重是这个实例自己的。
           $$\bar{\mathbf{c}}={{ pn | matrix:2 }}$$
-  - pn3: { op: 'view(pn, T // m, 1, c)', tex: '\bar{\mathbf{c}}_{w}' }
+  - pn3: { op: 'view(pn, T // m, 1, c)', tex: '\bar{\mathbf{c}}_{w}', when: rotate }
   - rope:
       use: PartialRoPE
+      when: rotate
       suffix: c
       title: apply_rotary_pos_emb
       subtitle: '位置是 $w\cdot m$'
@@ -85,6 +107,15 @@ body:
           计算和 self_attn 里 query 的 RoPE 相同，那里展开画了每一步；第 $w$ 个条目的位置是 $w\cdot m$。
           $$\of{C}={{ C | matrix:2 }}$$
 steps:
+  - id: float
+    when: float_input
+    show: xf
+    label: '$\of{xf}$'
+    title: 转成 float32
+    text: 参考实现的 compressor 在压缩率大于 1 时先做 <code>x = x.float()</code>，kv 和 gate 两个投影的权重也是 float32，后面的 softmax 加权在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{x}$'
+      title: 穿过类型转换
   - id: proj
     show: [Wkv.T, kv]
     label: '$\of{kv}$'
@@ -96,6 +127,7 @@ steps:
       label: '$\partial W_{\mathrm{kv}},\ \partial\of{x}$'
       title: 传到 kv_proj 的权重和 $\of{x}$
   - id: gate
+    when: gated
     show: [Wgate.T, gate]
     label: '$\of{gate}$'
     title: gate_proj
@@ -106,6 +138,7 @@ steps:
       label: '$\partial W_{\mathrm{gate}},\ \partial\of{x}$'
       title: 传到 gate_proj 的权重和 $\of{x}$
   - id: usable
+    when: gated
     show: [kv_u, gate_u]
     label: '$\of{kv_u},\ \of{gate_u}$'
     title: 只取能凑满窗口的 token
@@ -115,6 +148,7 @@ steps:
       label: '$\partial\of{kv},\ \partial\of{gate}$'
       title: 没被压缩的 token 这里没有梯度
   - id: windows
+    when: gated
     show: [kv_w, gate_w0]
     label: '$\of{kv_w},\ \of{gate_w0}$'
     title: 按窗口排好
@@ -124,6 +158,7 @@ steps:
       label: '$\partial\of{kv_u},\ \partial\of{gate_u}$'
       title: 按原来的顺序排回去
   - id: bias
+    when: bias
     show: [position_bias, gate_w]
     label: '$+B$'
     title: 加上窗口内位置的偏置
@@ -168,6 +203,7 @@ steps:
       label: '$\partial\mathbf{c}^{a}_{w-1},\ \partial\mathbf{c}^{b}$'
       title: 按来源切开
   - id: exp
+    when: gated
     show: ge
     label: '$e^{\mathbf{z}}$'
     title: softmax：转成 float32，取 exp
@@ -179,6 +215,7 @@ steps:
       title: 穿过 exp
       text: exp 的导数是它自己。
   - id: wsum
+    when: gated
     show: Zw
     label: '$\sum_j e^{\mathbf{z}_j}$'
     title: softmax：在窗口内求和
@@ -189,6 +226,7 @@ steps:
       label: '$\partial\,e^{\mathbf{z}}$'
       title: 和的梯度复制给窗口内每个来源
   - id: wdiv
+    when: gated
     show: w
     label: '$\of{w}$'
     title: softmax：相除
@@ -199,6 +237,7 @@ steps:
       label: '$\partial\,e^{\mathbf{z}},\ \partial\sum$'
       title: 穿过相除
   - id: weight
+    when: gated
     show: wk
     label: '$\of{wk}$'
     title: 内容乘权重
@@ -208,6 +247,7 @@ steps:
       label: '$\partial\boldsymbol{\omega},\ \partial\mathbf{c}$'
       title: 传到权重和内容
   - id: sum
+    when: gated
     show: pooled
     label: '$\of{pooled}$'
     title: 窗口内相加
@@ -218,6 +258,7 @@ steps:
       label: '$\partial(\boldsymbol{\omega}\odot\mathbf{c})$'
       title: 梯度复制给窗口里的每个 token
   - id: unsqueeze
+    when: rotate
     show: pn3
     label: '$\of{pn3}$'
     title: 加一个 head 维

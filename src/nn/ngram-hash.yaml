@@ -1,0 +1,128 @@
+module: NgramHash
+subtitle: NgramHashState，每个位置以它结尾的 n-gram 的哈希行号
+params:
+  nmax: { type: int }
+  pad:  { type: int }
+  V:    { type: dim }
+  Le:   { type: dim }
+  Hg:   { type: dim }
+inputs:
+  ids:  { shape: [T] }
+  mask: { shape: [T] }
+outputs: [hashes]
+buffers:
+  token_map: { value: 'zeros(V)', dtype: int64, tex: '\mathrm{map}' }
+  mult:      { value: 'zeros(Le, nmax)', dtype: int64, tex: '\mathbf{m}' }
+  primes:    { value: 'zeros(Le, nmax - 1, Hg)', dtype: int64, tex: '\boldsymbol{\pi}' }
+  offsets:   { value: 'zeros(Le, (nmax - 1) * Hg)', dtype: int64, tex: '\boldsymbol{\omega}' }
+  pos:       { value: 'arange(T)', dtype: int64, tex: '\mathbf{p}' }
+  pad_id:    { value: 'full(T, pad)', dtype: int64, tex: '\mathrm{pad}' }
+  'blocked[0]': { value: 'zeros(T)', dtype: bool, tex: '\mathbf{b}^{(0)}' }
+fold:
+  label: '$\of{hashes}$'
+  title: n-gram 哈希（已折叠）
+  text: |
+    每个位置取自己和前面的 token，组成 2-gram 到 $\of{nmax}$-gram，每个 n-gram 的哈希值对每个 head 的质数取模，再加上这个 head 在表里的起始行。图片里的位置不参与 n-gram。
+    $$\of{hashes}={{ hashes | slices:0 }}$$
+  backward:
+    label: 无梯度
+    title: 整数运算，没有梯度
+body:
+  - comp: { op: 'index(token_map, [ids])', tex: '\mathrm{map}[\of{ids}]' }
+  - live: { op: 'where(mask, comp, -1)', tex: '\mathbf{c}' }
+  - for: s
+    in: 1..nmax
+    sequential: true
+    body:
+      - 'shift[s]':
+          title: '往前看 $\of{s-1}$ 个 token'
+          body:
+            - 'back[s]':    { op: 'pos - (s - 1)', tex: '\mathbf{p}-\of{s-1}' }
+            - 'srcpos[s]':  { op: 'clamp_min(back[s], 0)', tex: '\mathbf{p}^{(\of{s})}' }
+            - 'src[s]':     { op: 'index(live, [srcpos[s]])', tex: '\mathbf{c}^{(\of{s})}' }
+            - 'early[s]':   { op: 'lt(pos, s - 1)', tex: '[\,\mathbf{p}<\of{s-1}\,]' }
+            - 'dead[s]':    { op: 'eq(src[s], -1)', tex: '[\,\mathbf{c}^{(\of{s})}=-1\,]' }
+            - 'b1[s]':      { op: 'bitwise_or(blocked[s-1], early[s])', tex: '\mathbf{b}^{(\of{s-1})}\lor[\,\mathbf{p}<\of{s-1}\,]' }
+            - 'blocked[s]': { op: 'bitwise_or(b1[s], dead[s])', tex: '\mathbf{b}^{(\of{s})}' }
+            - 'tok[s]':     { op: 'where(blocked[s], pad_id, src[s])', tex: '\mathbf{tok}^{(\of{s})}' }
+            - 'col[s]':     { op: 'unsqueeze(tok[s], -1)', tex: '\mathbf{tok}^{(\of{s})}_{:,\mathrm{col}}' }
+  - tokens:   { op: 'cat(col[1..nmax], dim=-1)', tex: '\mathrm{Tok}' }
+  - products: { op: 'unsqueeze(tokens, 1) * mult', tex: '\mathrm{Tok}\odot\mathbf{m}' }
+  - 'roll[1]': { op: 'select(products, -1, 0)', tex: '\mathbf{h}_{1}' }
+  - for: n
+    in: 2..nmax
+    sequential: true
+    body:
+      - 'gram[n]':
+          title: '$\of{n}$-gram'
+          body:
+            - 'term[n]':  { op: 'select(products, -1, n - 1)', tex: '(\mathrm{Tok}\odot\mathbf{m})_{\of{n-1}}' }
+            - 'roll[n]':  { op: 'bitwise_xor(roll[n-1], term[n])', tex: '\mathbf{h}_{\of{n}}' }
+            - 'prm[n]':   { op: 'select(primes, 1, n - 2)', tex: '\boldsymbol{\pi}_{\of{n}}' }
+            - 'bucket[n]': { op: 'remainder(unsqueeze(roll[n], -1), prm[n])', tex: '\mathbf{h}_{\of{n}}\bmod\boldsymbol{\pi}_{\of{n}}' }
+  - joined: { op: 'cat(bucket[2..nmax], dim=-1)', tex: '[\,\mathbf{h}_{n}\bmod\boldsymbol{\pi}_{n}\,]' }
+  - hashes: { op: joined + offsets, tex: '\mathbf{id}' }
+steps:
+  - id: map
+    show: [token_map, comp]
+    label: '$\of{comp}$'
+    title: 压缩词表
+    text: |
+      <code>compressed = self.token_map[input_ids]</code>：先把 token id 换成压缩词表里的编号。压缩词表由 <code>build_compressed_token_map</code> 从 tokenizer 建出：把 token 的文字做 NFKC、NFD、去掉重音、转小写、合并空白，文字相同的 token 合成一类，真实模型有 99092 类。这一页的词表很小，表是直接写出的，例如 The 和 the 是同一类。
+      $$\mathrm{map}={{ token_map | matrix:0 }},\qquad \of{comp}={{ comp | matrix:0 }}$$
+  - id: dead
+    show: live
+    label: '$\of{live}$'
+    title: 图片里的位置记成 $-1$
+    text: |
+      <code>torch.where(token_mask, compressed, self.DEAD)</code>：图片区间里的位置（包括起止和换行标记）不参与 n-gram，记成 DEAD $=-1$，之后往前看时遇到它就停下。
+      $$\of{live}={{ live | matrix:0 }}$$
+  - id: back
+    show: ['back[1..nmax]', 'srcpos[1..nmax]', 'src[1..nmax]']
+    label: '$\mathbf{c}^{(s)}$'
+    title: 往前第 $s$ 个 token
+    text: |
+      <code>source = cache.gather(1, (positions - shift).clamp_min(0))</code>：shift 从 0 到 $\of{nmax}-1$，取出每个位置往前第 shift 个位置的编号。往前超出序列开头时先用位置 0 占位，下一步把它换掉。
+      $$\mathbf{c}^{(2)}={{ src[2] | matrix:0 }}$$
+  - id: blocked
+    show: ['early[1..nmax]', 'dead[1..nmax]', 'b1[1..nmax]', 'blocked[1..nmax]', 'blocked[0]']
+    label: '$\mathbf{b}^{(s)}$'
+    title: 往前看到哪里为止
+    text: |
+      <code>blocked = blocked | (positions &lt; shift) | (source == DEAD)</code>：超出序列开头或者遇到图片里的位置，这个位置往前的 n-gram 就到此为止，之后更远的位置也一直是 blocked。
+      $$\mathbf{b}^{(\of{nmax})}={{ blocked[nmax] | matrix:0 }}$$
+  - id: tokens
+    show: [pad_id, 'tok[1..nmax]', 'col[1..nmax]', tokens]
+    label: '$\of{tokens}$'
+    title: blocked 的位置换成 pad
+    text: |
+      <code>torch.where(blocked, self.pad_id, source)</code>，pad_id 是 pad token（id 2）在压缩词表里的编号 $\of{pad}$。<code>torch.stack(tokens, dim=-1)</code> 把 $\of{nmax}$ 列并排，第 $s$ 列是往前第 $s-1$ 个 token。
+      $$\of{tokens}={{ tokens | matrix:0 }}$$
+  - id: products
+    show: [mult, products]
+    label: '$\of{products}$'
+    title: 每一列乘自己的乘数
+    text: |
+      <code>tokens.unsqueeze(2) * self.multipliers</code>：每个 Engram 层有 $\of{nmax}$ 个奇数乘数，由 <code>np.random.default_rng(10007 * layer_id)</code> 生成，上界保证乘积不超过 int64。乘积超过 float64 能精确表示的 $2^{53}$，vizflow 按 int64 精确计算。
+      $$\mathbf{m}={{ mult | matrix:0 }}$$
+  - id: xor
+    show: ['roll[1]', 'term[2..nmax]', 'roll[2..nmax]']
+    label: '$\mathbf{h}_{n}$'
+    title: 依次按位异或
+    text: |
+      <code>rolling = torch.bitwise_xor(rolling, products[..., i])</code>：从当前 token 的乘积开始，每异或进往前一个 token 的乘积，就得到长一个 token 的 n-gram 的哈希值。
+      $$\mathbf{h}_{2}={{ roll[2] | matrix:0 }}$$
+  - id: bucket
+    show: ['prm[2..nmax]', 'bucket[2..nmax]', primes]
+    label: '$\bmod\ \boldsymbol{\pi}$'
+    title: 对每个 head 的质数取模
+    text: |
+      <code>rolling.unsqueeze(-1) % self.primes[:, i - 1]</code>：每种长度的 n-gram 有 $H_g$ 个 head，每个 head 一个质数，所有质数互不相同，从 engram_vocab_size 往上依次取。同一个哈希值对不同的质数取模，得到几个互相独立的行号。真实模型的质数都不小于 16000000。
+      $$\boldsymbol{\pi}={{ primes | slices:0 }}$$
+  - id: offset
+    show: [joined, offsets, hashes]
+    label: '$\of{hashes}$'
+    title: 加上每个 head 的起始行
+    text: |
+      <code>torch.cat(hashes, dim=-1) + self.offsets</code>：所有 head 共用一张表，每个 head 占连续的一段，起始行是前面各个质数的累加。
+      $$\of{hashes}={{ hashes | slices:0 }}$$
