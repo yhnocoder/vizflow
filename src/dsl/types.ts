@@ -106,7 +106,7 @@ export interface ModuleFile {
   subtitle?: Text;
   params?: Record<Name, ParamDecl>;
   inputs: Record<Name, InputDecl>;
-  outputs: Name[];
+  outputs: (Name | { name: Name; when?: Expr | boolean })[];
   weights?: Record<Name, WeightDecl>;
   buffers?: Record<Name, BufferDecl>;
   body: Item[];

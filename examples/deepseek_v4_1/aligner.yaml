@@ -1,0 +1,121 @@
+module: Aligner
+subtitle: Aligner，$3\times3$ 个 patch 合成一个 token，再过两层 MLP
+import:
+  GELU: vizflow/nn/gelu
+formula: '\step{w2,b2}{\of{out}=}\step{gelu.*}{\operatorname{GELU}\big(}\step{w1,b1}{\operatorname{unshuffle}_{r}(\of{x})W_{1}^{\top}+\mathbf{b}_{1}}\step{gelu.*}{\big)}\step{w2}{W_{2}^{\top}}\step{b2}{+\mathbf{b}_{2}}'
+params:
+  d:  { type: dim }
+  nh: { type: dim }
+  nw: { type: dim }
+  r:  { type: dim }
+inputs:
+  x: { shape: [n, dv] }
+outputs: [out]
+weights:
+  W1: { shape: [d, dv * r * r], tex: 'W_{1}' }
+  b1: { shape: [d], tex: '\mathbf{b}_{1}' }
+  W2: { shape: [d, d], tex: 'W_{2}' }
+  b2: { shape: [d], tex: '\mathbf{b}_{2}' }
+fold:
+  label: '$\of{out}=\mathrm{aligner}(\of{x})$'
+  title: aligner（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 aligner（已折叠）
+body:
+  - grid:  { op: 'view(x, nh, nw, dv)', tex: '\mathbf{G}' }
+  - chw:   { op: 'permute(grid, 2, 0, 1)', tex: '\mathbf{G}^{\mathrm{c}}' }
+  - padded: { op: 'pad(chw, [0, (nw + r - 1) // r * r - nw, 0, (nh + r - 1) // r * r - nh])', tex: '\mathbf{G}^{\mathrm{pad}}' }
+  - cells: { op: 'view(padded, dv, (nh + r - 1) // r, r, (nw + r - 1) // r, r)', tex: '\mathbf{G}^{\mathrm{cell}}' }
+  - moved: { op: 'permute(cells, 0, 2, 4, 1, 3)', tex: '\mathbf{G}^{\mathrm{perm}}' }
+  - cols:  { op: 'view(moved, dv * r * r, (nh + r - 1) // r * ((nw + r - 1) // r))', tex: '\operatorname{unfold}' }
+  - rows:  { op: 'transpose(cols, 0, 1)', tex: '\mathbf{u}' }
+  - a0:    { op: rows @ W1.T, tex: '\mathbf{u}W_{1}^{\top}' }
+  - a:     { op: a0 + b1, tex: '\mathbf{a}' }
+  - gelu:
+      use: GELU
+      inputs: { x: a }
+      outputs: { out: ag }
+      tex: { out: '\operatorname{GELU}(\mathbf{a})' }
+  - y0:    { op: ag @ W2.T, tex: '\operatorname{GELU}(\mathbf{a})W_{2}^{\top}' }
+  - out:   { op: y0 + b2, tex: '\mathbf{img}' }
+steps:
+  - id: grid
+    show: [grid, chw]
+    label: '$\of{chw}$'
+    title: 排回 patch 的网格，通道放在最前
+    text: |
+      <code>x.view(n_h, n_w, -1).permute(2, 0, 1)</code>：ViT 的输出按行优先排回 $\of{nh}\times\of{nw}$ 的网格，再把 $d_v=\of{dv}$ 个通道换到最前面，形状 $(d_v, n_h, n_w)$。
+    backward:
+      label: '$\partial\of{x}$'
+      title: 排回每个 patch 一行
+  - id: pad
+    show: padded
+    label: '$\of{padded}$'
+    title: 补 0，让行数和列数都是 $r$ 的倍数
+    text: |
+      <code>F.pad(x, (0, -n_w % r, 0, -n_h % r))</code>：在右边和下边补 0，$r=\of{r}$。这一页的网格是 $\of{nh}\times\of{nw}$，补成 $\of{(nh + r - 1) // r * r}\times\of{(nw + r - 1) // r * r}$；补出来的位置是常数 0，没有梯度。
+      $$\of{padded}={{ padded | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{chw}$'
+      title: 去掉补出来的位置
+  - id: unfold
+    show: [cells, moved, cols]
+    label: '$\operatorname{unfold}$'
+    title: unfold：每 $r\times r$ 个 patch 一组
+    text: |
+      <code>F.unfold(x.unsqueeze(0), r, stride=r)</code>：窗口 $r\times r$、步长 $r$，窗口不重叠。不重叠的 unfold 只是搬动元素，这里画成三步：把网格排成 (通道, 块行, 块内行, 块列, 块内列)，把块内的两维换到通道后面，再合成 $(d_v r^2, L)$。第 $c\cdot r^2+i\cdot r+j$ 行是通道 $c$、块内第 $i$ 行第 $j$ 列；$L=\of{(nh + r - 1) // r * ((nw + r - 1) // r)}$ 列按块的行优先排列。
+    backward:
+      label: '$\partial\of{padded}$'
+      title: 元素放回网格
+  - id: rows
+    show: rows
+    label: '$\of{rows}$'
+    title: 每组一行
+    text: |
+      <code>.squeeze(0).transpose(0, 1)</code>：每 $r\times r$ 个 patch 合成一行 $d_v r^2=\of{dv*r*r}$ 维，一共 $L$ 行，每行是语言模型里的一个图片 token。真实模型 $d_v r^2=9216$。
+      $$\of{rows}={{ rows | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{cols}$'
+      title: 转置回去
+  - id: w1
+    show: [W1.T, a0]
+    label: '$\of{a0}$'
+    title: w1：投影到语言模型的宽度
+    text: |
+      <code>self.w1 = nn.Linear(in_dim, args.dim)</code>，带偏置，从 $d_v r^2$ 维投影到 $d=\of{d}$ 维。
+      $$\of{a0}={{ a0 | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{1},\ \partial\of{rows}$'
+      title: 传到 w1 的权重
+  - id: b1
+    show: [b1, a]
+    label: '$\of{a}$'
+    title: 加偏置
+    text: |
+      $$\of{a}={{ a | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{b}_{1},\ \partial\of{a0}$'
+      title: 偏置的梯度是各行之和
+  - id: w2
+    show: [W2.T, y0]
+    label: '$\of{y0}$'
+    title: w2
+    text: |
+      <code>self.w2(F.gelu(self.w1(x)))</code>，<code>F.gelu</code> 用的是精确的 erf 形式。
+      $$\of{y0}={{ y0 | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{2},\ \partial\operatorname{GELU}(\mathbf{a})$'
+      title: 传到 w2 的权重
+  - id: b2
+    show: [b2, out]
+    label: '$\of{out}$'
+    title: 加偏置，得到图片 token
+    text: |
+      每一行是一个图片 token 的输入向量，按块的行优先排列。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{b}_{2},\ \partial\of{y0}$'
+      title: 偏置的梯度是各行之和

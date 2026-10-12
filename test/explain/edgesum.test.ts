@@ -397,7 +397,7 @@ const cases: Case[] = [
     },
   { op: 'remainder', build: (g, r) => binary(g, r, 'remainder', [2, 3], [3], true) },
   { op: 'remainder', build: (g, r) => scalar(g, r, 'remainder', 0.7) },
-  ...(['bitwise_xor', 'bitwise_and', 'eq', 'ge', 'floor_divide'] as const).map((op) => ({
+  ...(['bitwise_xor', 'bitwise_and', 'bitwise_or', 'floor_divide', 'eq', 'ge', 'lt'] as const).map((op) => ({
     op,
     build: (g: Graph) => {
       const a = g.label('a', [[3, 1, 2], [0, 5, 4]]);
@@ -428,6 +428,73 @@ const cases: Case[] = [
       const x = g.input('x', [7, 2], randomValues(r, [7, 2]));
       const w = g.input('w', [2, 3], randomValues(r, [2, 3]));
       return { out: g.causal_conv1d(x, w, { dilation: 2 }), inputs: [x, w] };
+    },
+  },
+  {
+    op: 'logical_not',
+    build: (g) => {
+      const m = g.label('m', [[0, 1, 1], [1, 0, 0]]);
+      return { out: g.logical_not(m), inputs: [] };
+    },
+  },
+  { op: 'copysign', build: (g, r) => binary(g, r, 'copysign', [2, 3], [3]) },
+  { op: 'copysign', build: (g, r) => scalar(g, r, 'copysign', -1) },
+  {
+    op: 'where',
+    build: (g, r) => {
+      const keep = g.label('keep', [[1], [0], [1]]);
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const y = g.input('y', [4], randomValues(r, [4]));
+      return { out: g.where(keep, x, y), inputs: [x, y] };
+    },
+  },
+  {
+    op: 'sort',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      return { out: g.sort(x, -1), inputs: [x] };
+    },
+  },
+  {
+    op: 'scatter',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const index = g.label('index', [[3, 0], [1, 2], [0, 3]]);
+      const src = g.input('s', [3, 2], randomValues(r, [3, 2]));
+      return { out: g.scatter(x, -1, index, src), inputs: [x, src] };
+    },
+  },
+  {
+    op: 'index_put',
+    build: (g, r) => {
+      const x = g.input('x', [4, 3], randomValues(r, [4, 3]));
+      const mask = g.label('mask', [1, 0, 1, 0]);
+      const v = g.input('v', [3], randomValues(r, [3]));
+      return { out: g.index_put(x, mask, v), inputs: [x, v] };
+    },
+  },
+  {
+    op: 'index_put',
+    build: (g, r) => {
+      const x = g.input('x', [4, 3], randomValues(r, [4, 3]));
+      const mask = g.label('mask', [0, 1, 1, 0]);
+      const v = g.input('v', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.index_put(x, mask, v), inputs: [x, v] };
+    },
+  },
+  {
+    op: 'index',
+    build: (g, r) => {
+      const x = g.input('x', [4, 3], randomValues(r, [4, 3]));
+      const rows = g.label('rows', [[2, 0], [3, 3], [1, 0]]);
+      return { out: g.index(x, [rows]), inputs: [x] };
+    },
+  },
+  {
+    op: 'pad',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.pad(x, [0, 1], { value: -2 }), inputs: [x] };
     },
   },
 ];

@@ -192,7 +192,10 @@ function compileItem(
   const valueEnv = { ...env, where: valueWhere };
   const { name, base, indices } = c.concreteName(key, valueEnv);
   const braceTitle = env.loops.size > 0 ? base : name;
-  if (isRecord(value) && !c.enabled(value, valueEnv)) return { name: undefined, beside: undefined };
+  if (isRecord(value) && !c.enabled(value, valueEnv)) {
+    if ('use' in value) c.switchedOffSteps.add(`${join(scope.path, name)}#*`);
+    return { name: undefined, beside: undefined };
+  }
   if (isRecord(value) && 'use' in value) {
     slots.push(compileInstance(c, scope, name, braceTitle, indices, value, valueEnv, entries, counts, ordinals, before));
     return { name, beside: besideOf(value, valueWhere) };

@@ -1,0 +1,70 @@
+module: VisionMLP
+subtitle: MLP，SwiGLU，gate 和 up 合在一个 Linear 里
+import:
+  SiLU: vizflow/nn/silu
+formula: '\step{down}{\of{out}=\big(}\step{act.*}{\operatorname{SiLU}(\mathbf{g})}\step{mul}{\odot\mathbf{u}}\step{down}{\big)W_{2}^{\top}},\quad\step{proj,chunk}{[\mathbf{g},\mathbf{u}]=\of{x}W_{1}^{\top}}'
+params:
+  fv: { type: dim }
+inputs:
+  x: { shape: [n, dv] }
+outputs: [out]
+weights:
+  W1: { shape: [2 * fv, dv], tex: 'W_{1}' }
+  W2: { shape: [dv, fv], tex: 'W_{2}' }
+fold:
+  label: '$\of{out}=\mathrm{mlp}(\of{x})$'
+  title: mlp（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 mlp（已折叠）
+body:
+  - gu:   { op: x @ W1.T, tex: '\mathbf{gu}' }
+  - gate: { op: 'narrow(gu, -1, 0, fv)', tex: '\mathbf{g}' }
+  - up:   { op: 'narrow(gu, -1, fv, fv)', tex: '\mathbf{u}' }
+  - act:
+      use: SiLU
+      inputs: { x: gate }
+      outputs: { out: sg }
+      tex: { out: '\operatorname{SiLU}(\mathbf{g})' }
+  - m:    { op: sg * up, tex: '\mathbf{m}' }
+  - out:  { op: m @ W2.T, tex: '\mathbf{mlp}' }
+steps:
+  - id: proj
+    show: [W1.T, gu]
+    label: '$\of{gu}$'
+    title: w1：gate 和 up 一起投影
+    text: |
+      <code>self.w1(x)</code> 输出 $2f_v=\of{2*fv}$ 维，没有偏置。真实模型 $f_v=2816$。
+      $$\of{gu}={{ gu | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{1},\ \partial\of{x}$'
+      title: 传到 w1 的权重和输入
+  - id: chunk
+    show: [gate, up]
+    label: '$\mathbf{g},\ \mathbf{u}$'
+    title: 切成 gate 和 up
+    text: <code>gate, up = self.w1(x).chunk(2, dim=-1)</code>：前一半是 gate，后一半是 up。ViT 的 MLP 没有截断。
+    backward:
+      label: '$\partial\of{gu}$'
+      title: 两半梯度拼回去
+  - id: mul
+    show: m
+    label: '$\of{m}$'
+    title: 门控相乘
+    text: |
+      <code>F.silu(gate) * up</code>。
+      $$\of{m}={{ m | matrix:2 }}$$
+    backward:
+      label: '$\partial\operatorname{SiLU}(\mathbf{g}),\ \partial\mathbf{u}$'
+      title: 梯度分给两边
+  - id: down
+    show: [W2.T, out]
+    label: '$\of{out}$'
+    title: w2：回到 $d_v$ 维
+    text: |
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{2},\ \partial\of{m}$'
+      title: 传到 w2 的权重

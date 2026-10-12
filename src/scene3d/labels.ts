@@ -57,7 +57,7 @@ export class Label {
   private alternate: { key: string; build: () => Node } | undefined = undefined;
   private alternateSize: [number, number] | undefined = undefined;
 
-  constructor(readonly kind: LabelKind, extraClass: string) {
+  constructor(readonly kind: LabelKind, extraClass: string, private readonly host: HTMLElement) {
     this.el = document.createElement('div');
     this.el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
     this.anchor = DEFAULT_ANCHOR[kind];
@@ -88,6 +88,7 @@ export class Label {
   }
 
   measure(): [number, number] {
+    if (this.el.parentElement === null) this.host.appendChild(this.el);
     if (this.size === undefined) this.size = [this.el.offsetWidth, this.el.offsetHeight];
     return this.size;
   }
@@ -155,8 +156,7 @@ export class LabelLayer {
   }
 
   add(kind: LabelKind, extraClass = ''): Label {
-    const label = new Label(kind, extraClass);
-    this.root.appendChild(label.el);
+    const label = new Label(kind, extraClass, this.root);
     this.labels.push(label);
     return label;
   }

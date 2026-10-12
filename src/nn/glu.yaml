@@ -12,6 +12,8 @@ params:
   name: { type: text, default_key: true }
   clamped: { type: bool, default: false }
   limit: { type: float }
+  up_first: { type: bool, default: false }
+  float_act: { type: bool, default: false }
 inputs:
   x: { shape: [T, d] }
 outputs: [down]
@@ -31,25 +33,41 @@ fold:
       $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
 body:
   - gate: x @ Wg.T
-  - gc:   { op: 'clamp(gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: clamped }
+  - gate32: { op: identity(gate), tex: '\mathbf{gate}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: 'false if up_first else clamped' }
   - act_fn:
       use: act
       when: not clamped
-      inputs: { x: gate }
+      inputs: { x: 'gate32 if float_act else gate' }
       outputs: { out: a }
       tex: { out: '\of{act}(\mathbf{gate})' }
   - up:   x @ Wu.T
-  - uc:   { op: 'clamp(up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - up32: { op: identity(up), tex: '\mathbf{up}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
+  - uc:   { op: 'clamp(up32 if float_act else up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
+  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: up_first }
   - act_fn:
       use: act
       when: clamped
       inputs: { x: gc }
       outputs: { out: a }
       tex: { out: '\of{act}(\bar{\mathbf{gate}})' }
-  - m:    { op: 'a * uc if clamped else a * up' }
-  - down: m @ Wd.T
+  - m:    { op: 'a * uc if clamped else a * up32 if float_act else a * up' }
+  - mc:   { op: identity(m), tex: '\mathbf{m}_{\mathrm{cast}}', dtype: x, when: float_act }
+  - down: { op: 'mc @ Wd.T if float_act else m @ Wd.T' }
 steps:
   - id: gate_proj
+    when: up_first
+    show: [Wg.T, gate]
+    label: '$\mathbf{gate}$'
+    title: w1
+    text: |
+      <code>gate = self.w1(x).float()</code> 里的 w1：把 $\of{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
+      $$\mathbf{gate}=\of{x}W_g^{\top}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial W_g,\ \partial\of{x}$'
+      title: 传到 w1 权重和 $\of{x}$
+  - id: gate_proj
+    when: not up_first
     show: [Wg.T, gate]
     label: '$\mathbf{gate}$'
     title: gate_proj
@@ -59,8 +77,19 @@ steps:
     backward:
       label: '$\partial W_g,\ \partial\of{x}$'
       title: 传到 gate_proj 权重和 $\of{x}$
+  - id: gate_float
+    when: float_act
+    show: gate32
+    label: '$\of{gate32}$'
+    title: gate 转成 float32
+    text: |
+      <code>gate = self.w1(x).float()</code>：投影的结果先转成 float32，截断和激活在 float32 里算。
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
   - id: clamp_gate
-    when: clamped
+    when: 'false if up_first else clamped'
     show: gc
     label: '$\bar{\mathbf{gate}}$'
     title: 截断 gate 的上界
@@ -86,7 +115,7 @@ steps:
         $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
   - id: up_proj
-    when: clamped
+    when: 'false if up_first else clamped'
     show: [Wu.T, up]
     label: '$\mathbf{up}$'
     title: up_proj
@@ -99,8 +128,33 @@ steps:
       text: |
         $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
         $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: up_proj
+    when: 'clamped if up_first else false'
+    show: [Wu.T, up]
+    label: '$\mathbf{up}$'
+    title: w3
+    text: |
+      <code>up = self.w3(x).float()</code> 里的 w3：输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。参考实现的 <code>Expert.forward</code> 先算完 w1 和 w3，再截 up、截 gate，最后做激活。
+      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_u,\ \partial\of{x}$'
+      title: 传到 w3 权重和 $\of{x}$
+      text: |
+        $\of{x}$ 同时用在 w1 和 w3 两处，它的梯度是两条路相加。
+        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+  - id: up_float
+    when: float_act
+    show: up32
+    label: '$\of{up32}$'
+    title: up 转成 float32
+    text: |
+      <code>up = self.w3(x).float()</code>：up 也先转成 float32。
+    backward:
+      label: '$\partial\mathbf{up}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
   - id: clamp_up
-    when: clamped
+    when: 'false if up_first else clamped'
     show: uc
     label: '$\bar{\mathbf{up}}$'
     title: 截断 up 的两侧
@@ -111,6 +165,30 @@ steps:
       label: '$\partial\mathbf{up}$'
       title: 穿过截断
       text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
+  - id: clamp_up
+    when: 'clamped if up_first else false'
+    show: uc
+    label: '$\bar{\mathbf{up}}$'
+    title: 截断 up 的两侧
+    text: |
+      <code>up = torch.clamp(up, min=-self.swiglu_limit, max=self.swiglu_limit)</code>：先截 up，两边都截，限制在 $[-L, L]$，$L=\of{limit}$。
+      $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{up}$'
+      title: 穿过截断
+      text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
+  - id: clamp_gate
+    when: 'clamped if up_first else false'
+    show: gc
+    label: '$\bar{\mathbf{gate}}$'
+    title: 截断 gate 的上界
+    text: |
+      <code>gate = torch.clamp(gate, max=self.swiglu_limit)</code>：再截 gate，只截上界，大于 $L$ 的值变成 $L$。
+      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{gate}$'
+      title: 穿过截断
+      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
   - id: gate
     when: not clamped
     show: m
@@ -127,7 +205,30 @@ steps:
     text: 激活后的 gate 和截断后的 up 逐元素相乘，决定 up 的每个分量放行多少。
     backward:
       label: '$\partial\of{a},\ \partial\bar{\mathbf{up}}$'
+  - id: cast
+    when: float_act
+    show: mc
+    label: '$\of{mc}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return self.w2(x.to(dtype))</code>：float32 里算出的乘积先转回输入的 dtype，<code>dtype</code> 是开头记下的 <code>x.dtype</code>，再进 w2。
+      $$\of{mc}={{ mc | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{m}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。
   - id: down
+    when: up_first
+    show: [Wd.T, down]
+    label: '$\of{down}$'
+    title: w2
+    text: |
+      <code>return self.w2(x.to(dtype))</code> 里的 w2：再投影回 $d$ 维。
+      $$\of{down} = {{ down | matrix }}$$
+    backward:
+      label: '$\partial W_d,\ \partial\of{m}$'
+  - id: down
+    when: not up_first
     show: [Wd.T, down]
     label: '$\of{down}$'
     title: down_proj
