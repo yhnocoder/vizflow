@@ -34,7 +34,8 @@ body:
   - Z:      { op: 'sum(ex, -1, keepdim=true)', tex: 'Z' }
   - P:      { op: ex / Z, tex: 'P^{+}' }
   - Pk:     { op: 'narrow(P, -1, 0, k)', tex: 'P' }
-  - o:      { op: Pk @ G, tex: '\mathbf{o}', dtype: q }
+  - Pc:     { op: identity(Pk), tex: 'P^{\mathrm{c}}', dtype: q }
+  - o:      { op: Pc @ G, tex: '\mathbf{o}', dtype: q }
 steps:
   - id: valid
     show: [valid, ic]
@@ -96,7 +97,7 @@ steps:
     label: '$[\bar{S},\mathbf{s}]$'
     title: 接上 sink 一列
     text: |
-      每个 head 有一个可学习的 <code>attn_sink</code>，形状 $(H)$。它 <code>view</code> 成 $(1, H, 1)$，<code>expand</code> 给每个位置一份，接在分数的最后一列。kernel 在分母上加 <code>sum_exp[i] += T.exp(attn_sink[i] - scores_max[i])</code>，sink 这一列只进 softmax 的分母，没有对应的 value。
+      每个 head 有一个可学习的 <code>attn_sink</code>，形状 $(H)$。kernel 在所有块算完以后执行 <code>sum_exp[i] += T.exp(attn_sink[i] - scores_max[i])</code>，把 $e^{s_h}$ 加进 softmax 的分母，sink 没有对应的 value。这一页按 softmax 的定义画：sink 排成 $(1, H, 1)$，复制给每个位置，接在分数的最后一列，和分数一起做 softmax，最后再去掉这一列。这三个操作是这一页为了画出分母而加的，kernel 里没有；结果与 kernel 相同。
       $$\of{sink}={{ sink | matrix:3 }}$$
     backward:
       label: '$\partial\of{sink},\ \partial\of{Sm}$'
@@ -143,6 +144,16 @@ steps:
     backward:
       label: '$\partial\of{P}$'
       title: sink 那一列梯度是 0
+  - id: cast_p
+    show: Pc
+    label: '$\of{Pc}$'
+    title: 权重转成 q 的 dtype
+    text: |
+      kernel 用 <code>T.copy(acc_s, acc_s_cast)</code> 把 float32 的权重转成 bf16（<code>acc_s_cast = T.alloc_shared((h, block), BF16)</code>），再和 bf16 的 kv 相乘。kernel 转的是还没除以分母的 $e^{s-\max}$，除法在乘完 value 之后（<code>acc_o[i, j] /= sum_exp[i]</code>）；这一页先除再转，两种顺序只在舍入上不同。
+    backward:
+      label: '$\partial\of{Pk}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。
   - id: pv
     show: o
     label: '$\of{o}$'
@@ -151,5 +162,5 @@ steps:
       kernel 里是 <code>T.gemm(acc_s_cast, kv_shared, acc_o, policy=T.GemmWarpPolicy.FullRow)</code>：取出的 $k$ 行 kv 同时作 value，按权重相加，每个 head 得到一个 $D$ 维的输出。
       $$\of{o}={{ o | matrix:2 }}$$
     backward:
-      label: '$\partial\of{Pk},\ \partial\of{G}$'
+      label: '$\partial\of{Pc},\ \partial\of{G}$'
       title: 传到权重和取出的 kv
