@@ -238,8 +238,13 @@ def page_paths(model):
     return paths
 
 
-def stacked_grad(paths, name):
+def stacked_grad(name):
     return name.endswith(("experts.W1", "experts.W2", "experts.W3"))
+
+
+def stable_topk(self, k, dim=-1, largest=True, sorted=True):
+    order = self.sort(dim=dim, descending=largest, stable=True)
+    return torch.return_types.topk((order.values.narrow(dim, 0, k), order.indices.narrow(dim, 0, k)))
 
 
 def encode(t):
@@ -306,6 +311,7 @@ def run(source):
     M.Transformer.encode_image = M.Transformer.encode_image.__wrapped__
     head = M.ParallelHead.forward
     M.ParallelHead.forward = lambda self, x, full_logits=False: head(self, x, full_logits=True)
+    torch.Tensor.topk = stable_topk
     _, logits, _ = M.Transformer.forward.__wrapped__(model, ids, 0, images=[[image]], token_types=token_types)
     captured["candidates"] = M.shared_attn.candidates.clone()
     logp = F.log_softmax(logits[0], -1)
@@ -327,7 +333,7 @@ def run(source):
         if path in grads:
             continue
         grads[path] = encode(p.grad if p.grad is not None else torch.zeros_like(p))
-    without_grad = sorted(path for path, p in paths.items() if not stacked_grad(paths, path) and p.grad is None)
+    without_grad = sorted(path for path, p in paths.items() if not stacked_grad(path) and p.grad is None)
     hash_state = model.engram_hash
     nodes = {
         "vision": encode(captured["vision"]),

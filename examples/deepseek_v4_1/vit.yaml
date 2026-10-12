@@ -1,0 +1,104 @@
+module: ViT
+subtitle: DeepSeek-ViT，双向注意力和二维 RoPE
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  VitBlock: ./vit-block.yaml
+params:
+  dv:    { type: dim }
+  nh:    { type: dim }
+  nw:    { type: dim }
+  Hv:    { type: dim }
+  fv:    { type: dim }
+  theta: { type: float, default: 1e4 }
+inputs:
+  patches: { shape: [n, 3, p, p] }
+outputs: [out]
+weights:
+  Wpe: { shape: [dv, 3 * p * p], tex: 'W_{pe}' }
+  bpe: { shape: [dv], tex: '\mathbf{b}_{pe}' }
+buffers:
+  cos: { value: 'rope2d_cos(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], tex: '\cos^{2\mathrm{D}}' }
+  sin: { value: 'rope2d_sin(nh, nw, dv // Hv // 2, theta)', shape: [n, 1, dv // Hv // 2], tex: '\sin^{2\mathrm{D}}' }
+fold:
+  label: '$\of{out}=\mathrm{vision}(\of{patches})$'
+  title: vision（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{patches}$'
+    title: 穿过 vision（已折叠）
+body:
+  - flat: { op: 'view(patches, n, 3 * p * p)', tex: '\mathbf{P}' }
+  - z0:   { op: flat @ Wpe.T, tex: '\mathbf{P}{W_{pe}}^{\top}' }
+  - z:    { op: z0 + bpe, tex: '\mathbf{z}_{0}' }
+  - block:
+      use: VitBlock
+      title: Block
+      subtitle: 第 1 个 ViT block
+      params: { Hv: Hv, fv: fv }
+      inputs: { x: z, cos: cos, sin: sin }
+      outputs: { out: z1 }
+      tex: { out: '\mathbf{z}_{1}' }
+  - rest:
+      title: $\cdots$ 第 2 到 32 个 block
+      subtitle: Block $\times$ 31
+      fixed: true
+      repeat: [{ like: block, count: 31 }]
+      fold:
+        label: '$\of{zl}$'
+        title: $\cdots$ 第 2 到 32 个 ViT block（占位）
+        text: |
+          真实的 ViT 有 32 个 block，结构都和第 1 个相同，参数各自不同。这一页的小模型只有 1 个 block，这里把其余 31 个收成一个盒子，只用来示意：盒子里没有真实计算，按恒等映射处理。这个盒子不能展开。
+          $$\of{zl}=\mathrm{blocks}_{2..32}(\of{z1})\;\approx\;\of{z1}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{z1}$'
+          title: 穿过占位的 ViT block
+      body:
+        - zl: { op: identity(z1), tex: '\mathbf{z}_{32}' }
+  - norm:
+      use: RMSNorm
+      subtitle: RMSNorm，$\epsilon=10^{-6}$
+      folded: true
+      inputs: { x: zl }
+      outputs: { out: out }
+      fold:
+        text: |
+          计算和 Block 里的 norm1 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\of{out}={{ out | matrix:2 }}$$
+steps:
+  - id: patch_flat
+    show: flat
+    label: '$\of{flat}$'
+    title: 每个 patch 摊成一行
+    text: |
+      <code>PatchEmbed.forward</code> 先做 <code>x.flatten(1)</code>：每个 patch 的 $3\times\of{p}\times\of{p}$ 个数按通道、行、列的顺序摊成 $3p^2=\of{3*p*p}$ 维。真实模型的 patch 是 $14\times14$，一行 588 维。
+      $$\of{flat}={{ flat | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{patches}$'
+      title: 排回 patch 的形状
+  - id: patch_embed
+    show: [Wpe.T, z0]
+    label: '$\of{z0}$'
+    title: patch_embed：一个带偏置的 Linear
+    text: |
+      <code>self.proj = nn.Linear(3 * patch_size ** 2, vision_dim)</code>：参考实现用 Linear，没有卷积。每个 patch 投影到 $d_v=\of{dv}$ 维，真实模型 $d_v=1024$。
+      $$\of{z0}={{ z0 | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{pe},\ \partial\of{flat}$'
+      title: 传到 patch_embed 的权重
+  - id: patch_bias
+    show: [bpe, z]
+    label: '$\of{z}$'
+    title: 加偏置
+    text: |
+      $$\of{z}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{b}_{pe},\ \partial\of{z0}$'
+      title: 偏置的梯度是各个 patch 之和
+  - id: rope_table
+    show: [cos, sin]
+    label: '$\cos^{2\mathrm{D}},\ \sin^{2\mathrm{D}}$'
+    title: 二维 RoPE 的表
+    text: |
+      <code>get_vision_cos_sin(n_h, n_w, rope_dim, theta)</code>：每个 head 宽 $d_v/H_v$，转一半 $r=d_v/H_v/2=\of{dv//Hv//2}$ 个角度，频率 $\omega_i=\theta^{-2i/r}$，$\theta=\of{theta}$。第 $i$ 行第 $j$ 列的 patch 的角度是 $[\,i\,\omega_0,\dots,\ j\,\omega_0,\dots\,]$：前一半频率乘行号，后一半乘列号，这一页每个 head 只有 $r=\of{dv//Hv//2}$ 个角度。patch 按行优先排列，$\of{nh}$ 行、$\of{nw}$ 列。表是常量，没有梯度。
+      $$\cos^{2\mathrm{D}}={{ cos | matrix:3 }}$$

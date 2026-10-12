@@ -1,0 +1,186 @@
+module: VisionAttention
+subtitle: Attention，双向，带偏置
+import:
+  VisionRotary: ./vision-rotary.yaml
+formula: '\step{out_proj,out_bias}{\of{y}=}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{scores}{\mathbf{q}\mathbf{k}^{\top}}\step{scale}{/\sqrt{d_v}}\step{exp,sum,div}{\big)}\step{pv}{\mathbf{v}}\step{out_proj}{\,W_{o}^{\top}}\step{out_bias}{+\mathbf{b}_{o}}'
+params:
+  Hv: { type: dim }
+inputs:
+  x:   { shape: [n, dv] }
+  cos: { shape: [n, 1, r2] }
+  sin: { shape: [n, 1, r2] }
+outputs: [y]
+weights:
+  Wqkv: { shape: [3 * dv, dv], tex: 'W_{qkv}' }
+  bqkv: { shape: [3 * dv], tex: '\mathbf{b}_{qkv}' }
+  Wo:   { shape: [dv, dv], tex: 'W_{o}' }
+  bo:   { shape: [dv], tex: '\mathbf{b}_{o}' }
+fold:
+  label: '$\of{y}=\mathrm{attn}(\of{x})$'
+  title: attn（已折叠）
+  text: |
+    所有 patch 互相都能看到，没有因果 mask。
+    $$\of{y}={{ y | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 attn（已折叠）
+body:
+  - qkv0: { op: x @ Wqkv.T, tex: '\of{x}W_{qkv}^{\top}' }
+  - qkv:  { op: qkv0 + bqkv, tex: '\mathbf{qkv}' }
+  - q0:   { op: 'narrow(qkv, -1, 0, dv)', tex: '\mathbf{q}^{\mathrm{flat}}' }
+  - k0:   { op: 'narrow(qkv, -1, dv, dv)', tex: '\mathbf{k}^{\mathrm{flat}}' }
+  - v0:   { op: 'narrow(qkv, -1, 2 * dv, dv)', tex: '\mathbf{v}^{\mathrm{flat}}' }
+  - q:    { op: 'view(q0, n, Hv, dv // Hv)', tex: '\mathbf{q}' }
+  - k:    { op: 'view(k0, n, Hv, dv // Hv)', tex: '\mathbf{k}' }
+  - v:    { op: 'view(v0, n, Hv, dv // Hv)', tex: '\mathbf{v}' }
+  - q_rot:
+      use: VisionRotary
+      suffix: q
+      title: apply_rotary
+      subtitle: query
+      inputs: { x: q, cos: cos, sin: sin }
+      outputs: { out: qr }
+      tex: { out: "\\mathbf{q}'" }
+  - k_rot:
+      use: VisionRotary
+      suffix: k
+      title: apply_rotary
+      subtitle: key
+      folded: true
+      inputs: { x: k, cos: cos, sin: sin }
+      outputs: { out: kr }
+      tex: { out: "\\mathbf{k}'" }
+      fold:
+        text: |
+          计算和上面 query 的 apply_rotary 相同，那里展开画了每一步。
+          $$\mathbf{k}'={{ kr | matrix:2 }}$$
+  - qt:   { op: 'transpose(qr, 0, 1)', tex: '\mathbf{q}^{\mathrm{h}}' }
+  - kt:   { op: 'transpose(kr, 0, 1)', tex: '\mathbf{k}^{\mathrm{h}}' }
+  - vt:   { op: 'transpose(v, 0, 1)', tex: '\mathbf{v}^{\mathrm{h}}' }
+  - kT:   { op: 'transpose(kt, 1, 2)', tex: '{\mathbf{k}^{\mathrm{h}}}^{\top}' }
+  - S:    { op: qt @ kT, tex: 'S' }
+  - Ss:   { op: S * (dv // Hv) ** -0.5, tex: '\tilde{S}' }
+  - ex:   { op: exp(Ss), tex: 'e^{\tilde{S}}' }
+  - Z:    { op: 'sum(ex, -1, keepdim=true)', tex: 'Z' }
+  - P:    { op: ex / Z, tex: 'P' }
+  - ot:   { op: P @ vt, tex: '\mathbf{o}^{\mathrm{h}}' }
+  - o:    { op: 'transpose(ot, 0, 1)', tex: '\mathbf{o}' }
+  - of:   { op: 'view(o, n, dv)', tex: '\mathbf{o}^{\mathrm{flat}}' }
+  - y0:   { op: of @ Wo.T, tex: '\mathbf{o}{W_{o}}^{\top}' }
+  - y:    { op: y0 + bo, tex: '\mathbf{y}' }
+steps:
+  - id: qkv_proj
+    show: [Wqkv.T, qkv0]
+    label: '$\of{qkv0}$'
+    title: wqkv：一次投影出 q、k、v
+    text: |
+      <code>self.wqkv(x)</code> 是带偏置的 <code>nn.Linear</code>，输出 $3d_v=\of{3*dv}$ 维。这一步是矩阵乘法，下一步加偏置。
+      $$\of{qkv0}={{ qkv0 | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{qkv},\ \partial\of{x}$'
+      title: 传到 wqkv 的权重和输入
+  - id: qkv_bias
+    show: [bqkv, qkv]
+    label: '$+\mathbf{b}_{qkv}$'
+    title: 加偏置
+    text: |
+      语言模型里的 Linear 都没有偏置，ViT 的 wqkv 和 wo 有。
+      $$\mathbf{b}_{qkv}={{ bqkv | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{b}_{qkv}$'
+      title: 偏置的梯度是各个 patch 之和
+  - id: chunk
+    show: [q0, k0, v0, q, k, v]
+    label: '$\mathbf{q},\ \mathbf{k},\ \mathbf{v}$'
+    title: 切成 q、k、v，按 head 分开
+    text: |
+      <code>self.wqkv(x).chunk(3, dim=-1)</code>，每段 <code>view(n, n_heads, head_dim)</code>：$H_v=\of{Hv}$ 个 head，每个宽 $d_v/H_v=\of{dv//Hv}$。真实模型 16 个 head，每个 64 维。
+    backward:
+      label: '$\partial\of{qkv}$'
+      title: 三段梯度拼回去
+  - id: heads_first
+    show: [qt, kt, vt]
+    label: '$\mathbf{q}^{\mathrm{h}},\ \mathbf{k}^{\mathrm{h}},\ \mathbf{v}^{\mathrm{h}}$'
+    title: head 换到最前面
+    text: <code>F.scaled_dot_product_attention(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))</code>：形状变成 $(H_v, n, d_h)$，每个 head 各算一次注意力。
+    backward:
+      label: '$\partial\mathbf{q}'',\ \partial\mathbf{k}'',\ \partial\mathbf{v}$'
+      title: 换回原来的顺序
+  - id: scores
+    show: [kT, S]
+    label: '$\of{S}$'
+    title: 打分
+    text: |
+      scaled_dot_product_attention 的定义是 $\operatorname{softmax}(\mathbf{q}\mathbf{k}^{\top}/\sqrt{d_h})\,\mathbf{v}$，这里按定义一步一步画。没有 mask：一张图里所有 patch 互相都能看到。
+      $$\of{S}={{ S | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{q}^{\mathrm{h}},\ \partial\mathbf{k}^{\mathrm{h}}$'
+      title: 传到 query 和 key
+  - id: scale
+    show: Ss
+    label: '$/\sqrt{d_h}$'
+    title: 乘 $1/\sqrt{d_h}$
+    text: |
+      $$\of{Ss}={{ Ss | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{S}$'
+      title: 穿过缩放
+  - id: exp
+    show: ex
+    label: '$\of{ex}$'
+    title: softmax：取 exp
+    text: softmax 按定义拆成取 exp、求和、相除三步。kernel 会先减去每行的最大值，这一项在结果和梯度里都抵消，这里按定义画。
+    backward:
+      label: '$\partial\of{Ss}$'
+      title: 穿过 exp
+  - id: sum
+    show: Z
+    label: '$\of{Z}$'
+    title: softmax：每行求和
+    backward:
+      label: '$\partial\of{ex}$'
+      title: 行和的梯度复制给这一行
+  - id: div
+    show: P
+    label: '$\of{P}$'
+    title: softmax：相除
+    text: |
+      $$\of{P}={{ P | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{ex},\ \partial\of{Z}$'
+      title: 穿过相除
+  - id: pv
+    show: ot
+    label: '$\of{ot}$'
+    title: 按权重加权 value
+    text: |
+      $$\of{ot}={{ ot | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{P},\ \partial\mathbf{v}^{\mathrm{h}}$'
+      title: 传到权重和 value
+  - id: merge_heads
+    show: [o, of]
+    label: '$\of{of}$'
+    title: 各个 head 拼回一行
+    text: <code>o.transpose(0, 1).reshape(n, -1)</code>。
+    backward:
+      label: '$\partial\of{ot}$'
+      title: 按 head 切开
+  - id: out_proj
+    show: [Wo.T, y0]
+    label: '$\of{y0}$'
+    title: wo
+    text: |
+      $$\of{y0}={{ y0 | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{o},\ \partial\of{of}$'
+      title: 传到 wo 的权重
+  - id: out_bias
+    show: [bo, y]
+    label: '$\of{y}$'
+    title: 加偏置
+    text: |
+      $$\of{y}={{ y | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{b}_{o},\ \partial\of{y0}$'
+      title: 偏置的梯度是各个 patch 之和

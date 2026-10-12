@@ -1,0 +1,68 @@
+module: VisionRotary
+subtitle: 二维 RoPE，前一半和后一半配对
+formula: '\step{cat}{\of{out}=\big[\,}\step{first}{{\of{x}}_{1}\cos-{\of{x}}_{2}\sin}\step{cat}{,\ }\step{second}{{\of{x}}_{2}\cos+{\of{x}}_{1}\sin}\step{cat}{\,\big]}'
+inputs:
+  x:   { shape: [n, Hx, hv] }
+  cos: { shape: [n, 1, r2] }
+  sin: { shape: [n, 1, r2] }
+outputs: [out]
+fold:
+  label: '$\of{out}$'
+  title: apply_rotary（已折叠）
+  text: |
+    每个 head 的第 $c$ 维和第 $c+\of{hv//2}$ 维成一对，转过这个 patch 的角度：前一半频率对应行号，后一半对应列号。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\of{x}$'
+    title: 穿过 apply_rotary（已折叠）
+body:
+  - x1:     { op: 'narrow(x, -1, 0, hv // 2)', tex: '{\of{x}}_{1}' }
+  - x2:     { op: 'narrow(x, -1, hv // 2, hv // 2)', tex: '{\of{x}}_{2}' }
+  - x1c:    { op: x1 * cos, tex: '{\of{x}}_{1}\cos' }
+  - x2s:    { op: x2 * sin, tex: '{\of{x}}_{2}\sin' }
+  - first:  { op: x1c - x2s, tex: '{\of{x}}_{1}\cos-{\of{x}}_{2}\sin' }
+  - x2c:    { op: x2 * cos, tex: '{\of{x}}_{2}\cos' }
+  - x1s:    { op: x1 * sin, tex: '{\of{x}}_{1}\sin' }
+  - second: { op: x2c + x1s, tex: '{\of{x}}_{2}\cos+{\of{x}}_{1}\sin' }
+  - out:    { op: 'cat([first, second], dim=-1)' }
+steps:
+  - id: chunk
+    show: [x1, x2]
+    label: '${\of{x}}_{1},\ {\of{x}}_{2}$'
+    title: 切成前后两半
+    text: |
+      <code>x1, x2 = x.float().chunk(2, dim=-1)</code>：每个 head 宽 $\of{hv}$，前一半和后一半各 $\of{hv//2}$ 维，第 $c$ 维和第 $c+\of{hv//2}$ 维成一对。语言模型里的 apply_rotary_emb 是相邻两维一对，ViT 的配对方式不同。
+      $${\of{x}}_{1}={{ x1 | matrix:2 }},\qquad {\of{x}}_{2}={{ x2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x}$'
+      title: 两半拼回去
+  - id: first
+    show: [x1c, x2s, first]
+    label: '$\of{first}$'
+    title: 前一半：$x_1\cos-x_2\sin$
+    text: |
+      $\cos$、$\sin$ 的形状是 $(n, 1, \of{hv//2})$，同一个 patch 的所有 head 用同一行。
+      $$\of{first}={{ first | matrix:2 }}$$
+    backward:
+      label: '$\partial{\of{x}}_{1},\ \partial{\of{x}}_{2}$'
+      title: 穿过前一半
+  - id: second
+    show: [x2c, x1s, second]
+    label: '$\of{second}$'
+    title: 后一半：$x_2\cos+x_1\sin$
+    text: |
+      两半一起看，每一对 $(x_1, x_2)$ 转过一个角度，长度不变。
+      $$\of{second}={{ second | matrix:2 }}$$
+    backward:
+      label: '$\partial{\of{x}}_{1},\ \partial{\of{x}}_{2}$'
+      title: 穿过后一半
+  - id: cat
+    show: out
+    label: '$\of{out}$'
+    title: 拼回一个 head
+    text: |
+      <code>torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)</code>。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{first},\ \partial\of{second}$'
+      title: 按列切开

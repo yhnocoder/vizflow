@@ -1,0 +1,73 @@
+module: VitBlock
+subtitle: Block，pre-norm 残差
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  VisionAttention: ./vision-attention.yaml
+  VisionMLP: ./vision-mlp.yaml
+params:
+  Hv: { type: dim }
+  fv: { type: dim }
+inputs:
+  x:   { shape: [n, dv] }
+  cos: { shape: [n, 1, r2] }
+  sin: { shape: [n, 1, r2] }
+outputs: [out]
+fold:
+  label: '$\of{out}=\mathrm{block}(\of{x})$'
+  title: Block（已折叠）
+  text: |
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 Block（已折叠）
+body:
+  - norm1:
+      use: RMSNorm
+      subtitle: RMSNorm，$\epsilon=10^{-6}$
+      params:
+        intro: 'ViT 的 RMSNorm 和语言模型的写法相同：<code>x * torch.rsqrt(x.square().mean(-1, keepdim=True) + self.eps)</code>，再乘权重；ViT 用 $\epsilon=10^{-6}$，语言模型用 $10^{-20}$。'
+      inputs: { x: x }
+      outputs: { out: a }
+  - attn:
+      use: VisionAttention
+      params: { Hv: Hv }
+      inputs: { x: a, cos: cos, sin: sin }
+      outputs: { y: ao }
+  - h: { op: x + ao, tex: '\mathbf{h}' }
+  - norm2:
+      use: RMSNorm
+      subtitle: RMSNorm，$\epsilon=10^{-6}$
+      folded: true
+      inputs: { x: h }
+      outputs: { out: b }
+      fold:
+        text: |
+          计算和上面的 norm1 相同，那里展开画了每一步；权重是这个实例自己的。
+          $$\of{b}={{ b | matrix:2 }}$$
+  - mlp:
+      use: VisionMLP
+      params: { fv: fv }
+      inputs: { x: b }
+      outputs: { out: mo }
+  - out: { op: h + mo, tex: '\mathbf{z}' }
+steps:
+  - id: residual_attn
+    show: h
+    label: '$\of{h}=\of{x}+\mathrm{attn}$'
+    title: 加回残差
+    text: |
+      <code>x = x + self.attn(self.norm1(x), cos, sin)</code>。
+      $$\of{h}={{ h | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{x},\ \partial\of{ao}$'
+      title: 梯度分给残差和注意力
+  - id: residual_mlp
+    show: out
+    label: '$\of{out}=\of{h}+\mathrm{mlp}$'
+    title: 加回残差
+    text: |
+      <code>return x + self.mlp(self.norm2(x))</code>。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{h},\ \partial\of{mo}$'
+      title: 梯度分给残差和 MLP

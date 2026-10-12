@@ -1,0 +1,86 @@
+module: MoE
+subtitle: MoE，路由专家加 1 个共享专家
+import:
+  GLU: vizflow/nn/glu
+  Experts: vizflow/nn/experts
+  Gate: ./gate.yaml
+params:
+  E:     { type: dim }
+  K:     { type: dim }
+  f:     { type: dim }
+  rsf:   { type: float, default: 1.5 }
+  limit: { type: float }
+inputs:
+  x:          { shape: [T, d] }
+  image_mask: { shape: [T] }
+outputs: [out]
+fold:
+  label: '$\of{out}=\mathrm{ffn}(\of{x})$'
+  title: ffn（已折叠）
+  text: |
+    路由、\of{E} 个路由专家和共享专家都收进了盒子。每个位置只经过 $K=\of{K}$ 个路由专家和 1 个共享专家。
+    $$\of{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{x}$'
+    title: 穿过 ffn（已折叠）
+    text: |
+      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+body:
+  - gate:
+      use: Gate
+      params: { E: E, K: K, rsf: rsf }
+      inputs: { x: x, image_mask: image_mask }
+      outputs: { idx: idx, rw: rw }
+  - experts:
+      use: Experts
+      subtitle: Expert $\times E$，按专家循环
+      params: { E: E, mf: f, clamped: true, limit: limit, up_first: true, fused: false, token_major: true, scale_hidden: true }
+      inputs: { x: x, idx: idx, w: rw }
+      outputs: { out: routed }
+      tex: { out: '\mathbf{y}^{\mathrm{r}}' }
+      steps:
+        clamp_up:
+          text: |
+            <code>up = torch.clamp(up, min=-self.swiglu_limit, max=self.swiglu_limit)</code>：参考实现先截 up，两边都截，限制在 $[-L, L]$，$L=\of{limit}$。这一页用 $L=\of{limit}$，让截断在小数值上也能看到；真实模型里 swiglu_limit $=10$。参考实现的注释说明，截断来自训练，让 FP8、FP4 的激活值不越界。
+            $$\bar{\mathbf{up}}={{ experts.uc | matrix:2 }}$$
+        clamp_gate:
+          text: |
+            <code>gate = torch.clamp(gate, max=self.swiglu_limit)</code>：再截 gate，只截上界。
+            $$\bar{\mathbf{gate}}={{ experts.gc | matrix:2 }}$$
+        mul:
+          text: |
+            <code>x = F.silu(gate) * up</code>：激活后的 gate 和截断后的 up 逐元素相乘。
+            $$\mathbf{m}={{ experts.hidden | matrix:2 }}$$
+        weight:
+          text: |
+            每一行取出位置 ${ \mathbf{i}^{t}}_r$、槽位 ${ \mathbf{i}^{k}}_r$ 的路由权重，对应 <code>weights[idx, top, None]</code>。
+            $$\mathbf{w}^{s}={{ experts.weight | matrix:3 }}$$
+  - shared_experts:
+      use: GLU
+      subtitle: Expert，共享专家
+      suffix: s
+      params: { act: SiLU, f: f, name: shared_experts, clamped: true, limit: limit, up_first: true }
+      inputs: { x: x }
+      outputs: { down: shared }
+      tex: { down: '\mathbf{y}^{\mathrm{s}}', a: '\mathrm{SiLU}(\bar{\mathbf{gate}}_{s})' }
+      steps:
+        gate_proj:
+          text: |
+            共享专家是同一个 <code>Expert</code> 类，只是调用时不传路由权重：<code>self.shared_experts(x)</code>。w1 把 $\of{x}$ 投影到 $f=\of{f}$ 维，没有 bias。
+            $$\mathbf{gate}={{ shared_experts.gate | matrix:2 }}$$
+        clamp_gate:
+          text: |
+            先截 up，再截 gate 的上界，和路由专家相同。
+            $$\bar{\mathbf{gate}}={{ shared_experts.gc | matrix:2 }}$$
+  - out: { op: routed + shared, tex: '\mathbf{y}' }
+steps:
+  - id: add
+    show: out
+    label: '$\of{out}=\of{routed}+\of{shared}$'
+    title: 加上共享专家
+    text: |
+      <code>y += self.shared_experts(x)</code>：共享专家每个位置都要经过，权重固定是 1。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{routed},\ \partial\of{shared}$'
+      title: 梯度分给路由专家和共享专家
