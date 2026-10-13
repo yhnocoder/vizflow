@@ -834,7 +834,7 @@ class Plan implements LevelPlan {
       const side = m.parent === null && this.split(m) ? 'outer' : parent !== undefined && !this.split(parent) ? 'left' : 'right';
       this.modules.push({ id: m.id, title: m.title, subtitle: m.subtitle || undefined, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
     }
-    const runs: { title: string; subtitle?: string; nodes: Node[]; inside: boolean }[] = [];
+    const runs: { title: string; subtitle?: string; nodes: Node[]; inside: boolean; explicit: boolean }[] = [];
     let last: string | undefined;
     for (const step of this.spec.forward) {
       const owner = step.module === undefined ? undefined : this.byId.get(step.module);
@@ -846,10 +846,11 @@ class Plan implements LevelPlan {
       }
       const nodes = list(step.show);
       if (last === title) runs[runs.length - 1].nodes.push(...nodes);
-      else runs.push({ title, subtitle: step.brace?.subtitle, nodes: [...nodes], inside: step.brace !== undefined && isModule });
+      else runs.push({ title, subtitle: step.brace?.subtitle, nodes: [...nodes], inside: step.brace !== undefined && isModule, explicit: false });
+      if (step.brace !== undefined) runs[runs.length - 1].explicit = true;
       last = title;
     }
-    runs.forEach((run, i) => {
+    runs.filter((run) => run.explicit || run.nodes.length > 1).forEach((run, i) => {
       const params = run.nodes.some((n) => isLeafLike(n));
       const nested = run.nodes.some((n) => this.innermost(n) !== undefined);
       const copies = this.copies.filter((c) => c.board === undefined && c.consumers.some((u) => run.nodes.includes(u))).map((c) => c.node);

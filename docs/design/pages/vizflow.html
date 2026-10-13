@@ -915,7 +915,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
   <li><code>left</code>：父模块没有 <code>split</code> 的子模块，放在左侧离内容 1.7，按内层处理（相机跟随的概览里隐藏）。</li>
   <li><code>right</code>：其余模块，放在右侧离内容 2.2。</li>
 </ul>
-<p>不属于任何模块的连续步骤按分段名合成一个分段括号：含参数的放右侧，否则放左侧。括号放在最前一行前方 0.6 的深度。大括号的标签上有「▸ 展开」或「▾ 折叠」，点击切换这个模块的折叠状态；占位模块没有这个按钮。</p>
+<p>不属于任何模块的连续步骤按分段名合成一个分段括号：含参数的放右侧，否则放左侧。合成后只框住一个张量的分段不画括号，因为括号上的名字与张量自己的标签重复；步骤里显式写了 <code>brace</code> 的仍然画。括号放在最前一行前方 0.6 的深度。大括号的标签上有「▸ 展开」或「▾ 折叠」，点击切换这个模块的折叠状态；占位模块没有这个按钮。</p>
 <p>分层布局的这些值在 <code>scene3d/levels.ts</code> 里以 <code>GAP</code>、<code>FOLD</code>、<code>BOX_MARGIN</code>、<code>BRACE_PAD</code>、<code>BRACE_X</code> 等常量给出，改动时对照 Qwen3 页的截图检查各层的标签是否互相遮挡。</p>
 
 <h3>相机</h3>
