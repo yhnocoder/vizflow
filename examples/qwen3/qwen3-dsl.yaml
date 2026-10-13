@@ -58,8 +58,10 @@ modules:
       layers:
         use: list[Qwen3DecoderLayer]
         count: num_layers
-        args: [d_head, d_ff, num_heads, num_kv_heads, { theta: 10 }]
-      norm: RMSNorm
+        args: [d_model, d_head, d_ff, num_heads, num_kv_heads, { theta: 10 }]
+      norm:
+        use: RMSNorm
+        args: { hidden_size: d_model }
       lm_head:
         use: Linear
         args: { in_features: d_model, out_features: V, bias: false }

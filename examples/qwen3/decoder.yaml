@@ -6,6 +6,7 @@ import:
   Qwen3Attention: ./attention.yaml
 
 args:
+  d_model: dim
   d_head: dim
   d_ff: dim
   num_heads: dim
@@ -17,14 +18,18 @@ outputs:
   x_out: { type: tensor, shape: [T, d_model], dtype: dtype }
 
 init:
-  input_layernorm: RMSNorm
+  input_layernorm:
+    use: RMSNorm
+    args: { hidden_size: d_model }
   self_attn:
     use: Qwen3Attention
-    args: [d_head, num_heads, num_kv_heads, theta]
-  post_attention_layernorm: RMSNorm
+    args: [d_model, d_head, num_heads, num_kv_heads, theta]
+  post_attention_layernorm:
+    use: RMSNorm
+    args: { hidden_size: d_model }
   mlp:
     use: GLU
-    args: [d_ff, { act: SiLU }]
+    args: [d_model, d_ff, { act: SiLU }]
 
 forward:
   - n1: input_layernorm(x)

@@ -25,11 +25,10 @@ outputs:
 
 ## 形状绑定
 
-`inputs` 的 `shape` 和 `dtype` 里出现的名字，如果不是 `args` 中声明的参数，就在调用时从实际输入绑定；已经绑定或声明过的名字只做检查。`outputs` 里的名字必须已经绑定，用来检查结果。例如 `x: { shape: [T, d_model], dtype: dtype }` 从输入得到 `T`、`d_model` 和 `dtype`。
+`inputs` 的 `shape` 和 `dtype` 里出现的名字，如果不是 `args` 中声明的参数，就在调用时从实际输入绑定；已经绑定或声明过的名字只做检查。`outputs` 里的名字必须已经绑定，用来检查结果。例如 decoder 的 `x: { shape: [T, d_model], dtype: dtype }` 从输入得到 `T` 和 `dtype`，`d_model` 已在 `args` 中声明，只检查输入的第二维是否等于它。
 
 - 序列长度 `T` 是数据的维度，不作为参数传入。同一个实例可以用不同的 `T` 调用，例如 prefill 和 decode。
-- `init` 在第一次调用时求值，可以使用绑定得到的名字，例如 `in_features: d_model`。同一实例再次调用时，`init` 用到的名字必须取相同的值，其余名字（如 `T`）可以不同。
-- 只能由调用者给出的值写进 `args`，例如 `num_heads`、`d_head`、`theta`。根模块的输入只有 token 编号，`d_model` 等维度都是它的参数。
+- `init` 只能使用 `args` 中的名字，不能使用从输入绑定的名字。这和 HF 的 `__init__` 一致：建参数时需要的维度（`d_model`、`d_head`、`num_heads` 等）都由调用者传入，例如 `Linear` 的 `in_features: d_model`、`RMSNorm` 的 `hidden_size: d_model`。
 - 依赖输入形状的常量在 `forward` 里计算，例如 `M: causal_mask(T)`，不写成 buffer。
 
 ## 计算与引用
