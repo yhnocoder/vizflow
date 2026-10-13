@@ -1,10 +1,9 @@
-import { DTYPES, type Graph, Node } from '../../autograd';
+import { DTYPES, type Dtype, type Graph, Node, ProgramBuilder } from '../../autograd';
 import type { CameraOptions, LayoutTree } from '../../scene3d';
 import { isLayoutOp } from '../../scene3d/layout';
 import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
-import type { Nested } from '../../tensor';
+import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
-import { type Ast, ParseError, parseExpr } from '../expr';
 import type { ModuleDef } from '../load';
 import { DslError, type Where, child, fail } from '../source';
 import { elemOf } from '../tex';
@@ -12,8 +11,9 @@ import { compilePanels } from './panels';
 import { type SectionSources, compileSections } from './sections';
 import { StepCompiler } from './steps';
 import { Texts } from './texts';
-import { Call, type Env, type Num, Result, type Value } from './types';
-import { checkKeys, isRecord, record } from './util';
+import { describe } from './expressions';
+import { Call, Eager, type Env, Instance, type Num, PageFunction, Result, type Value } from './types';
+import { checkKeys, isNum, isRecord, num, record } from './util';
 
 export interface CompiledPage {
   graph: Graph;
@@ -35,16 +35,16 @@ export interface PageSequence {
 }
 
 export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections']);
-const PAGE_ONLY = new Set(['seed', 'tokenizer', 'real']);
+const PAGE_ONLY = new Set(['seed', 'tokenizer', 'real', 'dtype']);
+const DEFAULT_PAGE_DTYPE: Dtype = 'fp32';
 const DEFAULT_SEED = 0;
 
 type DataValue = number | string | boolean | DataValue[];
 
 interface DataEntry {
   name: string;
-  ast?: Ast;
-  value: DataValue;
-  ids: boolean;
+  expr?: string;
+  value: Value;
   where: Where;
 }
 
@@ -66,80 +66,64 @@ export class PageCompiler extends Texts {
     return this.callEnv(this.rootCall, where);
   }
 
-  dataValue(ast: Ast, where: Where, config: ReadonlyMap<string, DataValue>): { value: DataValue; ids: boolean } {
-    const failAt = (message: string, at: number): never => fail(where, message, at);
-    const evaluate = (node: Ast): { value: DataValue; ids: boolean } => {
-      switch (node.k) {
-        case 'num':
-        case 'str':
-        case 'bool':
-          return { value: node.v, ids: false };
-        case 'list':
-          return { value: node.items.map((item) => evaluate(item).value), ids: false };
-        case 'neg': {
-          const inner = evaluate(node.arg).value;
-          if (typeof inner !== 'number') return failAt('only numbers can be negated', node.pos);
-          return { value: -inner, ids: false };
-        }
-        case 'name': {
-          const entry = this.data.get(node.name);
-          if (entry !== undefined) return { value: entry.value, ids: entry.ids };
-          const value = config.get(node.name);
-          if (value === undefined) return failAt(`name '${node.name}' is not defined in data or config`, node.pos);
-          return { value, ids: false };
-        }
-        case 'index': {
-          const base = evaluate(node.obj);
-          if (!Array.isArray(base.value)) return failAt('only lists can be indexed', node.pos);
-          const list = base.value;
-          if (node.items.length !== 1 || node.items[0].k === 'ellipsis') return failAt('a list takes one index or slice', node.pos);
-          const item = node.items[0];
-          const int = (ast: Ast | undefined, fallback: number): number => {
-            if (ast === undefined) return fallback;
-            const v = evaluate(ast).value;
-            if (typeof v !== 'number' || !Number.isInteger(v)) return failAt('an index must be an integer', ast.pos);
-            return Math.min(list.length, Math.max(0, v < 0 ? list.length + v : v));
-          };
-          if (item.k === 'slice') return { value: list.slice(int(item.start, 0), int(item.stop, list.length)), ids: base.ids };
-          const at = int(item.value, 0);
-          if (at >= list.length) return failAt('index out of range', node.pos);
-          return { value: list[at], ids: false };
-        }
-        case 'call': {
-          if (node.fn.k !== 'name' || node.fn.name !== 'tokens_to_ids' || node.args.length !== 1 || node.kwargs.length > 0) return failAt('data expressions can call tokens_to_ids(tokens)', node.pos);
-          const tokens = evaluate(node.args[0]).value;
-          if (!Array.isArray(tokens) || !tokens.every((t) => typeof t === 'string')) return failAt('tokens_to_ids takes a list of tokens', node.pos);
-          const vocab = this.vocab;
-          if (vocab === undefined) return failAt('tokens_to_ids needs config.tokenizer.vocab', node.pos);
-          return {
-            value: tokens.map((token) => {
-              const id = vocab.indexOf(token as string);
-              if (id < 0) failAt(`token '${String(token)}' is not in the vocab`, node.pos);
-              return id;
-            }),
-            ids: true,
-          };
-        }
-        default:
-          return failAt('data expressions use names, indexes, slices and tokens_to_ids', node.pos);
-      }
-    };
-    return evaluate(ast);
+  readonly tokensToIds = new PageFunction('tokens_to_ids', (args, kwargs, failWith) => {
+    const tokens = args[0];
+    if (args.length !== 1 || kwargs.size > 0 || !Array.isArray(tokens) || !tokens.every((t) => typeof t === 'string')) return failWith('tokens_to_ids takes a list of tokens');
+    const vocab = this.vocab;
+    if (vocab === undefined) return failWith('tokens_to_ids needs config.tokenizer.vocab');
+    const ids = (tokens as string[]).map((token) => {
+      const id = vocab.indexOf(token);
+      if (id < 0) failWith(`token '${token}' is not in the vocab`);
+      return id;
+    });
+    return new Eager(Tensor.from(ids, [ids.length]).asInt64(), 'int64', undefined, vocab);
+  });
+
+  dataEnv(root: ModuleDef, where: Where): Env {
+    const locals = new Map<string, Value>();
+    for (const [key, value] of this.config) locals.set(key, valueOf(value));
+    for (const entry of this.data.values()) locals.set(entry.name, entry.value);
+    locals.set(this.tokensToIds.name, this.tokensToIds);
+    return { instance: new Instance(root, '', '', undefined, []), call: undefined, locals, where };
+  }
+
+  dataValue(expr: string, root: ModuleDef, where: Where): Value {
+    return this.computed(expr, this.dataEnv(root, where), new ProgramBuilder(), false);
   }
 }
 
-function parseAt(text: unknown, where: Where): Ast {
+function exprText(text: unknown, where: Where): string {
   if (typeof text !== 'string') fail(where, 'expr must be an expression string');
-  try {
-    return parseExpr(text);
-  } catch (error) {
-    if (error instanceof ParseError) fail(where, `${error.message} in '${text}'`, error.offset);
-    throw error;
-  }
+  return text;
 }
 
-function shapeOfData(value: DataValue): number[] {
+function valueOf(value: DataValue): Value {
+  if (typeof value === 'number') return num(value);
+  if (Array.isArray(value)) return value.map(valueOf);
+  return value;
+}
+
+function plainOf(value: Value, where: Where): DataValue {
+  if (isNum(value)) return value.toy;
+  if (typeof value === 'string' || typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map((v) => plainOf(v, where));
+  return fail(where, `a config expression gives numbers, strings, booleans or lists, got ${describe(value)}`);
+}
+
+function shapeOfData(value: Value): number[] {
+  if (value instanceof Eager) return [...value.value.shape];
   return Array.isArray(value) ? [value.length, ...(value.length > 0 ? shapeOfData(value[0]) : [])] : [];
+}
+
+function nestedOf(value: Value, where: Where): Nested {
+  if (value instanceof Eager) return value.value.toNested();
+  if (isNum(value)) return value.toy;
+  if (Array.isArray(value)) return value.map((v) => nestedOf(v, where));
+  return fail(where, `expected numbers, got ${describe(value)}`);
+}
+
+function isTokenIds(value: Value): boolean {
+  return value instanceof Eager && value.tokens !== undefined;
 }
 
 function literal(value: unknown, where: Where): DataValue {
@@ -176,7 +160,8 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     const at = child(configWhere, config, key);
     if (isRecord(value)) {
       checkKeys(value, new Set(['expr']), at);
-      configValues.set(key, c.dataValue(parseAt(value.expr, child(at, value, 'expr')), child(at, value, 'expr'), configValues).value);
+      const exprWhere = child(at, value, 'expr');
+      configValues.set(key, plainOf(c.dataValue(exprText(value.expr, exprWhere), root, exprWhere), exprWhere));
     } else configValues.set(key, literal(value, at));
   }
   const realOf = (name: string, toy: number): number => {
@@ -190,9 +175,9 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     if (isRecord(value)) {
       checkKeys(value, new Set(['expr']), at);
       const exprWhere = child(at, value, 'expr');
-      const ast = parseAt(value.expr, exprWhere);
-      c.data.set(name, { name, ast, ...c.dataValue(ast, exprWhere, configValues), where: exprWhere });
-    } else c.data.set(name, { name, value: literal(value, at), ids: false, where: at });
+      const expr = exprText(value.expr, exprWhere);
+      c.data.set(name, { name, expr, value: c.dataValue(expr, root, exprWhere), where: exprWhere });
+    } else c.data.set(name, { name, value: valueOf(literal(value, at)), where: at });
   }
 
   const argsDecl = record(root.decl.args, child(root.where, root.decl, 'args'), 'args');
@@ -218,6 +203,10 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     else return fail(at, `config '${name}' cannot be passed to arg '${name}' of ${root.name}`);
     rootArgs.set(name, { value, where: at });
   }
+  const dtypeWhere = child(configWhere, config, 'dtype');
+  const pageDtype = config.dtype ?? DEFAULT_PAGE_DTYPE;
+  if (typeof pageDtype !== 'string' || !(DTYPES as readonly string[]).includes(pageDtype)) fail(dtypeWhere, `dtype must be one of ${DTYPES.join(', ')}`);
+  if ('dtype' in argsDecl && config.dtype !== undefined) rootArgs.set('dtype', { value: { dtype: pageDtype as Dtype }, where: dtypeWhere });
   for (const name of configValues.keys()) {
     if (!(name in argsDecl)) fail(child(configWhere, config, name), `config '${name}' is not an arg of ${root.name}`);
   }
@@ -241,8 +230,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     });
   }
   for (const [name, value] of bound) dims.set(name, value);
-  const dtypeArg = rootArgs.get('dtype')?.value;
-  c.setupGraph({ dims, real, dtype: dtypeArg !== undefined && isRecord(dtypeArg) && typeof dtypeArg.dtype === 'string' ? dtypeArg.dtype : 'fp32', seed }, where);
+  c.setupGraph({ dims, real, dtype: pageDtype, seed }, where);
 
   const rootInstance = c.instantiate(root, '', '', undefined, [], rootArgs, child(where, page, 'model'));
   const call = new Call(rootInstance, '', undefined, new Map());
@@ -286,7 +274,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     page: { title: String(page.title) },
   };
   if (isRecord(page.camera)) compiled.page.camera = page.camera as CameraOptions;
-  const sequence = pageSequence(c, env);
+  const sequence = pageSequence(c, root, env);
   if (sequence !== undefined) compiled.sequence = sequence;
   return compiled;
 }
@@ -314,15 +302,16 @@ function rootInput(c: PageCompiler, name: string, field: Record<string, unknown>
     const dtype = c.expression(field.dtype, { ...c.rootEnv(), where: child(at, field, 'dtype') });
     if (!isRecord(dtype) || typeof dtype.dtype !== 'string') fail(child(at, field, 'dtype'), 'dtype must be a dtype');
     const tex = c.memberTex(c.rootCall.instance, name);
-    if (entry.ids) return c.g.label(name, entry.value as Nested, { tokens: c.vocab, shape, tex, elem: elemOf(tex), dtype: dtype.dtype as string });
-    return c.g.input(name, shape, entry.value as Nested, { tex, elem: elemOf(tex), dtype: dtype.dtype as string });
+    const values = nestedOf(entry.value, entry.where);
+    if (isTokenIds(entry.value)) return c.g.label(name, values, { tokens: c.vocab, shape, tex, elem: elemOf(tex), dtype: dtype.dtype as string });
+    return c.g.input(name, shape, values, { tex, elem: elemOf(tex), dtype: dtype.dtype as string });
   } catch (error) {
     if (error instanceof DslError) throw error;
     return fail(entry.where, (error as Error).message);
   }
 }
 
-function pageSequence(c: PageCompiler, env: Env): PageSequence | undefined {
+function pageSequence(c: PageCompiler, root: ModuleDef, env: Env): PageSequence | undefined {
   const panels = Array.isArray(c.page.panels) ? c.page.panels : [];
   const panelIndex = panels.findIndex((p) => isRecord(p) && p.sequence !== undefined);
   if (panelIndex < 0) return undefined;
@@ -337,7 +326,7 @@ function pageSequence(c: PageCompiler, env: Env): PageSequence | undefined {
   const vocab = c.vocab as string[];
   const tokenName = [...c.data.keys()].find((name) => c.nodes.get(name) === tokens) as string;
   const length = tokens.shape[0];
-  const derived = [...c.data.values()].filter((entry) => entry.ast !== undefined && c.nodes.get(entry.name) !== undefined);
+  const derived = [...c.data.values()].filter((entry) => entry.expr !== undefined && c.nodes.get(entry.name) !== undefined);
   const g = c.g;
   return {
     tokens: [...vocab],
@@ -352,8 +341,8 @@ function pageSequence(c: PageCompiler, env: Env): PageSequence | undefined {
       g.batch(() => {
         tokens.set(next);
         for (const item of derived) {
-          item.value = c.dataValue(item.ast as Ast, item.where, c.config).value;
-          (c.nodes.get(item.name) as Node).set(item.value as Nested);
+          item.value = c.dataValue(item.expr as string, root, item.where);
+          (c.nodes.get(item.name) as Node).set(nestedOf(item.value, item.where));
         }
       });
     },

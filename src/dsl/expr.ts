@@ -4,6 +4,7 @@ export type Ast =
   | { k: 'num'; v: number; pos: number }
   | { k: 'str'; v: string; pos: number }
   | { k: 'bool'; v: boolean; pos: number }
+  | { k: 'none'; pos: number }
   | { k: 'name'; name: string; pos: number }
   | { k: 'member'; obj: Ast; name: string; pos: number }
   | { k: 'index'; obj: Ast; items: IndexItem[]; pos: number }
@@ -190,6 +191,7 @@ class Parser {
     if (token.t === 'str') return { k: 'str', v: token.v, pos: token.pos };
     if (token.t === 'id') {
       if (token.v === 'True' || token.v === 'False') return { k: 'bool', v: token.v === 'True', pos: token.pos };
+      if (token.v === 'None') return { k: 'none', pos: token.pos };
       return { k: 'name', name: token.v, pos: token.pos };
     }
     if (token.t === 'op' && token.v === '(') {

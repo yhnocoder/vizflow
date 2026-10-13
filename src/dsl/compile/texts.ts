@@ -1,11 +1,10 @@
-import { Node, evaluateValue } from '../../autograd';
-import type { Tensor } from '../../tensor';
+import { Node, ProgramBuilder } from '../../autograd';
 import { checkFigure, figureNames, figureTag } from '../../ui/figure-spec';
 import { DslError } from '../source';
 import { numberTex } from '../tex';
 import { describe, isDtype, isView, viewShape } from './expressions';
 import { Modules } from './instance';
-import type { Env, TensorView, Value, ViewIndex } from './types';
+import { Eager, type Env, type TensorView, type Value, type ViewIndex } from './types';
 import { isNum } from './util';
 
 export interface Macro {
@@ -153,19 +152,12 @@ export abstract class Texts extends Modules {
       if (eq < 0) return part.trim();
       return `${part.slice(0, eq).trim()}=${this.number(part.slice(eq + 1).trim(), env).toy}`;
     });
-    const resolved = this.valueExpr(this.parse(expr, env), env, true);
-    let shape: readonly number[];
-    try {
-      shape = evaluateValue(resolved, (path, grad) => {
-        const node = this.g.node(path) as Node;
-        return grad ? (node.grad as Tensor) : node.value;
-      }).shape;
-    } catch (error) {
-      return this.fail(env, `${(error as Error).message} in '{{${source}}}'`);
-    }
-    const problem = checkFigure(name, shape, args);
+    const program = new ProgramBuilder();
+    const value = this.computed(expr, env, program, true);
+    if (!(value instanceof Eager) || value.ref === undefined) return this.fail(env, `'{{${source}}}' is ${describe(value)}, not a tensor computed from the page`);
+    const problem = checkFigure(name, value.value.shape, args);
     if (problem !== undefined) this.fail(env, `${problem} in '{{${source}}}'`);
-    return figureTag(name, resolved, args);
+    return figureTag(name, program.program(value.ref), args);
   }
 
   private plain(found: Value, source: string, env: Env): string {

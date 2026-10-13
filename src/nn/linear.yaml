@@ -10,7 +10,9 @@ outputs:
 init:
   weights:
     weight: { shape: [out_features, in_features], init: uniform }
+    bias: { shape: [out_features], init: uniform, present: bias }
 forward:
-  - y: x @ weight.T
+  - y: linear(x, weight, bias)
 tex:
   weight: W
+  bias: '\mathbf{b}'

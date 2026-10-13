@@ -1,4 +1,4 @@
-import type { ValueExpr } from '../autograd';
+import type { Program } from '../autograd';
 
 export type FigureArgs = Record<string, number>;
 
@@ -37,16 +37,22 @@ export function checkFigure(name: string, shape: readonly number[], args: readon
   return CHECKS[name](shape, parsed);
 }
 
-export function encodeExpr(expr: ValueExpr): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(expr));
+const NON_FINITE = 'nonFinite';
+
+export function encodeProgram(program: Program): string {
+  const json = JSON.stringify(program, (_key, value: unknown) => (typeof value === 'number' && !Number.isFinite(value) ? { [NON_FINITE]: String(value) } : value));
+  const bytes = new TextEncoder().encode(json);
   return btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
 }
 
-export function decodeExpr(text: string): ValueExpr {
+export function decodeProgram(text: string): Program {
   const binary = atob(text);
-  return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as ValueExpr;
+  const json = new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  return JSON.parse(json, (_key, value: unknown) =>
+    typeof value === 'object' && value !== null && NON_FINITE in value && Object.keys(value).length === 1 ? Number((value as Record<string, string>)[NON_FINITE]) : value,
+  ) as Program;
 }
 
-export function figureTag(name: string, expr: ValueExpr, args: readonly string[]): string {
-  return `<vf-figure name="${name}" expr="${encodeExpr(expr)}" args="${args.join(':')}"></vf-figure>`;
+export function figureTag(name: string, program: Program, args: readonly string[]): string {
+  return `<vf-figure name="${name}" program="${encodeProgram(program)}" args="${args.join(':')}"></vf-figure>`;
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { type CompiledPage, loadPage, parseYaml } from '../../src/dsl';
-import { evaluateValue } from '../../src/core';
+import { runProgram } from '../../src/core';
 import { createSteps } from '../../src/steps';
-import { decodeExpr } from '../../src/ui/figure-spec';
+import { decodeProgram } from '../../src/ui/figure-spec';
 
 const BASE = 'mem:/pages/page.yaml';
 
@@ -121,12 +121,28 @@ c: { use: Scale, args: [n] }`,
     expect(p.graph.dims.T).toBe(3);
   });
 
-  it('rejects unknown and missing args, a misspelled list name and Linear with a bias', async () => {
+  it('rejects unknown and missing args and a misspelled list name', async () => {
     const make = (init: string) => page(root({ init, forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l', extra: 'import: { Scale: ./scale.yaml }' }), { [SCALE_FILE]: SCALE });
     await expect(make('a: { use: Scale, args: { n: d, size: 2 } }')).rejects.toThrow(/page\.yaml:\d+:\d+ .*module Scale has no arg 'size'/);
     await expect(make('a: { use: Scale }')).rejects.toThrow(/module Scale needs arg 'n'/);
     await expect(make('a: { use: Scale, args: [dd] }')).rejects.toThrow(/name 'dd' is not defined/);
-    await expect(make('a: { use: Linear, args: { in_features: d, out_features: d } }')).rejects.toThrow(/Linear with bias: true is not supported yet/);
+  });
+
+  it('creates an optional weight only when its present arg is true', async () => {
+    const make = (args: string) => page(root({ init: `a: { use: Linear, args: ${args} }`, forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l' }));
+    const params = (p: CompiledPage) => p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name);
+    const biased = await make('{ in_features: d, out_features: d }');
+    expect(params(biased)).toEqual(['a.weight', 'a.bias']);
+    biased.nodes.get('a.weight')!.set([[1, 0], [0, 1]]);
+    biased.nodes.get('a.bias')!.set([10, 20]);
+    expect(Array.from(biased.nodes.get('y')!.value.data)).toEqual([11, 22, 13, 24, 15, 26]);
+    expect(params(await make('{ in_features: d, out_features: d, bias: False }'))).toEqual(['a.weight']);
+  });
+
+  it('rejects a shape or dtype name that binds from an input but is used nowhere else', async () => {
+    const typo = SCALE.replace("x: { type: tensor, shape: ['...', n]", "x: { type: tensor, shape: ['...', nn]");
+    const yaml = root({ init: 'a: { use: Scale, args: { n: d } }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l' });
+    await expect(page(yaml, { [SCALE_FILE]: typo })).rejects.toThrow(/'nn' takes its value from this input but is used nowhere else in Scale; if it should be an arg, check the spelling/);
   });
 
   it('checks input shapes and keeps init to the args', async () => {
@@ -240,6 +256,24 @@ describe('steps', () => {
   });
 });
 
+describe('expressions', () => {
+  it('follows Python semantics for lists, reflected operators and new axes', async () => {
+    const forward = ['c: cat([x, x], dim=0)', 'p: x.permute([1, 0])', 'r: x.reshape([d, T])', 'v: x.view([T * d])', 'a: 1 - x', 'b: 1 / x', 'u: x[:, None]', 's: x[1, :]', 'l: c.mean() + p.mean() + r.mean() + v.mean() + a.mean() + b.mean() + u.mean() + s.mean()'];
+    const p = await page(root({ forward: forward.map((line) => `- ${line}`).join('\n'), unshown: '[c, p, r, v, a, b, u, s]', steps: '- id: l' }));
+    const value = (name: string) => p.nodes.get(name)!.value;
+    expect(value('c').shape).toEqual([6, 2]);
+    expect([value('p').shape, value('r').shape, value('v').shape, value('u').shape]).toEqual([[2, 3], [2, 3], [6], [3, 1, 2]]);
+    expect(Array.from(value('a').data)).toEqual([0, -1, -2, -3, -4, -5]);
+    expect(Array.from(value('b').data)).toEqual([1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6]);
+    expect(Array.from(value('s').data)).toEqual([3, 4]);
+    expect(p.graph.nodes.filter((n) => n.name.startsWith('s')).map((n) => n.name)).toEqual(['s']);
+  });
+
+  it('rejects arange with a zero step', async () => {
+    await expect(page(root({ forward: '- t: arange(0, 4, 0)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/arange: step must be nonzero/);
+  });
+});
+
 describe('templates and tex', () => {
   it('interpolates scalars and formatted tensors and rejects a tensor without a format', async () => {
     const yaml = (text: string) => page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: '${text}'\n- id: l` }));
@@ -267,9 +301,9 @@ describe('templates and tex', () => {
   it('computes figure data from a template expression outside the graph', async () => {
     const yaml = (text: string) => page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: '${text}'\n- id: l` }));
     const p = await yaml('{{ cos(arange(5)[:, None] * y[0]) | lines:shade=T }}');
-    const tag = /^<vf-figure name="lines" expr="([^"]+)" args="shade=3"><\/vf-figure>$/.exec(p.steps.forward[0].text ?? '');
+    const tag = /^<vf-figure name="lines" program="([^"]+)" args="shade=3"><\/vf-figure>$/.exec(p.steps.forward[0].text ?? '');
     expect(tag).not.toBeNull();
-    const value = evaluateValue(decodeExpr(tag![1]), (name) => p.nodes.get(name)!.value);
+    const value = runProgram(decodeProgram(tag![1]), (name) => p.nodes.get(name)!.value);
     expect(value.shape).toEqual([5, 2]);
     expect(value.get([4, 1])).toBeCloseTo(Math.cos(16), 12);
     expect(p.graph.nodes.map((n) => n.name)).toEqual(['x', 'y', 'l']);
@@ -279,7 +313,7 @@ describe('templates and tex', () => {
   });
 
   it('evaluates buffer values with ops and broadcasting', async () => {
-    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
+    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2, dtype=fp32)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
     expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
   });
 

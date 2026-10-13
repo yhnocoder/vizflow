@@ -1,18 +1,21 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
-import { type ValueExpr, evaluateValue, graph } from '../../src/core';
+import { type Program, ProgramBuilder, graph, runProgram } from '../../src/core';
 import { renderText } from '../../src/formula';
 import { createSteps } from '../../src/steps';
 import { mountSteps, renderFigures, type Mounted } from '../../src/ui';
-import { checkFigure, decodeExpr, figureTag } from '../../src/ui/figure-spec';
+import { checkFigure, decodeProgram, figureTag } from '../../src/ui/figure-spec';
 import { shown } from './shown';
 
-const angles: ValueExpr = {
-  k: 'bin',
-  op: '*',
-  a: { k: 'index', obj: { k: 'call', fn: 'arange', args: [{ k: 'num', v: 5 }], kwargs: [] }, items: [{ k: 'slice' }, { k: 'new' }] },
-  b: { k: 'node', name: 'x' },
-};
+function anglesProgram(then?: string): Program {
+  const b = new ProgramBuilder();
+  const rows = b.op('unsqueeze', [b.op('arange', [], { start: 5, end: null, step: 1, dtype: null })], { dim: 1 });
+  const angles = b.op('mul', [rows, b.read('x', false)], {});
+  return b.program(then === undefined ? angles : b.op(then, [angles], {}));
+}
+
+const angles = anglesProgram();
+const cosines = anglesProgram('cos');
 
 function smallGraph() {
   const g = graph({ dims: { K: 2 } });
@@ -29,22 +32,20 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe('value expressions', () => {
-  it('computes with arange, a new axis, broadcasting and ops', () => {
+describe('figure programs', () => {
+  it('runs a program of registry ops on values read from the graph', () => {
     const { g } = smallGraph();
-    const read = (name: string) => g.node(name)!.value;
-    const value = evaluateValue({ k: 'call', fn: 'cos', args: [angles], kwargs: [] }, read);
+    const value = runProgram(cosines, (name) => g.node(name)!.value);
     expect(value.shape).toEqual([5, 2]);
     expect(value.get([3, 1])).toBeCloseTo(Math.cos(1.5), 12);
-    const sliced = evaluateValue({ k: 'index', obj: angles, items: [{ k: 'at', i: -1 }, { k: 'slice', start: 1 }] }, read);
-    expect([...sliced.shape, ...sliced.data]).toEqual([1, 2]);
-    expect(() => evaluateValue({ k: 'call', fn: 'nope', args: [], kwargs: [] }, read)).toThrow("unknown function 'nope'");
   });
 
-  it('round-trips through the figure tag', () => {
-    const tag = figureTag('lines', angles, ['shade=3']);
-    expect(tag).toMatch(/^<vf-figure name="lines" expr="[A-Za-z0-9+/=]+" args="shade=3"><\/vf-figure>$/);
-    expect(decodeExpr(/expr="([^"]+)"/.exec(tag)![1])).toEqual(angles);
+  it('round-trips through the figure tag, non-finite numbers included', () => {
+    const b = new ProgramBuilder();
+    const program = b.program(b.op('clamp', [b.read('x', false)], { min: -Infinity, max: Number.NaN }));
+    const tag = figureTag('lines', program, ['shade=3']);
+    expect(tag).toMatch(/^<vf-figure name="lines" program="[A-Za-z0-9+/=]+" args="shade=3"><\/vf-figure>$/);
+    expect(decodeProgram(/program="([^"]+)"/.exec(tag)![1])).toEqual(program);
   });
 });
 
@@ -52,7 +53,7 @@ describe('lines figure', () => {
   it('draws one curve per column with a legend and a shaded band', () => {
     const { g } = smallGraph();
     const el = document.createElement('div');
-    renderText(`第一段\n\n${figureTag('lines', { k: 'call', fn: 'cos', args: [angles], kwargs: [] }, ['shade=3'])}\n\n第二段`, el);
+    renderText(`第一段\n\n${figureTag('lines', cosines, ['shade=3'])}\n\n第二段`, el);
     expect([...el.children].map((c) => c.tagName.toLowerCase())).toEqual(['p', 'vf-figure', 'p']);
     renderFigures(el, g);
     const svg = el.querySelector('vf-figure svg.vf-lines')!;
@@ -88,7 +89,8 @@ describe('lines figure', () => {
     expect(checkFigure('chart', [3, 4], [])).toBe("unknown figure 'chart'");
     const { g } = smallGraph();
     const el = document.createElement('div');
-    el.innerHTML = figureTag('lines', { k: 'node', name: 'missing' }, []);
+    const missing = new ProgramBuilder();
+    el.innerHTML = figureTag('lines', missing.program(missing.read('missing', false)), []);
     expect(() => renderFigures(el, g)).toThrow("figure lines: no node 'missing'");
   });
 

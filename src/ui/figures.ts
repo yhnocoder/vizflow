@@ -1,7 +1,7 @@
-import { type Graph, type ValueExpr, evaluateValue } from '../autograd';
+import { type Graph, type Program, runProgram } from '../autograd';
 import { renderText } from '../formula';
 import { type Tensor, formatNumber } from '../tensor';
-import { type FigureArgs, checkFigure, decodeExpr, figureArgs } from './figure-spec';
+import { type FigureArgs, checkFigure, decodeProgram, figureArgs } from './figure-spec';
 
 const LINES_WIDTH = 340;
 const LINES_HEIGHT = 112;
@@ -78,13 +78,13 @@ export function renderFigures(root: HTMLElement, g: Graph): void {
   for (const el of root.querySelectorAll<HTMLElement>('vf-figure')) {
     const name = el.getAttribute('name') ?? '';
     const given = (el.getAttribute('args') ?? '').split(':').filter((a) => a !== '');
-    let expr: ValueExpr;
+    let program: Program;
     try {
-      expr = decodeExpr(el.getAttribute('expr') ?? '');
+      program = decodeProgram(el.getAttribute('program') ?? '');
     } catch {
-      throw new Error(`figure ${name}: expr is not an encoded expression`);
+      throw new Error(`figure ${name}: program is not an encoded program`);
     }
-    const value = evaluateValue(expr, (nodeName, grad) => {
+    const value = runProgram(program, (nodeName, grad) => {
       const node = g.node(nodeName);
       if (node === undefined) throw new Error(`figure ${name}: no node '${nodeName}'`);
       if (!grad) return node.value;

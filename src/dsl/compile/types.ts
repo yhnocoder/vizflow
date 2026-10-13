@@ -1,4 +1,5 @@
-import type { Dtype, Node, RealSize } from '../../autograd';
+import type { Dtype, Node, ProgramBuilder, RealSize } from '../../autograd';
+import type { Tensor } from '../../tensor';
 import type { ModuleDef } from '../load';
 import type { Where } from '../source';
 
@@ -36,9 +37,27 @@ export interface RealSizeEntry {
   values: RealSizeValues;
 }
 
-export type Value = Num | boolean | string | DtypeValue | ModuleRef | Node | Value[] | Instance | InstanceList | Result | TensorView | RealSizes | RealSizeEntry;
+export class Eager {
+  constructor(
+    readonly value: Tensor,
+    readonly dtype: Dtype,
+    readonly ref: number | undefined,
+    readonly tokens?: readonly string[],
+  ) {}
+}
 
-export type Member = Instance | InstanceList | Node;
+export class PageFunction {
+  constructor(
+    readonly name: string,
+    readonly run: (args: Value[], kwargs: ReadonlyMap<string, Value>, fail: (message: string) => never) => Value,
+  ) {}
+}
+
+export type Value = Num | boolean | string | null | DtypeValue | ModuleRef | Node | Eager | PageFunction | Value[] | Instance | InstanceList | Result | TensorView | RealSizes | RealSizeEntry;
+
+export type Member = Instance | InstanceList | Node | null;
+
+export type Mode = { k: 'graph'; make: Make } | { k: 'ref' } | { k: 'eager'; program: ProgramBuilder; reads: boolean };
 
 export class Instance {
   readonly members = new Map<string, Member>();
@@ -114,5 +133,4 @@ export interface Make {
   path: string;
   tex: string;
   anon: Node[];
-  counter: number;
 }

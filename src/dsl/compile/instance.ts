@@ -1,24 +1,22 @@
-import { DTYPES, type Dtype, Node, evaluateValue } from '../../autograd';
-import type { Nested, Tensor } from '../../tensor';
-import { type ModuleDef, PACKAGE_PREFIX } from '../load';
-import { DslError, type Where, child, fail } from '../source';
+import { DTYPES, Node, ProgramBuilder } from '../../autograd';
+import { Tensor } from '../../tensor';
+import type { ModuleDef } from '../load';
+import { type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
-import { type Alias, Call, type DtypeValue, type Env, Instance, InstanceList, ListCall, type Make, type Num, Result, type Value } from './types';
-import { checkKeys, combine, isNum, isRecord, join, num, record } from './util';
+import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Num, Result, type Value } from './types';
+import { checkKeys, isNum, isRecord, join, record } from './util';
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const DEFAULT_INIT = 'uniform';
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'steps', 'unshown']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count']);
-const WEIGHT_KEYS: ReadonlySet<string> = new Set(['shape', 'init']);
+const WEIGHT_KEYS: ReadonlySet<string> = new Set(['shape', 'init', 'present']);
 const BUFFER_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'value']);
 const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-export const LINEAR = 'Linear';
 
 export function listMark(i: number): string {
   return `^{[${i}]}`;
@@ -29,6 +27,7 @@ export abstract class Modules extends Expressions {
   readonly producers = new Map<Node, Call>();
   readonly anon = new Map<Node, Node[]>();
   readonly instances: Instance[] = [];
+  private readonly declText = new Map<ModuleDef, string>();
 
   instanceEnv(instance: Instance, where: Where = instance.def.where): Env {
     return { instance, call: undefined, locals: new Map(), where };
@@ -66,9 +65,6 @@ export abstract class Modules extends Expressions {
       else return fail(where, `module ${def.name} needs arg '${key}'`);
       instance.args.set(key, checkArg(type, key, value, provided?.where ?? at));
     }
-    if (def.name === LINEAR && def.file.startsWith(PACKAGE_PREFIX) && instance.args.get('bias') === true) {
-      fail(given.get('bias')?.where ?? where, 'Linear with bias: true is not supported yet; pass bias: false');
-    }
     this.initMembers(instance);
     return instance;
   }
@@ -89,8 +85,8 @@ export abstract class Modules extends Expressions {
     }
   }
 
-  private define(instance: Instance, name: string, value: Instance | InstanceList | Node, where: Where): void {
-    if (instance.members.has(name) || instance.args.has(name)) fail(where, `name '${name}' is already defined in ${instance.def.name}`);
+  private define(instance: Instance, name: string, value: Member, where: Where): void {
+    if (instance.members.has(name)) fail(where, `name '${name}' is already defined in ${instance.def.name}`);
     instance.members.set(name, value);
   }
 
@@ -107,6 +103,14 @@ export abstract class Modules extends Expressions {
   private weight(instance: Instance, name: string, decl: unknown, at: Where): void {
     const spec = record(decl, at, `weight '${name}'`);
     checkKeys(spec, WEIGHT_KEYS, at);
+    if (spec.present !== undefined) {
+      const present = this.expression(spec.present, this.instanceEnv(instance, child(at, spec, 'present')));
+      if (typeof present !== 'boolean') fail(child(at, spec, 'present'), `present must be True or False, got ${describe(present)}`);
+      if (!present) {
+        this.define(instance, name, null, at);
+        return;
+      }
+    }
     const env = this.instanceEnv(instance, child(at, spec, 'shape'));
     const shape = this.shape(spec.shape, env);
     const init = spec.init ?? DEFAULT_INIT;
@@ -132,15 +136,10 @@ export abstract class Modules extends Expressions {
     const dtype = this.expression(spec.dtype, { ...env, where: child(at, spec, 'dtype') });
     if (!isDtype(dtype)) fail(child(at, spec, 'dtype'), `dtype must be one of ${DTYPES.join(', ')}`);
     const valueWhere = child(at, spec, 'value');
-    let values: Tensor;
-    try {
-      values = evaluateValue(this.valueExpr(this.parse(spec.value, { ...env, where: valueWhere }), { ...env, where: valueWhere }, false), () => {
-        throw new Error('a buffer value cannot read tensors');
-      });
-    } catch (error) {
-      if (error instanceof DslError) throw error;
-      return fail(valueWhere, (error as Error).message);
-    }
+    const computed = this.computed(spec.value, { ...env, where: valueWhere }, new ProgramBuilder(), false);
+    if (!(computed instanceof Eager) && !isNum(computed)) fail(valueWhere, `the value is ${describe(computed)}, not a tensor`);
+    const values = computed instanceof Eager ? computed.value : new Tensor([], [computed.toy]);
+    if (computed instanceof Eager && computed.dtype !== dtype.dtype) fail(valueWhere, `the value has dtype ${computed.dtype}, but the buffer declares ${dtype.dtype}`);
     const actual = values.shape;
     if (actual.join(',') !== shape.map((d) => d.toy).join(',')) fail(valueWhere, `the value has shape (${actual.join(', ')}), but the buffer declares (${shape.map((d) => d.toy).join(', ')})`);
     const path = join(instance.path, name);
@@ -318,6 +317,7 @@ export abstract class Modules extends Expressions {
       const d = rest >= 0 && k > rest ? node.shape.length - (shape.length - k) : k;
       const at = child(shapeWhere, shape, k);
       if (bind && typeof entry === 'string' && NAME.test(entry) && !call.instance.args.has(entry) && !call.bound.has(entry) && !call.values.has(entry)) {
+        this.checkUsed(call.instance.def, entry, at);
         call.bound.set(entry, { toy: node.shape[d], real: node.realShape[d], derive: (_sizes, shapes) => shapes[node.id][d] });
         return;
       }
@@ -328,12 +328,23 @@ export abstract class Modules extends Expressions {
     const dtype = field.dtype;
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
+      this.checkUsed(call.instance.def, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
       return;
     }
     const expected = this.expression(dtype, { ...env, where: dtypeWhere });
     if (!isDtype(expected)) fail(dtypeWhere, `'${dtype}' is ${describe(expected)}, not a dtype`);
     if (expected.dtype !== node.dtype) mismatch(`expected dtype ${expected.dtype}, got ${node.dtype}`);
+  }
+
+  private checkUsed(def: ModuleDef, name: string, where: Where): void {
+    let text = this.declText.get(def);
+    if (text === undefined) {
+      text = JSON.stringify(def.decl);
+      this.declText.set(def, text);
+    }
+    const uses = text.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
+    if (uses < 2) fail(where, `'${name}' takes its value from this input but is used nowhere else in ${def.name}; if it should be an arg, check the spelling`);
   }
 
   runForward(call: Call): void {
@@ -358,7 +369,7 @@ export abstract class Modules extends Expressions {
       const env = this.callEnv(call, where);
       if (call.values.has(name) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
       const alias = this.resultAlias(call, name, env);
-      const make: Make = { name, path: alias.path, tex: alias.tex, anon: [], counter: 0 };
+      const make: Make = { name, path: alias.path, tex: alias.tex, anon: [] };
       const value = this.expression(text, env, make);
       if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor or a module result, got ${describe(value)}`);
       call.values.set(name, value);
@@ -424,39 +435,6 @@ export abstract class Modules extends Expressions {
     };
     const real = this.dimSpec(list.count);
     return real === list.count.toy ? run() : this.g.realCopies(list.count.toy, real, run);
-  }
-
-  constantNode(fn: string, args: Value[], env: Env, make: Make, top: boolean, at: number): Node | undefined {
-    if (fn !== 'arange' && fn !== 'causal_mask') return undefined;
-    if (!args.every(isNum)) this.fail(env, `${fn} takes numbers`, at);
-    const nums = args as Num[];
-    let shape: Num[];
-    let values: Nested;
-    let dtype: Dtype;
-    if (fn === 'arange') {
-      if (nums.length < 1 || nums.length > 3) this.fail(env, 'arange takes one to three numbers', at);
-      const [start, stop, step] = nums.length === 1 ? [num(0), nums[0], num(1)] : [nums[0], nums[1], nums[2] ?? num(1)];
-      const length = combine([stop, start, step], (b, a, s) => Math.max(0, Math.ceil((b - a) / s)));
-      shape = [length];
-      values = Array.from({ length: length.toy }, (_, i) => start.toy + i * step.toy);
-      dtype = 'int64';
-    } else {
-      if (nums.length !== 1) this.fail(env, 'causal_mask takes the sequence length', at);
-      const T = nums[0];
-      shape = [T, T];
-      values = Array.from({ length: T.toy }, (_, r) => Array.from({ length: T.toy }, (_, c) => (c > r ? -Infinity : 0)));
-      dtype = this.g.dtype;
-    }
-    const name = top ? make.path : `${make.path}/${++make.counter}`;
-    const tex = top ? make.tex : `\\mathrm{${fn.replace(/_/g, '\\_')}}`;
-    let node: Node;
-    try {
-      node = this.g.buffer(name, shape.map((d) => this.dimSpec(d)), values, { dtype, tex, elem: elemOf(tex) });
-    } catch (error) {
-      return this.fail(env, (error as Error).message, at);
-    }
-    if (!top) make.anon.push(node);
-    return node;
   }
 }
 
