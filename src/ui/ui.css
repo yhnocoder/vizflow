@@ -1122,14 +1122,6 @@ vf-figure {
   filter: brightness(0.9);
 }
 
-.vf-costhatch {
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  background: repeating-linear-gradient(135deg, transparent 0 3px, color-mix(in srgb, var(--surface) 55%, transparent) 3px 6px);
-}
-
 .vf-costtag {
   margin-left: 4px;
   padding: 0 4px;
@@ -1139,10 +1131,6 @@ vf-figure {
   font-family: var(--mono);
   font-size: 10.5px;
   white-space: nowrap;
-}
-
-.vf-costtag.vf-costrepeat {
-  background: repeating-linear-gradient(135deg, transparent 0 3px, var(--line) 3px 6px);
 }
 
 .vf-costdims {

@@ -24,7 +24,7 @@ export class ModuleBraces {
 
   private foldable(module: SceneModule): string | undefined {
     const steps = this.c.steps;
-    if (module.id === undefined || module.fixed === true || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
+    if (module.id === undefined || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
     if (!steps.modules.some((m) => m.id === module.id)) return undefined;
     return module.id;
   }

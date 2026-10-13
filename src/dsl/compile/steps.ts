@@ -419,6 +419,14 @@ export class StepCompiler {
     const forward: ForwardStep[] = [];
     const modules: StepModule[] = [];
     const visible = new Set(leaves(entries).filter((r) => r.merged === undefined).flatMap((r) => r.step.show));
+    const consumers = new Map<Node, Node[]>();
+    for (const u of this.c.g.nodes) {
+      for (const n of u.inputs) {
+        const list = consumers.get(n);
+        if (list === undefined) consumers.set(n, [u]);
+        else list.push(u);
+      }
+    }
     const walk = (list: Entry[], chain: { module: StepModule; box: Box }[], braces: Box['brace'][]) => {
       for (const entry of list) {
         if (entry.kind === 'step') {
@@ -450,7 +458,6 @@ export class StepCompiler {
           outputs: [],
           nodes,
           params: [],
-          fixed: false,
           folded: box.folded,
           segment: box.segment ?? (chain.length > 0 ? chain[0].module.segment : box.title),
           forward: box.fold.forward,
@@ -461,8 +468,7 @@ export class StepCompiler {
         const used = nodes.flatMap((n) => n.inputs);
         module.inputs = unique(used.filter((n) => !inside.has(n) && !isLeafLike(n)));
         module.params = unique(used.flatMap((n) => (isLeafLike(n) && n.kind === 'op' ? [n, n.inputs[0]] : [n])).filter((n) => isLeafLike(n) && n.kind !== 'label')).sort((a, b) => a.id - b.id);
-        const consumers = (n: Node) => this.c.g.nodes.filter((u) => u.inputs.includes(n));
-        const outputs = nodes.filter((n) => consumers(n).some((u) => !inside.has(u)));
+        const outputs = nodes.filter((n) => (consumers.get(n) ?? []).some((u) => !inside.has(u)));
         module.outputs = outputs.length > 0 ? outputs : nodes.slice(-1);
         modules.push(module);
         walk(entry.children, [...chain, { module, box }], braces);

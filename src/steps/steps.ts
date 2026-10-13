@@ -47,14 +47,7 @@ export interface PageModule {
   outputs: Node[];
   nodes: Node[];
   params: Node[];
-  fixed: boolean;
   folded: boolean;
-  repeat?: ModuleRepeat[];
-}
-
-export interface ModuleRepeat {
-  like: string;
-  count: number;
 }
 
 export interface StepModule extends PageModule {
@@ -248,7 +241,7 @@ class StepsImpl implements Steps {
     this.modules = Object.freeze([...(spec.modules ?? [])]);
     for (const module of spec.modules ?? []) {
       this.byModule.set(module.id, module);
-      this.foldState.set(module.id, module.fixed || module.folded);
+      this.foldState.set(module.id, module.folded);
     }
     this.visible = Object.freeze(byId(spec.forward.flatMap((step) => toList(step.show))));
     if (this.reverse) {
@@ -538,7 +531,7 @@ class StepsImpl implements Steps {
   setFolded(id: string, folded: boolean): void {
     const module = this.byModule.get(id);
     if (module === undefined) throw new Error(`setFolded: module '${id}' does not exist`);
-    if (module.fixed || this.foldState.get(id) === folded) return;
+    if (this.foldState.get(id) === folded) return;
     this.foldState.set(id, folded);
     this.refold();
   }
@@ -546,7 +539,7 @@ class StepsImpl implements Steps {
   setAllFolded(folded: boolean): void {
     let changed = false;
     for (const module of this.byModule.values()) {
-      if (module.fixed || this.foldState.get(module.id) === folded) continue;
+      if (this.foldState.get(module.id) === folded) continue;
       this.foldState.set(module.id, folded);
       changed = true;
     }

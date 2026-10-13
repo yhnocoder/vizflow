@@ -108,7 +108,7 @@ describe('costTimeline on the MoE pages', () => {
   it('counts every parameter of Qwen3-30B-A3B once the 47 placeholder layers are repeated', async () => {
     const page = await loadExample('qwen3_moe-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const t = costTimeline(page.graph, steps.list, { real: true });
     const QWEN3_30B_A3B_PARAMS = 30_532_122_624;
     expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_30B_A3B_PARAMS * 2);
   });
@@ -130,7 +130,7 @@ describe('costTimeline on the MoE pages', () => {
     const page = await loadExample(file);
     const steps = createSteps(page.graph, page.steps);
     const start = performance.now();
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules, dims: { T: 2048 } });
+    const t = costTimeline(page.graph, steps.list, { real: true, dims: { T: 2048 } });
     expect(performance.now() - start).toBeLessThan(5000);
     expect(t.forward).toBeGreaterThan(0);
     expect(t.uncounted).toEqual([]);
@@ -141,7 +141,7 @@ describe('costTimeline on the Qwen3 page', () => {
   it('counts every parameter of Qwen3-8B once the placeholder layers are repeated', async () => {
     const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const t = costTimeline(page.graph, steps.list, { real: true });
     const QWEN3_8B_PARAMS = 8_190_735_360;
     expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_8B_PARAMS * 2);
     const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;

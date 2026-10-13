@@ -1,5 +1,5 @@
 import { DTYPE_BYTES, type Graph, type Node, type OpCost, opDef, realSizeOf } from '../autograd';
-import type { PageModule, StepInfo } from '../steps';
+import type { StepInfo } from '../steps';
 
 export type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad' | 'grad';
 
@@ -8,7 +8,6 @@ export const MEMORY_KINDS: readonly MemoryKind[] = ['param', 'input', 'buffer', 
 export interface Scale {
   batch: number;
   copies?: { drawn: number; real: number };
-  repeat?: number;
 }
 
 export interface MemoryEntry {
@@ -50,15 +49,6 @@ export interface CostOptions {
   real?: boolean;
   dims?: Record<string, number>;
   batch?: number;
-  modules?: readonly PageModule[];
-}
-
-interface Repeat {
-  placeholder: Node[];
-  count: number;
-  params: Node[];
-  saved: Node[];
-  ops: Node[];
 }
 
 const LEAF_KINDS: Readonly<Record<string, MemoryKind>> = { param: 'param', input: 'input', label: 'input', buffer: 'buffer' };
@@ -66,7 +56,7 @@ const LEAF_KINDS: Readonly<Record<string, MemoryKind>> = { param: 'param', input
 const product = (factors: readonly number[]) => factors.reduce((a, b) => a * b, 1);
 
 export function scaleFactor(scale: Scale): number {
-  return scale.batch * (scale.copies === undefined ? 1 : scale.copies.real / scale.copies.drawn) * (scale.repeat ?? 1);
+  return scale.batch * (scale.copies === undefined ? 1 : scale.copies.real / scale.copies.drawn);
 }
 
 class CostModel {
@@ -141,16 +131,15 @@ class CostModel {
     return this.shapes[n.id];
   }
 
-  scale(n: Node, repeat?: number): Scale {
+  scale(n: Node): Scale {
     const scale: Scale = { batch: this.batched[n.id] ? this.batch : 1 };
     const real = this.real ? product(n.copies.real.map((d) => realSizeOf(d, this.sizes, this.shapes) as number)) : n.copies.drawn;
     if (real !== n.copies.drawn) scale.copies = { drawn: n.copies.drawn, real };
-    if (repeat !== undefined) scale.repeat = repeat;
     return scale;
   }
 
-  entry(n: Node, kind: MemoryKind, repeat?: number): MemoryEntry {
-    const scale = this.scale(n, repeat);
+  entry(n: Node, kind: MemoryKind): MemoryEntry {
+    const scale = this.scale(n);
     const shape = this.real && this.batched[n.id] ? [this.batch, ...this.shape(n)] : this.shape(n);
     return { node: n, kind, shape, bytes: product(this.shape(n)) * DTYPE_BYTES[n.dtype] * scaleFactor(scale), scale };
   }
@@ -199,18 +188,18 @@ class CostModel {
     return fresh.sort((a, b) => a.id - b.id);
   }
 
-  forwardOps(ops: readonly Node[], uncounted: Set<Node>, repeat?: number): FlopEntry[] {
+  forwardOps(ops: readonly Node[], uncounted: Set<Node>): FlopEntry[] {
     const out: FlopEntry[] = [];
     for (const n of ops) {
       const cost = this.cost(n);
       if (cost === undefined) uncounted.add(n);
       const terms = cost === undefined ? [] : [cost.flops(n.inputs.map((i) => [...this.shape(i)]), [...this.shape(n)]).forward];
-      this.push(out, n, 'forward', terms, repeat);
+      this.push(out, n, 'forward', terms);
     }
     return out;
   }
 
-  backwardOps(ops: readonly Node[], uncounted: Set<Node>, repeat?: number): FlopEntry[] {
+  backwardOps(ops: readonly Node[], uncounted: Set<Node>): FlopEntry[] {
     const out: FlopEntry[] = [];
     for (const n of [...ops].sort((a, b) => b.id - a.id)) {
       const ks = this.gradInputs(n);
@@ -218,50 +207,16 @@ class CostModel {
       const cost = this.cost(n);
       if (cost === undefined) uncounted.add(n);
       const backward = cost?.flops(n.inputs.map((i) => [...this.shape(i)]), [...this.shape(n)]).backward ?? [];
-      this.push(out, n, 'backward', ks.flatMap((k) => (backward[k] === undefined ? [] : [backward[k]])), repeat);
+      this.push(out, n, 'backward', ks.flatMap((k) => (backward[k] === undefined ? [] : [backward[k]])));
     }
     return out;
   }
 
-  private push(out: FlopEntry[], node: Node, dir: FlopEntry['dir'], terms: number[][], repeat?: number): void {
+  private push(out: FlopEntry[], node: Node, dir: FlopEntry['dir'], terms: number[][]): void {
     const counted = terms.filter((t) => product(t) > 0);
-    const scale = this.scale(node, repeat);
+    const scale = this.scale(node);
     const flops = counted.reduce((sum, t) => sum + product(t), 0) * scaleFactor(scale);
     if (flops > 0) out.push({ node, dir, terms: counted, flops, scale });
-  }
-
-  repeats(modules: readonly PageModule[]): Repeat[] {
-    if (!this.real) return [];
-    const byId = new Map(modules.map((m) => [m.id, m]));
-    return modules.flatMap((m) =>
-      (m.repeat ?? []).flatMap(({ like, count }) => {
-        const model = byId.get(like);
-        if (model === undefined) return [];
-        const ops = model.nodes.filter((n) => n.kind === 'op');
-        const saved = new Set(ops.flatMap((op) => this.saved(op).filter((s) => this.computes(s)).map((s) => this.root[s.id])));
-        return [
-          {
-            placeholder: m.nodes.filter((n) => n.kind === 'op'),
-            count,
-            params: model.params.filter((n) => n.kind === 'param'),
-            saved: [...saved].sort((a, b) => a - b).map((id) => this.nodes[id]),
-            ops,
-          },
-        ];
-      }),
-    );
-  }
-
-  repeatMemory(repeats: readonly Repeat[], computed: Uint8Array, processed: Uint8Array): MemoryEntry[] {
-    return repeats.flatMap((r) => {
-      const ran = r.placeholder.some((n) => computed[n.id]);
-      const done = r.placeholder.some((n) => processed[n.id]);
-      return [
-        ...r.params.map((n) => this.entry(n, 'param', r.count)),
-        ...(ran && !done ? r.saved.map((n) => this.entry(n, 'saved', r.count)) : []),
-        ...(done ? r.params.filter((n) => this.needsGrad[n.id]).map((n) => this.entry(n, 'param_grad', r.count)) : []),
-      ];
-    });
   }
 
   computes(n: Node): boolean {
@@ -275,7 +230,6 @@ class CostModel {
 
 export function costTimeline(g: Graph, list: readonly StepInfo[], options: CostOptions = {}): CostTimeline {
   const model = new CostModel(g, options);
-  const repeats = model.repeats(options.modules ?? []);
   const uncounted = new Set<Node>();
   const computed = new Uint8Array(g.nodes.length);
   const processed = new Uint8Array(g.nodes.length);
@@ -297,16 +251,13 @@ export function costTimeline(g: Graph, list: readonly StepInfo[], options: CostO
       const fresh = model.closure(info.nodes, computed);
       batches.push({ id: info.id, ops: fresh });
       ops = model.forwardOps(fresh, uncounted);
-      for (const r of repeats) if (r.placeholder.some((n) => fresh.includes(n))) ops.push(...model.forwardOps(r.ops, uncounted, r.count));
       memory = model.forwardMemory(computed);
     } else {
       const batch = i === lastBackward ? g.nodes.filter((n) => n.kind === 'op' && !processed[n.id]) : backwardBatch(info);
       batch.forEach((n) => (processed[n.id] = 1));
       ops = model.backwardOps(batch, uncounted);
-      for (const r of repeats) if (r.placeholder.some((n) => batch.includes(n))) ops.push(...model.backwardOps(r.ops, uncounted, r.count));
       memory = model.backwardMemory(processed);
     }
-    memory.push(...model.repeatMemory(repeats, computed, processed));
     const flops = ops.reduce((sum, op) => sum + op.flops, 0);
     if (info.dir === 'forward') forward += flops;
     else backward += flops;

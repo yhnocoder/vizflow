@@ -4,7 +4,6 @@ import { capFor } from './scales';
 
 export interface SceneModule {
   id?: string;
-  fixed?: boolean;
   title: string;
   subtitle?: string;
   nodes: Node[];

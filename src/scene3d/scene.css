@@ -176,10 +176,6 @@
   white-space: nowrap;
 }
 
-.vf-lb.vf-boxlb.vf-fixed {
-  cursor: help;
-}
-
 .vf-lb.vf-boxlb small {
   font-family: var(--mono);
   font-size: 11px;

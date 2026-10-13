@@ -34,7 +34,6 @@ export const BOX_FOOTPRINT: [number, number] = [1.1, 0.8];
 export const DISC_FOOTPRINT: [number, number] = [0.54, 0.54];
 
 export const GAP = {
-  fixedOutput: 7.2,
   scalar: 1.2,
   scalarAfterBoard: 3.2,
   loss: 2.0,
@@ -413,7 +412,7 @@ class Plan implements LevelPlan {
   private findCopies(): void {
     for (const x of this.computed) {
       const producer = this.head(x);
-      if (producer === undefined || producer.fixed) continue;
+      if (producer === undefined) continue;
       const groups = new Map<string, Node[]>();
       for (const u of this.consumers(x)) {
         const consumer = this.head(u);
@@ -823,8 +822,8 @@ class Plan implements LevelPlan {
     for (const m of this.stepModules) {
       if (!m.nodes.some((n) => this.computed.has(n))) continue;
       const parent = m.parent === null ? undefined : this.byId.get(m.parent);
-      const side = m.parent === null && (this.split(m) || m.fixed) ? 'outer' : parent !== undefined && !this.split(parent) ? 'left' : 'right';
-      this.modules.push({ id: m.id, fixed: m.fixed, title: m.title, subtitle: m.subtitle || undefined, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
+      const side = m.parent === null && this.split(m) ? 'outer' : parent !== undefined && !this.split(parent) ? 'left' : 'right';
+      this.modules.push({ id: m.id, title: m.title, subtitle: m.subtitle || undefined, nodes: [...m.nodes, ...m.params], side, inner: side === 'left' });
     }
     const runs: { title: string; subtitle?: string; nodes: Node[]; inside: boolean }[] = [];
     let last: string | undefined;
@@ -853,7 +852,7 @@ class Plan implements LevelPlan {
 
   resolve(ctx: LevelContext): LevelLayout {
     const folded = (id: string) => ctx.folded(id);
-    const isFolded = (m: StepModule) => m.fixed || folded(m.id);
+    const isFolded = (m: StepModule) => folded(m.id);
     const hiddenNode = (n: Node) => this.computed.has(n) && this.stepModules.some((m) => isFolded(m) && m.nodes.includes(n) && !this.isOutput(m, n));
     const outerFold = (id: string | null): StepModule | undefined => this.chain(id).find(isFolded);
     const hidden = new Map<Entry, boolean>();
@@ -887,13 +886,11 @@ class Plan implements LevelPlan {
         copy: level.copyOnly,
         copied: shown.some((e) => e.copy !== undefined),
         module: level.module,
-        fixedOutput: own.length > 0 && own.every((e) => this.stepModules.some((m) => m.fixed && this.isOutput(m, e.node))),
       };
     };
     type Flags = ReturnType<typeof flags>;
     const opens = (f: Flags, prev: Flags) => f.module !== null && f.module !== prev.module && this.chain(f.module).some((m) => m.id === prev.module);
     const gap = (f: Flags, prev: Flags, before: Flags | undefined): number => {
-      if (f.fixedOutput) return GAP.fixedOutput;
       if (f.scalar) return prev.board ? GAP.scalarAfterBoard : f.loss ? GAP.loss : GAP.scalar;
       if (f.board) return !f.linear ? GAP.board : f.copied || prev.board ? GAP.linearBoard : GAP.ownBoard;
       if (f.copy) return prev.board ? GAP.copyAfterBoard + GAP.copyPerTileRow * prev.tileRows : GAP.copy;
@@ -1021,7 +1018,7 @@ class Plan implements LevelPlan {
     });
     for (const m of this.stepModules) {
       const range = ranges.get(m.id);
-      if (range === undefined || m.fixed || (isFolded(m) && this.split(m))) continue;
+      if (range === undefined || (isFolded(m) && this.split(m))) continue;
       const direct = (input: Node) => this.consumers(input).some((u) => m.nodes.includes(u) && !this.copies.some((c) => c.node === input && c.consumers.includes(u)));
       const inputLevels = this.levels.filter((l) => flags(l).visible && l.y < range[0] && l.entries.some((e) => e.copy === undefined && !hiddenOf(e) && this.isInput(m, e.node) && direct(e.node)));
       const covered = (y: number) => [...ranges].some(([id, r]) => id !== m.id && sideOf.get(id) === sideOf.get(m.id) && r[0] <= range[0] && y <= r[1] && r[1] < range[1]);

@@ -9,7 +9,6 @@ export {
   type ForwardStep,
   type BackwardOverride,
   type BackwardSpec,
-  type ModuleRepeat,
   type PageModule,
   type StepModule,
   type StepKind,

@@ -60,19 +60,19 @@ export class FoldBoxes {
     mesh.add(new LineSegments(this.edges, edgeMaterial));
     c.scene.add(mesh);
     const module = box.module;
-    const label = c.labels.add('boxlb', module.fixed ? 'vf-fixed' : '');
+    const label = c.labels.add('boxlb', '');
     label.anchor = 'above-right';
     label.setContent(module.title, () => {
       const fragment = document.createDocumentFragment();
       const title = document.createElement('span');
-      renderText(module.fixed ? module.title : `${module.title} · ${BOX_FOLDED_TEXT}`, title);
+      renderText(`${module.title} · ${BOX_FOLDED_TEXT}`, title);
       fragment.appendChild(title);
       return fragment;
     });
     const entry: SceneBox = { box, mesh, material, edgeMaterial, label };
     label.el.addEventListener('pointerenter', () => c.popups.showBoxCard(entry));
     label.el.addEventListener('pointerleave', () => c.popups.hideNodeCard());
-    if (!module.fixed) label.el.addEventListener('click', () => c.steps?.setFolded(module.id, false));
+    label.el.addEventListener('click', () => c.steps?.setFolded(module.id, false));
     this.boxes.set(module.id, entry);
     return entry;
   }

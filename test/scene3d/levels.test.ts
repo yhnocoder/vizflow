@@ -31,7 +31,6 @@ function headGraph() {
     outputs: [y],
     nodes: inside,
     params: [gamma],
-    fixed: false,
     folded: false,
     segment: 'norm',
     forward: {},
@@ -124,7 +123,6 @@ function flatGraph() {
     outputs: [y],
     nodes: [sq, ms, g.node('shifted')!, r, hat, y],
     params: [gamma],
-    fixed: false,
     folded: false,
     segment: 'norm',
     forward: {},
@@ -197,7 +195,7 @@ describe('levelPlan with views and head-selecting boards', () => {
     const other = g.mul(x, 3, { name: 'other' });
     const loss = g.loss(g.add(g.sum(S, null), g.sum(other, null), { name: 'loss' }));
     const module: StepModule = {
-      id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], fixed: false, folded: false, segment: 'att', forward: {}, backward: {},
+      id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], folded: false, segment: 'att', forward: {}, backward: {},
     };
     const spec: StepsSpec = {
       forward: [

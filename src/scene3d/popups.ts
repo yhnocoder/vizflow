@@ -11,7 +11,6 @@ import { plates, rowCol, rowsCols, tokenText } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
-export const BOX_FIXED_CARD_NOTE = '这个盒子只用来示意，数值按恒等映射处理，不能展开。';
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
 export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
@@ -132,7 +131,7 @@ export class ScenePopups {
     const fragment = document.createDocumentFragment();
     const title = document.createElement('h4');
     title.className = 'vf-pop-title';
-    renderText(module.fixed ? module.title : `${module.title}（${BOX_FOLDED_TEXT}）`, title);
+    renderText(`${module.title}（${BOX_FOLDED_TEXT}）`, title);
     fragment.appendChild(title);
     if (io !== undefined) {
       const J = moduleJacobian(c.g, module, io.input, io.output);
@@ -159,7 +158,7 @@ export class ScenePopups {
     }
     const note = document.createElement('p');
     note.className = 'vf-nt';
-    note.textContent = module.fixed ? BOX_FIXED_CARD_NOTE : BOX_CARD_NOTE;
+    note.textContent = BOX_CARD_NOTE;
     fragment.appendChild(note);
     this.pinned = undefined;
     this.pop.replaceChildren(fragment);
