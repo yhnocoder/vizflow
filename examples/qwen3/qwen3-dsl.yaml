@@ -61,7 +61,7 @@ modules:
         args: [d_model, d_head, d_ff, num_heads, num_kv_heads, { theta: 10 }]
       norm:
         use: RMSNorm
-        args: { hidden_size: d_model }
+        args: [d_model]
       lm_head:
         use: Linear
         args: { in_features: d_model, out_features: V, bias: false }

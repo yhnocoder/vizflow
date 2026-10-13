@@ -27,10 +27,10 @@ init:
     args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
   q_norm:
     use: RMSNorm
-    args: { hidden_size: d_head }
+    args: { d_model: d_head }
   k_norm:
     use: RMSNorm
-    args: { hidden_size: d_head }
+    args: { d_model: d_head }
   apply_rotary_pos_emb:
     use: RoPE
     args: [theta]

@@ -28,7 +28,7 @@ outputs:
 `inputs` 的 `shape` 和 `dtype` 里出现的名字，如果不是 `args` 中声明的参数，就在调用时从实际输入绑定；已经绑定或声明过的名字只做检查。`outputs` 里的名字必须已经绑定，用来检查结果。例如 decoder 的 `x: { shape: [T, d_model], dtype: dtype }` 从输入得到 `T` 和 `dtype`，`d_model` 已在 `args` 中声明，只检查输入的第二维是否等于它。
 
 - 序列长度 `T` 是数据的维度，不作为参数传入。同一个实例可以用不同的 `T` 调用，例如 prefill 和 decode。
-- `init` 只能使用 `args` 中的名字，不能使用从输入绑定的名字。这和 HF 的 `__init__` 一致：建参数时需要的维度（`d_model`、`d_head`、`num_heads` 等）都由调用者传入，例如 `Linear` 的 `in_features: d_model`、`RMSNorm` 的 `hidden_size: d_model`。
+- `init` 只能使用 `args` 中的名字，不能使用从输入绑定的名字。这和 HF 的 `__init__` 一致：建参数时需要的维度（`d_model`、`d_head`、`num_heads` 等）都由调用者传入，例如 `Linear` 的 `in_features: d_model`、`RMSNorm` 的 `d_model`。
 - 参数的 dtype 由页面 `config.dtype` 统一设定，作用于整个模型，相当于 `model.to(torch.bfloat16)`。模块的 `args` 不声明 dtype，`init` 也不读它。输入的 `dtype` 从实际输入绑定，用来检查输出。输入和权重的 dtype 不一致时，由运算报错，例如 `Linear` 的输入是 fp32、权重是 bf16。有意的转换在 `forward` 里写出来，例如 `z.float()`。
 - 依赖输入形状的常量在 `forward` 里计算，例如 `M: causal_mask(T)`，不写成 buffer。
 

@@ -20,13 +20,13 @@ outputs:
 init:
   input_layernorm:
     use: RMSNorm
-    args: { hidden_size: d_model }
+    args: [d_model]
   self_attn:
     use: Qwen3Attention
     args: [d_model, d_head, num_heads, num_kv_heads, theta]
   post_attention_layernorm:
     use: RMSNorm
-    args: { hidden_size: d_model }
+    args: [d_model]
   mlp:
     use: GLU
     args: [d_model, d_ff, { act: SiLU }]
