@@ -69,7 +69,7 @@ fold:
   text: |
     一层是两次「先 norm、再计算、再加回」：
     $$\viz{a}=\viz{x}+\mathrm{attn}(\mathrm{norm}(\viz{x})),\qquad \viz{x_out}=\viz{a}+\mathrm{mlp}(\mathrm{norm}(\viz{a}))$$
-    位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以整层的 Jacobian 是块下三角的。两次残差相加把 $\viz{x}$ 原样带到输出，所以对角块里含有一个单位阵。
+    位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以整层的 Jacobian 是块下三角的。进一步看对角块：两次残差相加把 $\viz{x}$ 原样带到输出，所以对角块里含有一个单位阵。
     $$\viz{x_out}={{ x_out | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\viz{x}$'
@@ -93,7 +93,7 @@ steps:
           $\viz{n1}$ 是 q_proj、k_proj、v_proj 共同的输入。
     fold:
       text: |
-        每一行只和自己有关，Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
+        每一行只和自己有关，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
         $$\viz{n1}={{ n1 | matrix:2 }}$$
       backward:
         text: |
@@ -112,23 +112,23 @@ steps:
     text: |
       <code>hidden_states = residual + hidden_states</code>。attention 的输出作为增量加到输入上，这就是残差连接。
       $$\viz{a}=\viz{x}+\viz{att}={{ a | matrix:2 }}$$
-      残差让每一层表示「在输入上改多少」：$\viz{x}$ 是一条贯穿所有层的主干，每个子层只往上面加一笔修改。把所有层展开，最后一层的输出是 embedding 加上每一层每个子层的增量之和。
+      残差让每一层表示「在输入上改多少」：$\viz{x}$ 是一条贯穿所有层的主干，每个子层只往上面加一笔修改。于是把所有层展开，最后一层的输出是 embedding 加上每一层每个子层的增量之和。
     backward:
       label: '$\partial\viz{x},\ \partial\viz{att}$'
       title: '$\pfl{\viz{x}},\ \pfl{\viz{att}}$'
       text: |
         相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\viz{att}$ 进入 attention，一份沿残差直接交给 $\viz{x}$。
         $$\pfl{\viz{att}}=\pfl{\viz{a}}={{ a.grad | matrix:3 }}$$
-        由上面的展开式，embedding 的梯度 $\pfl{\mathbf{e}}$ 里始终有一项等于 $\pfl{\mathbf{h}_{\mathrm{last}}}$。这一项不经过任何权重，没有连乘，所以层数增加时梯度不会因为连乘而消失。可以把残差看成梯度的直达通道，再深的网络，底层也能直接收到来自损失的信号。
+        由上面的展开式，embedding 的梯度 $\pfl{\mathbf{e}}$ 里始终有一项等于 $\pfl{\mathbf{h}_{\mathrm{last}}}$。这一项不经过任何权重，没有连乘，所以层数增加时梯度不会因为连乘而消失。因此可以把残差看成梯度的直达通道：网络再深，底层也能直接收到来自损失的信号。
   - id: post_attention_layernorm
     subtitle: Qwen3RMSNorm
     steps:
       float:
         append: |
-          这是 post_attention_layernorm，在 MLP 之前，计算与 input_layernorm 相同，参数各自独立。
+          这是 post_attention_layernorm，在 MLP 之前，计算与 input_layernorm 相同，但参数各自独立。
         backward:
           append: |
-            $\viz{a}$ 除了经过 norm 拿到的梯度，还沿 MLP 的残差直接收到 $\pfl{\viz{x_out}}$，所以 $\pfl{\viz{a}}$ 是两者之和。
+            和 input_layernorm 处的 $\viz{x}$ 一样，$\viz{a}$ 除了经过 norm 拿到的梯度，还沿 MLP 的残差直接收到 $\pfl{\viz{x_out}}$，所以 $\pfl{\viz{a}}$ 是两者之和。
       scale:
         append: $\viz{n}$ 是 gate_proj 和 up_proj 共同的输入。
   - id: mlp
@@ -140,12 +140,9 @@ steps:
       act_fn.sigmoid.neg:
         append: |
           Qwen3 的 <code>config.hidden_act</code> 是 <code>"silu"</code>，所以 <code>self.act_fn</code> 是 SiLU，gate 经过 SiLU、up 不经过激活。这种组合叫 SwiGLU。
-      gate:
-        append: |
-          $$\viz{mlp.m}={{ mlp.m | matrix:2 }}$$
     fold:
       text: |
-        MLP 对每个位置单独计算，Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
+        MLP 对每个位置单独计算，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
         $$\viz{down}=\mathrm{mlp}(\viz{n})={{ down | matrix:2 }}$$
   - id: res2
     show: x_out
@@ -161,5 +158,5 @@ steps:
       label: '$\partial\viz{a},\ \partial\viz{down}$'
       title: '$\pfl{\viz{a}},\ \pfl{\viz{down}}$'
       text: |
-        梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\viz{a}$。
+        和第一次残差相加一样，梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\viz{a}$。
         $$\pfl{\viz{down}}=\pfl{\viz{x_out}}={{ x_out.grad | matrix:3 }}$$

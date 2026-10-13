@@ -27,7 +27,18 @@ export interface TensorView {
   index: ViewIndex[];
 }
 
-export type Value = Num | boolean | string | DtypeValue | ModuleRef | Node | Value[] | Instance | InstanceList | Result | TensorView;
+export type RealSizeValues = Readonly<Record<string, number | string>>;
+
+export interface RealSizes {
+  realSizes: Readonly<Record<string, RealSizeValues>>;
+}
+
+export interface RealSizeEntry {
+  realSize: string;
+  values: RealSizeValues;
+}
+
+export type Value = Num | boolean | string | DtypeValue | ModuleRef | Node | Value[] | Instance | InstanceList | Result | TensorView | RealSizes | RealSizeEntry;
 
 export type Member = Instance | InstanceList | Node;
 

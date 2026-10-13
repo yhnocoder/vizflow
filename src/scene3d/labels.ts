@@ -161,7 +161,7 @@ export class LabelLayer {
     return label;
   }
 
-  project(camera: Camera, width: number, height: number, avoid = true): void {
+  project(camera: Camera, width: number, height: number, avoidAll = true): void {
     const shown: Label[] = [];
     for (const label of this.labels) {
       let off = label.pos === undefined || !label.visible;
@@ -205,7 +205,15 @@ export class LabelLayer {
         if (other.x < box.x + box.w && box.x < other.x + other.w) box.y = Math.max(box.y, other.y + other.h);
       }
     });
-    const adjustments = avoid ? avoidOverlaps(placements, bounds) : placements.map(() => ({ dx: 0, dy: 0, hidden: false }));
+    const avoiding = shown.flatMap((label, i) => (avoidAll || label.movable ? [i] : []));
+    const adjusted = avoidOverlaps(
+      avoiding.map((i) => placements[i]),
+      avoidAll ? bounds : undefined,
+    );
+    const adjustments = placements.map(() => ({ dx: 0, dy: 0, hidden: false }));
+    avoiding.forEach((i, k) => {
+      adjustments[i] = adjusted[k];
+    });
     shown.forEach((label, i) => {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];

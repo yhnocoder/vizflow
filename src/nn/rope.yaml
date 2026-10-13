@@ -40,7 +40,7 @@ fold:
   label: '$\viz{q_embed},\ \viz{k_embed}$'
   title: RoPE
   text: |
-    乘 cos、rotate_half、乘 sin、相加合起来是一次旋转：每个 head 里第 $c$ 和第 $c+d_h/2$ 个分量转过 $t\,\omega_c$。Jacobian 由 $2\times2$ 的旋转矩阵组成，位置 0 的角度是 0，所以那里是单位阵。
+    乘 cos、rotate_half、乘 sin、相加合起来是一次旋转：每个 head 里第 $c$ 和第 $c+d_h/2$ 个分量转过 $t\,\omega_c$。所以 Jacobian 由 $2\times2$ 的旋转矩阵组成；位置 0 的角度是 0，那里的旋转矩阵是单位阵。
     $$\begin{pmatrix}q'_c\\ q'_{c+d_h/2}\end{pmatrix}=\begin{pmatrix}\cos t\omega_c & -\sin t\omega_c\\ \sin t\omega_c & \cos t\omega_c\end{pmatrix}\begin{pmatrix}q_c\\ q_{c+d_h/2}\end{pmatrix}$$
   backward:
     label: '$\partial\viz{q},\ \partial\viz{k}$'
@@ -72,11 +72,11 @@ steps:
     label: '$\viz{q1},\ \viz{q2}$'
     title: rotate_half：切成两半
     text: |
-      <code>rotate_half</code> 的前两行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>。每个 head 的 $d_h$ 列切成前后两半，前半是每一对的第一个分量，后半是第二个分量。切片只取出元素，局部导数是 1。
+      <code>rotate_half</code> 的前两行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>。HF 把第 $c$ 和第 $c+d_h/2$ 个分量配成一对，所以把每个 head 的 $d_h$ 列切成前后两半后，前半是每一对的第一个分量，后半是第二个分量。切片只取出元素，局部导数是 1。
       $$\viz{q1}={{ q1 | matrix:2 }},\qquad \viz{q2}={{ q2 | matrix:2 }}$$
     backward:
       label: '$\partial\viz{q},\ \partial\viz{k}$（rotate_half）'
-      title: 两半放回原来的列
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
       text: 切片的反向把梯度放回被切出的列。
   - id: neg
     show: [nq2, nk2]
@@ -108,7 +108,7 @@ steps:
     label: '$\odot\sin$'
     title: RoPE：乘 sin
     text: |
-      $\mathrm{rh}(\mathbf{q})$ 逐元素乘 sin。位置 $t=0$ 的角度是 0，$\sin 0=0$，所以第 0 行在这一步全为 0。再加上 $\cos 0=1$，位置 0 的 q、k 保持不变。
+      $\mathrm{rh}(\mathbf{q})$ 逐元素乘 sin。位置 $t=0$ 的角度是 0，$\sin 0=0$，所以第 0 行在这一步全为 0。又因为 $\cos 0=1$，乘 cos 那一项在第 0 行等于 q 本身，所以两项相加后，位置 0 的 q、k 保持不变。
       $$\mathrm{rh}(\viz{q})\odot\sin={{ qs | matrix:2 }}$$
     backward:
       label: '$\partial\,\mathrm{rh}$'

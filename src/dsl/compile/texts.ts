@@ -14,6 +14,7 @@ export interface Macro {
 }
 
 const MACRO_DEPTH = 32;
+const MATRIX_LINE_COLUMNS = 8;
 
 function bracedEnd(text: string, open: number): number {
   let depth = 0;
@@ -168,7 +169,7 @@ export abstract class Texts extends Modules {
   }
 
   private plain(found: Value, source: string, env: Env): string {
-    if (isNum(found)) return numberTex(found.toy);
+    if (isNum(found)) return Number.isSafeInteger(found.toy) ? String(found.toy) : numberTex(found.toy);
     if (typeof found === 'string' || typeof found === 'boolean') return String(found);
     if (isDtype(found)) return found.dtype;
     if (found instanceof Node || isView(found)) {
@@ -214,6 +215,9 @@ export abstract class Texts extends Modules {
       for (let i = 0; i < leading[prefix.length]; i++) visit([...prefix, i]);
     };
     visit([]);
-    return `\\left[\\,${blocks.join('\\;\\;')}\\,\\right]`;
+    const perLine = Math.max(1, Math.floor(MATRIX_LINE_COLUMNS / cols));
+    if (blocks.length <= perLine) return `\\left[\\,${blocks.join('\\;\\;')}\\,\\right]`;
+    const lines = Array.from({ length: Math.ceil(blocks.length / perLine) }, (_, i) => blocks.slice(i * perLine, (i + 1) * perLine).join('\\;\\;'));
+    return `\\left[\\begin{array}{l}${lines.join('\\\\[1ex]')}\\end{array}\\right]`;
   }
 }

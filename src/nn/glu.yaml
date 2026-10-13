@@ -39,7 +39,7 @@ fold:
   label: '$\viz{down}=\mathrm{mlp}(\viz{x})$'
   title: 门控 MLP
   text: |
-    MLP 对每个位置单独计算，Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+    MLP 对每个位置单独计算，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
     $$\viz{down}={{ down | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\viz{x}$'
@@ -79,7 +79,7 @@ steps:
     label: '$\viz{a}\odot\mathbf{up}$'
     title: 门控相乘
     text: |
-      $\mathbf{m}=\mathrm{act}(\mathbf{gate})\odot\mathbf{up}$。普通 MLP 的 $\mathrm{act}(\mathbf{x}W^{\top})$ 只有一个线性函数，这里每个分量是两个线性函数的乘积（其中一个经过激活），所以 $\mathbf{m}$ 对 $\viz{x}$ 近似是二次的。$\viz{a}$ 像一排阀门：激活值接近 0 的分量把阀门关上，$\mathbf{up}$ 的对应分量几乎不进入输出；激活值大的分量把阀门打开。
+      $\mathbf{m}=\mathrm{act}(\mathbf{gate})\odot\mathbf{up}$。普通 MLP 的 $\mathrm{act}(\mathbf{x}W^{\top})$ 只有一个线性函数，而这里每个分量是两个线性函数的乘积（其中一个经过激活），所以 $\mathbf{m}$ 对 $\viz{x}$ 近似是二次的。$\viz{a}$ 像一排阀门：激活值接近 0 的分量把阀门关上，$\mathbf{up}$ 的对应分量几乎不进入输出；激活值大的分量把阀门打开。
       $$\mathbf{m}={{ m | matrix:2 }}$$
     backward:
       label: '$\partial\viz{a},\ \partial\mathbf{up}$'

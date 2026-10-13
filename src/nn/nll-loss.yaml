@@ -61,7 +61,7 @@ steps:
       $$\viz{loss}={{ loss | matrix:3 }}$$
     backward:
       label: '$\partial\viz{lt}$'
-      title: 从损失出发
+      title: '$\frac{\partial\ell}{\partial \viz{lt}}$'
       text: |
-        反向从 $\frac{\partial\ell}{\partial \ell}=1$ 开始。平均的局部导数是 $1/N$，每个位置拿到 $1/N$。
+        反向从 $\frac{\partial\ell}{\partial \ell}=1$ 开始。平均的局部导数是 $1/N$，所以每个位置拿到 $1/N$。
         $$\frac{\partial\ell}{\partial \viz{lt}}={{ lt.grad | matrix:3 }}$$

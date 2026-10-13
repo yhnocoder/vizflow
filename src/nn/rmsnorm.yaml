@@ -38,7 +38,7 @@ fold:
     label: '$\partial\viz{weight},\ \partial\viz{x}$'
     title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{x}}$'
     text: |
-      $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\mathbf{x}}\,\frac{\hat{\mathbf{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{weight}}={{ weight.grad | matrix:3 }}$$
+      $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{weight}}={{ weight.grad | matrix:3 }}$$
 
 steps:
   - id: float
@@ -47,16 +47,16 @@ steps:
     title: RMSNorm：转成 float32
     text: |
       RMSNorm 把每一行缩放到均方根为 1，再乘一个可学习的权重：
-      $$\viz{out}=\viz{weight}\odot\frac{\viz{x}}{\sqrt{\frac{1}{d}\sum_k x_k^2+\epsilon}}$$
-      和 LayerNorm 相比，它不减均值，也没有 bias。HF 第一行 <code>hidden_states.to(torch.float32)</code> 先转成 float32。
+      $$\viz{out}=\viz{weight}\odot\frac{\viz{x}}{\sqrt{\frac{1}{d}\sum_k {\viz{x}}_k^2+\epsilon}}$$
+      和 LayerNorm 相比，它不减均值，也没有 bias。计算从分母里的 ${\viz{x}}_k^2$ 开始：HF 第一行 <code>hidden_states.to(torch.float32)</code> 先转成 float32。
       $$\viz{xf}={{ xf | matrix:2 }}$$
     backward:
       label: '$\partial\viz{x}$'
       title: '$\frac{\partial\ell}{\partial \viz{x}}$'
       text: |
         平方这一路和归一化那一步的直连在 $\viz{xf}$ 上相加。记 $\mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}$，两路合起来是：
-        $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\mathbf{x}}\,\frac{\hat{\mathbf{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
-        第二项减去了 $\mathbf{u}$ 在 $\hat{\mathbf{x}}$ 方向上的分量，所以 $\viz{x}\cdot\frac{\partial\ell}{\partial \viz{x}}=r\,(\viz{x}\cdot\mathbf{u})\,\frac{\epsilon}{\mathrm{ms}+\epsilon}$，$\epsilon$ 可忽略时为 0。也就是说，梯度和这一行的输入垂直：把整行放大或缩小，输出几乎不变，损失也就不会沿这个方向变化。
+        $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
+        第二项减去了 $\mathbf{u}$ 在 $\hat{\viz{x}}$ 方向上的分量，所以 $\viz{x}\cdot\frac{\partial\ell}{\partial \viz{x}}=r\,(\viz{x}\cdot\mathbf{u})\,\frac{\epsilon}{\mathrm{ms}+\epsilon}$，$\epsilon$ 可忽略时为 0。也就是说，梯度和这一行的输入垂直。原因是把整行放大或缩小时输出几乎不变，损失也就不会沿这个方向变化。
   - id: square
     show: sq
     label: '$\viz{sq}$'
@@ -122,7 +122,7 @@ steps:
       label: '$\partial\viz{r},\ \partial\viz{xf}$'
       title: '$\frac{\partial\ell}{\partial \viz{r}},\ \frac{\partial\ell}{\partial \viz{xf}}$'
       text: |
-        $r_t$ 用在这一行的 $d$ 个输出里，每一路的局部导数是 $x_{t,k}$，所以 $\frac{\partial\ell}{\partial r_t}=\sum_kx_{t,k}u_{t,k}=\mathbf{x}_t\cdot\mathbf{u}_t$。直连那条的局部导数是 $r_t$，输入拿到 $r_t\,u_{t,k}$。
+        $r_t$ 用在这一行的 $d$ 个输出里，每一路的局部导数是 $x_{t,k}$，所以 $\frac{\partial\ell}{\partial r_t}=\sum_kx_{t,k}u_{t,k}=\mathbf{x}_t\cdot\mathbf{u}_t$。另一条是直连，局部导数是 $r_t$，所以输入从这一条拿到 $r_t\,u_{t,k}$。
         $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$
   - id: cast
     show: xc
@@ -146,5 +146,5 @@ steps:
       label: '$\partial\viz{weight},\ \partial\viz{xc}$'
       title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{xc}}$'
       text: |
-        逐元素乘的两个输入互为对方的局部导数。$\viz{weight}$ 被 $T$ 行共用，梯度按行相加：
+        逐元素乘的两个输入互为对方的局部导数。$\viz{weight}$ 被 $T$ 行共用，所以梯度按行相加：
         $$\frac{\partial\ell}{\partial \viz{weight}}=\sum_t\frac{\partial\ell}{\partial {\viz{out}}_t}\odot{\viz{xc}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}={{ xc.grad | matrix:3 }}$$

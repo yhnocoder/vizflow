@@ -1,7 +1,7 @@
 import { type Graph, type Node, graph } from '../../autograd';
 import type { Nested } from '../../tensor';
 import { type Where, fail } from '../source';
-import type { Env, Num } from './types';
+import type { Env, Num, RealSizeValues } from './types';
 
 const INIT_DIGITS = 2;
 
@@ -25,6 +25,7 @@ export interface GraphSetup {
 
 export class CompilerState {
   g!: Graph;
+  realSizes: Readonly<Record<string, RealSizeValues>> | undefined;
   readonly nodes = new Map<string, Node>();
   private random: () => number = rng(0);
   private realPage = false;

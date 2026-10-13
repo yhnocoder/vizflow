@@ -182,7 +182,7 @@ steps:
     );
     expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([4, 8, 12, 16, 20, 24]);
     expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['layers[0].weight', 'layers[1].weight', 'layers[2].weight']);
-    expect(p.nodes.get('layers[1].out')!.tex).toBe('o^{[2]}');
+    expect(p.nodes.get('layers[1].out')!.tex).toBe('o^{[1]}');
     expect(p.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
   });
 
@@ -246,6 +246,22 @@ describe('templates and tex', () => {
     expect((await yaml('d={{ d }}, {{ y[0] | join: ", " }}')).steps.forward[0].text).toBe('d=2, {{y[0, 0]}}, {{y[0, 1]}}');
     expect((await yaml('$$\\viz{y}={{ y[:1] | matrix:2 }}$$')).steps.forward[0].text).toBe('$$\\mathbf{y}=\\begin{pmatrix} {{y[0, 0]:2}} & {{y[0, 1]:2}} \\end{pmatrix}$$');
     await expect(yaml('{{ y }}')).rejects.toThrow(/is not a single number; add a format/);
+  });
+
+  it('reads real sizes in root templates and prints integers as digits', async () => {
+    const yaml = (text: string) => page(root({ config: '{ d: 2, real: { big: { name: Big, d: 4096, V: 151936 } } }', forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: "${text}"\n- id: l` }));
+    expect((await yaml("{{ real['big'].name }}: {{ real['big'].V }}, {{ real['big'].d // d }}, {{ 0.00001 }}")).steps.forward[0].text).toBe('Big: 151936, 2048, 10^{-5}');
+    await expect(yaml("{{ real['small'].d }}")).rejects.toThrow("real has no 'small'; it has big");
+    await expect(yaml("{{ real['big'].T }}")).rejects.toThrow("real size 'big' has no 'T'; it has name, d, V");
+  });
+
+  it('wraps the blocks of a matrix to at most eight columns per line', async () => {
+    const block = JSON.stringify([[1, 2, 3, 4]]);
+    const yaml = (count: number) =>
+      page(root({ config: '{ d: 4 }', inputs: 'x: { type: tensor, shape: [T, 1, d], dtype: fp32 }', data: `x: [${Array(count).fill(block).join(', ')}]`, forward: '- l: x.mean()', steps: "- id: l\n  text: '{{ x | matrix:0 }}'" }));
+    const lines = (text: string) => /\\begin\{array\}\{l\}(.*)\\end\{array\}/.exec(text)?.[1].split('\\\\[1ex]').map((line) => (line.match(/\\begin\{pmatrix\}/g) ?? []).length);
+    expect(lines((await yaml(3)).steps.forward[0].text ?? '')).toEqual([2, 1]);
+    expect((await yaml(2)).steps.forward[0].text).not.toContain('array');
   });
 
   it('computes figure data from a template expression outside the graph', async () => {

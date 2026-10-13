@@ -13,7 +13,8 @@ forward:
   - S: q @ kT
   - Ss: S * d_head ** -0.5
   - Sm: Ss + mask
-  - ex: Sm.float().exp()
+  - Sf: Sm.float()
+  - ex: Sf.exp()
   - Z: ex.sum(-1, keepdim=True)
   - P: (ex / Z).to(q.dtype)
   - attn_output: P @ value_states
@@ -25,6 +26,7 @@ tex:
   S: 'S'
   Ss: '\tilde{S}'
   Sm: '\bar{S}'
+  Sf: '\bar{S}_{\mathrm{fp32}}'
   ex: '\mathrm{ex}'
   Z: 'Z'
   P: 'P'
@@ -48,12 +50,12 @@ steps:
     label: '$\mathrm{repeat\_kv}(\viz{k})$'
     title: repeat_kv：复制 k
     text: |
-      <code>key_states = repeat_kv(key, module.num_key_value_groups)</code>。$H$ 个 query head 共用 $H_{kv}$ 个 kv head，每 $n_{\mathrm{rep}}=H/H_{kv}$ 个相邻的 query head 一组，共用一个 kv head。repeat_kv 把第 $j$ 个 kv head 复制到第 $j\,n_{\mathrm{rep}},\dots,(j+1)n_{\mathrm{rep}}-1$ 个位置，之后 k 和 q 的 head 数相同，可以按 head 批量矩阵乘。复制的局部导数是 1。
+      <code>key_states = repeat_kv(key, module.num_key_value_groups)</code>。$H$ 个 query head 共用 $H_{kv}$ 个 kv head，每 $n_{\mathrm{rep}}=H/H_{kv}$ 个相邻的 query head 一组，共用一个 kv head。k 的 head 比 q 少，不能按 head 一一配对相乘，所以 repeat_kv 把第 $j$ 个 kv head 复制到第 $j\,n_{\mathrm{rep}},\dots,(j+1)n_{\mathrm{rep}}-1$ 个位置，之后 k 和 q 的 head 数相同，可以按 head 批量矩阵乘。复制的局部导数是 1。
     backward:
       label: '$\partial\viz{k}$'
-      title: repeat_kv 反向：几份加回一份
+      title: '$\frac{\partial\ell}{\partial \viz{k}}$'
       text: |
-        同一个 kv head 被 $n_{\mathrm{rep}}$ 个 query head 使用，梯度是这几份之和：
+        同一个 kv head 被 $n_{\mathrm{rep}}$ 个 query head 使用，所以梯度是这几份之和：
         $$\frac{\partial\ell}{\partial \mathbf{k}^{(j)}}=\sum_{h=j\,n_{\mathrm{rep}}}^{(j+1)n_{\mathrm{rep}}-1}\frac{\partial\ell}{\partial \mathbf{k}^{(h)}_{\mathrm{rep}}},\qquad \frac{\partial\ell}{\partial \viz{k}}={{ k.grad | matrix:3 }}$$
   - id: vrep
     show: value_states
@@ -62,7 +64,7 @@ steps:
     text: v 按同样的方式复制，每个 query head 拿到所在组的那一份。
     backward:
       label: '$\partial\viz{v}$'
-      title: v 的几份加回一份
+      title: '$\frac{\partial\ell}{\partial \viz{v}}$'
       text: |
         $$\frac{\partial\ell}{\partial \viz{v}}={{ v.grad | matrix:3 }}$$
   - id: kT
@@ -71,7 +73,7 @@ steps:
     text: <code>key_states.transpose(2, 3)</code> 交换最后两个轴，每个 head 的 k 从 $T_k\times d_h$ 变成 $d_h\times T_k$，下一步的矩阵乘因此得到 $T\times T_k$ 的分数表。转置只换轴，局部导数是 1。
     backward:
       label: '$\partial\mathbf{k}_{\mathrm{rep}}$'
-      title: 转置回去
+      title: '$\frac{\partial\ell}{\partial \viz{key_states}}$'
       text: 把梯度转置回 $T_k\times d_h$。
   - id: S
     label: '$\mathbf{q}\mathbf{k}^{\top}$'
@@ -83,9 +85,9 @@ steps:
       label: '$\partial\viz{q},\ \partial\mathbf{k}^{\top}$'
       title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \mathbf{k}^{\top}}$'
       text: |
-        两边都是激活，各自的梯度是另一边乘 $\frac{\partial\ell}{\partial S}$：
+        和线性投影不同，这里两边都是激活，各自的梯度是另一边乘 $\frac{\partial\ell}{\partial S}$：
         $$\frac{\partial\ell}{\partial \mathbf{q}}=\frac{\partial\ell}{\partial S}\,\mathbf{k},\qquad \frac{\partial\ell}{\partial \mathbf{k}^{\top}}=\mathbf{q}^{\top}\frac{\partial\ell}{\partial S}$$
-        被 mask 的格子 $\frac{\partial\ell}{\partial S_{t,s}}=0$，所以位置 $t$ 的 query 只从 $s\le t$ 的 key 拿到梯度。
+        被 mask 的格子在 softmax 处梯度为 0，经过加 mask 和缩放仍是 0，所以位置 $t$ 的 query 只从 $s\le t$ 的 key 拿到梯度。
         $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
   - id: Ssc
     show: Ss
@@ -94,7 +96,7 @@ steps:
     text: |
       <code>* scaling</code>，<code>scaling = head_dim**-0.5</code>。为什么要缩放？假设 q、k 的各分量独立，均值为 0，方差为 1，则
       $$\mathbb{E}\big[(\mathbf{q}\cdot\mathbf{k})^2\big]=\sum_{c,c'}\mathbb{E}[q_cq_{c'}]\,\mathbb{E}[k_ck_{c'}]=\sum_c\mathbb{E}[q_c^2]\,\mathbb{E}[k_c^2]=d_h$$
-      也就是说，点积的标准差是 $\sqrt{d_h}$。$d_h$ 大时分数之间相差很大，exp 把差距进一步放大，softmax 的结果接近 one-hot，实际上退化成了 argmax。这时 softmax 的梯度 $P_{t,s}(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'})$ 几乎为 0，q、k 收不到梯度。所以乘上 $1/\sqrt{d_h}$，把标准差拉回 1。
+      也就是说，点积的标准差是 $\sqrt{d_h}$。$d_h$ 大时分数之间相差很大，exp 又把差距进一步放大，于是 softmax 的结果接近 one-hot，实际上退化成了 argmax。这时 softmax 的梯度 $P_{t,s}(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'})$ 几乎为 0，所以 q、k 收不到梯度。所以乘上 $1/\sqrt{d_h}$，把标准差拉回 1。
       $$\tilde S^{(0)}={{ Ss[0] | matrix:2 }}$$
     backward:
       label: '$\partial S$'
@@ -107,18 +109,18 @@ steps:
     label: '$+\,\viz{mask}$'
     title: 加上 mask
     text: |
-      <code>attn_weights = attn_weights + attention_mask</code>。被 mask 的格子加上 dtype 的最小值，下一步取 exp 后为 0，相当于 softmax 只在允许的位置上归一化。mask 对所有 head 相同，按广播相加。
+      <code>attn_weights = attn_weights + attention_mask</code>。被 mask 的格子加上 dtype 的最小值，下一步取 exp 后为 0，相当于 softmax 只在允许的位置上归一化。mask 对所有 head 相同，所以按广播相加。
       $$\viz{mask}={{ mask | matrix:2 }},\qquad \bar S^{(0)}={{ Sm[0] | matrix:2 }}$$
     backward:
       label: '$\partial\tilde S$'
       title: '$\frac{\partial\ell}{\partial \tilde S}$'
       text: 加常量的局部导数是 1，梯度原样传下去。mask 没有梯度。
   - id: exp
-    show: ex
+    show: [Sf, ex]
     label: '$\exp$'
     title: softmax：转成 float32 并取 exp
     text: |
-      <code>nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)</code> 先把分数转成 float32，再做 softmax。按定义，softmax 是取 exp、按行求和、相除。被 mask 的格子 $e^{\bar S}=0$。
+      <code>nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)</code> 先把分数转成 float32，再做 softmax。按定义，softmax 是取 exp、按行求和、相除，这一步先取 exp，被 mask 的格子 $e^{\bar S}=0$。
 
       kernel 实际算的是 $e^{\bar S_{t,s}-m_t}$，$m_t$ 是这一行的最大值。减去它以后指数都不超过 0，exp 不会溢出；又因为分子分母同乘 $e^{-m_t}$，比值不变：
       $$\frac{e^{\bar S_{t,s}-m_t}}{\sum_{s'}e^{\bar S_{t,s'}-m_t}}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}$$
@@ -129,7 +131,7 @@ steps:
       text: |
         exp 的局部导数是它自己。把相除、求和、exp 三步连起来，记 $g=\frac{\partial\ell}{\partial P}$：
         $$\frac{\partial\ell}{\partial \mathrm{ex}_{t,s}}=\frac{g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}}{Z_t},\qquad \frac{\partial\ell}{\partial \bar S_{t,s}}=\mathrm{ex}_{t,s}\frac{\partial\ell}{\partial \mathrm{ex}_{t,s}}=P_{t,s}\Big(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}\Big)$$
-        被 mask 的格子 $P=0$，梯度为 0。每行的梯度之和为 0，因为给一行分数同时加一个常数不改变 softmax。
+        被 mask 的格子 $P=0$，所以梯度为 0。每行的梯度之和为 0，因为给一行分数同时加一个常数不改变 softmax。
         $$\frac{\partial\ell}{\partial \bar S^{(0)}}={{ Sm[0].grad | matrix:3 }}$$
   - id: sum
     show: Z

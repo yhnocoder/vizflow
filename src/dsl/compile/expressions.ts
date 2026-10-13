@@ -4,7 +4,7 @@ import { type Ast, type IndexItem, ParseError, parseExpr } from '../expr';
 import { DslError } from '../source';
 import { elemOf, numberTex } from '../tex';
 import { CompilerState } from './state';
-import { type DtypeValue, type Env, Instance, InstanceList, type Make, type ModuleRef, type Num, Result, type TensorView, type Value, type ViewIndex } from './types';
+import { type DtypeValue, type Env, Instance, InstanceList, type Make, type ModuleRef, type Num, type RealSizeEntry, type RealSizes, Result, type TensorView, type Value, type ViewIndex } from './types';
 import { combine, isNum, isRecord, num } from './util';
 
 const METHOD_CASTS: Record<string, Dtype> = { float: 'fp32', double: 'fp64', half: 'fp16', bfloat16: 'bf16' };
@@ -21,6 +21,14 @@ export function isView(value: unknown): value is TensorView {
   return isRecord(value) && value.node instanceof Node && Array.isArray(value.index);
 }
 
+export function isRealSizes(value: unknown): value is RealSizes {
+  return isRecord(value) && 'realSizes' in value && Object.keys(value).length === 1;
+}
+
+export function isRealSizeEntry(value: unknown): value is RealSizeEntry {
+  return isRecord(value) && typeof value.realSize === 'string' && 'values' in value;
+}
+
 export function describe(value: Value): string {
   if (value instanceof Node) return `tensor '${value.name}'`;
   if (value instanceof Instance) return `module instance '${value.path}'`;
@@ -30,6 +38,8 @@ export function describe(value: Value): string {
   if (isDtype(value)) return `dtype ${value.dtype}`;
   if (isModuleRef(value)) return `module ${value.module.name}`;
   if (isView(value)) return `a part of tensor '${value.node.name}'`;
+  if (isRealSizes(value)) return 'the real sizes';
+  if (isRealSizeEntry(value)) return `real size '${value.realSize}'`;
   if (Array.isArray(value)) return 'a list';
   return JSON.stringify(value);
 }
@@ -81,6 +91,7 @@ export abstract class Expressions extends CompilerState {
     }
     const arg = env.instance.args.get(name);
     if (arg !== undefined) return arg;
+    if (name === 'real' && env.instance.path === '' && this.realSizes !== undefined) return { realSizes: this.realSizes };
     const module = env.instance.def.namespace.get(name);
     if (module !== undefined) return { module };
     if ((DTYPES as readonly string[]).includes(name)) return { dtype: name as Dtype };
@@ -140,6 +151,11 @@ export abstract class Expressions extends CompilerState {
       if (output === undefined) this.fail(env, `${base.call.instance.def.name} has no output '${ast.name}'; its outputs are ${[...base.outputs.keys()].join(', ')}`, ast.pos);
       return output;
     }
+    if (isRealSizeEntry(base)) {
+      const value = base.values[ast.name];
+      if (value === undefined) this.fail(env, `real size '${base.realSize}' has no '${ast.name}'; it has ${Object.keys(base.values).join(', ')}`, ast.pos);
+      return typeof value === 'number' ? num(value) : value;
+    }
     if (base instanceof Node && ast.name === 'T') return this.transposed(base, env, make, ast.pos);
     if (base instanceof Node && ast.name === 'dtype') return { dtype: base.dtype };
     if (make === undefined && ast.name === 'grad' && (base instanceof Node || isView(base))) {
@@ -179,6 +195,13 @@ export abstract class Expressions extends CompilerState {
       const at = i < 0 ? items.length + i : i;
       if (at < 0 || at >= items.length) this.fail(env, `index ${i} is out of range for ${items.length} items`, ast.pos);
       return items[at];
+    }
+    if (isRealSizes(base)) {
+      const key = ast.items.length === 1 && ast.items[0].k === 'at' ? this.evaluate(ast.items[0].value, env, undefined, false) : undefined;
+      if (typeof key !== 'string') this.fail(env, 'real takes one name, such as real[\'qwen3-8b\']', ast.pos);
+      const values = base.realSizes[key];
+      if (values === undefined) this.fail(env, `real has no '${key}'; it has ${Object.keys(base.realSizes).join(', ')}`, ast.pos);
+      return { realSize: key, values };
     }
     if (!(base instanceof Node) && !isView(base)) return this.fail(env, `cannot index ${describe(base)}`, ast.pos);
     const view: TensorView = base instanceof Node ? { node: base, grad: false, index: [] } : base;

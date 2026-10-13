@@ -167,6 +167,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     return out as { name: string } & Record<string, number | string>;
   });
   const real = realSpecs[0];
+  c.realSizes = Object.fromEntries(Object.keys(reals).map((key, i) => [key, realSpecs[i]]));
   const seed = config.seed ?? DEFAULT_SEED;
   if (typeof seed !== 'number' || !Number.isInteger(seed)) fail(child(configWhere, config, 'seed'), 'seed must be an integer');
   const configValues = c.config;

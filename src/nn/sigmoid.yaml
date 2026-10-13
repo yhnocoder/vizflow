@@ -68,7 +68,7 @@ steps:
     label: '$\viz{out}$'
     title: sigmoid：取倒数
     text: |
-      分母大于 1，取倒数后每个值在 0 和 1 之间。
+      分母大于 1，所以取倒数后每个值在 0 和 1 之间。
       $$\sigma(\viz{x})=\frac{1}{\viz{d}}={{ out | matrix:3 }}$$
     backward:
       label: '$\partial\viz{d}$'

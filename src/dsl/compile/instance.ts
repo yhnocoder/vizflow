@@ -21,7 +21,7 @@ const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const LINEAR = 'Linear';
 
 export function listMark(i: number): string {
-  return `^{[${i + 1}]}`;
+  return `^{[${i}]}`;
 }
 
 export abstract class Modules extends Expressions {

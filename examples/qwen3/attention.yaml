@@ -67,6 +67,7 @@ tex:
   qt: '\bar{\mathbf{q}}'
   kt: '\bar{\mathbf{k}}'
   vt: '\mathbf{v}'
+  attn_output: '\mathbf{o}'
   qr: "\\mathbf{q}'"
   kr: "\\mathbf{k}'"
   o: '\mathbf{o}'
@@ -108,13 +109,13 @@ fold:
   label: '$\viz{att}=\mathrm{self\_attn}(\viz{x})$'
   title: self_attn
   text: |
-    位置 $t$ 的输出是 $\sum_{s\le t}P_{t,s}\mathbf{v}_s$ 经过 o_proj 的结果，只依赖 $s\le t$ 的输入，所以 Jacobian 是块下三角的。
+    位置 $t$ 的输出是 $\sum_{s\le t}P_{t,s}\mathbf{v}_s$ 经过 o_proj 的结果，因此只依赖 $s\le t$ 的输入，Jacobian 是块下三角的。
     $$\viz{att}={{ att | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\viz{x}$'
     title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
     text: |
-      一次反向算出 attention 全部参数的梯度和 $\pfl{\viz{x}}$。块下三角的 Jacobian 转置以后是块上三角：位置 $s$ 的输入从所有 $t\ge s$ 的输出收到梯度。
+      一次反向算出 attention 全部参数的梯度和 $\pfl{\viz{x}}$。反向乘的是 Jacobian 的转置，块下三角转置以后是块上三角，所以位置 $s$ 的输入从所有 $t\ge s$ 的输出收到梯度。
       $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
 
 steps:
@@ -126,7 +127,7 @@ steps:
     text: |
       注意力要回答的问题是：位置 $t$ 应该从哪些位置取信息。做法是给每个位置算一个 query $\mathbf{q}_t$ 和一个 key $\mathbf{k}_s$，用点积 $\mathbf{q}_t\cdot\mathbf{k}_s$ 衡量匹配程度。
 
-      <code>self.q_proj(hidden_states)</code> 是一次没有 bias 的线性投影，宽度 $H\,d_h={{ num_heads }}\times{{ d_head }}={{ num_heads * d_head }}$。接着 <code>.view(hidden_shape)</code> 把每一行切成 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$，形状变成 $T\times H\times d_h$。view 只改变形状的解释，不移动数据。HF 的张量多一个 batch 维，这一页没有，所以轴的编号比 HF 少 1。
+      query 由线性投影得到：<code>self.q_proj(hidden_states)</code> 是一次没有 bias 的线性投影，宽度 $H\,d_h={{ num_heads }}\times{{ d_head }}={{ num_heads * d_head }}$。接着 <code>.view(hidden_shape)</code> 把每一行切成 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$，形状变成 $T\times H\times d_h$。view 只改变形状的解释，不移动数据。HF 的张量多一个 batch 维，这一页没有，所以轴的编号比 HF 少 1。
       $$\viz{q}=\viz{x}{\viz{q_proj.weight}}^{\top}={{ q | matrix:2 }}$$
     backward:
       label: '$\partial\viz{q_proj.weight},\ \partial\viz{x}$'
@@ -141,9 +142,9 @@ steps:
     label: '$\viz{k}$'
     title: k_proj
     text: |
-      key 由同一个 $\viz{x}$ 投影得到，但只有 $H_{kv}={{ num_kv_heads }}$ 个 head，宽 {{ num_kv_heads * d_head }}。几个 query head 共用一个 kv head，这种做法叫 GQA（grouped-query attention）。kv head 比 query head 少，所以推理时 k、v 的缓存缩小为 $H_{kv}/H$。
+      key 由同一个 $\viz{x}$ 投影得到，但只有 $H_{kv}={{ num_kv_heads }}$ 个 head，宽 {{ num_kv_heads * d_head }}，所以几个 query head 共用一个 kv head，这种做法叫 GQA（grouped-query attention）。它的好处是推理时 k、v 的缓存缩小为 $H_{kv}/H$。
 
-      HF 先算完 q 这一路（q_proj、view、q_norm、transpose），再算 k 这一路。两路互不依赖，先后顺序不影响结果。
+      HF 先算完 q 这一路（q_proj、view、q_norm、transpose），再算 k 这一路。两路互不依赖，所以先后顺序不影响结果。
       $$\viz{k}=\viz{x}{\viz{k_proj.weight}}^{\top}={{ k | matrix:2 }}$$
     backward:
       label: '$\partial\viz{k_proj.weight},\ \partial\viz{x}$'
@@ -156,13 +157,13 @@ steps:
     label: '$\viz{v}$'
     title: v_proj
     text: |
-      value 是被取回的内容，宽度和 k 相同。q、k 只用来算权重，v 才是加权求和的对象，所以 v 既不做 norm，也不做 RoPE。<code>value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)</code> 一行完成投影、分 head 和换轴。
+      value 是被取回的内容，宽度和 k 相同。q_norm、k_norm 和 RoPE 都作用在分数上，而 v 不参与打分，只是加权求和的对象，所以 v 既不做 norm，也不做 RoPE。<code>value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)</code> 一行完成投影、分 head 和换轴。
       $$\viz{v}=\viz{x}{\viz{v_proj.weight}}^{\top}={{ v | matrix:2 }}$$
     backward:
       label: '$\partial\viz{v_proj.weight},\ \partial\viz{x}$'
       title: '$\pfl{\viz{v_proj.weight}},\ \pfl{\viz{x}}$'
       text: |
-        $\viz{x}$ 用在三个投影里，它的梯度是三路之和。$x_{t,k}$ 影响三个投影的全部 ${{ num_heads * d_head }}+{{ num_kv_heads * d_head }}+{{ num_kv_heads * d_head }}$ 个输出分量：
+        $\viz{x}$ 用在三个投影里，$x_{t,k}$ 影响三个投影的全部 ${{ num_heads * d_head }}+{{ num_kv_heads * d_head }}+{{ num_kv_heads * d_head }}$ 个输出分量，所以它的梯度是三路之和：
         $$\pfl{\viz{x}}=\pfl{\viz{q}}W_q+\pfl{\viz{k}}W_k+\pfl{\viz{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: qk_norm
     show: [q_norm, k_norm]
@@ -177,7 +178,7 @@ steps:
       label: '$\viz{qn},\ \viz{kn}$'
       title: q_norm 和 k_norm
       text: |
-        每个位置、每个 head 各做一次 RMSNorm，Jacobian 是 $d_h\times d_h$ 的小块。
+        每个位置、每个 head 各做一次 RMSNorm，所以 Jacobian 是 $d_h\times d_h$ 的小块。
         $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
       backward:
         label: '$\partial\boldsymbol{\gamma},\ \partial\viz{q},\ \partial\viz{k}$'
@@ -194,7 +195,7 @@ steps:
 
               它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
               $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|\gamma_{q,c}|\,\max_c|\gamma_{k,c}|$$
-              后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，softmax 不会因为 q、k 变大而饱和。
+              后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
               $${\viz{q}}^{2}={{ q_norm.sq | matrix:2 }},\qquad {\viz{k}}^{2}={{ k_norm.sq | matrix:2 }}$$
             backward:
               title: '$\pfl{\viz{q}},\ \pfl{\viz{k}}$'
@@ -224,7 +225,7 @@ steps:
           scale:
             title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
             text: |
-              $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
+              $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，所以每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
               $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
             backward:
               title: '$\pfl{\viz{q_norm.weight}},\ \pfl{\viz{k_norm.weight}}$'
@@ -240,12 +241,12 @@ steps:
         $$\viz{qr}={{ qr | matrix:2 }}$$
       backward:
         text: |
-          旋转不改变模长，所以梯度的模长也不变，方向转回 $-t\,\omega_c$。
+          反向乘的是旋转矩阵的转置，它也是旋转，所以梯度的模长不变，方向转回 $-t\,\omega_c$。
           $$\pfl{\viz{qn}}={{ qn.grad | matrix:3 }},\qquad \pfl{\viz{kn}}={{ kn.grad | matrix:3 }}$$
     steps:
       cos:
         append: |
-          <code>cos, sin = position_embeddings</code> 是模型开头 rotary_emb 算好的表，每一层用同一组。q 有 {{ num_heads }} 个 head，k 有 {{ num_kv_heads }} 个，都乘同一张表。HF 的表带 batch 维，要先 <code>cos.unsqueeze(1)</code> 加一个 head 维才能和 q 广播。这一页没有 batch 维，所以表直接按广播相乘。
+          <code>cos, sin = position_embeddings</code> 是模型开头 rotary_emb 算好的表，每一层用同一组。q 有 {{ num_heads }} 个 head，k 有 {{ num_kv_heads }} 个，都乘同一张表。HF 的表带 batch 维，要先 <code>cos.unsqueeze(1)</code> 加一个 head 维才能和 q 广播。而这一页没有 batch 维，所以表直接按广播相乘。
           $$\cos={{ cos | matrix:3 }}$$
       sin:
         notes:
@@ -263,7 +264,7 @@ steps:
           $$S^{({{ num_heads - 1 }})}={{ eager_attention_forward.S[num_heads - 1] | matrix:2 }}$$
       Ssc:
         append: |
-          这一页 $1/\sqrt{d_h}={{ d_head ** -0.5 }}$。在 Qwen3 里 q、k 已经过 q_norm、k_norm，所以 $\boldsymbol{\gamma}$ 全为 1 时上面方差的假设近似成立。把 q_norm 那一步的上界除以 $\sqrt{d_h}$，缩放之后分数的绝对值不超过 $\sqrt{d_h}\,\max|\gamma_q|\,\max|\gamma_k|$。
+          这一页 $1/\sqrt{d_h}={{ d_head ** -0.5 }}$。在 Qwen3 里 q、k 已经过 q_norm、k_norm，所以 $\boldsymbol{\gamma}$ 全为 1 时上面方差的假设近似成立。进一步，把 q_norm 那一步的上界除以 $\sqrt{d_h}$，可知缩放之后分数的绝对值不超过 $\sqrt{d_h}\,\max|\gamma_q|\,\max|\gamma_k|$。
       mask:
         notes:
           - at: 'mask[0, 2]'
@@ -276,7 +277,7 @@ steps:
           - at: 'eager_attention_forward.P[0, 0, 0]'
             text: '位置 0 只能看到自己，$P_{0,0}=1$'
         append: |
-          位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3 的 <code>attention_dropout</code> 是 0。
+          位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3 的 <code>attention_dropout</code> 是 0，所以训练时省去 dropout 也不改变结果。
           $$P^{({{ num_heads - 1 }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
   - id: reshape
     show: o
@@ -287,7 +288,7 @@ steps:
       $${\viz{o}}_t=[\,\mathbf{o}^{(0)}_t\,|\,\cdots\,|\,\mathbf{o}^{({{ num_heads - 1 }})}_t\,],\qquad \viz{o}={{ o | matrix:2 }}$$
       上一步的 contiguous 已经让数据按这个顺序排好，所以 reshape 不再复制。局部导数是 1。
     backward:
-      title: 拆回各个 head
+      title: '$\pfl{\viz{attn_output}}$'
       text: 把梯度按列切回 {{ num_heads }} 个 head。
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }

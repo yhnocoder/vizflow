@@ -35,7 +35,7 @@ steps:
     text: |
       softmax 把一行 logits 变成概率 $p_i=e^{x_i}/\sum_je^{x_j}$。损失要用的是 $\log p_i$，直接写成
       $$\log p_i=x_i-\log\sum_je^{x_j}$$
-      先算 $p$ 再取 log 的话，$p_i$ 很小时会下溢为 0，log 后变成 $-\infty$，所以直接按这个式子算。kernel 还先减去每行最大值 $m$ 来避免 exp 溢出，$\log\sum_je^{x_j}=m+\log\sum_je^{x_j-m}$，结果和梯度都不变。
+      先算 $p$ 再取 log 的话，$p_i$ 很小时会下溢为 0，log 后变成 $-\infty$，所以直接按这个式子算。kernel 还先减去每行最大值 $m$ 来避免 exp 溢出，$\log\sum_je^{x_j}=m+\log\sum_je^{x_j-m}$，结果和梯度都不变。按这个式子，第一步对每个元素取 exp，供下一步求和。
       $$\viz{ex}={{ ex | matrix:3 }}$$
     backward:
       label: '$\partial\viz{x}$'
@@ -80,5 +80,5 @@ steps:
       label: '$\partial\viz{x},\ \partial\viz{LSE}$'
       title: '$\frac{\partial\ell}{\partial \viz{x}},\ \frac{\partial\ell}{\partial \viz{LSE}}$'
       text: |
-        $\viz{x}$ 的直连局部导数是 1；LSE 连到这一行的每个元素，局部导数是 $-1$，收到这一行梯度之和的相反数。
+        $\viz{x}$ 的直连局部导数是 1；LSE 连到这一行的每个元素，局部导数是 $-1$，所以收到这一行梯度之和的相反数。
         $$\frac{\partial\ell}{\partial \viz{LSE}}={{ LSE.grad | matrix:3 }}$$
