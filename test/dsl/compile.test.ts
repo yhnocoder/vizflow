@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { type CompiledPage, loadPage, parseYaml } from '../../src/dsl';
+import { evaluateValue } from '../../src/core';
 import { createSteps } from '../../src/steps';
+import { decodeExpr } from '../../src/ui/figure-spec';
 
 const BASE = 'mem:/pages/page.yaml';
 
@@ -147,7 +149,7 @@ describe('forward', () => {
     );
     expect(['s.h', 'y', 's#2.h', 'z'].map((n) => p.nodes.get(n)?.name)).toEqual(['s.h', 'y', 's#2.h', 'z']);
     expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['s.weight']);
-    expect(p.steps.modules.map((m) => m.id)).toEqual(['s', 's#2']);
+    expect(p.modules.map((m) => m.id)).toEqual(['s', 's#2']);
   });
 
   it('chains the first input through a module list and passes keywords to every layer', async () => {
@@ -181,7 +183,7 @@ steps:
     expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([4, 8, 12, 16, 20, 24]);
     expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['layers[0].weight', 'layers[1].weight', 'layers[2].weight']);
     expect(p.nodes.get('layers[1].out')!.tex).toBe('o^{[2]}');
-    expect(p.steps.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
+    expect(p.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
   });
 
   it('returns named results and rejects a name defined twice', async () => {
@@ -216,7 +218,7 @@ describe('steps', () => {
     const titles = p.steps.forward.map((s) => s.title);
     expect(titles).toEqual(['twice', 'multiply', 'l']);
     expect(p.steps.forward[0].text).toMatch(/^h = \\begin\{pmatrix\} \{\{s\.h\[0, 0\]:1\}\} .*\\end\{pmatrix\}\nmore$/);
-    expect(p.steps.modules[0].title).toBe('outer');
+    expect(p.modules[0].title).toBe('outer');
     await expect(
       page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n  steps:\n    nope: { text: x }\n- id: l' }), { [SCALE_FILE]: SCALE }),
     ).rejects.toThrow(/there is no step 'nope'; the steps here are double, mul/);
@@ -224,7 +226,7 @@ describe('steps', () => {
 
   it('marks the formula of a module call with the steps it names', async () => {
     const p = await page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n- id: l' }), { [SCALE_FILE]: SCALE });
-    expect(p.steps.modules[0].formula).toBe('\\htmlData{vf-step=s0}{\\mathbf{y}=w\\odot}\\htmlData{vf-step=s1}{2\\mathbf{x}}');
+    expect(p.modules[0].formula).toBe('\\htmlData{vf-step=s0}{\\mathbf{y}=w\\odot}\\htmlData{vf-step=s1}{2\\mathbf{x}}');
     expect(p.steps.forward.map((s) => s.marks)).toEqual([['s1'], ['s0'], undefined]);
   });
 
@@ -244,6 +246,25 @@ describe('templates and tex', () => {
     expect((await yaml('d={{ d }}, {{ y[0] | join: ", " }}')).steps.forward[0].text).toBe('d=2, {{y[0, 0]}}, {{y[0, 1]}}');
     expect((await yaml('$$\\viz{y}={{ y[:1] | matrix:2 }}$$')).steps.forward[0].text).toBe('$$\\mathbf{y}=\\begin{pmatrix} {{y[0, 0]:2}} & {{y[0, 1]:2}} \\end{pmatrix}$$');
     await expect(yaml('{{ y }}')).rejects.toThrow(/is not a single number; add a format/);
+  });
+
+  it('computes figure data from a template expression outside the graph', async () => {
+    const yaml = (text: string) => page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: '${text}'\n- id: l` }));
+    const p = await yaml('{{ cos(arange(5)[:, None] * y[0]) | lines:shade=T }}');
+    const tag = /^<vf-figure name="lines" expr="([^"]+)" args="shade=3"><\/vf-figure>$/.exec(p.steps.forward[0].text ?? '');
+    expect(tag).not.toBeNull();
+    const value = evaluateValue(decodeExpr(tag![1]), (name) => p.nodes.get(name)!.value);
+    expect(value.shape).toEqual([5, 2]);
+    expect(value.get([4, 1])).toBeCloseTo(Math.cos(16), 12);
+    expect(p.graph.nodes.map((n) => n.name)).toEqual(['x', 'y', 'l']);
+    await expect(yaml('{{ y | lines:shade=T + 1 }}')).rejects.toThrow("lines shade must be an integer from 0 to 3, got 4 in '{{ y | lines:shade=T + 1 }}'");
+    await expect(yaml('{{ y[0] | lines }}')).rejects.toThrow('lines needs a (N, K) tensor with at least 2 rows, got shape (2)');
+    await expect(yaml('{{ tan(y) | lines }}')).rejects.toThrow("unknown function 'tan'");
+  });
+
+  it('evaluates buffer values with ops and broadcasting', async () => {
+    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
+    expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
   });
 
   it('expands preamble macros and takes tex of a child result from the outer module', async () => {

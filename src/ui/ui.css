@@ -254,8 +254,8 @@
 .vf-ropekv .katex,
 .vf-rope-svg .katex,
 .vf-cap .katex,
-.vf-wave .katex,
-.vf-wave-note .katex,
+.vf-lines .katex,
+.vf-lines-legend .katex,
 .vf-rope-curve .katex {
   font-size: 1em;
 }
@@ -880,17 +880,26 @@ vf-figure {
   display: block;
 }
 
-.vf-wave {
+.vf-lines {
   width: 100%;
   max-width: 420px;
   display: block;
   margin: 6px 0 2px;
 }
 
-.vf-wave-note {
+.vf-lines-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   font-size: 11.5px;
   color: var(--muted);
   margin-bottom: 6px;
+}
+
+.vf-lines-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .vf-fo {

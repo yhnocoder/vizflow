@@ -17,327 +17,260 @@
 <body>
 <main>
 <p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
-<h1>vizflow 页面描述文件 <span class="tag">第一版</span></h1>
-<p class="lead">由标准模块组成的页面（例如一层 Transformer）可以不写 JavaScript，只写一份 YAML 页面描述文件。<code>dsl</code> 入口把它编译成计算图、步骤、面板、讲解段落、模块记录和一棵布局树，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 再把这些交给已有的挂载流程。页面描述文件只是 JavaScript 接口之上的一层：编译结果就是普通的 <code>Graph</code>、<code>StepsSpec</code> 与 <code>PanelItem[]</code>，遇到描述文件写不出的需求时，页面改用 JavaScript 接口。JavaScript 调用方也可以直接把同样结构的对象传给 <code>compilePage</code>，YAML 只是这份结构的一种写法。</p>
-<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code> 与它引用的 <code>examples/qwen3/attention.yaml</code>。它和 JavaScript 写的 <code>examples/qwen3-structure.html</code> 是同一页，测试比较两页的损失和每个权重的梯度。</p>
+<h1>vizflow 页面描述文件 <span class="tag">第二版</span></h1>
+<p class="lead">由标准模块组成的页面（例如几层 Transformer）可以不写 JavaScript，只写 YAML 页面描述文件。描述文件的结构对应 PyTorch 的写法：<mark>一个模块对应一个真实的类</mark>，<code>init</code> 对应 <code>__init__</code>，<code>forward</code> 对应 <code>forward</code>，参数路径与 <code>state_dict</code> 的键相同。<code>dsl</code> 入口把文件编译成计算图、步骤、面板、讲解段落和模块记录，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 再把这些交给已有的挂载流程。编译结果就是普通的 <code>Graph</code>、<code>StepsSpec</code> 与 <code>PanelItem[]</code>，描述文件写不出的需求仍然用 JavaScript 接口。</p>
+<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code> 与它引用的 <code>decoder.yaml</code>、<code>attention.yaml</code>、<code>rope.md</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度；fixture 由 <code>uv run scripts/gen_qwen3_fixture.py</code> 生成。其他模型页面还使用第一版的写法，迁移之前不能编译。</p>
 
-<h2>文件里写什么</h2>
-<p>文件分两种。页面文件描述一整页，模块文件描述一个可以复用的模块，例如 RMSNorm。页面本身是根模块，body、steps、backward 的规则与模块相同。</p>
-<pre><code class="language-yaml">module: RMSNorm
-subtitle: RMSNorm
-params:
-  eps:  { type: float, default: 1e-6 }
-  name: { type: text, default_key: true }
-inputs:
-  x: { shape: [..., n] }
-outputs: [out]
-weights:
-  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
-fold:
-  label: '$\of{out}$'
-  title: \of{name}（已折叠）
-  backward:
-    title: 穿过 \of{name}（已折叠）
-body:
-  - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
-  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
-  - r:  { op: rsqrt(mse), tex: r }
-  - xh: { op: x * r, tex: '\hat{\of{x}}' }
-  - out: { op: xh * weight, dtype: x }
-steps:
-  - id: rms
-    show: r
-    label: '$\of{r}$'
-    title: 平方根的倒数
-    text: |
-      取平方根的倒数，对应一次 <code>torch.rsqrt</code>。
-      $$\of{r} = {{ r | matrix:3 }}$$
-    backward:
-      label: '$\partial\of{mse}$'
-      title: 穿过 rsqrt</code></pre>
+<blockquote>
+  <p>每个 <code>forward</code> 结果都要被某一步讲解展示，否则编译报错。图上的每个节点因此都对应讲解里的一步，内置模块的每一步对应 HF 实现里的一行代码。</p>
+</blockquote>
+
+<h2>文件里有什么</h2>
+<p>文件分两种。页面文件描述一整页，用 <code>model</code> 指定根模块；模块文件描述一个可以复用的模块，用 <code>module</code> 给出模块名。页面只在 <code>modules</code> 里用到的模块也可以直接写在页面文件里。</p>
 <table>
-  <thead>
-    <tr><th>字段</th><th>出现在</th><th>内容</th></tr>
-  </thead>
+  <thead><tr><th>页面文件的键</th><th>作用</th></tr></thead>
   <tbody>
-    <tr><td><code>module</code></td><td>模块</td><td>模块名</td></tr>
-    <tr><td><code>title</code>、<code>lede</code>、<code>hint</code>、<code>camera</code></td><td>页面</td><td>页面标题、导语、场景提示和相机选项。元素把标题和导语画在场景上方，<code>hint</code> 与 <code>camera</code> 原样传给 <code>mountScene</code>。</td></tr>
-    <tr><td><code>import</code></td><td>两种</td><td>本文件用到的模块，<code>{ 名字: 引用 }</code></td></tr>
-    <tr><td><code>modules</code></td><td>页面</td><td>只在本页使用的模块，<code>{ 名字: 模块内容 }</code>，内容与模块文件相同，不写 <code>module</code></td></tr>
-    <tr><td><code>subtitle</code></td><td>两种</td><td>大括号上的副标题</td></tr>
-    <tr><td><code>formula</code></td><td>模块</td><td>模块的公式，用 <code>\step{id}{...}</code> 标出各部分由哪一步算出，见「模块公式」</td></tr>
-    <tr><td><code>params</code></td><td>两种</td><td>参数声明，<code>{ 名字: { type, default?, default_key?, values? } }</code></td></tr>
-    <tr><td><code>dims</code>、<code>real</code></td><td>页面</td><td>根作用域的维度和传给 <code>graph({ real })</code> 的真实尺寸</td></tr>
-    <tr><td><code>dtype</code></td><td>页面</td><td>传给 <code>graph({ dtype })</code> 的默认 dtype，例如 <code>bf16</code>，不写时是 <code>fp32</code></td></tr>
-    <tr><td><code>vocab</code></td><td>页面</td><td>token 名，传给 <code>graph({ vocab })</code></td></tr>
-    <tr><td><code>inputs</code></td><td>两种</td><td>模块：<code>{ 名字: { shape, tex? } }</code>，shape 是匹配模式，可以含一个 <code>...</code>。页面：<code>{ 名字: { tokens: [...] } }</code> 建 label 节点，<code>{ 名字: { value: 数组, dtype? } }</code> 建 input 节点</td></tr>
-    <tr><td><code>outputs</code></td><td>模块</td><td>输出节点的名字列表；一项也可以写成 <code>{ name, when }</code>，<code>when</code> 为 <code>false</code> 时这个输出不建，见下面的「按参数取舍」</td></tr>
-    <tr><td><code>weights</code></td><td>两种</td><td><code>{ 名字: { shape, init?, tex?, dtype? } }</code>，建 param 节点</td></tr>
-    <tr><td><code>buffers</code></td><td>两种</td><td><code>{ 名字: { value, shape?, tex?, dtype? } }</code>，<code>value</code> 是只由参数和维度算出的表达式，建 buffer 节点；<code>shape</code> 把数值按这个形状重排，元素个数必须相同，否则报错 <code>buffer 'x' has N values, which do not fit the shape (...)</code></td></tr>
-    <tr><td><code>body</code></td><td>两种</td><td>节点、子模块实例、group 与 for 的列表，按顺序建图</td></tr>
-    <tr><td><code>steps</code></td><td>两种</td><td>本模块的前向步骤：<code>id</code>、<code>show</code>、<code>active?</code>、<code>label?</code>、<code>title?</code>、<code>text?</code>、<code>segment?</code>、<code>backward?</code>、<code>notes?</code>、<code>when?</code>。<code>backward: { label?, title?, text? }</code> 是这一步对应的反向步骤的默认文字，<code>segment</code> 覆盖步骤条上的分段名，<code>notes</code> 见「步骤上的注释」，<code>when</code> 见下面的「按参数取舍」</td></tr>
-    <tr><td><code>backward</code></td><td>两种</td><td>按节点名给对应反向步骤的 <code>title</code>、<code>label</code>、<code>text</code></td></tr>
-    <tr><td><code>fold</code></td><td>模块</td><td>模块折叠后那一步的默认文字 <code>{ label?, title?, text?, backward?: { label?, title?, text? } }</code>，实例的 <code>fold</code> 逐个字段覆盖它</td></tr>
-    <tr><td><code>overview</code></td><td>页面</td><td>总览步骤的 <code>title</code>、<code>text</code>、<code>label</code>、<code>notes</code>；<code>backward: { label?, title?, text? }</code> 在反向的最后加一个反向总览步骤</td></tr>
-    <tr><td><code>leaves</code></td><td>页面</td><td><code>{ title, label?, text? }</code>，在总览之后加一个输入步骤，显示全部叶子（input、label、权重、权重的转置和 buffer），缺 <code>title</code> 时报错 <code>leaves needs a title</code>，见「步骤怎么排」</td></tr>
-    <tr><td><code>sequence</code></td><td>页面</td><td><code>{ tokens, input, label }</code>，用一条 token 序列同时建输入和右移一位的标签，见「序列输入」</td></tr>
-    <tr><td><code>init</code>、<code>values</code></td><td>页面</td><td>权重初值的随机种子 <code>{ seed }</code>，以及按路径给定的固定数值</td></tr>
-    <tr><td><code>panels</code></td><td>页面</td><td>面板列表，见「面板与大括号」</td></tr>
-    <tr><td><code>sections</code></td><td>页面</td><td>场景下方的讲解段落，见「讲解段落」</td></tr>
-    <tr><td><code>layout</code></td><td>页面</td><td>原样放进编译结果的 <code>layout</code>，目前没有模块读取它</td></tr>
+    <tr><td><code>title</code></td><td>页面标题，元素把它画在场景上方。</td></tr>
+    <tr><td><code>camera</code></td><td>相机选项，原样传给 <code>mountScene</code>。</td></tr>
+    <tr><td><code>import</code></td><td>模块名到模块文件的映射。<code>vizflow/nn/名字</code> 是包内的模块，<code>./x.yaml</code> 相对于当前文件。</td></tr>
+    <tr><td><code>preamble</code></td><td>一个只写 <code>\newcommand</code> 的文件，定义模板和 LaTeX 里可用的宏。</td></tr>
+    <tr><td><code>model</code></td><td>根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。</td></tr>
+    <tr><td><code>config</code></td><td>本页的配置值。根模块的 <code>args</code> 按同名从这里取值；<code>seed</code>、<code>tokenizer</code>、<code>real</code> 只属于页面。</td></tr>
+    <tr><td><code>data</code></td><td>根模块的输入值，按名字对应根模块的 <code>inputs</code>。</td></tr>
+    <tr><td><code>modules</code></td><td>只在本页使用的模块，键是模块名。</td></tr>
+    <tr><td><code>panels</code></td><td>页面右侧的面板，见「面板」。</td></tr>
+    <tr><td><code>sections</code></td><td>场景下方的讲解段落，见「讲解段落」。</td></tr>
   </tbody>
 </table>
-<p>body 的每一项是只有一个键的映射，或者一个 for：</p>
+<table>
+  <thead><tr><th>模块的键</th><th>作用</th></tr></thead>
+  <tbody>
+    <tr><td><code>module</code></td><td>模块名，只在模块文件里写。</td></tr>
+    <tr><td><code>import</code></td><td>这个模块用到的其他模块。内置的 <code>Linear</code>、<code>Embedding</code> 不需要导入。</td></tr>
+    <tr><td><code>args</code></td><td>构造参数，对应 <code>__init__</code> 的参数。</td></tr>
+    <tr><td><code>inputs</code>、<code>outputs</code></td><td>接口，键是名字，值是 <code>{ type, shape, dtype }</code>。</td></tr>
+    <tr><td><code>init</code></td><td>子模块、<code>weights</code> 和 <code>buffers</code>。</td></tr>
+    <tr><td><code>forward</code></td><td>计算，一个 <code>名字: 表达式</code> 的列表。</td></tr>
+    <tr><td><code>tex</code></td><td>数学名称，键是名字或相对路径。</td></tr>
+    <tr><td><code>formula</code></td><td>模块整体的公式，用 <code>\step{}{}</code> 关联步骤。</td></tr>
+    <tr><td><code>fold</code></td><td>模块折叠成一步时的讲解。</td></tr>
+    <tr><td><code>steps</code></td><td>讲解步骤，按顺序排列。</td></tr>
+    <tr><td><code>unshown</code></td><td>不需要单独展示的 <code>forward</code> 结果。</td></tr>
+  </tbody>
+</table>
+<p>模块只能读取自己声明的参数、输入，以及 <code>init</code> 和 <code>forward</code> 定义的名字。要用外面的值，通过 <code>args</code> 或输入传进来。同一作用域里一个名字只能定义一次。</p>
+
+<h2>字符串写在哪里、怎么读</h2>
+<p>字符串按所在的位置分三类。这样同一个名字在表达式里直接是引用，在模板里只有包在 <code>\viz{}</code> 或 <code>{{ }}</code> 里才是引用，不会和正文文字混淆。</p>
+<table>
+  <thead><tr><th>类别</th><th>位置</th><th>读法</th></tr></thead>
+  <tbody>
+    <tr><td>表达式</td><td><code>args</code> 的取值、<code>count</code>、<code>shape</code>、<code>dtype</code>、<code>forward</code>、<code>show</code>、<code>notes.at</code>、面板和讲解段落里的张量引用</td><td>按 Python 的表达式读，名字就是引用。</td></tr>
+    <tr><td>模板</td><td><code>label</code>、<code>title</code>、<code>subtitle</code>、<code>text</code>、<code>append</code>、<code>brace</code>、<code>note</code>、<code>hint</code></td><td>普通文字；<code>$...$</code> 与 <code>$$...$$</code> 是 LaTeX，<code>{{ }}</code> 插入表达式的值。</td></tr>
+    <tr><td>LaTeX</td><td><code>tex</code> 的值、<code>formula</code></td><td>整个值就是 LaTeX，不加 <code>$</code>。</td></tr>
+  </tbody>
+</table>
+<p>表达式支持 <code>+ - * / // ** @</code>、一元负号、函数调用和关键字参数、方法调用、成员访问、下标与切片、列表、字符串字面量和 <code>True</code>、<code>False</code>。下标从 0 开始，可以是负数，和 Python 一致。dtype 名（<code>bf16</code>、<code>fp32</code> 等）和导入的模块名是表达式里可用的名字。含 <code>[</code>、<code>:</code> 等字符的表达式在 YAML 里加引号。</p>
+
+<h2>模块的参数与输入</h2>
+<h3>args</h3>
+<p><code>args</code> 声明构造参数，类型是 <code>dim</code>（正整数）、<code>int</code>、<code>float</code>、<code>bool</code>、<code>dtype</code> 或 <code>module</code>。没有额外选项时写成 <code>d_head: dim</code>，有默认值时写成 <code>{ type: float, default: 1e-6 }</code>。默认值是表达式，可以引用前面的参数。</p>
+<p>使用处的 <code>args</code> 可以写成字典或列表。列表里的裸名字表示用调用者同名的值传入，单键字典表示指定值。名字不是被调模块的参数、参数没给也没有默认值、同一个参数给了两次，都在编译时报错。</p>
+<pre><code class="language-yaml">init:
+  self_attn:
+    use: Qwen3Attention
+    args: [d_model, d_head, num_heads, num_kv_heads]
+  mlp:
+    use: GLU
+    args: [d_model, d_ff, { act: SiLU }]</code></pre>
+
+<h3>inputs、outputs 与形状绑定</h3>
+<p>输入输出写成 <code>{ type: tensor, shape, dtype }</code>，页面根模块的 token 列表写成 <code>{ type: list, dtype: str }</code>。<code>shape</code> 和 <code>dtype</code> 里不是参数的名字在调用时从实际输入绑定，已经绑定或声明过的名字只做检查；<code>outputs</code> 里的名字必须已经绑定，用来检查结果。<code>'...'</code> 可以在 shape 里出现一次，对上任意个维度，例如 RMSNorm 的 <code>['...', hidden_size]</code> 只要求最后一维。</p>
 <ul>
-  <li><code>name: expr</code> 建一个节点，等价于 <code>name: { op: expr }</code>；<code>{ op, tex, dtype, when }</code> 同时给出 tex 和 dtype。<code>dtype</code> 写 dtype 名（<code>fp32</code>），或者写一个张量的名字，表示取那个张量的 dtype，对应 torch 里的 <code>.to(x.dtype)</code>。示例里 RMSNorm 把平方写成 <code>fp32</code>，之后的 ms、$r$、$\hat{x}$ 按类型提升都是 fp32，输出写 <code>dtype: x</code> 转回输入的 dtype，所以输入是 bf16 或 fp32 时模块都不用改。名字既不是 dtype、也不是张量时报错。</li>
-  <li><code>name: { use, params?, inputs, outputs?, weights?, suffix?, tex?, steps?, beside?, inline?, brace?, formula?, when?, title?, subtitle?, fixed?, folded?, split?, fold?, repeat? }</code> 是子模块实例。<code>inputs</code> 必须恰好给出模块的每个输入，值是表达式；声明里 <code>when</code> 为 <code>false</code> 的输入不用给，给了也不读取；<code>outputs</code> 把模块的输出绑定到父作用域的名字，可以只绑定一部分，对 <code>when</code> 为 <code>false</code> 的输出的绑定直接跳过；<code>weights</code> 把模块的权重绑定到父作用域已有的权重；<code>tex</code> 按模块内的名字覆盖 tex，名字可以是节点、权重或 buffer；覆盖的 tex 不含 <code>\of{}</code> 时，加上外层实例的下标，规则见「tex」；<code>steps</code> 是步骤补丁。其余字段决定这个实例作为一个模块怎么显示和折叠，见下面的「模块记录」。</li>
-  <li><code>name: { body, steps?, beside?, formula?, when?, title?, subtitle?, fixed?, folded?, split?, fold?, repeat? }</code> 是 group，即匿名的内联模块。它的名字直接属于外层作用域，用来画大括号、把步骤分组和整体折叠。</li>
-  <li><code>{ for: h, in: '1..H', name?, brace?, beside?, sequential?, when?, body }</code> 把 body 按 <code>h</code> 从 1 到 H 展开。<code>name</code> 只给 <code>beside</code> 引用，和 body 里的名字一样必须唯一，在嵌套的 for 里要带外层的循环下标。<code>sequential</code>（默认 <code>false</code>）为 <code>true</code> 时，各次迭代按顺序往上叠在主列上，每次迭代的步骤单独成步，用于后一次迭代依赖前一次结果的递推，例如 gated delta rule 按位置更新的状态 $S_t$；默认的迭代互相独立，并排画出、步骤合并，例如 GQA 的各个 head。</li>
+  <li>序列长度 <code>T</code> 是数据的维度，不作为参数传入，同一个实例可以用不同的 <code>T</code> 调用。</li>
+  <li><code>init</code> 只能使用 <code>args</code> 中的名字。这和 HF 的 <code>__init__</code> 一致：建参数需要的维度都由调用者传入。</li>
+  <li>依赖输入形状的常量在 <code>forward</code> 里计算，例如 <code>M: causal_mask(T)</code>，不写成 buffer。</li>
 </ul>
-<p><b>按参数取舍。</b>节点、实例、group、for、模块的步骤和步骤补丁都可以写 <code>when: 表达式</code>。表达式在这一项所在的作用域里求值，结果必须是 <code>true</code> 或 <code>false</code>，否则报错 <code>when must be true or false</code>。为 <code>false</code> 的项整个不建：不建节点、不定义名字、不占布局，也不计入同一模块实例的个数（实例下标照常从 1 数起）；为 <code>false</code> 的步骤不生成，为 <code>false</code> 的补丁不检查它的步骤是否存在。步骤补丁的 <code>when</code> 在写补丁的作用域里求值，也就是使用处。几步可以用同一个 id，只要同时为 <code>true</code> 的不超过一个。和条件表达式 <code>a if c else b</code> 合用时，一个模块可以带一段可选的计算而不复制整个文件：MLA 用 <code>sparse</code> 参数决定是否建 indexer 实例，注意力的 mask 写成 <code>M_sparse if sparse else M</code>。模块声明里的 <code>inputs</code>、<code>weights</code>、<code>buffers</code> 的每一项也可以写 <code>when</code>，在参数之后求值：为 <code>false</code> 的输入不要求使用处给出，权重和 buffer 不建，这样的权重写在 <code>weights:</code> 绑定里时报错 <code>weight 'x' of M is switched off by its when, so it cannot be shared</code>。例如 GQA 的输入 <code>sinks</code> 写 <code>when: sink</code>。<code>outputs</code> 的一项写成 <code>{ name, when }</code> 时，为 <code>false</code> 的输出不建，也不要求 body 定义它，使用处对它的绑定直接跳过，和不用给的输入对称；这样一个实例对各种参数写同一套 <code>outputs</code> 绑定，例如 CSA2Attention 只在 <code>kv_source</code> 时输出压缩 KV <code>C</code>。实例和 group 的 <code>folded</code>、<code>fixed</code>、<code>split</code> 除了 <code>true</code>、<code>false</code>，也可以写成在所在作用域里求值的表达式，例如 <code>folded: not detail</code>，结果不是布尔值时报错 <code>folded must be true or false</code>。模块 <code>formula</code> 里 <code>\step{ids}{...}</code> 的 ids 全部是被 <code>when</code> 去掉的步骤、而且没有同名的步骤留下时，这一段整段从公式里去掉，所以一个公式可以同时写出两种写法里各自的部分；ids 只有一部分被去掉时，这一段保留，只标记留下的步骤。<code>\step{inst.*}</code> 指向的实例被 <code>when</code> 去掉、又没有同名实例留下时，同样整段去掉。名字先在节点和实例里查找，再查参数，所以 <code>when</code> 里用到的参数不要和本模块的实例同名，否则报错 <code>'x' is a module instance, not a value</code>。</p>
-<pre><code class="language-yaml">params:
-  sparse: { type: bool, default: false }
-  kI:     { type: dim }
-body:
-  - indexer:
-      use: LightningIndexer
-      when: sparse
-      params: { kI: kI }
-      inputs: { mask: M }
-      outputs: { idx: topk_idx }
-  - index_mask: { op: 'scatter(ones, -1, topk_idx, 0)', dtype: bool, when: sparse }
-  - M_sparse: { op: 'masked_fill(M, index_mask, -inf)', when: sparse }
-  - eager_attention_forward:
-      use: GQA
-      inputs: { mask: M_sparse if sparse else M }
-      steps:
-        mask: { when: sparse, title: 稀疏的 mask }</code></pre>
-<p>默认值让不写这些参数的实例保持原样，所以已有的页面不用改。可选部分才用到的参数可以不写默认值，见「作用域、维度与参数」。</p>
-<p><b>模块记录。</b>每个不是 inline 的实例、每个 group 和写了 <code>brace</code> 的 for 迭代对应一个模块记录，编译结果的 <code>modules</code> 列出其中含运算节点的那些（<code>PageModule</code>，见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」）。记录的字段来自使用处：</p>
+
+<h3>dtype</h3>
+<p>参数的 dtype 由页面 <code>config.dtype</code> 统一设定，相当于 <code>model.to(torch.bfloat16)</code>；不写时是 <code>fp32</code>。模块的 <code>args</code> 不声明参数 dtype，<code>init</code> 也不读它。输入的 <code>dtype</code> 从实际输入绑定，用来检查输出。运算的结果按 torch 的类型提升推导，matmul 两侧的 dtype 必须相同，否则编译报错 <code>expected inputs of the same dtype</code>；有意的转换在 <code>forward</code> 里写出来，例如 <code>z.float()</code>、<code>xh.to(x.dtype)</code>。这样页面上的每个类型转换都是 HF 代码里的一次转换。</p>
+
+<h2>init：子模块、权重与 buffer</h2>
+<pre><code class="language-yaml">init:
+  q_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: false }
+  layers:
+    use: list[Qwen3DecoderLayer]
+    count: num_layers
+    args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+  log_softmax: LogSoftmax
+  weights:
+    weight: { shape: [hidden_size], init: ones }
+  buffers:
+    inv_freq:
+      type: tensor
+      shape: [d_head // 2]
+      dtype: fp32
+      value: 1.0 / rope_theta ** (arange(0, d_head, 2).float() / d_head)</code></pre>
 <ul>
-  <li><code>title</code> 覆盖大括号的标题，默认是实例名或 group 名（for 里去掉循环下标），可以写 <code>\of{...}</code> 和行内公式。<code>subtitle</code> 默认取模块文件的 <code>subtitle</code>。</li>
-  <li><code>folded: true</code> 让模块一开始就是折叠的，读者可以展开。<code>fixed: true</code> 表示占位模块：它总是折叠，不能展开，盒子里的计算只用来示意（例如 Qwen3 页的「第 1 到 $N-1$ 层」用 <code>identity</code> 代替）。</li>
-  <li><code>repeat: [{ like, count }]</code> 写在占位模块上，告诉显存与计算量面板：真实模型在这里有 <code>count</code> 层与 <code>like</code> 结构相同的层。<code>like</code> 是同一作用域里另一个模块实例的名字，<code>count</code> 是正整数。面板在真实尺寸下按 <code>like</code> 推算这些层的参数、保存的激活、参数梯度和 FLOP，并标明是推算的，规则见 vizflow 设计的「显存与计算量」。例如 Qwen3-8B 有 36 层，占位盒子写 <code>repeat: [{ like: layer, count: 35 }]</code>；Qwen3.5-27B 的占位盒子含 47 个 linear_attention 层和 15 个 full_attention 层，写两项。<code>like</code> 找不到有运算的模块时报错 <code>repeat: 'x' is not a module instance with operations on this page</code>；格式错误报 <code>repeat must be a list of { like, count }</code>、<code>like must name a module instance</code>、<code>count must be a positive integer</code>。</li>
-  <li><code>split: true</code> 让子模块各自成为步骤条上的一段，例如 decoder 层的 input_layernorm、self_attn、MLP 各占一段；不写时整个模块是一段，子模块是段里的小标题。</li>
-  <li><code>fold</code> 是折叠后那一步的文字，字段与模块文件顶层的 <code>fold</code> 相同，逐个字段覆盖模块文件给的默认值。</li>
-  <li><code>inline: true</code> 的实例不建模块记录，也不生成子布局树：节点和步骤直接算作外层模块的，路径仍然带实例名。它不能写 <code>title</code>、<code>subtitle</code>、<code>fixed</code>、<code>folded</code>、<code>split</code>、<code>fold</code>，写了报错 <code>an inline instance has no box of its own, so it cannot have 'x'</code>。Qwen3 注意力里的 q_norm、k_norm 和 eager_attention_forward 用 inline，因为 HF 里它们不是单独的一次模块调用。</li>
+  <li>子模块写 <code>{ use, args }</code>，没有参数时可以只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建参数独立的层列表，第 $i$ 层的路径是 <code>layers[i]</code>。</li>
+  <li><code>weights</code> 的 <code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>，默认 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数，随机数的种子是页面的 <code>config.seed</code>，默认 0。</li>
+  <li><code>buffers</code> 的 <code>value</code> 是在编译时求值的表达式，可以用数、参数、<code>arange</code>、库里的运算、四则运算与广播、下标和类型转换，不能读张量；结果的形状必须等于声明的 <code>shape</code>。它和插值里小图的表达式用同一个求值函数 <code>evaluateValue</code>。</li>
+  <li>内置的 <code>Linear</code> 和 <code>Embedding</code> 使用 PyTorch 的参数名：<code>Linear</code> 是 <code>in_features</code>、<code>out_features</code>、<code>bias</code>（默认 <code>true</code>），<code>Embedding</code> 是 <code>num_embeddings</code>、<code>embedding_dim</code>；两者的参数都叫 <code>weight</code>，形状与 PyTorch 相同。带 bias 的 Linear 还没有实现，写 <code>bias: true</code> 时编译报错。</li>
 </ul>
-<p><b>并排。</b>实例、group 和 for 可以写 <code>beside: 名字</code>，表示这一项在场景里画在前一项的旁边，从同一层开始。名字是紧挨着的前一项的名字（实例名、group 名或 for 的 <code>name</code>），或者是已经 beside 前一项的某一项的名字，这样几项连成一组，例如 c beside b、b beside a 是三条竖道。一组里的项在编译结果的布局树里合成一个 <code>parallel</code>，每项一个分支，按书写顺序从左到右排列；主列从各分支最高的一层再往上一层继续。没有写 <code>beside</code> 的项按原来的规则排在主列上。</p>
-<p>并排的几项是同一个模块的实例时，步骤也合并：各实例 id 相同的步骤合成一步，<code>show</code> 和 <code>active</code> 取并集，标题和正文用第一个实例的（模块默认值或这个实例的补丁），按钮文字和反向按钮文字把各实例不同的写法连起来，两边都是一整个行内公式时合成一个公式 <code>$a,\ b$</code>，否则用 <code>, </code> 连接。其余情况下 <code>beside</code> 只影响布局，步骤不变。合并让「q 和 k 各做一次 RMSNorm」只占四步，读者在同一步里看到两边的对应关系。</p>
-<pre><code class="language-yaml">- q: 'view(x @ Wq.T, T, H, dh)'
-- k: 'view(x @ Wk.T, T, Hkv, dh)'
-- qk_norm:
-    title: q_norm $\cdot$ k_norm
-    body:
-      - q_norm: { use: RMSNorm, inline: true, suffix: q, inputs: { x: q }, outputs: { out: qn } }
-      - k_norm: { use: RMSNorm, inline: true, suffix: k, beside: q_norm, inputs: { x: k }, outputs: { out: kn } }
-- apply_rotary_pos_emb:
-    use: RoPE
-    inputs: { q: qn, k: kn }
-    outputs: { q_embed: qr, k_embed: kr }</code></pre>
-<p>这里 q_norm 和 k_norm 是两条竖道，从同一层开始，整组由 group qk_norm 画一个大括号；均方根那一步的按钮文字是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。RoPE 从两条竖道的上方开始。一个 body 里实例的步骤补丁在这个 body 全部建完之后才编译，所以 q_norm 的补丁可以引用后面 k_norm 的节点，例如在合并后的那一步里同时写出 $r^{q}$ 和 $r^{k}$。以下情况报错，错误信息指向 <code>beside</code> 所在的行：</p>
+<p>参数的路径沿 <code>init</code> 树拼接，与 PyTorch <code>state_dict</code> 的键一致，例如 <code>layers[0].self_attn.q_proj.weight</code>、<code>lm_head.weight</code>。graph 上参数的节点名就是这个路径，测试据此把 transformers 的参数写进页面。</p>
+
+<h2>forward：计算</h2>
+<pre><code class="language-yaml">forward:
+  - q_linear: q_proj(x)
+  - q: q_linear.view(T, num_heads, d_head)
+  - qt: q_norm(q).transpose(0, 1)
+  - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
+  - qr: rotated.q_embed
+  - M: causal_mask(T)
+  - h_last: layers(e, mask=M, cos=cos, sin=sin)
+  - zf: z.float()</code></pre>
 <ul>
-  <li>名字不是紧挨着的前一项，也不是与前一项并排的项，例如中间隔了一个节点。错误信息区分「这个名字前面没有」和「这个名字不是前一项」。</li>
-  <li>写在单个节点 <code>name: expr</code> 上。并排的单位是实例、group 和 for。</li>
-  <li>这一项用到了同一组里前面某一项算出的值。并排的项从同一层开始，用到别的竖道的结果的项必须画在那条竖道上方，所以要写在这一组之后。权重、buffer 和只由它们算出的节点（例如权重的转置）不算。</li>
+  <li>每一项只有一个结果名。表达式里的函数和方法是 autograd 的运算，例如 <code>x @ weight.T</code>、<code>x ** 2</code>、<code>rsqrt(mse)</code>、<code>sq.mean(-1, keepdim=True)</code>、<code>cat([nq2, q1], dim=-1)</code>、<code>repeat_kv(k, n_rep)</code>、<code>q[..., : d_head // 2]</code>。类型转换写成 <code>x.float()</code>、<code>x.double()</code>、<code>x.half()</code>、<code>x.bfloat16()</code> 或 <code>x.to(dtype)</code>。</li>
+  <li><code>arange(n)</code> 建一个 int64 的常量，<code>causal_mask(T)</code> 建一个 $T\times T$ 的常量，$s&gt;t$ 的格子是 $-\infty$，其余是 0，dtype 是页面的 dtype。</li>
+  <li>调用子模块写 <code>实例(位置参数, 名字=值)</code>。单输出的模块返回张量；多输出的模块返回具名结果，用 <code>result.名字</code> 取出。</li>
+  <li>同一个实例可以调用多次，各次共用参数，每次调用的中间结果独立：第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。</li>
+  <li>调用层列表时依次执行各层，第一个位置参数逐层串联，其余关键字参数原样传给每一层，返回最后一层的输出。</li>
+  <li>子模块调用是赋值的整个表达式时，模块的输出用调用处的名字命名：<code>n1: input_layernorm(x)</code> 的输出节点名是 <code>layers[0].n1</code>，tex 也取调用处的。多输出的模块按 <code>qr: rotated.q_embed</code> 这样的赋值命名各个输出。</li>
+  <li>表达式里间接产生的节点（例如 <code>x.float().exp()</code> 里的类型转换）的名字是结果名加 <code>/序号</code>，例如 <code>ex/1</code>，随结果一起展示。</li>
 </ul>
-<p>结构检查手写，不用 JSON Schema。未知的字段、缺少的字段和类型不对的值都报错，错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>bad.yaml:5:8 body[0].y: name 'nope' is not defined in the page</code>。行号和列号来自 <code>yaml</code> 包解析时保留的位置，传入的是 JavaScript 对象时信息里只有路径。YAML 里的重复键同样报错。</p>
 
-<h2>表达式</h2>
-<p>节点的 <code>op</code>、实例的 <code>inputs</code>、buffer 的 <code>value</code> 和 shape 里的维度都是 PyTorch 风格的表达式：</p>
-<table>
-  <thead>
-    <tr><th>写法</th><th>含义</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>f(a, b, k=v)</code></td><td>调用 graph 上的同名方法（内置运算与 <code>defineOp</code> 注册的运算），位置参数和关键字参数按方法签名传递；不是张量的位置参数也可以按关键字写，例如 <code>nonzero_static(m, size=T*K)</code>，同一个参数既按位置又按关键字给出时报错。只能在编译期求值的参数（维度名、参数、数字表达式）先求值成数。运算定义了 <code>rest</code> 时，多出的位置参数收成一个数组，例如 <code>view(x, T, H, dh)</code> 等于 <code>view(x, [T, H, dh])</code>。</td></tr>
-    <tr><td><code>a @ b</code>、<code>a ** n</code></td><td><code>matmul</code>；<code>pow</code>，<code>n</code> 是数</td></tr>
-    <tr><td><code>a + b</code>、<code>a - b</code>、<code>a * b</code>、<code>a / b</code></td><td><code>add</code>、<code>sub</code>、<code>mul</code>、<code>div</code>。右边可以是数；<code>数 + 节点</code> 和 <code>数 * 节点</code> 交换成节点在左；<code>数 - 节点</code> 和 <code>数 / 节点</code> 报错</td></tr>
-    <tr><td><code>-a</code>、<code>a.T</code></td><td>乘 −1；转置，图上已有同一个转置时复用</td></tr>
-    <tr><td><code>q[h]</code>、<code>o[1..H]</code></td><td>循环下标；按顺序列出全部下标，用在 <code>cat</code> 这类接受节点列表的参数里。下标可以是表达式，例如 <code>S[t-1]</code></td></tr>
-    <tr><td><code>[a, b]</code></td><td>节点列表，至少一项，例如 <code>cat([q_rot, q_pass], dim=2)</code>、<code>index(x, [token_idx])</code>；每一项都是数时是数的列表，例如 <code>sum(m, [-1, -2])</code>，用在尺寸参数里时逐项按维度处理</td></tr>
-    <tr><td><code>inf</code></td><td>正无穷，<code>-inf</code> 是负无穷，例如 <code>where(em, sc, -inf)</code>。作用域里有名为 <code>inf</code> 的名字时用那个名字</td></tr>
-    <tr><td><code>//</code>、<code>1e-6</code>、<code>"none"</code>、<code>true</code></td><td>整除，两边都是数时在编译时求值，左边是节点时建 <code>floor_divide</code> 节点；科学计数法；字符串字面量，只用于关键字参数；布尔值</td></tr>
-    <tr><td><code>act(x)</code></td><td><code>act</code> 是 op 类型的参数时，调用它的值对应的运算</td></tr>
-    <tr><td><code>act_fn: { use: act, ... }</code></td><td><code>act</code> 是 module 类型的参数时，实例化它的值对应的模块</td></tr>
-    <tr><td><code>a if c else b</code>、<code>not c</code></td><td>条件表达式和取反，写法与 Python 相同。<code>c</code> 必须是 <code>true</code> 或 <code>false</code>，否则报错 <code>a condition must be true or false</code>；只求值选中的一边，所以另一边可以引用没有建出的名字。用在 <code>inputs</code> 里时，两边都可以是已有节点的名字</td></tr>
-    <tr><td><code>min(a, b)</code>、<code>max(a, b)</code></td><td>参数都是数（维度、参数、数字）时取最小值和最大值，示例值和真实值分别取，例如 <code>topk_mask(x, min(kI, T), -1)</code> 对应 HF 的 <code>min(index_topk, seq_len)</code>。参数里有节点时 <code>max</code> 仍是按维度求最大值的运算</td></tr>
-  </tbody>
-</table>
-<p>YAML 的 flow 映射 <code>{ ... }</code> 里不加引号的值遇到逗号就结束，所以带逗号的表达式要加引号，例如 <code>{ op: 'embedding(ids, E)' }</code>。</p>
-
-<h2>作用域、维度与参数</h2>
-<ol>
-  <li>作用域封闭。名字依次在本模块的 body 节点、inputs、weights、buffers、子实例 outputs 绑定的名字、params 里查找，找不到就报错。模块看不到父模块和页面的名字。</li>
-  <li>名字唯一。for 里定义的名字和实例名必须带循环变量下标（<code>q[h]</code>），展开后是 <code>q[1]</code>、<code>q[2]</code>。</li>
-  <li>维度靠匹配绑定。inputs 的 shape 是模式，实际形状逐位匹配，名字第一次出现时绑定，再出现时必须相等。模式里可以有一个 <code>...</code>，匹配任意个维度，这些维度不绑定名字；例如 RMSNorm 的 <code>[..., n]</code> 只要求最后一维，输入可以是 $(T, d)$，也可以是按 head 分好的 $(T, H, d_h)$。推不出的维度声明为 <code>dim</code> 参数。weights 的 shape 只能用已绑定的维度和参数，可以写 <code>H*dh</code> 这类表达式。页面的 <code>dims</code> 是根作用域的维度。</li>
-  <li>参数的类型是 <code>int</code>、<code>float</code>、<code>dim</code>、<code>bool</code>、<code>op</code>、<code>module</code>、<code>tex</code>、<code>text</code> 之一。没给的取 <code>default</code>。<code>bool</code> 的值是 <code>true</code> 或 <code>false</code>，也可以写父作用域里求值成布尔值的表达式，主要给 <code>when</code> 和条件表达式用。<code>text</code> 类型的参数可以写 <code>default_key: true</code>，没给时取实例的键，例如 <code>input_layernorm</code>；这样实例名就是显示的模块名，不用在实例里再写一遍。两者都没有时，模块用到这个参数的地方报错 <code>parameter 'x' has no value and no default, and module M uses it</code>，位置指向实例的 <code>params</code>；没用到时不报错，这样只在 <code>when</code> 为 <code>true</code> 的部分用到的参数（例如 MLA 的 <code>kI</code>）可以不写默认值。<code>op</code> 和 <code>module</code> 类型的值必须在 <code>values</code> 里列出。<code>module</code> 类型的值是一个模块名，在声明这个参数的模块的命名空间里查找，所以 GLU 自己 import 了可选的激活模块，页面只写 <code>act: SiLU</code>，不用 import SiLU；实例里写 <code>use: act</code> 时实例化这个模块。父模块把自己的 module 参数原样传下去时，传的是它的值。</li>
-  <li>每个实例默认创建自己的权重；使用处写 <code>weights: { 模块内名: 父作用域名 }</code> 时，这个实例不再创建它，直接用父作用域的权重。</li>
-  <li>模块相同、buffer 表达式相同、参数和维度也相同的多个实例共用同一个 buffer 节点。内置的 buffer 函数是 <code>rope_cos(T, dh, theta, stride=1, interleaved=false)</code>、<code>rope_sin(...)</code>（参数同 <code>rope_cos</code>）、<code>causal_mask(T, window?)</code>、<code>zeros(...)</code>、<code>ones(...)</code>、<code>full(..., value)</code> 与 <code>arange(n)</code>，前三个不带可选参数时的数值与 <code>examples/qwen3-structure.html</code> 的 <code>rotaryEmbedding</code> 和 mask 相同。<code>stride</code> 让第 $i$ 行的位置是 $i\cdot\mathit{stride}$，<code>interleaved=true</code> 时第 $c$ 列用第 $\lfloor c/2\rfloor$ 个频率，对应相邻两维一对的 RoPE。<code>causal_mask(T, window)</code> 还挡住 $s\le t-\mathit{window}$，对应滑动窗口。<code>zeros</code> 和 <code>ones</code> 接受任意个维度，给出全 0 或全 1 的张量（<code>ones(C, C)</code> 配合 <code>triu</code> 得到 HF 的 <code>torch.ones(C, C, dtype=torch.bool).triu(1)</code>），例如递推的初始状态 <code>'S[0]': { value: 'zeros(H, dk, dv)' }</code>；<code>full</code> 的最后一个参数是填充值，前面是一个以上的维度，例如 n-gram 历史开头补的 eos <code>full(N - 1, eos)</code>，对应 <code>torch.full</code>，填充值可以是 <code>-inf</code>；<code>arange(n)</code> 是 $0, 1, \ldots, n-1$，对应 <code>torch.arange</code>。参数个数不对时报错，关键字参数只能是函数列出的名字。buffer 写 <code>dtype: int64</code> 时数值带 int64 的精确存储（见 vizflow 设计的「张量」）。buffer 的名字可以带下标，供 for 里的 <code>S[t-1]</code> 在第一次迭代时引用。<code>rope_cos</code>、<code>rope_sin</code> 算出 $(T, d_h)$ 的表，RoPE 模块用 <code>shape: [T, 1, dh]</code> 把它重排成能和 $(T, H, d_h)$ 广播的形状。</li>
-  <li><code>import</code> 的引用 <code>vizflow/nn/x</code> 指包内的 <code>src/nn/x.yaml</code>，构建时以文本打进 <code>dsl</code> 入口，免构建和构建工具两种用法都能用；<code>./x.yaml</code> 这类相对路径相对于引用它的文件，用 <code>fetch</code> 读取，<code>CompileOptions.read</code> 可以替换读取函数。循环引用报错。包内的核心模块见下表。</li>
-</ol>
-<table>
-  <thead>
-    <tr><th>模块文件</th><th>模块名</th><th>接口</th></tr>
-  </thead>
-  <tbody>
-    <tr><td><code>rmsnorm</code></td><td>RMSNorm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>；权重 $\boldsymbol{\gamma}$ 长度 $n$，初值全 1；参数 <code>eps</code>（默认 $10^{-6}$）和四个 text 参数 <code>name</code>、<code>intro</code>、<code>out_note</code>、<code>in_note</code>，用来在步骤正文里写出实例自己的名字和补充说明。节点按 HF 的代码逐个画出：平方 <code>sq</code>、平均 <code>ms</code>、加上 $\epsilon$ 的 <code>mse</code>、<code>rsqrt</code> 得到的 <code>r</code>、<code>xh</code>、<code>out</code>。<code>sq</code> 到 <code>r</code> 在 fp32 里算，<code>xh</code> 转回输入的 dtype 后再乘权重，与 HF 的 <code>self.weight * hidden_states.to(input_dtype)</code> 相同。步骤 square、mean、eps、rms、normalize、scale 都带反向的默认文字，模块带 <code>fold</code> 默认文字。bool 参数 <code>cast_last</code>（默认 <code>false</code>）为 <code>true</code> 时按 DeepSeek V4.1 参考实现的 <code>(self.weight * x).to(dtype)</code> 画：<code>xh</code> 留在 fp32，乘权重得到 <code>wx</code>，<code>out</code> 是 <code>wx</code> 转回输入的 dtype，多一步 cast。</td></tr>
-    <tr><td><code>glu</code></td><td>GLU</td><td>输入 <code>x: [T, d]</code>，输出 <code>down</code>；参数 <code>act</code>（module，可选 <code>Sigmoid</code>、<code>ReLU</code>、<code>GELU</code>、<code>SiLU</code>，默认 <code>SiLU</code>）、<code>f</code>（中间维度，dim）、<code>name</code>（text）、<code>clamped</code>（bool，默认 <code>false</code>）和 <code>limit</code>（float，<code>clamped</code> 时必须给）。<code>clamped</code> 为 <code>true</code> 时是 DeepSeek V4 带截断的 SwiGLU：gate_proj 之后建 <code>gc = clamp(gate, max=limit)</code>，up_proj 之后建 <code>uc = clamp(up, min=-limit, max=limit)</code>，激活作用在 <code>gc</code> 上，乘的是 <code>uc</code>，步骤依次是 gate_proj、clamp_gate、up_proj、clamp_up，顺序与 HF <code>DeepseekV4MLP</code> 相同；<code>up_first</code>（bool，默认 <code>false</code>）为 <code>true</code> 时先截 up 再截 gate，与 DeepSeek V4.1 参考实现的 <code>Expert.forward</code> 相同：步骤依次是 gate_proj、gate_float、up_proj、up_float、clamp_up、clamp_gate、激活模块的步骤、gate、cast、down，标题用参考实现的 w1、w3、w2，正文引用参考实现。激活是子实例 <code>act_fn</code>（对应 HF 的 <code>self.act_fn</code>），它的输出绑定为 <code>a</code>。body 按 HF <code>down_proj(act_fn(gate_proj(x)) * up_proj(x))</code> 的求值顺序排列，步骤是 gate_proj、激活模块的步骤、up_proj、gate、down，每个 Linear 一步。bool 参数 <code>float_act</code>（默认 <code>false</code>）为 <code>true</code> 时按 DeepSeek V4.1 参考实现的 <code>Expert</code> 画：gate、up 之后各建 fp32 的 <code>gate32</code>、<code>up32</code>（步骤 gate_float、up_float），乘积 <code>m</code> 转回输入的 dtype 得到 <code>mc</code>（步骤 cast）再乘 $W_d^{\top}$。</td></tr>
-    <tr><td><code>rope</code></td><td>RoPE</td><td>输入 <code>q: [T, Hq, dh]</code>、<code>k: [T, Hk, dh]</code>，输出 <code>q_embed</code>、<code>k_embed</code>；参数只有 <code>theta</code>（默认 $10^4$），$d_h$ 从输入推出；cos、sin 表是 $(T, 1, d_h)$ 的 buffer。rotate_half 按 HF 的三行代码画成切两半（两个 <code>narrow</code>）、后半取负、<code>cat</code> 拼回。步骤 cos、half、neg、rh、sin、add。</td></tr>
-    <tr><td><code>gqa</code></td><td>GQA</td><td>grouped-query attention。输入 <code>q: [T, H, dh]</code>、<code>k: [T, Hkv, dh]</code>、<code>v: [T, Hkv, dv]</code>、<code>mask: [T, Tk]</code>，输出 <code>o</code>，形状 $(T, H d_v)$；key 的个数 $T_k$ 可以大于 $T$，例如 DeepSeek V4 在滑动窗口的 key 后面接上压缩条目。参数 <code>sink</code>（bool，默认 <code>false</code>）为 <code>true</code> 时多一个输入 <code>sinks: [H]</code>：每个 head 的 softmax 分母多加一项 $e^{s_h}$（节点 <code>sk[h]</code>、<code>es[h]</code>、<code>Zs[h]</code>，步骤 sink），等价于 HF 把 sink 拼成最后一列、softmax 后再丢掉；$d_v$ 可以和 $d_h$ 不同，MLA 就是这样。每个 query head $h$ 用 <code>select</code> 取出下标为 $\lfloor (h-1)/(H/H_{kv}) \rfloor$ 的 kv head（下标从 0 起，对应 HF 的 <code>repeat_kv</code>），再算 $S = \operatorname{select}(\mathbf{q},1,h-1)\,\mathbf{k}^{\top}$（<code>select_matmul</code>）、乘 $d_h^{-1/2}$、加 mask、exp、按行求和、相除、乘 $\mathbf{v}$，最后 <code>cat(o[1..H], dim=1)</code>。$H = H_{kv}$ 时是普通的多头注意力。步骤 krep、vrep、kT、S、Ssc、mask、exp、sum、div、pv、concat。</td></tr>
-    <tr><td><code>mla</code></td><td>MLA</td><td>DeepSeek V2/V3 的 multi-head latent attention，对应 HF <code>DeepseekV3Attention</code>（<code>q_lora_rank</code> 不为空）。输入 <code>x: [T, d]</code>，输出 <code>att</code>；参数 <code>H</code>、<code>dn</code>（qk_nope_head_dim）、<code>dr</code>（qk_rope_head_dim）、<code>dv</code>（v_head_dim）、<code>rq</code>（q_lora_rank）、<code>rkv</code>（kv_lora_rank），都是 dim，以及 <code>theta</code>（默认 $10^4$）。权重 $W_{qa}$、$W_{qb}$、$W_{kva}$、$W_{kvb}$、$W_o$ 对应 q_a_proj、q_b_proj、kv_a_proj_with_mqa、kv_b_proj、o_proj，子实例 <code>q_a_layernorm</code>、<code>kv_a_layernorm</code> 是 RMSNorm，<code>apply_rotary_pos_emb</code> 是 RoPE，注意力用 inline 的 GQA（$H=H_{kv}$）。参数 <code>sparse</code>（bool，默认 <code>false</code>）为 <code>true</code> 时是 DeepSeek V3.2 的 <code>DeepseekV32Attention</code>：在注意力之前建子实例 <code>indexer</code>（<code>lightning-indexer</code>，输入 <code>x</code>、归一化后的 q latent 和 causal mask），它的输出是编号 <code>topk_idx</code>；然后按 HF <code>DeepseekV32Attention.forward</code> 的 eager 分支逐行建 bool buffer <code>ones</code>（<code>ones(T, T)</code>，<code>new_ones(..., dtype=torch.bool)</code>）、<code>index_mask</code>（<code>scatter(ones, -1, topk_idx, 0)</code>，dtype 写成 bool）和 <code>M_sparse</code>（<code>masked_fill(M, index_mask, -inf)</code>），步骤 index_ones、index_mask、sparse_mask。HF 填 <code>torch.finfo(dtype).min</code>，这里和 causal mask 一样填 $-\infty$，取 exp 后都是 0。GQA 的 mask 换成 <code>M_sparse</code>，GQA 的 mask 步骤换成说明稀疏 mask 和 indexer 没有梯度的文字；这时还要给 <code>HI</code>（index_n_heads）、<code>dI</code>（index_head_dim）、<code>kI</code>（index_topk），都是 dim，没有默认值。<code>sparse</code> 为 <code>false</code> 时这三个参数不用写，模块和 V3 的完全相同。后 $d_r$ 维按 HF 的 <code>apply_rotary_pos_emb_interleave</code> 处理：先用节点 <code>q_de</code>、<code>k_de</code>（<code>view(..., d_r/2, 2)</code>、<code>transpose</code>、<code>view</code>）把相邻的一对分量重排成前后两半，再交给前后两半配对的 RoPE，结果与 HF 逐位相同，之后的拼接也用重排后的顺序；步骤 deinterleave 显示这一步。这一步不能省：省掉时只有 $d_r=2$ 的数值与 HF 相同。不画 YaRN 的缩放。步骤 q_down、q_up、q_split、kv_down、kv_split、kv_up、kv_split2、deinterleave、q_cat、k_expand、k_cat、o_proj，以及 GQA 的步骤。</td></tr>
-    <tr><td><code>layernorm</code></td><td>LayerNorm</td><td>PyTorch 的 <code>nn.LayerNorm</code>（带 weight 和 bias）。输入 <code>x: [..., n]</code>，输出 <code>out</code> $=\boldsymbol{\gamma}\odot(x-\mu)/\sqrt{\sigma^2+\epsilon}+\boldsymbol{\beta}$，$\mu$ 和 $\sigma^2$ 是最后一维的均值和有偏方差；权重 $\boldsymbol{\gamma}$ 初值全 1，偏置 $\boldsymbol{\beta}$ 初值全 0；参数 <code>eps</code>（默认 $10^{-5}$，与 <code>nn.LayerNorm</code> 相同）和三个 text 参数 <code>name</code>、<code>intro</code>、<code>out_note</code>。节点 <code>mu</code>、<code>xc</code>、<code>sq</code>、<code>var</code>、加上 $\epsilon$ 的 <code>ve</code>、<code>r</code>、<code>xh</code>、<code>xw</code>、<code>out</code>。步骤 mean、center、square、var、eps、rms、normalize、scale、bias，带反向的默认文字和 <code>fold</code> 默认文字。</td></tr>
-    <tr><td><code>lightning-indexer</code></td><td>LightningIndexer</td><td>DeepSeek V3.2 的 lightning indexer，对应 HF <code>DeepseekV32Indexer</code>。输入 <code>x: [T, d]</code>、<code>qr: [T, rq]</code>（MLA 的 <code>q_a_layernorm(q_a_proj(x))</code>）、<code>mask: [T, T]</code>（causal mask），输出 <code>idx: [T, min(kI, T)]</code>：每一行选中的 key 的编号（<code>torch.topk</code> 的 indices，int64），与 HF <code>DeepseekV32Indexer.forward</code> 的返回值相同。参数 <code>HI</code>、<code>dI</code>、<code>dr</code>、<code>kI</code>（dim）和 <code>theta</code>（默认 $10^4$）。权重 $W^{I}_{qb}$、$W^{I}_{k}$、$W^{I}_{w}$ 对应 wq_b、wk、weights_proj，$W^{I}_{w}$ 的 dtype 是 fp32（HF 把 weights_proj 固定在 fp32）；子实例 <code>k_norm</code> 是 <code>layernorm</code>（eps $10^{-6}$），<code>apply_rotary_pos_emb</code> 是 RoPE。query 和 key 的前 $d_r$ 维做前后两半配对的 RoPE（HF 的 <code>apply_rotary_pos_emb</code>，不做 MLA 那一步重排；MLA 转的是后 $d_r$ 维）；$S$ 是所有 head 的 query 与共用 key 的点积 $(T, H_I, T)$，乘 $d_I^{-1/2}$ 过 ReLU，乘 <code>weights_proj(x)</code>$\cdot H_I^{-1/2}$ 后按 head 求和得到 index score $I$，加上 <code>mask</code> 得到 <code>Im</code>，每行用 <code>topk_indices</code> 取 $\min(k_I, T)$ 个编号，输出 <code>idx</code>。稀疏 mask 由 MLA 用编号拼出。<code>topk_indices</code> 不可导，所以 indexer 的节点没有梯度，参数的梯度是全零，与 HF 在 <code>torch.no_grad</code> 下运行一致。步骤 q_up、q_split、k_proj、k_split、cat、dot、scores、weights、index、masked、topk。</td></tr>
-    <tr><td><code>moe</code></td><td>SparseMoE</td><td>softmax 路由的稀疏 MoE，对应 HF <code>Qwen3MoeSparseMoeBlock</code>，Qwen3.5 MoE 的 <code>Qwen3_5MoeSparseMoeBlock</code> 在它外面加共享专家。输入 <code>x: [T, d]</code>，输出 <code>out</code>；参数 <code>E</code>（专家个数）、<code>K</code>（每个位置选的专家数）、<code>mf</code>（每个专家的中间维度），都是 dim；参数 <code>norm_topk_prob</code>（bool，默认 <code>false</code>，与 HF <code>Qwen3MoeConfig</code> 的默认值相同；Qwen3-30B-A3B 的页面传 <code>true</code>，Qwen3.5 MoE 的 <code>Qwen3_5MoeTopKRouter</code> 总是归一化，也传 <code>true</code>）。权重 $W_r$ 对应 <code>gate.weight</code>。group <code>gate</code> 对应 <code>Qwen3MoeTopKRouter</code>：<code>logits</code>，softmax 按定义拆成 fp32 的 <code>ex</code>（<code>exp(logits)</code>）、按行求和的 <code>Z</code> 和 <code>p</code>（<code>ex / Z</code>），<code>idx</code> 由 <code>topk_indices</code> 给出，<code>top</code> 是按 <code>idx</code> 从 <code>p</code> 里 gather 出的概率（torch.topk 一次给出值和下标，图上分成这两个节点，数值相同），<code>norm_topk_prob</code> 为 <code>true</code> 时 <code>den</code> 是它们的和，<code>rw</code> 是归一化后转回分数 dtype 的权重；为 <code>false</code> 时没有这两个节点，<code>topc</code> 是 <code>top</code> 直接转回分数 dtype 的权重。之后是 <code>experts</code> 模块的实例 <code>experts</code>，输入 <code>x</code>、<code>idx</code> 和 <code>rw</code> 或 <code>topc</code>。步骤 router、exp、sum、div、topk、gather，<code>norm_topk_prob</code> 为 <code>true</code> 时接 topsum、normalize，为 <code>false</code> 时接 cast，以及 <code>experts.*</code>。</td></tr>
-    <tr><td><code>experts</code></td><td>Experts</td><td>HF <code>Qwen3MoeExperts</code>，按 <code>forward</code> 的每一行建节点，不假定路由的算法。输入 <code>x: [T, d]</code>、<code>idx: [T, K]</code>（<code>top_k_index</code>）、<code>w: [T, K]</code>（<code>top_k_weights</code>），输出 <code>out: [T, d]</code>；参数 <code>E</code>、<code>mf</code>（dim）和 <code>act_fn</code>（module，可选 <code>Sigmoid</code>、<code>ReLU</code>、<code>GELU</code>、<code>SiLU</code>，默认 <code>SiLU</code>，子实例 <code>act</code> 的输出是 <code>hact</code>），$K$ 由 <code>idx</code> 的形状推出。参数 <code>clamped</code>（bool，默认 <code>false</code>）和 <code>limit</code>（float，<code>clamped</code> 时必须给）对应 DeepSeek V4 的 swiglu_limit：<code>clamped</code> 为 <code>true</code> 时，chunk 之后建 <code>gc = clamp(gate, max=limit)</code> 和 <code>uc = clamp(up, min=-limit, max=limit)</code>，激活作用在 <code>gc</code> 上，乘的是 <code>uc</code>，顺序与 HF <code>DeepseekV4Experts._apply_gate</code> 相同，步骤 clamp_gate、clamp_up 在 chunk 之后。DeepSeek V4.1 参考实现的 MoE 逐个专家调用 <code>Expert</code>，由五个 bool 参数画出：<code>up_first</code> 先截 up 再截 gate，步骤 clamp_up 在 clamp_gate 之前，截断和相乘的正文引用参考实现；<code>fused</code>（默认 <code>true</code>）为 <code>false</code> 时权重是三块 <code>W1: [E, mf, d]</code>、<code>W3: [E, mf, d]</code>、<code>W2: [E, d, mf]</code>（w1、w3、w2），gate 和 up 各是一个 <code>grouped_linear</code>，没有 <code>gate_up</code>，步骤 w1、w3；<code>token_major</code> 为 <code>true</code> 时 <code>expert_mask</code> 是 <code>one_hot(idx, E)</code>，<code>permute</code> 成 $(E, T, K)$，同一专家内先按位置、再按槽位，与参考实现按 token 收集的顺序相同，hit、gather 的正文按参考实现的 <code>torch.bincount</code> 和 <code>x[idx]</code> 写；<code>scale_hidden</code> 为 <code>true</code> 时在 gather 之后取权重 <code>weight</code>（参考实现调用 <code>expert(x[idx], weights[idx, top, None])</code> 时先求出两个参数），乘在激活后的 <code>hidden</code> 上得到 <code>hidden_w</code>，再乘 w2，对应 <code>w2(weights * x)</code>，没有 <code>scaled</code> 和 <code>cast</code>；<code>float_act</code> 为 <code>true</code> 时 gate 和 up 之后各建一个 fp32 的节点 <code>gate32</code>、<code>up32</code>（对应 <code>self.w1(x).float()</code>、<code>self.w3(x).float()</code>，步骤 gate_float、up_float，分别跟在 w1、w3 之后），w2 之前建转回输入 dtype 的 <code>hidden_c</code>（对应 <code>x.to(dtype)</code>，步骤 cast_hidden），累加用 fp32 的 buffer <code>final32</code>（对应 <code>torch.zeros_like(x, dtype=torch.float32)</code>），代替 <code>final</code>。DeepSeek V4.1 的写法下步骤依次是 mask、permute、hit、nonzero、split、gather、weight、w1、gate_float、w3、up_float、clamp_up、clamp_gate、激活模块的步骤、mul、scale_hidden、cast_hidden、down、index_add，与参考实现 <code>MoE.forward</code> 和 <code>Expert.forward</code> 的求值顺序相同。权重 <code>Wgu: [E, 2*mf, d]</code>、<code>Wd: [E, d, mf]</code> 对应 <code>gate_up_proj</code>、<code>down_proj</code>；buffer <code>final</code> 是 <code>zeros(T, d)</code>。节点依次是 <code>expert_mask</code>（<code>one_hot(idx, E + 1)</code>）、<code>expert_mask_p</code>（<code>permute</code> 成 $(E+1, K, T)$）、<code>count</code>、<code>expert_hit</code>（<code>greater</code>）、<code>nz</code>（<code>nonzero_static</code>，<code>size</code> 是 $TK$）、<code>expert_idx</code>、<code>top_k_pos</code>、<code>token_idx</code>（<code>nz</code> 的三列）、<code>current_state</code>（<code>index</code>）、<code>gate_up</code>（<code>grouped_linear</code>）、<code>gate</code>、<code>up</code>（两个 <code>narrow</code>，对应 <code>chunk(2, dim=-1)</code>）、<code>act</code>（激活模块的实例，输出 <code>hact</code>）、<code>hidden</code>、<code>down</code>（<code>grouped_linear</code>）、<code>weight</code>（<code>index(w, [token_idx, top_k_pos])</code>）、<code>scaled</code>、<code>cast</code>（<code>.to(final_hidden_states.dtype)</code>，dtype 写成 <code>final</code>）、<code>out</code>（<code>index_add</code>）。HF 逐个专家循环，每个专家的行数由路由决定；计算图的形状在建图时固定，所以把各专家的行按 <code>nonzero_static</code> 的行优先顺序接成 $TK$ 行一次算完，这个顺序就是 HF 循环的顺序：专家编号从小到大，同一专家内先按槽位、再按位置。<code>test/dsl/qwen_moe.test.ts</code> 按 HF 记录的顺序检查。步骤 mask、permute、hit、nonzero、split、gather、gate_up、chunk、激活模块的步骤、mul、down、weight、scale、cast、index_add。<code>cast</code> 单独成一个节点，是因为路由权重的 dtype 可以比模型的 dtype 宽：DeepSeek V3 的路由在 float32 里算，<code>scaled</code> 是 float32，这一步转回模型的 dtype；Qwen3 MoE 的路由权重已经转回模型的 dtype，这一步不改变 dtype。</td></tr>
-    <tr><td><code>rmsnorm-zero-centered</code></td><td>ZeroCenteredRMSNorm</td><td>Qwen3.5 的 <code>Qwen3_5RMSNorm</code>。接口与 <code>rmsnorm</code> 相同；权重初值全 0，输出是 $\hat{x}\odot(1+\boldsymbol{\gamma})$，乘之前在 fp32 里算 $1+\boldsymbol{\gamma}$，最后转回输入的 dtype。步骤 square、mean、eps、rms、normalize、scale。</td></tr>
-    <tr><td><code>rmsnorm-gated</code></td><td>GatedRMSNorm</td><td>Qwen3.5 Gated DeltaNet 的 <code>Qwen3_5RMSNormGated</code>。输入 <code>x: [..., n]</code> 和形状相同的 <code>gate</code>，输出 <code>out</code> $=\boldsymbol{\gamma}\odot\operatorname{norm}(x)\odot\operatorname{act}(\mathit{gate})$；激活是子实例 <code>act_fn</code>，由参数 <code>act</code>（module，可选 <code>SiLU</code>、<code>Sigmoid</code>，默认 <code>SiLU</code>，对应 HF 的 <code>activation</code>；Qwen4Exp 的 <code>output_gate_type</code> 是 sigmoid）决定，输出绑定为 <code>s</code>，它的输入是 <code>gf</code>，即 <code>gate</code> 转成 float32（HF 的 <code>gate.to(torch.float32)</code>）；权重初值全 1；参数 <code>eps</code>。步骤 square、mean、eps、rms、normalize、scale、cast_gate、激活模块的步骤、gate。</td></tr>
-    <tr><td><code>l2norm</code></td><td>L2Norm</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code> $=x/\sqrt{\sum x^2+\epsilon}$，在 fp32 里算；参数 <code>eps</code>（默认 $10^{-6}$）。没有权重。节点 <code>sq</code>、<code>ss</code>、加上 $\epsilon$ 的 <code>sse</code>、<code>r</code>、<code>out</code>。步骤 square、sum、eps、norm、normalize。</td></tr>
-    <tr><td><code>gated-delta-rule-chunk</code></td><td>GatedDeltaRuleChunk</td><td>HF <code>torch_chunk_gated_delta_rule</code>（<code>initial_state=None</code>），没有缓存时（prefill 和训练）HF 调用的版本，按 HF 的代码逐行建节点。输入与 <code>gated-delta-rule</code> 相同，输出 <code>o: [T, H, dv]</code>；参数 <code>chunk</code>（块长 $C$，dim，默认 64，与 HF 的 <code>chunk_size</code> 相同）和 <code>use_qk_l2norm_in_kernel</code>（bool，默认 <code>false</code>，与 HF 函数的默认值相同；Qwen3.5 的 <code>Qwen3_5GatedDeltaNet</code> 调用时传 <code>True</code>，<code>GatedDeltaNet</code> 模块也传 <code>true</code>）。先 <code>transpose(x, 0, 1)</code> 成 $(H, T, d)$ 并转成 fp32；<code>use_qk_l2norm_in_kernel</code> 为 <code>true</code> 时 q、k 过子实例 <code>q_l2norm</code>、<code>k_l2norm</code>（L2Norm，输出 <code>qn</code>、<code>kn</code>），为 <code>false</code> 时没有这两个子实例；q 乘 $d_k^{-1/2}$，<code>pad</code> 到 $C$ 的整数倍 $N C$（$N=\lceil T/C\rceil$），乘 $\beta$，建严格上三角的 mask <code>triu(ones(C, C), 1)</code>。然后对每个 head 用一个不 sequential 的 for（HF 一次算所有 head，图里每个 head 一条竖道，各 head 的步骤合成一步）：<code>view</code> 成 $(N, C, d)$，<code>cumsum</code>，两两之差，<code>masked_fill</code> 成 $-\infty$，exp，两个批量 <code>matmul</code> 乘衰减得到 $A$ 和块内注意力 $\mathcal{P}$，两次 <code>solve_triangular</code>（<code>upper=false</code>、<code>unitriangular=true</code>），给 query、key 乘衰减，算整块衰减；再用 <code>sequential</code> 的 for 按块传递状态 $S_i\in\mathbb{R}^{d_k\times d_v}$，每块先用 <code>select</code> 取出这一块的 $W_i$、$U_i$、$\bar{\mathbf{q}}_i$、$\mathcal{P}_i$、$\gamma_i$、$\bar{K}_i$，再算 $W_iS_{i-1}$、v_new、读旧状态、块内输出、相加、整块衰减、写入、新状态。最后按块拼回、按 head 拼回、去掉补位、转回 $(T, H, d_v)$ 和输入的 dtype。结果与块长无关，页面可以用很小的块长画出跨块的部分。步骤 transpose、scale、pad、beta、mask，每个 head 的 chunks、cumsum、pairwise、masked、exp、kk、ut、qk、intra_attn、decayed_k_beta、new_values、k_cumdecay、state0、query_decay、key_decay、chunk_decay、reshape，每块的 v_old、v_new、inter、intra、out、decay、write、state，以及 heads、unpad、stack。</td></tr>
-    <tr><td><code>gated-delta-rule</code></td><td>GatedDeltaRule</td><td>HF <code>torch_recurrent_gated_delta_rule</code>（<code>use_qk_l2norm_in_kernel=True</code>），只在带缓存、<code>seq_len</code> 为 1 的 decode 里调用。输入 <code>q</code>、<code>k: [T, H, dk]</code>，<code>v: [T, H, dv]</code>，<code>g</code>、<code>beta: [T, H]</code>，输出 <code>o: [T, H, dv]</code>。q、k 先过 L2Norm，q 再除以 $\sqrt{d_k}$；然后用 <code>sequential</code> 的 for 按位置递推状态 $S_t\in\mathbb{R}^{H\times d_k\times d_v}$：取出位置 $t$，衰减 $\alpha_tS_{t-1}$，读出 $\hat{\mathbf{v}}_t$，相减，乘 $\beta_t$ 得到 $\boldsymbol{\delta}_t$，外积 $\mathbf{k}_t\boldsymbol{\delta}_t^{\top}$，加进状态，输出 $S_t^{\top}\mathbf{q}_t$。$S_0$ 是 fp32 的全 0 buffer。模块步骤 scale、stack，每个位置的步骤 take、decay、read、diff、delta、outer、write、output。</td></tr>
-    <tr><td><code>lm-head-nll</code></td><td>LMHeadNLL</td><td>参数 <code>V</code>（dim）；输入 <code>h: [T, d]</code> 与标签 <code>y: [T]</code>，输出 <code>loss</code>、<code>z</code>、<code>logp</code>。节点 <code>zf</code> 是 <code>logits.float()</code>（fp32 的 identity），子实例 <code>log_softmax</code>（LogSoftmax）和 <code>nll_loss</code>（NLLLoss）接在它后面。</td></tr>
-    <tr><td><code>sigmoid</code></td><td>Sigmoid</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=1/(1+e^{-x})$。节点 <code>n</code>（取负）、<code>e</code>（exp）、<code>d</code>（加 1）、<code>out</code>（<code>reciprocal</code>）。步骤 neg、exp、add、recip。</td></tr>
-    <tr><td><code>silu</code></td><td>SiLU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=x\,\sigma(x)$。子实例 <code>sigmoid</code>（Sigmoid）输出 <code>s</code>，再算 <code>x * s</code>。步骤是 Sigmoid 的四步加 mul。</td></tr>
-    <tr><td><code>softplus</code></td><td>Softplus</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=\log(1+e^{x})$。节点 <code>e</code>、<code>d</code>、<code>out</code>。步骤 exp、add、log。<code>F.softplus</code> 在 $x&gt;20$ 时直接输出 $x$，模块按定义画，步骤正文写明这一点。</td></tr>
-    <tr><td><code>gelu</code></td><td>GELU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code> $=\tfrac{1}{2}x\big(1+\operatorname{erf}(x/\sqrt{2})\big)$，按 PyTorch kernel 的顺序画出 <code>hx</code>、<code>u</code>、<code>e</code>（<code>erf</code>）、<code>p</code>、<code>out</code>。步骤 half、scale、erf、add、mul。</td></tr>
-    <tr><td><code>relu</code></td><td>ReLU</td><td>输入 <code>x: [...]</code>，输出 <code>out</code>，一个 <code>relu</code> 节点。步骤 relu。</td></tr>
-    <tr><td><code>log-softmax</code></td><td>LogSoftmax</td><td>输入 <code>x: [..., n]</code>，输出 <code>out</code>，对最后一维算 log_softmax。节点 <code>ex</code>（exp，dtype 跟随输入）、<code>S</code>（按行求和，keepdim）、<code>LSE</code>（log）、<code>out</code> $=x-\mathrm{LSE}$。步骤 exp、sum、log、sub。</td></tr>
-    <tr><td><code>nll-loss</code></td><td>NLLLoss</td><td>输入 <code>logp: [N, C]</code> 和标签 <code>y: [N]</code>，输出 <code>loss</code> 和每个位置的 <code>lt: [N, 1]</code>。节点 <code>pick</code> $=$ <code>gather(logp, -1, view(y, -1, 1))</code>、<code>lt</code> $=-$<code>pick</code>、<code>loss</code> $=$ <code>mean(lt)</code>，对应 <code>reduction='mean'</code>，不处理 <code>ignore_index</code>。步骤 pick、neg、mean。</td></tr>
-    <tr><td><code>rmsnorm-unweighted</code></td><td>UnweightedRMSNorm</td><td>HF <code>DeepseekV4UnweightedRMSNorm</code>，没有权重。输入 <code>x: [..., n]</code>，输出 <code>out</code> $=x/\sqrt{\operatorname{mean}(x^2)+\epsilon}$，平方和均值在 fp32 里算，<code>r</code> 转回 <code>x</code> 的 dtype 后再乘；参数 <code>eps</code>（默认 $10^{-6}$）、<code>name</code>、<code>intro</code>。<code>+\epsilon</code> 是单独的节点 <code>mse</code>，<code>rsqrt</code> 不带 eps。步骤 square、mean、eps、rms、normalize。</td></tr>
-    <tr><td><code>partial-rope</code></td><td>PartialRoPE</td><td>只转最后 $d_r$ 维的 RoPE，对应 DeepSeek V4 的 <code>apply_rotary_pos_emb</code>。输入 <code>x: [N, Hx, dh]</code>，输出 <code>out</code>；参数 <code>rd</code>（dim，要求 $d_h&gt;d_r$）、<code>theta</code>（默认 $10^4$）、<code>stride</code>（int，默认 1，第 $i$ 行的位置是 $i\cdot\mathit{stride}$）、<code>inverse</code>（bool，默认 <code>false</code>；为 <code>true</code> 时用 $-\sin$，把旋转转回去）。相邻两维一对，cos、sin 表是 $(N, 1, d_r)$ 的 buffer，乘 cos、乘 sin 的结果是 fp32，旋转后的结果转回 <code>x</code> 的 dtype，每个频率连着写两遍。rotate_half 按 HF 的三行代码画出：<code>view(..., d_r/2, 2)</code> 后用两个 <code>select</code> 取出偶数位 <code>x1</code> 和奇数位 <code>x2</code>，奇数位取负（<code>nx2</code>），<code>torch.stack((-x2, x1), -1)</code> 写成两个加一维的 <code>view</code> 再 <code>cat</code>（<code>st</code>），<code>flatten(-2)</code> 写成 <code>view</code>（<code>xrh</code>）。前 $d_h-d_r$ 维原样拼回。步骤 split、cos、pair、neg、stack、flatten、sin、add 或 sub、cat。</td></tr>
-    <tr><td><code>hyper-connection</code></td><td>HyperConnection</td><td>DeepSeek V4 的 mHC，对应 HF <code>DeepseekV4HyperConnection</code>。输入 <code>X: [T, N, d]</code>（$N$ 条 stream），输出 <code>post: [T, N]</code>、<code>comb: [T, N, N]</code>、<code>collapsed: [T, d]</code>。参数 <code>iters</code>（int，hc_sinkhorn_iters，至少 2）、<code>hc_eps</code>、<code>eps</code>（都默认 $10^{-6}$）。权重 $W_{\mathrm{fn}}$ $((2+N)N, Nd)$、$\mathbf{b}$ $((2+N)N)$、$\boldsymbol{\alpha}$ $(3)$，都是 fp32。摊平的输入过 <code>rmsnorm-unweighted</code>（实例 <code>input_norm</code>），乘 $W_{\mathrm{fn}}^{\top}$ 后切成 pre、post、comb 三段，各乘自己的缩放、加自己的偏置；pre 过 sigmoid 加 hc_eps，post 过 sigmoid 乘 2，comb 按行 softmax（按定义画成 <code>comb_ex</code>、<code>comb_Z</code>、<code>comb_sm</code> 三步）加 hc_eps 后做 Sinkhorn：先按列归一化一次（节点 <code>C[0]</code>），再做 $\mathit{iters}-1$ 轮按行、按列归一化，每次求和、加 hc_eps、相除各是一个节点，中间各轮是 <code>sequential</code> 的 for，最后一轮是 group <code>last_round</code>，输出 <code>comb</code>。<code>collapsed</code> 是 pre 加权的 stream 之和，dtype 转回 <code>X</code> 的 dtype。两个 sigmoid 是 <code>sigmoid</code> 模块的子实例 <code>pre_sigmoid</code>（展开）和 <code>post_sigmoid</code>（折叠，fold 文字说明它和 pre 的相同），输出 <code>pre_sig</code>、<code>post_sig</code>；<code>input_norm</code> 展开。其余每个节点各有一步。DeepSeek V4.1 的 Single-Pass mHC 由两个 bool 参数画出：<code>project_first</code> 为 <code>true</code> 时按参考实现的 <code>hc_mixes</code> 画：先算摊平输入的 <code>rsqrt(mean(x²)+eps)</code>（节点 <code>sq</code>、<code>ms</code>、<code>mse</code>、<code>rsq</code>），再乘 $W_{\mathrm{fn}}^{\top}$（<code>mixp</code>），最后乘 rsqrt（<code>mix</code>），步骤依次是 square、mean、eps、rsqrt、mix_first、scale，没有 <code>input_norm</code>；flatten、split、scale_split、pre_eps 的文字引用参考实现的 <code>x.flatten(2).float()</code> 和 <code>hc_split_sinkhorn</code> kernel，pre_sigmoid 不附 HF 的写法；<code>single_pass</code> 为 <code>true</code> 时多一个输入 <code>pre_in: [T, N]</code>，<code>collapsed</code> 用 <code>pre_in</code> 加权，加权的乘积是 fp32（对应 <code>pre_mix.unsqueeze(-1) * x.float()</code>），这一组算出的 pre 作为输出 <code>pre</code> 交给下一个子层。输出 <code>pre</code> 在两种写法里都有。</td></tr>
-    <tr><td><code>hyper-connection-merge</code></td><td>HyperConnectionMerge</td><td>DeepSeek V4 decoder 层里子层之后的写回 <code>post.to(dtype).unsqueeze(-1) * y.unsqueeze(-2) + comb.to(dtype).transpose(-1, -2) @ X</code>。输入 <code>X: [T, N, d]</code>、<code>y: [T, d]</code>、<code>post: [T, N]</code>、<code>comb: [T, N, N]</code>，输出 <code>out: [T, N, d]</code>。$\mathit{comb}^{\top}X$ 按输出的 stream 用 for 展开：第 $k$ 条是 comb 的第 $k$ 列乘输入的 stream 再求和。<code>post_c</code>、<code>comb_c</code> 是转成 <code>X</code> 的 dtype 的 post 和 comb。步骤 cast、expand、column、column_sum、stack、add。<code>broadcast</code>（bool，默认 <code>false</code>）为 <code>true</code> 时按 DeepSeek V4.1 参考实现的 <code>hc_post</code> 画：<code>post.unsqueeze(-1) * x.unsqueeze(-2) + torch.sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=2)</code>，post 和 comb 不转 dtype，乘法和求和都在 fp32 里做，没有 <code>post_c</code>、<code>comb_c</code>；节点 <code>prod</code> 是 $(T, N, N, d)$ 的乘积，<code>mixed</code> 沿第 2 维求和，<code>summed</code> 是两部分的和，<code>out</code> 是 <code>summed</code> 转成 <code>y</code> 的 dtype（对应 <code>y.type_as(x)</code>）；步骤 expand、outer、pair_sum、sum_fp32、cast_out。</td></tr>
-    <tr><td><code>hyper-head</code></td><td>HyperHead</td><td>HF <code>DeepseekV4HyperHead</code>，最后一层之后把 $N$ 条 stream 合成一条。输入 <code>X: [T, N, d]</code>，输出 <code>out: [T, d]</code>；参数 <code>hc_eps</code>、<code>eps</code>；权重 $W_{\mathrm{fn}}$ $(N, Nd)$、$\mathbf{b}$ $(N)$、$\alpha$ $(1)$，都是 fp32。sigmoid 是 <code>sigmoid</code> 模块的子实例 <code>sigmoid</code>，输出 <code>sig</code>；它和 <code>input_norm</code> 都折叠，fold 文字说明它们和 mHC 里的实例相同。输出转回 <code>X</code> 的 dtype。步骤 flatten、mix、scale、base、eps、weight、sum，以及两个子实例的步骤。</td></tr>
-    <tr><td><code>compressor</code></td><td>Compressor</td><td>DeepSeek V4 的 KV 压缩，对应 HF <code>DeepseekV4HCACompressor</code>（<code>overlap: false</code>）和 <code>DeepseekV4CSACompressor</code>、indexer 内部的 compressor（<code>overlap: true</code>）。输入 <code>x: [T, d]</code>，输出 <code>C: [T // m, 1, c]</code>。参数 <code>m</code>（压缩率）、<code>c</code>（条目宽度）、<code>rd</code>（dim）、<code>theta</code>、<code>overlap</code>、<code>eps</code>。权重 $W_{\mathrm{kv}}$、$W_{\mathrm{gate}}$（行数 $c$，overlap 时 $2c$）和 fp32 的 position_bias $B$。只取前 $\lfloor T/m\rfloor m$ 个 token，按窗口排成 $(T/m, m, \cdot)$，gate 加 $B$；overlap 时每个窗口的前一半通道 $\mathbf{c}^{a}$ 交给下一个窗口，第一个窗口用全 0 的内容和 $-\infty$ 的 gate 补齐，每个条目有 $2m$ 个来源。gate 沿窗口做 fp32 的 softmax，按定义画成 <code>ge</code>（exp）、<code>Zw</code>（求和）、<code>w</code>（相除，结果转回内容的 dtype）三步，内容乘权重求和，过 RMSNorm（实例 <code>kv_norm</code>），在位置 $w\cdot m$ 上做 <code>partial-rope</code>（实例 <code>rope</code>）。压缩条目的 mask 不在这个模块里，HCA 层的 mask 由 <code>compressed-attention</code> 建。overlap 时要求 $\lfloor T/m\rfloor\ge 2$。不画 YaRN。DeepSeek V4.1 的 compressor 由五个 bool 参数（默认都是 V4 的写法）画出：<code>gated</code>（默认 <code>true</code>）为 <code>false</code> 时没有 $W_{\mathrm{gate}}$ 和池化，$m=1$ 时每个 token 的投影直接过 <code>kv_norm</code>；<code>bias</code>（默认 <code>true</code>）为 <code>false</code> 时没有 position_bias；<code>rotate</code>（默认 <code>true</code>）为 <code>false</code> 时不建 <code>rope</code>，输出 <code>C</code> 是 <code>kv_norm</code> 的输出 $(T/m, c)$，由使用者自己做 RoPE；<code>float_input</code>（默认 <code>false</code>）为 <code>true</code> 时先建 fp32 的 <code>xf</code>（对应 <code>x = x.float()</code>，步骤 float），池化的结果再转回输入的 dtype（节点 <code>pooled_c</code>，对应 <code>kv.to(dtype)</code>，步骤 cast）；<code>norm_cast_last</code>（默认 <code>false</code>）传给 <code>kv_norm</code> 的 <code>cast_last</code>。text 参数 <code>norm_ref</code> 是 <code>kv_norm</code> 折叠文字里引用的、展开画过的 RMSNorm 的名字，默认 <code>decoder 层的 input_layernorm</code>。</td></tr>
-    <tr><td><code>compressed-indexer</code></td><td>CompressedIndexer</td><td>HF <code>DeepseekV4Indexer</code>。输入 <code>x: [T, d]</code>、<code>qr: [T, rq]</code>（注意力的 <code>q_residual</code>），输出 <code>idx: [T, min(kI, T // m)]</code>：每一行选中的压缩条目编号，指向还没压缩完的条目的编号是 $-1$，与 HF <code>DeepseekV4Indexer.forward</code> 的返回值相同。参数 <code>HI</code>、<code>cI</code>、<code>kI</code>、<code>m</code>、<code>rd</code>（dim）、<code>theta</code>、<code>eps</code>。权重 $W^{I}_{qb}$、$W^{I}_{w}$，子实例 <code>compressor</code>（overlap，宽 $c_I$）、<code>rope</code> 和 <code>relu</code>（<code>relu</code> 模块，输出 <code>R</code>）。点积在 fp32 里算，先 ReLU 再乘 $c_I^{-1/2}$，乘 <code>weights_proj(x)</code>$\cdot H_I^{-1/2}$ 后按 head 求和得到 <code>I</code>。之后按 HF 逐行建节点：int64 buffer <code>position_ids</code>（<code>arange(T)</code>）和 <code>entry_indices</code>（<code>arange(T // m)</code>），<code>pos1</code>、<code>threshold</code>（<code>pos1 // m</code>，即 <code>causal_threshold</code>）、<code>entry_row</code>、<code>threshold_col</code>、<code>future_mask</code>（<code>ge</code>）、<code>Im</code>（<code>masked_fill(I, future_mask, -inf)</code>）、<code>top</code>（<code>topk_indices</code>，$\min(k_I, \lfloor T/m\rfloor)$ 个）、<code>invalid</code>（<code>ge(top, threshold_col)</code>）、<code>idx</code>（<code>masked_fill(top, invalid, -1)</code>，HF 写的是 <code>torch.where(invalid, full_like(-1), top_k_indices)</code>）。步骤 q_up、q_heads、q_flat、k_flat、dot、relu、scale、weights、weights_scale、index_weight、index_sum、positions、threshold、entries、threshold_col、future_mask、future_fill、topk、invalid、invalid_fill。没有梯度。</td></tr>
-    <tr><td><code>compressed-attention</code></td><td>CompressedAttention</td><td>HF <code>DeepseekV4Attention</code>。输入 <code>x: [T, d]</code>，输出 <code>att</code>。参数 <code>H</code>、<code>D</code>、<code>rd</code>、<code>rq</code>、<code>g</code>（o_groups）、<code>dg</code>（o_lora_rank）、<code>W</code>（sliding_window），都是 dim，<code>theta</code>，<code>compress</code>、<code>sparse</code>（bool，默认 <code>false</code>），<code>compress</code> 为 <code>true</code> 时的 <code>m</code>，<code>sparse</code> 为 <code>true</code> 时的 <code>HI</code>、<code>cI</code>、<code>kI</code>，以及 <code>eps</code>。权重 $W_{qa}$、$W_{qb}$、$W_{kv}$、$W_{a}$ $(g d_g, HD/g)$、$W_{b}$ 和 fp32 的 sinks。q 经过 q_a_proj、RMSNorm、q_b_proj、按 head 的 <code>rmsnorm-unweighted</code> 和 RoPE；kv 是一个 head，既作 key 也作 value，经过 kv_proj、RMSNorm 和 RoPE。<code>compress</code> 时建 <code>compressor</code>，key 后面接上压缩条目，mask 是 <code>causal_mask(T, W)</code> 接上压缩条目那几列；HCA 层（<code>compress</code> 且不 <code>sparse</code>）按 HF <code>DeepseekV4HCACompressor.forward</code> 的最后几行建 int64 buffer <code>entry_indices</code>（<code>arange(T // m)</code>）、<code>position_ids</code>（<code>arange(T)</code>）、buffer <code>block_zeros</code>（<code>zeros(T, T // m)</code>）和节点 <code>entry_row</code>、<code>pos1</code>、<code>threshold</code>（<code>pos1 // m</code>）、<code>threshold_col</code>、<code>future_mask</code>（<code>ge</code>）、<code>Mc</code>（<code>masked_fill(block_zeros, future_mask, -inf)</code>），步骤 hca_entries、hca_positions、hca_threshold、hca_threshold_col、hca_future、hca_fill；HF 在 compressor 里建这张 mask，这里画在 compressor 实例之后，因为模块的输出不能按 <code>when</code> 取舍，CSA 的 compressor 不建它；<code>sparse</code> 时再建 <code>compressed-indexer</code>（实例 <code>indexer</code>，输出编号 <code>top_k_indices</code>），然后按 HF <code>DeepseekV4CSACompressor.forward</code> 的最后几行用编号拼出 mask：<code>valid</code>（<code>ge(top_k_indices, 0)</code>）、<code>safe_indices</code>（<code>where(valid, top_k_indices, T // m)</code>）、buffer <code>block_bias</code>（<code>full(T, T // m + 1, -inf)</code>）、<code>block_s</code>（<code>scatter(block_bias, -1, safe_indices, 0)</code>）、<code>Ms</code>（<code>narrow(block_s, -1, 0, T // m)</code>），步骤 index_valid、index_safe、block_bias、block_scatter、block_narrow；mask 的压缩部分换成 <code>Ms</code>。注意力是 inline 的 GQA（<code>sink: true</code>）。输出用 <code>inverse: true</code> 的 RoPE 转回去，按组用 <code>select_matmul</code> 乘 $W_{a}$ 的对应行，拼起来乘 $W_{b}^{\top}$。RoPE 都是相邻两维一对、只转最后 $d_r$ 维。query 的 RoPE（实例 <code>q_rope</code>）展开，其余 RMSNorm、RoPE 子实例折叠，fold 文字写明它们和哪个实例相同。</td></tr>
-    <tr><td><code>apply-rotary-emb</code></td><td>ApplyRotaryEmb</td><td>DeepSeek V4.1 参考实现的 <code>apply_rotary_emb</code>：最后 $d_r$ 维每相邻两维当作一个复数 $a+\mathrm{i}b$，乘 $e^{\mathrm{i}p\omega}$。输入 <code>x: [N, ..., dh]</code>，输出 <code>out</code>。参数 <code>rd</code>、<code>theta</code>、<code>stride</code>（位置 $p$ 是行号乘 stride，压缩条目用 $m$）、<code>inverse</code>（转 $-p\omega$，用于把注意力输出转回去）、<code>heads</code>（默认 <code>true</code>，输入是 $(N, H, d_h)$；<code>false</code> 时是 $(N, d_h)$）、<code>yarn_factor</code>、<code>yarn_original</code>、<code>beta_fast</code>、<code>beta_slow</code>（YaRN，<code>yarn_original</code> 为 0 时不用）。buffer <code>cos</code>、<code>sin</code> 是 <code>rope_cos(..., half=true)</code> 的 $(N, d_r/2)$ 表。节点依次是 <code>x_pass</code>、<code>x_rot</code>、<code>xr</code>（按对排成 $(\ldots, d_r/2, 2)$）、<code>a</code>、<code>b</code>、四个乘积、<code>re</code>、<code>im</code>、<code>st</code>（<code>view_as_real</code>）、<code>rot</code>、<code>out</code>，步骤 split、pair、view_as_complex、freqs、freqs_view、re、im、view_as_real、flatten、cat。</td></tr>
-    <tr><td><code>sparse-attn</code></td><td>SparseAttn</td><td>参考实现 <code>sparse_attn</code> 的定义：每个 query 只看 <code>idx</code> 列出的那几行 kv。输入 <code>q: [T, H, D]</code>、<code>kv: [Tk, D]</code>、<code>sink: [H]</code>、<code>idx: [T, k]</code>（$-1$ 表示空位），输出 <code>o: [T, H, D]</code>。节点 <code>valid</code>、<code>ic</code>（<code>clamp_min(idx, 0)</code>）、<code>G</code>（<code>index(kv, [ic])</code>，$(T, k, D)$）、<code>S</code>、<code>Ss</code>（乘 $D^{-1/2}$）、<code>Sm</code>（空位填 $-\infty$）、<code>sk</code>、<code>skx</code>、<code>Sc</code>（每个 head 接上一列 sink）、<code>ex</code>、<code>Z</code>、<code>P</code>、<code>Pk</code>（去掉 sink 那一列）、<code>Pc</code>（<code>Pk</code> 转成 <code>q</code> 的 dtype，对应 kernel 的 <code>acc_s_cast</code>，步骤 cast_p）、<code>o</code>。kv 既是 key 也是 value。</td></tr>
-    <tr><td><code>candidate-blocks</code></td><td>CandidateBlocks</td><td>参考实现的 <code>select_candidate_blocks</code>。输入 <code>logits: [T, Tc]</code>（看不到的位置已是 $-\infty$）、<code>lens: [T, 1]</code>（每个 query 能看到几个压缩位置），输出 <code>keep: [T, Tc]</code>（bool）。参数 <code>B</code>（每个 query 保留几块）、<code>bs</code>（每块几个位置）。最后一块用 $-\infty$ 补满，块的分数取块内最大值，最新可见位置所在的块填 $+\infty$，取前 $\min(B, \text{块数})$ 块，分数是 $-\infty$ 的块丢掉，再展开回每个位置。整个模块没有梯度。</td></tr>
-    <tr><td><code>csa2-indexer</code></td><td>CSA2Indexer</td><td>参考实现的 <code>Indexer</code>，在 <code>torch.no_grad()</code> 之外也不产生梯度：它的输出是整数下标。输入 <code>x: [T, d]</code>、<code>qr: [T, rq]</code>（注意力 q_norm 的输出），<code>owns_k</code> 时 <code>latent: [Tc, c]</code>，否则 <code>K_in: [Tc, cI]</code>，<code>use_cand</code> 时 <code>cand_in: [T, Tc]</code>。输出 <code>idx: [T, kI]</code>（int32，可见的条目是 $T+j$，空位 $-1$），<code>owns_k</code> 时输出 index key <code>K</code>，<code>cand_source</code> 时输出 <code>cand</code>。参数 <code>HI</code>、<code>cI</code>、<code>kI</code>、<code>m</code>、<code>rd</code>、<code>theta</code>、YaRN 两个参数、<code>eps</code>、<code>owns_k</code>（默认 <code>true</code>）、<code>cand_source</code>、<code>use_cand</code>、<code>B</code>、<code>bs</code>、<code>detail</code>（是否展开 ReLU）、<code>norm_ref</code>。权重 $W^{I}_{qb}$、$W^{I}_{w}$，<code>owns_k</code> 时还有 $W^{I}_{k}$ 和实例 <code>k_norm</code>。分数是 $\sum_h w_h\,\mathrm{ReLU}(\mathbf{q}_h\mathbf{K}^{\top})$，$w$ 乘 $c_I^{-1/2}H_I^{-1/2}$；看不到的位置（<code>ge(cpos, lens)</code>）填 $-\infty$；<code>cand_source</code> 时建 <code>candidate-blocks</code> 实例 <code>candidates</code>；<code>use_cand</code> 时候选块以外再填 $-\infty$；然后 <code>topk_indices</code>、<code>sort</code>、平移 $T$、不可见的换成 $-1$。</td></tr>
-    <tr><td><code>csa2-attention</code></td><td>CSA2Attention</td><td>DeepSeek V4.1 参考实现的 <code>Attention</code>。输入 <code>x: [T, d]</code>，输出 <code>att</code>。参数 <code>H</code>、<code>D</code>、<code>rd</code>、<code>rq</code>、<code>g</code>、<code>dg</code>、<code>W</code>、<code>theta</code>、<code>yarn_factor</code>、<code>yarn_original</code>、<code>eps</code>，以及选择层类型的 bool：<code>compress</code>（有压缩 KV）、<code>kv_source</code>（自己压缩，建 <code>compressor</code>，否则读输入 <code>C_in</code>）、<code>index_source</code>（自己选条目，建 <code>csa2-indexer</code> 实例 <code>indexer</code>，否则读输入 <code>idx_in</code>；不是 kv_source 时读输入 <code>K_in</code> 作为 index key）、<code>cand_source</code>、<code>use_cand</code>（输入 <code>cand_in</code>），和 <code>m</code>、<code>HI</code>、<code>cI</code>、<code>kI</code>、<code>B</code>、<code>bs</code>、<code>detail</code>、<code>index_detail</code>、<code>norm_ref</code>。条件输出 <code>C</code>、<code>KI</code>（<code>kv_source</code>）、<code>idx</code>（<code>index_source</code>）、<code>cand</code>（<code>cand_source</code>）交给后面的层。q 经过 wq_a、RMSNorm、wq_b 和 <code>apply-rotary-emb</code>；滑动窗口的 kv 经过 wkv、RMSNorm 和 RoPE；压缩 latent 在 indexer 之后、位置 $j\cdot m$ 上做 RoPE。key 是 <code>cat([kv, C])</code>，下标是 buffer <code>win</code>（<code>window_topk_idxs(T, W)</code>）接上 indexer 的下标，交给 <code>sparse-attn</code>。输出经逆 RoPE、按组乘 $W_{a}$、拼起来乘 $W_{b}^{\top}$。</td></tr>
-    <tr><td><code>engram</code></td><td>Engram</td><td>DeepSeek V4.1 参考实现的 <code>Engram</code>：按 n-gram 查表，门控后写进每条 stream。输入 <code>X: [T, N, d]</code>、<code>hash: [T, C]</code>（每个位置的哈希行号）、<code>mask: [T]</code>（图片位置为 0），输出 <code>out: [T, N, d]</code>。参数 <code>Vg</code>（表的行数）、<code>dg</code>（每行宽度）、<code>eps</code>、<code>clamp</code>（都默认 $10^{-6}$）。权重表 $E_g$、$W^{g}_{kv}$ $((N+1)d, C d_g)$、<code>q_weight</code>、<code>k_weight</code>（$N\times d$，初值全 1）。查表（<code>emb0</code>）后转成 bf16（<code>emb</code>，对应参考实现写死的 <code>.to(torch.bfloat16)</code>）、摊平、乘 $W^{g}_{kv}$ 后切成每条 stream 的 key 和一个共用的 value；门控是 $\sigma(\operatorname{sign}(s)\sqrt{\max(|s|,\epsilon_c)})$，$s=\langle\mathbf{h},\mathbf{w}\odot\mathbf{k}\rangle\,r_h r_k/\sqrt{d}$，$r$ 是 rsqrt 的均方根，sigmoid 是 <code>sigmoid</code> 模块的子实例；<code>mask</code> 为 0 的位置门控是 0；value 转成 fp32（<code>vf</code>）后乘门控，加回转成 fp32 的 stream，结果转回 <code>X</code> 的 dtype。</td></tr>
-    <tr><td><code>ngram-hash</code></td><td>NgramHash</td><td>参考实现的 <code>NgramHashState</code>：每个位置以它结尾的 2 到 $n_{\max}$-gram 的哈希行号。输入 <code>ids: [T]</code>、<code>mask: [T]</code>（参与 n-gram 的位置），输出 <code>hashes: [T, Le, (nmax-1) Hg]</code>（int64）。参数 <code>nmax</code>、<code>pad</code>（config 的 <code>engram_pad_id</code>，模块用 <code>token_map</code> 把它换成压缩编号 <code>pad_id</code>）、<code>V</code>、<code>Le</code>（Engram 层数）、<code>Hg</code>（每种 n 的 head 数）。buffer <code>token_map</code>、<code>mult</code>、<code>primes</code>、<code>offsets</code> 是常量，由页面的 <code>values</code> 给出，<code>mult</code> 超过 $2^{53}$，写成字符串。token 先映射到压缩词表，mask 为 0 的位置是 $-1$；往前看第 $s-1$ 个 token 时，越过开头或遇到 $-1$ 以后都换成 pad（<code>sequential</code> 的 for）；各列乘 <code>mult</code> 后逐个异或，对每种 n 按各 head 的质数取余，加上偏移。整数运算按 int64 精确计算，没有梯度。</td></tr>
-  </tbody>
-</table>
-<p>内置模块里每个节点是一个初等运算，PyTorch 里由一个 kernel 完成的复合函数也按定义拆开：softmax 拆成 exp、求和、相除，log_softmax 拆成 exp、求和、log、相减，sigmoid 拆成取负、exp、加 1、取倒数，SiLU 是 sigmoid 再乘输入，softplus 拆成 exp、加 1、log，nll_loss 拆成按标签取格、取负、取平均，rotate_half 拆成切片、取负、拼接，RMSNorm 的 $\epsilon$ 是单独的加法节点，repeat_kv 画成 <code>select</code>。理由：读者要在图上看到每个中间张量和每条边的局部导数，复合函数的导数正是学生最容易跳过的一步。softmax 和 log_softmax 的 kernel 会先减去每行的最大值，这一项在结果和梯度里都抵消，模块按定义画，步骤正文写明这一点。数值与 torch 的融合实现在 float64 下一致。<code>matmul</code>、<code>causal_conv1d</code>、<code>rsqrt</code>、<code>exp</code> 这类本身就是一个初等运算或一个线性映射的运算保留为一个节点。每个 Linear 单独一步，几个投影共用一个输入时也不合并。页面里每种模块第一次出现时展开画，只有和前面某个实例计算相同的重复实例写 <code>folded: true</code>，它的 <code>fold</code> 文字写明和哪一层的哪个实例相同。理由同上：默认折叠会让读者跳过第一次出现的细节。</p>
-<p><b>真实尺寸。</b>维度在编译期同时算出示例值和真实值，真实值按 <code>real</code> 里的同名值取，<code>real</code> 里没有时等于示例值。<code>narrow</code> 的长度、<code>view</code> 的形状这类尺寸参数在两个值不同时必须写成维度名，<code>realShape</code> 才能显示真实尺寸。表达式算出的尺寸（例如 <code>(h-1)*dh</code>）没有现成的名字时，编译器第一次遇到这个尺寸时用 <code>g.addDim</code> 在 graph 的 <code>dims</code> 和 <code>real</code> 里加一个名为 <code>"示例值:真实值"</code> 的维度（例如 <code>"4:128"</code>），再按这个名字传参，编译只进行一遍。页面没有 <code>real</code> 时不加。<code>cat</code> 的列表参数来自范围 <code>o[a..b]</code>、并且范围的真实个数与示例个数不同时（例如 $H$ 的示例值 2、真实值 32），编译器给 <code>cat</code> 加上 <code>pieces</code> 选项，值是表示个数的维度，拼接结果的真实尺寸按「一块的真实尺寸 × 真实个数」计算，后面的 o_proj 因此按 4096 显示。</p>
-<p><b>初值。</b>权重按路径在 <code>values</code> 里查固定数值，没有时按 <code>init</code> 生成。buffer 也可以在 <code>values</code> 里按路径给定数值，替换 <code>value</code> 算出的数值，例如 MoE 路由的偏置 <code>moe_layer.mlp.bias</code>；这样的 buffer 不和其他实例共用。<code>values</code> 里写成字符串的整数（<code>'1582356468320383169'</code>）按 bigint 精确读取，用来给出超过 $2^{53}$ 的 int64 常量，例如 n-gram 哈希的乘数；YAML 的数字字面量在超过 $2^{53}$ 时已经丢了精度。<code>values</code> 里多出的路径报错。</p>
-<table>
-  <thead>
-    <tr><th>常量</th><th>值</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>默认 <code>init</code></td><td><code>uniform</code></td></tr>
-    <tr><td><code>uniform</code></td><td>$U(-1, 1)$，四舍五入到 2 位小数</td></tr>
-    <tr><td><code>normal</code></td><td>$N(0, 1)$（Box–Muller），四舍五入到 2 位小数</td></tr>
-    <tr><td><code>ones</code>、<code>zeros</code></td><td>全 1、全 0</td></tr>
-    <tr><td>默认随机种子</td><td>1，随机数生成器是 mulberry32；权重按建图顺序依次取随机数</td></tr>
-  </tbody>
-</table>
-
-<h2>路径与 graph 上的节点名</h2>
-<p>实例内的名字在全页的路径是「实例名.名字」逐层拼接，例如 <code>layer.self_attn.attn[1].P</code>。<code>panels</code>、<code>backward</code>、步骤补丁、<code>values</code> 和正文模板都按路径或本作用域的名字引用节点。编译结果的 <code>nodes</code> 是 <code>Map&lt;路径, Node&gt;</code>。</p>
-<p>graph 上节点的 <code>name</code> 就是路径。一个表达式里间接产生的节点（例如 <code>rsqrt(ms + eps)</code> 里的 <code>ms + eps</code>）没有名字，命名为 <code>路径/k</code>，<code>k</code> 从 1 起按创建顺序编号，例如 <code>layer.input_layernorm.r/1</code>。这些节点和所属的节点在同一步出现。正文模板按最长前缀匹配节点名，所以 <code>{{layer.self_attn.P[1][i, j]}}</code> 能正确识别。</p>
+<h2>页面：config、data 与 real</h2>
+<pre><code class="language-yaml">model: Qwen3ForCausalLM
+config:
+  V: 5
+  d_model: 4
+  num_layers: 2
+  rope_theta: 10
+  dtype: bf16
+  seed: 20261010
+  tokenizer:
+    vocab: [on, mat, the, sat, cat]
+  real:
+    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, num_layers: 36 }
+data:
+  tokens: [the, cat, sat, on]
+  ids: { expr: 'tokens_to_ids(tokens[:-1])' }
+  y: { expr: 'tokens_to_ids(tokens[1:])' }</code></pre>
+<ul>
+  <li><code>config</code> 和 <code>data</code> 按 YAML 字面值读取，需要计算时写 <code>{ expr: ... }</code>。数据表达式可以用名字、下标、切片和 <code>tokens_to_ids</code>。<code>config</code> 里的名字必须是根模块的参数。</li>
+  <li><code>data</code> 里的 token 列表编译成一个隐藏的标签节点；由 <code>tokens_to_ids</code> 得到的数据编译成标签节点，带上词表。序列面板替换 token 后，这些数据按原来的表达式重新计算。</li>
+  <li><code>real</code> 是字典，键是规格名，值是 <code>{ name, 维度名: 真实值 }</code>，<code>T</code> 是真实规模下的序列长度。第一个规格用于卡片上的真实形状和显存与计算量面板；<code>real</code> 只描述真实规模，不改变示例计算。</li>
+</ul>
 
 <h2>tex 怎么来</h2>
-<ul>
-  <li>默认值由名字推出：小写名字加粗（<code>q</code> 成为 <code>\mathbf{q}</code>，<code>gate</code> 成为 <code>\mathbf{gate}</code>）；大写字母开头的名字照写，名字末尾的数字或小写字母作下标（<code>Wq</code> 成为 <code>W_{q}</code>，<code>x0</code> 成为 <code>\mathbf{x}_{0}</code>）；多个大写字母的名字用 <code>\mathrm</code>（<code>LSE</code>）；带下划线的名字把下划线后的部分作下标。带循环下标的名字加上标 <code>^{(h)}</code>。</li>
-  <li>节点的 tex 依次取：使用处 <code>tex</code> 的覆盖、声明里的 <code>tex</code>、使用处绑定的输出名推出的默认值、模块内名字推出的默认值。</li>
-  <li><code>\of{name}</code> 换成那个名字的 tex。op 参数的 <code>\of{act}</code> 是运算的 tex，module 参数的 <code>\of{act}</code> 是 <code>\operatorname{模块名}</code>，<code>\of{act.def}</code> 是运算登记的定义式，<code>sigmoid</code>、<code>relu</code>、<code>gelu</code>、<code>silu</code> 已登记（<code>OP_TEX</code>）。循环变量的 <code>\of{h}</code> 是它的值，float 参数的 <code>\of{eps}</code> 是它的 TeX 写法（<code>10^{-6}</code>）。text 参数的值里也可以写 <code>\of{...}</code>，在模块内展开，名字按模块内的作用域查找，所以页面传给 RMSNorm 的 <code>out_note: $\of{out}$ 是 lm_head 的输入。</code> 写出的是这个实例输出的 tex。</li>
-  <li>重音命令 <code>\hat</code>、<code>\bar</code>、<code>\tilde</code>、<code>\widehat</code>、<code>\widetilde</code>、<code>\overline</code>、<code>\vec</code>、<code>\dot</code> 的参数是 <code>\of{x}</code>、而 x 的 tex 以下标结尾时，下标移到重音外面：<code>\hat{\of{x}}</code> 在 x 为 <code>\mathbf{x}_{0}</code> 时写成 <code>\hat{\mathbf{x}}_{0}</code>。实例自动加的下标因此不会被重音盖住，elem 也只有一层下标。</li>
-  <li>步骤的标题、按钮文字、正文和面板文字里的数学符号一律写成 LaTeX（<code>$\partial\of{x}$</code>），不用 unicode 的数学字符。模块的步骤文字用 <code>\of{...}</code> 引用节点，实例自动加的下标就会出现在文字里。</li>
-  <li>节点的 <code>elem</code> 由 tex 推出，与 <code>explain</code> 追加下标的方式兼容：<code>\mathbf{x}</code> 的 elem 是 <code>{x}</code>，多字母名字用 <code>\mathrm</code>，tex 里已有不在末尾的下标时整体加花括号，追加下标时不产生双下标。</li>
-  <li>同一作用域里同一个模块有多个实例时，按出现顺序给实例内部节点和权重的 tex 加下标，带循环下标的实例用循环变量的值。已有下标的合并（<code>W_{q}</code> 成为 <code>W_{q,1}</code>），含 <code>\of{}</code> 的 tex 不加，作用域里只有一个实例时不加，buffer 不加。使用处写了 <code>suffix</code> 时用它代替下标。使用处 <code>tex</code> 覆盖的 tex 不含 <code>\of{}</code> 时，加上外层实例的下标：DeepSeek V4 两个 decoder 层里的 <code>q_a_norm</code> 输出都覆盖成 $\bar{\mathbf{c}}_{q}$，两层的 <code>suffix</code> 是 3 和 4，显示为 $\bar{\mathbf{c}}_{q,3}$ 和 $\bar{\mathbf{c}}_{q,4}$。</li>
-  <li>全页两个节点的 tex 相同时，编译器用 <code>console.warn</code> 给出 <code>vizflow dsl: nodes 'a', 'b' share the tex '...'</code>。</li>
-</ul>
-
-<h2>步骤怎么排</h2>
+<p>节点的 tex 按以下顺序决定，先找到的生效：</p>
 <ol>
-  <li>每个模块的 steps 插在该实例在父模块 body 里的位置。一个 step 放在它 <code>show</code> 的节点里最早创建的那一个之后；同一个模块里后写的 step 不排在先写的 step 前面。这样「按 head 拆开」这类步骤可以写在模块末尾，仍然出现在循环之前。</li>
-  <li>body 里没有被任何 step 的 <code>show</code> 覆盖的节点自动生成一步，标题和标签取节点名。这一步同时显示该节点用到的、还没有出现过的权重、权重的转置和 buffer。权重和 buffer 不单独生成步骤。</li>
-  <li>没有写 <code>sequential: true</code> 的 for，各次迭代生成的步骤合并成一步：id 相同的步骤（包括子实例和 group 的步骤）合并，自动生成的步骤按节点在迭代中的位置合并。合并后的 <code>show</code> 和 <code>active</code> 取所有迭代的并集，<code>label</code>、<code>title</code>、<code>text</code> 用第一次迭代的，位置也是第一次迭代的位置。这样 GQA 每个 head 的 $S^{(h)}$、$P^{(h)}$ 共用一组步骤，步骤数不随 head 数增长，与按 head 并排画出的场景一致。并排的同一模块的实例按同样的方式合并，规则见上文「并排」。</li>
-  <li>步骤补丁写在使用处的 <code>steps</code> 里，键是「步骤 id」或「子实例路径.步骤 id」，例如 <code>q_norm.square</code>。补丁可以写 <code>when</code>，规则见「按参数取舍」。<code>title</code>、<code>label</code>、<code>text</code> 替换原值，<code>append</code> 接在原文后面，用换行分隔，<code>backward</code> 逐个字段覆盖这一步的反向默认文字。循环里合并的步骤用任一次迭代的路径都能找到。id 不存在时报错 <code>step 'x' does not exist in '路径'</code>。补丁在所在 body 建完后才编译。</li>
-  <li>页面写了 <code>leaves</code> 时，总览之后的第一步是输入步骤（<code>kind: 'inputs'</code>），显示全部叶子；之后各步只显示自己算出的节点，用到的叶子已经在输入步骤里出现。</li>
-  <li>反向步骤用 <code>createSteps</code> 的 <code>backward: 'reverse'</code> 生成：前向步骤倒过来，每一步一个反向步骤，规则见<a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。反向步骤的文字按字段取，优先级从高到低是：模块或页面的 <code>backward</code> 按节点名写的文字（写进算出这个节点的那个前向步骤，节点不在任何前向步骤里时报错 <code>node 'x' is not computed in any forward step</code>）、补丁的 <code>backward</code>、步骤声明的 <code>backward</code>。三处都没写的字段用自动内容。</li>
-  <li>每一步记下它所属的最内层模块（<code>module</code>）、步骤条上的分段（<code>segment</code>）和段内小标题（<code>sub</code>）。从外往里找第一个没有写 <code>split</code> 的模块，它的标题是分段名；这一步的最内层模块比它更深、本身也没有写 <code>split</code> 时，最内层模块的标题是小标题。最内层模块按这一步显示的第一个算出的节点找；只显示 buffer 的步骤（例如 RoPE 的 $\cos$、$\sin$ 表）属于写这一步的模块实例；值相同的 buffer 在几个实例之间共用一个节点，所以不能按节点找。这样模块折叠时这一步跟着模块走，不会单独成为一段。不属于任何模块的步骤以按钮文字为分段名。步骤自己写了 <code>segment</code> 时用它。</li>
-  <li>正文里的 <code>{{ name | matrix }}</code>、<code>{{ name | matrix:3 }}</code>、<code>{{ name.grad | matrix:3 }}</code> 在编译期按节点形状展开成 <code>\begin{pmatrix}...\end{pmatrix}</code>，每个单元格是一个模板 <code>{{节点名[i, j]:3}}</code>。三维的节点 $(T, H, d_h)$ 每个 head 展开成一个矩阵，下面标 <code>_{h=i}</code>，几个矩阵并排放在 <code>\left[\,\cdots\,\right]</code> 里；只有一个 head 时是一个普通矩阵。<code>{{ name | slices:3 }}</code> 按 PyTorch 批量矩阵的排列展开：最后两维是矩阵，前面各维的每个下标一个矩阵，下面标 <code>_{[i]}</code>（下标从 1 起），例如分块的 $(N, C, C)$ 每块一个矩阵；二维以下与 <code>matrix</code> 相同。</li>
-  <li><code>{{ name | rope_wave:cos }}</code>、<code>{{ name | rope_wave:sin:N }}</code> 展开成内置小图 <code>&lt;vf-figure&gt;</code>，画出 RoPE 表每一列随位置变化的曲线，<code>N</code> 是画到的位置数，见<a href="vizflow.html">vizflow 设计</a>的「正文模板」。节点必须是至少 2 行、最后一维为偶数的表，中间可以夹大小为 1 的维度（$(T, 1, d_h)$）；不满足时编译报错。未知的过滤器报 <code>unknown template filter</code>。</li>
-  <li>其余 <code>{{...}}</code> 里的名字按作用域换成 graph 上的节点名，再交给步骤的正文模板。</li>
+  <li>外层模块 <code>tex</code> 里按相对路径写的名字，例如 decoder 的 <code>mlp.a</code>、attention 的 <code>q_norm.ms</code>，最外层的模块优先。</li>
+  <li>调用处的名字的 tex：<code>n1: input_layernorm(x)</code> 的输出用 decoder 里 <code>n1</code> 的 tex。</li>
+  <li>模块自己的 <code>tex</code>。</li>
+  <li>由名字推出：<code>q</code> 是 $\mathbf{q}$，<code>x0</code> 是 $\mathbf{x}_{0}$，<code>W_q</code> 是 $W_{q}$。</li>
 </ol>
+<p><code>\viz{名字}</code> 在 tex、模板和公式里引用一个张量的 tex，名字按当前模块的作用域查找，只做替换，不调整排版；追加下标或上标时写 <code>{\viz{x}}_t</code>、<code>{\viz{x}}^{\top}</code>。层列表里的模块给自己的 tex 加上标 <code>^{[i+1]}</code>（第一层是 $^{[1]}$），已有上标时合并成 <code>^{q,[1]}</code>；含 <code>\viz</code> 的 tex 不加，因为被引用的 tex 已经带了层号。</p>
 
-<h2>步骤上的注释</h2>
-<p>步骤、步骤补丁和 <code>overview</code> 可以写 <code>notes</code>，在这一步的场景里放作者的注释：一段文字，加一条从文字指向目标的手绘箭头。注释只在这一步显示，离开这一步时淡出。</p>
-<pre><code class="language-yaml">steps:
-  mask:
-    notes:
-      - at: 'M[0,2]'
-        side: left
-        text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'</code></pre>
+<h2>讲解步骤</h2>
+<p><code>steps</code> 按顺序列出讲解，每一步是 <code>{ id, show, ... }</code>。步骤的 <code>id</code> 就是要展示的名字时 <code>show</code> 可以省略。</p>
 <table>
-  <thead>
-    <tr><th>字段</th><th>内容</th></tr>
-  </thead>
+  <thead><tr><th><code>show</code></th><th>含义</th></tr></thead>
   <tbody>
-    <tr><td><code>at</code></td><td>箭头指向的目标，按作用域查找。张量名或张量列表指向整块；带下标的写法 <code>q[0,1,2]</code> 指向一个元素，下标从 0 开始，个数等于张量的维数，箭头落在这个元素柱子的顶端；模块实例名指向这个实例里全部运算节点的范围。名字本身就是一个节点时（例如循环产生的 <code>P[1]</code>）按节点处理。</td></tr>
-    <tr><td><code>text</code></td><td>注释文字，不能为空，可以有 <code>$...$</code> 公式和 <code>\of{...}</code></td></tr>
-    <tr><td><code>side</code></td><td><code>left</code>、<code>right</code>、<code>above</code>、<code>below</code> 之一，文字放在目标的哪一边。不写时库按四边的空位从多到少尝试，避开场景上的按钮、图例、标签、已显示的柱子和其他注释。写了时优先这一边，这一边被挡住时仍然可以换到别的边。</td></tr>
+    <tr><td>张量或张量列表</td><td>一步，展示这些张量。</td></tr>
+    <tr><td>模块实例</td><td>插入这次调用的讲解：模块有 <code>steps</code> 时是一个带大括号的模块，没有时是一步，展示它的参数和结果。</td></tr>
+    <tr><td>几个模块实例</td><td>一组，组里每个实例一个子模块，<code>title</code> 等写在组上。</td></tr>
+    <tr><td><code>{ producer_of: a }</code></td><td>同一实例调用多次时，指定产生 <code>a</code> 的那次调用。</td></tr>
+    <tr><td><code>{ all: true }</code></td><td>总览，展示全图，只能写 <code>label</code>、<code>title</code>、<code>text</code>、<code>notes</code>、<code>backward</code>。</td></tr>
+    <tr><td><code>{ inputs: true, parameters: true }</code></td><td>输入步骤，展示根模块的输入和全部参数。</td></tr>
   </tbody>
 </table>
-<p>补丁里的 <code>notes</code> 接在原有注释后面，不替换。以下情况报错：<code>at</code> 不是张量、元素或模块实例（<code>'x' is not a tensor or a module instance</code>），下标个数不对（<code>'z[1]' gives 1 indices, but 'z' has shape (2, 3)</code>），下标越界（<code>'z[2,0]': index 2 is outside 0..1 on axis 0</code>），<code>text</code> 为空，<code>side</code> 不是四个值之一。</p>
-<p>注释的文字和箭头用主题颜色 <code>--note</code>（浅色主题 <code>#2e7a55</code>，深色主题 <code>#84cfa4</code>），与表示正负的 <code>--pos</code>、<code>--neg</code> 区分开。文字最宽 260px，箭头在 0.45 秒内画出。同一条注释每次画出的箭头形状相同，形状由注释在步骤里的位置决定。</p>
-
-<h2>模块公式</h2>
-<p>模块文件的顶层、实例和 group 可以写 <code>formula</code>，给出这个模块计算的公式。公式按 LaTeX 写，<code>\step{id}{...}</code> 标出某一部分由哪一步算出：</p>
-<pre><code class="language-yaml">module: RMSNorm
-formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\operatorname{mean}\big(\step{square}{{\of{x}}^{2}}\big)+\epsilon}}'</code></pre>
+<p>步骤的其他键：</p>
 <ul>
-  <li><code>id</code> 的写法与步骤补丁的键相同：本模块的步骤 id，或「子实例路径.步骤 id」。<code>子实例.*</code> 表示这个子实例里的全部步骤，<code>*</code> 表示本模块的全部步骤，几个 id 用逗号隔开，任一步到达时这一部分出现。<code>\step</code> 可以嵌套。自动生成的步骤用节点名作 id。</li>
-  <li>id 不存在时报错 <code>\step{square}: 'n' has no step 'square'; its steps are rms, scale</code>，列出这个模块的步骤 id；<code>\step</code> 后面不是两个花括号参数时同样报错。</li>
-  <li>实例的 <code>formula</code> 覆盖模块文件的 <code>formula</code>。<code>rmsnorm</code>、<code>rope</code>、<code>glu</code>、<code>gqa</code> 自带公式。</li>
-  <li>inline 实例没有模块记录，它的 <code>formula</code> 只能和 <code>brace</code> 一起写，公式归属于这个大括号，标题取 <code>brace</code> 的标题；只写 <code>formula</code> 时报错 <code>an inline instance has no module of its own, so its formula needs a brace to name it</code>。没有写 <code>brace</code> 的 inline 实例不使用模块文件的公式。</li>
+  <li><code>label</code>、<code>title</code>、<code>text</code> 是这一步的讲解，<code>append</code> 在正文后追加；<code>backward: { label, title, text, append }</code> 改写对应的反向步骤。</li>
+  <li><code>segment</code> 是步骤条上的分段名，默认取最外层模块的标题。<code>subtitle</code>、<code>fold</code>、<code>folded</code>、<code>formula</code>、<code>inline</code>、<code>steps</code> 只用于展示模块调用的步骤。</li>
+  <li><code>steps: { 路径: 补丁 }</code> 按步骤 id 改写子模块的步骤，路径用点连接，例如 <code>act_fn.sigmoid.neg</code>；组里的成员可以不写组名。补丁不能改 <code>show</code>。写在模块步骤上的 <code>text</code>、<code>append</code>、<code>notes</code> 放到这个模块的第一步。</li>
+  <li><code>fold</code> 改写模块折叠后那一步的讲解；模块顶层的 <code>fold</code> 是默认值。</li>
+  <li><code>inline: true</code> 让模块调用不成为单独的模块，步骤算作外层模块的；配合 <code>brace: { title, subtitle }</code> 在场景里画一个大括号，模块的 <code>formula</code> 显示在大括号上。不是 inline 的模块调用不能写 <code>brace</code>，它已经有自己的大括号。</li>
+  <li><code>beside: 前一步的 id</code> 把这一步并到那一步里：两个张量步骤合成一步；两个模块调用的步骤逐个合成，步数必须相同，例如 q_norm 和 k_norm。</li>
+  <li><code>notes</code> 在场景里加注释：<code>at</code> 是张量、张量的一个元素（例如 <code>'mask[0, 2]'</code>）或模块实例，<code>text</code> 是模板，<code>side</code> 是 <code>left</code>、<code>right</code>、<code>above</code>、<code>below</code> 之一。</li>
 </ul>
-<p>编译器把 <code>\step{id}{...}</code> 换成 KaTeX 的 <code>\htmlData{vf-step=...}{...}</code>，给对应的前向步骤记下标记（<code>ForwardStep.marks</code>，步骤列表里是 <code>StepInfo.marks</code>）；编译结果里模块的公式在 <code>PageModule.formula</code>，inline 实例的公式在步骤的 <code>brace.formula</code>，步骤列表里是 <code>StepInfo.formula: { title, tex }</code>。折叠的模块那一步带有模块内全部步骤的标记。</p>
-<p><b>显示的位置。</b>场景在左下角当前步骤框（←、→ 按钮和步骤标签）的正上方放一个公式框，只显示一条公式：当前步骤的 <code>StepInfo.formula</code>，没有时从这一步所属的最内层模块开始，向外找第一个有公式的模块。模块标题用小字写在公式上方，公式按正常的行间公式大小显示。总览和输入步骤不显示公式框，这一步所在的模块链上都没有公式时也不显示。只有跟随相机的页面有当前步骤框，所以也只有这类页面显示公式框。公式放在固定的位置，不写在每个模块大括号的标题下面：大括号旁的空间只够放一行标题，公式在那里要缩到十像素左右，还会被相邻的大括号截断。</p>
-<p><b>逐步出现。</b>公式框里每一部分有四种状态：</p>
+<h3>循环步骤</h3>
+<pre><code class="language-yaml">- id: layers
+  loop: layer = layers[i]
+  defaults:
+    title: Qwen3DecoderLayer
+    subtitle: 第 {{ i + 1 }} 层
+  rules:
+    - at: -1
+      subtitle: 最后一层</code></pre>
+<p><code>loop</code> 对列表的每一项生成一步，<code>layer</code> 是当前项，<code>i</code> 从 0 开始，可以引用 <code>layers[i + 1]</code>。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则（<code>at</code> 可以是负数），再求值模板，越界引用报错。<code>show</code> 默认是循环变量。</p>
+<h3>每个结果都要展示</h3>
+<p>编译器检查每个被展示的模块调用：<code>forward</code> 的每个结果要么出现在某一步的 <code>show</code> 里，要么是某个被展示的模块调用的输入，要么由一个被展示的子模块调用产生，要么是布局运算（<code>view</code>、<code>reshape</code>、<code>transpose</code>、<code>unsqueeze</code>、<code>contiguous</code>）作用在已展示的张量上的结果，这类结果画在输入上。都不满足时报错，指向 <code>forward</code> 里那一项。确实不需要单独展示的结果写进模块的 <code>unshown</code>。没有被任何一步展示的参数和 buffer 放进第一个展示其使用者的步骤。</p>
+
+<h2>公式与插值</h2>
+<p><code>formula</code> 是模块的公式，<code>\step{步骤 id}{公式片段}</code> 标出由哪一步算出的部分：前向走到这一步之前这部分不显示，走到这一步时用正色标出；反向时整条公式显示，当前步骤对应的部分用负色标出。id 的写法与补丁相同，<code>子实例.*</code> 表示子实例的全部步骤，几个 id 用逗号隔开。编译后 <code>\step</code> 变成 <code>\htmlData{vf-step=s序号}</code>，对应步骤的 <code>marks</code>。</p>
+<p><code>preamble</code> 文件里的 <code>\newcommand{\名字}[参数个数]{定义}</code> 在模板、tex 和公式里展开，展开嵌套超过 32 层时报错。</p>
+<p><code>{{ 表达式 | 格式 }}</code> 插入值。标量不写格式时直接显示；非标量必须写格式，否则报错。</p>
 <table>
-  <thead>
-    <tr><th>状态</th><th>条件</th><th>显示</th></tr>
-  </thead>
+  <thead><tr><th>格式</th><th>结果</th></tr></thead>
   <tbody>
-    <tr><td>未出现</td><td>前向，这一部分的步骤都还没有到</td><td>不显示，保留位置，公式的排版不随步骤变化</td></tr>
-    <tr><td>当前</td><td>前向，当前步骤是这一部分的步骤之一</td><td>用正色 <code>--pos</code>，从左到右在 0.7 秒内显出</td></tr>
-    <tr><td>已出现</td><td>前向，这一部分的某一步已经过去</td><td>正文颜色</td></tr>
-    <tr><td>反向当前</td><td>反向，当前反向步骤对应的前向步骤是这一部分的步骤之一</td><td>用负色 <code>--neg</code>；反向时其余部分都按已出现显示</td></tr>
+    <tr><td><code>matrix:位数</code></td><td>整个张量写成 pmatrix；超过 2 维时按最后两维切块，每块下标标出前面各维（从 0 开始）。</td></tr>
+    <tr><td><code>join: "分隔符"</code></td><td>一维张量或 token 列表的各项用分隔符连接，token 列表显示 token 文字。</td></tr>
+    <tr><td><code>lines:shade=T</code></td><td>内置小图。这时表达式可以计算新的值：<code>arange</code>、库里的运算、四则运算与广播、下标、切片和 <code>[:, None]</code>，计算只用于显示，不进计算图，页面数值变化后重新计算。参数写成 <code>名字=表达式</code>，在编译时算成数。小图的名字和参数见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</td></tr>
   </tbody>
 </table>
-<p>反向步骤对应的前向步骤由 <code>StepInfo.forwardId</code> 给出：分层步骤里，每个反向步骤和折叠模块的反向步骤都记下同一组运算的前向步骤 id。没有 <code>forwardId</code> 的反向步骤（不分层的自动反向步骤、反向总览）按当前步骤自己的公式来源显示，各部分都按已出现显示。</p>
-<p>系统设置了减少动画时，各部分直接出现，不做显出动画。</p>
+<p>插值编译成运行时模板 <code>{{节点名[下标]:位数}}</code>，数值随页面更新；<code>x.grad</code> 取梯度。</p>
 
-<h2>面板与大括号</h2>
-<p><code>panels</code> 是 <code>PanelItem</code> 的同构写法，凡是节点的位置都写路径或根作用域的名字：<code>tokens</code>、<code>sliders</code>、<code>ids</code>、<code>columns[].node</code>、<code>matrix</code>、<code>matrices[].matrix</code>、<code>highlight</code>（或 <code>highlight.node</code>）、<code>attention</code>、<code>loss.parts</code>、<code>loss.random.nodes</code> 与 <code>sgd.params</code>。<code>attention</code> 可以写范围 <code>'P[1..H]'</code> 或列表；<code>extra_keys</code> 是 token 之后各列的表头，按根作用域展开 <code>\of{...}</code>。<code>sgd.params</code> 与 <code>random.nodes</code> 写 <code>all</code> 表示全部权重。<code>matrix: head.W.T</code> 这类表达式也可以写，转置在建图时已经存在时直接复用。<code>title</code>、<code>note</code>、<code>caption</code>、列标题与 <code>loss.text</code> 里的 <code>\of{...}</code> 按根作用域展开。<code>loss</code> 一项单独写 <code>- loss</code> 时用默认选项，显存与计算量面板写 <code>- cost</code> 或 <code>- cost: { dims: toy }</code>。<code>sequence: true</code> 的面板需要页面写了 <code>sequence</code>。</p>
-<p>大括号来自模块记录。页面编译出 <code>modules</code> 后，<code>autoLayout</code> 按<a href="vizflow.html">vizflow 设计</a>的「分层布局」生成大括号；标题是模块记录的标题，按 <code>renderText</code> 渲染，可以含行内公式。页面里没有任何模块时（例如只有几个节点的最小页面），<code>autoLayout</code> 按布局树排布，for 里同名实例合成一个括号、并排的几项标题用 <code> · </code> 连接，见<a href="vizflow.html">vizflow 设计</a>的「自动布局」。</p>
-
-<h2>序列输入</h2>
-<p>语言模型的页面通常把一条 token 序列同时作为输入和右移一位的标签。页面写 <code>sequence: { tokens: [the, cat, sat, on], input: ids, label: y }</code> 时，编译器建两个 label 节点：<code>input</code> 是前 $T$ 个 token 的 id，<code>label</code> 是后 $T$ 个，两者的 <code>tokens</code> 都是页面的 <code>vocab</code>。规则：</p>
-<ul>
-  <li><code>tokens</code> 至少两个，每个必须在 <code>vocab</code> 里；$T$ 等于个数减 1，根作用域的 <code>dims</code> 里有 <code>T</code> 时必须相等，否则报错 <code>sequence has N tokens, so T must be ..., but dims gives T = ...</code>。<code>dims</code> 里有 <code>T</code> 时两个 label 的 shape 写成 <code>(T,)</code>，真实尺寸按 <code>real</code> 里的 <code>T</code> 计算，显存与计算量面板据此得到真实序列长度下的大小。</li>
-  <li>编译结果的 <code>sequence</code> 是 <code>PageSequence</code>：<code>get()</code> 返回当前的 $T+1$ 个 id，<code>set(ids)</code> 在一次 <code>batch</code> 里同时改写输入和标签；个数不对或 id 越界时抛错 <code>sequence.set: expected N token ids between 0 and V-1, got [...]</code>。</li>
-  <li>元素把 <code>sequence</code> 交给面板和场景：序列面板逐个位置选 token，场景里点击 $\log\mathbf{p}$ 的柱子改的是序列，输入和标签一起变化，见<a href="vizflow.html">vizflow 设计</a>的「标签与交互」。</li>
-</ul>
-<pre><code class="language-ts">interface PageSequence { readonly tokens: string[]; readonly length: number; get(): number[]; set(ids: number[]): void }</code></pre>
+<h2>面板</h2>
+<table>
+  <thead><tr><th>写法</th><th>说明</th></tr></thead>
+  <tbody>
+    <tr><td><code>cost</code></td><td>显存与计算量面板。</td></tr>
+    <tr><td><code>loss: { parts?, hint? }</code></td><td>损失曲线，<code>parts</code> 是每个位置的损失。</td></tr>
+    <tr><td><code>sequence: true, tokens, input, label, labels?, sgd?, random?, reset?</code></td><td>序列面板。<code>tokens</code> 是 data 里的 token 列表，<code>input</code>、<code>label</code> 是根模块的输入；<code>sgd: { params: all 或参数列表, lr, label? }</code>。</td></tr>
+    <tr><td><code>code</code></td><td>一段代码。</td></tr>
+    <tr><td><code>attention, ids</code></td><td>注意力权重面板。</td></tr>
+    <tr><td><code>matrices, highlight?, rows?</code></td><td>矩阵面板。</td></tr>
+  </tbody>
+</table>
+<p>除 <code>cost</code> 和 <code>loss</code> 外，面板都可以写 <code>title</code> 和 <code>note</code>（模板）。张量引用按根模块的作用域求值，可以写路径，例如 <code>layers[0].self_attn.qn</code>。</p>
 
 <h2>讲解段落</h2>
-<p><code>sections</code> 在场景和步骤条下方画讲解段落，用来放不属于某一步的长篇讲解（例如 RoPE 为什么能编码相对位置）。每一项编译成 <code>SectionItem</code>，由 <code>ui</code> 的 <code>mountSections</code> 画出，见<a href="vizflow.html">vizflow 设计</a>的「面板」。</p>
+<p><code>sections</code> 的每一项是 <code>{ title?, src, rope? }</code>，编译成 <code>SectionItem</code>，由 <code>ui</code> 的 <code>mountSections</code> 画出。</p>
 <ul>
-  <li><code>{ title?, rope?, src }</code> 或 <code>{ title?, rope?, rows }</code>，两者只能写一个，都没有时报错 <code>a section needs src or rows</code>。</li>
-  <li><code>src</code> 是 Markdown 文件，相对于 YAML 文件解析，和 <code>import</code> 的模块路径一样在运行时读取。文件按冒号块分行、分栏：三个或更多冒号加名字的一行打开一个块，只有冒号的一行关闭最近的块；<code>columns 宽度...</code> 只能在最外层，里面只放 <code>column</code>；<code>lead</code> 是开头段落；单独的 <code>---</code> 结束当前行；其他名字是内置组件，参数写在块的内容里（YAML）。解析由 <code>dsl</code> 的 <code>section-md</code> 完成，出错时报 Markdown 文件的行号，例如 <code>qwen3/rope.md:12:1: '::: lead' is not closed</code>。完整写法见 <code>docs/guide.md</code> 第 5.3 节。</li>
-  <li><code>rows</code> 直接写在 YAML 里：一行是块的列表，或者 <code>{ columns: [宽度...], cells: [[块...], ...] }</code>，宽度个数必须等于栏数；数字是像素，其他写法原样作为 CSS 网格宽度。块是 <code>rope_dial</code>、<code>rope_curve</code>、<code>{ text }</code>、<code>{ lead }</code>、<code>{ buttons: [{ label, go }] }</code>、<code>{ rope_compare: { scores, weights, ids } }</code> 之一。</li>
-  <li><code>rope: { q, k, rows?, head?, theta, dh, positions? }</code> 给 RoPE 组件提供数据：q、k 可以是 $(T, H d_h)$ 或 $(T, H, d_h)$ 的节点，或每个 head 一个节点的列表；<code>rows</code> 是 q 和 k 各取第几行（负数从末尾数），默认 <code>[-1, 1]</code>；<code>head</code> 默认 1；<code>dh</code> 必须是偶数；<code>positions</code> 是曲线画到的位置数，默认 24，至少 2。</li>
+  <li><code>src</code> 是 Markdown 文件，相对于页面文件解析，在运行时读取。冒号块的写法见 <code>docs/guide.md</code> 第 5.3 节，出错时报 Markdown 文件的行号。</li>
+  <li>块里的 <code>buttons</code> 是 <code>{ label, go }</code> 的列表，<code>rope_compare</code> 是 <code>{ scores, weights, ids }</code>，<code>scores</code> 和 <code>weights</code> 是形状为 (heads, T, T) 的张量，例如 Qwen3 注意力里的 <code>Ss</code> 和 <code>P</code>。</li>
+  <li><code>rope: { q, k, rows?, head?, theta, d_head, positions? }</code> 给 RoPE 组件提供数据：<code>q</code>、<code>k</code> 是张量，<code>rows</code> 是 q 和 k 各取第几行，从 0 开始，可以是负数，默认 <code>[-1, 0]</code>；<code>head</code> 从 0 开始，默认 0；<code>d_head</code> 必须是偶数；<code>positions</code> 是曲线画到的位置数，默认 24，至少 2。</li>
 </ul>
 
-<h2>编译接口与布局树</h2>
+<h2>内置模块</h2>
+<p>Qwen3 用到的内置模块按新写法实现，每一步对应 HF 实现的一行代码；其余包内模块还没有迁移。</p>
+<table>
+  <thead><tr><th>模块</th><th>args</th><th>输入 → 输出</th><th>步骤 id</th></tr></thead>
+  <tbody>
+    <tr><td><code>Linear</code>（内置）</td><td><code>in_features</code>、<code>out_features</code>、<code>bias</code></td><td><code>x</code> → <code>y = x @ weight.T</code></td><td>没有步骤，展示时是一步</td></tr>
+    <tr><td><code>Embedding</code>（内置）</td><td><code>num_embeddings</code>、<code>embedding_dim</code></td><td><code>x</code>（int64）→ <code>out</code></td><td>没有步骤</td></tr>
+    <tr><td><code>vizflow/nn/rmsnorm</code></td><td><code>hidden_size</code>、<code>eps</code>（默认 1e-6）</td><td><code>x: [..., hidden_size]</code> → <code>out</code>；中间结果 <code>xf</code>、<code>sq</code>、<code>ms</code>、<code>mse</code>、<code>r</code>、<code>xh</code>、<code>xc</code></td><td><code>float</code>、<code>square</code>、<code>mean</code>、<code>eps</code>、<code>rms</code>、<code>normalize</code>、<code>cast</code>、<code>scale</code></td></tr>
+    <tr><td><code>vizflow/nn/glu</code></td><td><code>d_model</code>、<code>d_ff</code>、<code>act</code>（module，默认 SiLU）</td><td><code>x</code> → <code>down</code>；子模块 <code>gate_proj</code>、<code>up_proj</code>、<code>down_proj</code>、<code>act_fn</code>，中间结果 <code>gate</code>、<code>a</code>、<code>up</code>、<code>m</code></td><td><code>gate_proj</code>、<code>act_fn</code>、<code>up_proj</code>、<code>gate</code>、<code>down</code></td></tr>
+    <tr><td><code>vizflow/nn/silu</code></td><td>无</td><td><code>x</code> → <code>out</code>；子模块 <code>sigmoid</code></td><td><code>sigmoid</code>、<code>mul</code></td></tr>
+    <tr><td><code>vizflow/nn/sigmoid</code></td><td>无</td><td><code>x</code> → <code>out</code></td><td><code>neg</code>、<code>exp</code>、<code>add</code>、<code>recip</code></td></tr>
+    <tr><td><code>vizflow/nn/log-softmax</code></td><td>无</td><td><code>x: [..., C]</code> → <code>out</code></td><td><code>exp</code>、<code>sum</code>、<code>log</code>、<code>sub</code></td></tr>
+    <tr><td><code>vizflow/nn/nll-loss</code></td><td>无</td><td><code>logp: [N, C]</code>、<code>y: [N]</code> → <code>loss</code>、<code>lt</code></td><td><code>pick</code>、<code>neg</code>、<code>mean</code></td></tr>
+    <tr><td><code>vizflow/nn/rope</code></td><td>无</td><td><code>q: [H, T, d_head]</code>、<code>k: [H_kv, T, d_head]</code>、<code>cos</code>、<code>sin: [T, d_head]</code> → <code>q_embed</code>、<code>k_embed</code></td><td><code>cos</code>、<code>half</code>、<code>neg</code>、<code>rh</code>、<code>sin</code>、<code>add</code></td></tr>
+    <tr><td><code>vizflow/nn/gqa</code></td><td>无</td><td><code>q: [H, T, d_head]</code>、<code>k</code>、<code>v: [H_kv, T, d_head]</code>、<code>mask: [T, T]</code> → <code>o: [T, H, d_head]</code>；中间结果 <code>key_states</code>、<code>value_states</code>、<code>kT</code>、<code>S</code>、<code>Ss</code>、<code>Sm</code>、<code>ex</code>、<code>Z</code>、<code>P</code>、<code>attn_output</code></td><td><code>krep</code>、<code>vrep</code>、<code>kT</code>、<code>S</code>、<code>Ssc</code>、<code>mask</code>、<code>exp</code>、<code>sum</code>、<code>div</code>、<code>pv</code></td></tr>
+    <tr><td><code>vizflow/nn/rotary-embedding</code></td><td><code>d_head</code>、<code>rope_theta</code></td><td><code>x: [T, hidden]</code>、<code>position_ids: [T]</code> → <code>cos</code>、<code>sin</code>；buffer <code>inv_freq</code></td><td><code>freqs</code>、<code>emb</code>、<code>cos_sin</code></td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><code>gqa</code> 按 HF 的批量写法计算：<code>repeat_kv</code> 后所有 head 一起 matmul，softmax 按定义拆成 exp、求和、相除，在 fp32 里算完再转回 q 的 dtype，最后 <code>transpose(0, 1).contiguous()</code> 回到 (T, H, d_head)。</li>
+  <li><code>rotary-embedding</code> 的 <code>attention_scaling</code> 在默认的 rope 类型下是 1，乘 1 不画，讲解里写明。</li>
+  <li><code>rope</code> 没有 HF 里 cos、sin 的 <code>unsqueeze</code>：这里没有 batch 维，(T, d_head) 的表直接和 (H, T, d_head) 广播。</li>
+</ul>
+
+<h2>编译接口</h2>
 <pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
 interface CompiledPage {
   graph: Graph;
@@ -348,21 +281,18 @@ interface CompiledPage {
   sections: SectionItem[];
   nodes: Map&lt;string, Node&gt;;
   sequence?: PageSequence;
-  layout?: unknown;
-  page: { title: string; lede?: string; hint?: string; camera?: CameraOptions };
+  page: { title: string; camera?: CameraOptions };
 }
+interface PageSequence { tokens: string[]; length: number; get(): number[]; set(ids: number[]): void; }
 function compilePage(spec: PageFile, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
 function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
 function parseYaml(text: string, file: string): unknown;</code></pre>
-<p><code>compilePage</code> 的 <code>base</code> 是相对引用的基准地址，也是错误信息里的文件名，省略时文件名是 <code>&lt;page&gt;</code>，页面里不能有相对引用。<code>loadPage</code> 读取 <code>url</code>，以它为基准地址编译。两者都用同一个读取函数读 <code>sections</code> 的 <code>src</code> 文件。<code>steps</code> 的 <code>backward</code> 是 <code>'reverse'</code>，<code>steps.modules</code> 与 <code>modules</code> 是同一组模块记录。<code>dsl</code> 入口另外导出 <code>PageFile</code>、<code>ModuleFile</code> 等类型、<code>DslError</code> 与 <code>OP_TEX</code>。</p>
-<p><code>tree</code> 是交给自动布局的布局树，类型定义在 <code>scene3d</code>：</p>
-<pre><code class="language-ts">type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
-interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; children: LayoutEntry[] }</code></pre>
 <ul>
-  <li>根模块是最外层的 LayoutTree，title 为空；页面的 inputs 和 <code>sequence</code> 建的两个节点是它的第一批 node 条目。inline 实例生成一个 title 为空的子树。</li>
-  <li>body 顺序就是 children 顺序，表达式里间接产生的节点排在所属节点之前；weights 和 buffers 作为 node 条目放在第一次用到它的节点前面。权重的转置节点不进入布局树，自动布局从 <code>matmul</code> 节点的输入找到它。</li>
-  <li>实例和 group 生成子 LayoutTree。一个 for 生成一个 parallel，每次迭代一个分支，没有 <code>brace</code> 的迭代 title 为空；<code>sequential: true</code> 的 for 不生成 parallel，各次迭代的条目依次接在外层的 children 里。实例和 group 的 title 与对应 <code>SceneModule</code> 的标题相同，在 for 里去掉循环下标。</li>
-  <li>一项和 beside 它的各项合成一个 parallel，每项一个分支。实例和 group 的分支就是它们自己的 LayoutTree；for 的分支是一个 title 为空的 LayoutTree，里面是这个 for 自己的 parallel。</li>
+  <li><code>base</code> 是相对引用的基准地址，也是错误信息里的文件名。<code>loadPage</code> 读取 <code>url</code>，以它为基准地址编译。两者都用同一个读取函数读模块文件、<code>preamble</code> 和讲解段落。</li>
+  <li><code>nodes</code> 按路径查节点：根模块的名字没有前缀，子模块里的名字是 <code>实例路径.名字</code>，参数是 <code>state_dict</code> 的键。</li>
+  <li><code>steps.backward</code> 是 <code>'reverse'</code>，<code>steps.modules</code> 与 <code>modules</code> 是同一组模块记录。模块记录的 <code>id</code> 是调用的路径前缀，例如 <code>layers[0].self_attn</code>。</li>
+  <li>错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>attention.yaml:44:7 forward[3].qt: name 'qnn' is not defined in 'layers[0].self_attn' (Qwen3Attention)</code>。</li>
+  <li><code>dsl</code> 入口另外导出 <code>PageFile</code>、<code>ModuleFile</code> 等描述文件的类型和 <code>DslError</code>。</li>
 </ul>
 
 </main>

@@ -1,6 +1,5 @@
-import { DTYPES, type Dtype, Node } from '../../autograd';
-import type { Nested } from '../../tensor';
-import type { Ast } from '../expr';
+import { DTYPES, type Dtype, Node, evaluateValue } from '../../autograd';
+import type { Nested, Tensor } from '../../tensor';
 import { type ModuleDef, PACKAGE_PREFIX } from '../load';
 import { DslError, type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
@@ -19,30 +18,10 @@ const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
-type Constant = number | Constant[];
-
 export const LINEAR = 'Linear';
 
 export function listMark(i: number): string {
   return `^{[${i + 1}]}`;
-}
-
-function mapConstant(a: Constant, fn: (x: number) => number): Constant {
-  return Array.isArray(a) ? a.map((x) => mapConstant(x, fn)) : fn(a);
-}
-
-function zipConstant(a: Constant, b: Constant, fn: (x: number, y: number) => number): Constant {
-  if (Array.isArray(a) && Array.isArray(b)) {
-    if (a.length !== b.length) throw new Error(`cannot combine lists of length ${a.length} and ${b.length}`);
-    return a.map((x, i) => zipConstant(x, b[i], fn));
-  }
-  if (Array.isArray(a)) return a.map((x) => zipConstant(x, b, fn));
-  if (Array.isArray(b)) return b.map((y) => zipConstant(a, y, fn));
-  return fn(a, b);
-}
-
-function shapeOfConstant(value: Constant): number[] {
-  return Array.isArray(value) ? [value.length, ...(value.length > 0 ? shapeOfConstant(value[0]) : [])] : [];
 }
 
 export abstract class Modules extends Expressions {
@@ -153,61 +132,27 @@ export abstract class Modules extends Expressions {
     const dtype = this.expression(spec.dtype, { ...env, where: child(at, spec, 'dtype') });
     if (!isDtype(dtype)) fail(child(at, spec, 'dtype'), `dtype must be one of ${DTYPES.join(', ')}`);
     const valueWhere = child(at, spec, 'value');
-    let values: Constant;
+    let values: Tensor;
     try {
-      values = this.constant(this.parse(spec.value, { ...env, where: valueWhere }), { ...env, where: valueWhere });
+      values = evaluateValue(this.valueExpr(this.parse(spec.value, { ...env, where: valueWhere }), { ...env, where: valueWhere }, false), () => {
+        throw new Error('a buffer value cannot read tensors');
+      });
     } catch (error) {
       if (error instanceof DslError) throw error;
       return fail(valueWhere, (error as Error).message);
     }
-    const actual = shapeOfConstant(values);
+    const actual = values.shape;
     if (actual.join(',') !== shape.map((d) => d.toy).join(',')) fail(valueWhere, `the value has shape (${actual.join(', ')}), but the buffer declares (${shape.map((d) => d.toy).join(', ')})`);
     const path = join(instance.path, name);
     const tex = this.memberTex(instance, name);
     let node: Node;
     try {
-      node = this.g.buffer(path, shape.map((d) => this.dimSpec(d)), values as Nested, { dtype: dtype.dtype, tex, elem: elemOf(tex) });
+      node = this.g.buffer(path, shape.map((d) => this.dimSpec(d)), values.toNested(), { dtype: dtype.dtype, tex, elem: elemOf(tex) });
     } catch (error) {
       return fail(at, (error as Error).message);
     }
     this.define(instance, name, node, at);
     this.nodes.set(path, node);
-  }
-
-  private constant(ast: Ast, env: Env): Constant {
-    switch (ast.k) {
-      case 'num':
-        return ast.v;
-      case 'name': {
-        const value = this.lookup(ast.name, env, ast.pos);
-        if (!isNum(value)) return this.fail(env, `'${ast.name}' is ${describe(value)}, not a number`, ast.pos);
-        return value.toy;
-      }
-      case 'neg':
-        return mapConstant(this.constant(ast.arg, env), (x) => -x);
-      case 'list':
-        return ast.items.map((item) => this.constant(item, env));
-      case 'bin': {
-        const a = this.constant(ast.a, env);
-        const b = this.constant(ast.b, env);
-        const ops: Record<string, (x: number, y: number) => number> = { '+': (x, y) => x + y, '-': (x, y) => x - y, '*': (x, y) => x * y, '/': (x, y) => x / y, '//': (x, y) => Math.floor(x / y), '**': (x, y) => x ** y };
-        const fn = ops[ast.op];
-        if (fn === undefined) return this.fail(env, `'${ast.op}' is not available in a buffer value`, ast.pos);
-        return zipConstant(a, b, fn);
-      }
-      case 'call': {
-        if (ast.fn.k === 'member' && ['float', 'double'].includes(ast.fn.name) && ast.args.length === 0) return this.constant(ast.fn.obj, env);
-        if (ast.fn.k === 'name' && ast.fn.name === 'arange' && ast.kwargs.length === 0) {
-          const args = ast.args.map((arg) => this.constant(arg, env));
-          if (args.length < 1 || args.length > 3 || args.some((a) => typeof a !== 'number')) return this.fail(env, 'arange takes one to three numbers', ast.pos);
-          const [start, stop, step] = args.length === 1 ? [0, args[0] as number, 1] : [args[0] as number, args[1] as number, (args[2] as number | undefined) ?? 1];
-          return Array.from({ length: Math.max(0, Math.ceil((stop - start) / step)) }, (_, i) => start + i * step);
-        }
-        return this.fail(env, 'a buffer value can only use numbers, args, arange and arithmetic', ast.pos);
-      }
-      default:
-        return this.fail(env, 'a buffer value can only use numbers, args, arange and arithmetic', ast.pos);
-    }
   }
 
   private childMember(instance: Instance, name: string, spec: unknown, at: Where): void {

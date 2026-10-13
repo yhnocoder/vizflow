@@ -1,4 +1,5 @@
-import { Node } from '../../autograd';
+import { Node, evaluateValue } from '../../autograd';
+import type { Tensor } from '../../tensor';
 import { checkFigure, figureNames, figureTag } from '../../ui/figure-spec';
 import { DslError } from '../source';
 import { numberTex } from '../tex';
@@ -123,11 +124,12 @@ export abstract class Texts extends Modules {
 
   interpolate(source: string, env: Env): string {
     const { expr, filter } = splitFilter(source);
+    const colon = filter === undefined ? -1 : filter.indexOf(':');
+    const name = filter === undefined ? undefined : (colon < 0 ? filter : filter.slice(0, colon)).trim();
+    const arg = filter === undefined || colon < 0 ? undefined : filter.slice(colon + 1).trim();
+    if (name !== undefined && figureNames.includes(name)) return this.figure(name, expr, arg, source, env);
     const found = this.reference(expr, env);
-    if (filter === undefined) return this.plain(found, source, env);
-    const colon = filter.indexOf(':');
-    const name = (colon < 0 ? filter : filter.slice(0, colon)).trim();
-    const arg = colon < 0 ? undefined : filter.slice(colon + 1).trim();
+    if (name === undefined) return this.plain(found, source, env);
     const view = this.viewOf(found, source, env);
     if (name === 'matrix') {
       if (arg !== undefined && !/^\d+$/.test(arg)) this.fail(env, `matrix takes a number of digits, got '${arg}' in '{{${source}}}'`);
@@ -141,14 +143,28 @@ export abstract class Texts extends Modules {
       const format = this.tokenLists.has(view.node) ? ':token' : '';
       return Array.from({ length: shape[0] }, (_, i) => this.cell(view, [i], format)).join(separator[2]);
     }
-    if (figureNames.includes(name)) {
-      if (view.index.length > 0 || view.grad) this.fail(env, `${name} takes a whole tensor in '{{${source}}}'`);
-      const args = arg === undefined ? [] : arg.split(':').map((part) => part.trim());
-      const problem = checkFigure(name, view.node.shape, args);
-      if (problem !== undefined) this.fail(env, `${problem} in '{{${source}}}'`);
-      return figureTag(name, view.node.name, args);
-    }
     return this.fail(env, `unknown format '${name}' in '{{${source}}}'; formats are matrix, join and ${figureNames.join(', ')}`);
+  }
+
+  private figure(name: string, expr: string, arg: string | undefined, source: string, env: Env): string {
+    const args = (arg === undefined ? [] : arg.split(':')).map((part) => {
+      const eq = part.indexOf('=');
+      if (eq < 0) return part.trim();
+      return `${part.slice(0, eq).trim()}=${this.number(part.slice(eq + 1).trim(), env).toy}`;
+    });
+    const resolved = this.valueExpr(this.parse(expr, env), env, true);
+    let shape: readonly number[];
+    try {
+      shape = evaluateValue(resolved, (path, grad) => {
+        const node = this.g.node(path) as Node;
+        return grad ? (node.grad as Tensor) : node.value;
+      }).shape;
+    } catch (error) {
+      return this.fail(env, `${(error as Error).message} in '{{${source}}}'`);
+    }
+    const problem = checkFigure(name, shape, args);
+    if (problem !== undefined) this.fail(env, `${problem} in '{{${source}}}'`);
+    return figureTag(name, resolved, args);
   }
 
   private plain(found: Value, source: string, env: Env): string {

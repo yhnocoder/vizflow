@@ -27,7 +27,6 @@ config:
     vocab: [on, mat, the, sat, cat]
   real:
     qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
-    qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28, rope_theta: 1000000 }
 
 data:
   tokens: [the, cat, sat, on]
@@ -137,6 +136,7 @@ modules:
           下一步，我们先看 embedding 如何把 token 编号转换成向量。
       - id: embed
         label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
+        title: embedding：按编号取行
         brace: { title: embed_tokens, subtitle: nn.Embedding }
         show: [ids, e, embed_tokens.weight]
         text: |
@@ -153,11 +153,13 @@ modules:
         steps:
           cos_sin:
             text: |
-              RoPE 用的 cos、sin 表在进入 decoder 层之前只算一次，之后传给每一层。表的每一行对应一个位置 $t$（position_id），列按频率排：$\omega_i=\theta^{-2i/d_h}$。Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h={{ d_head }}$ 和 {{ T }} 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta={{ rope_theta }}$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs), dim=-1)</code> 生成这张表，所以它们的频率相同、数值也相同。下图把位置延长到 24，阴影是这里用到的前 {{ T }} 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
+              RoPE 用的 cos、sin 表在进入 decoder 层之前只算一次，之后传给每一层。表的第 $t$ 行对应位置 $t$（position_id，行和列都从 0 数），第 $i$ 列和第 $i+d_h/2$ 列的角度都是 $t\,\omega_i$，$\omega_i=\theta^{-2i/d_h}$。Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h={{ d_head }}$ 和 {{ T }} 个位置，用 $10^6$ 的话 $\omega_1$ 太小，看不出循环，所以改用 $\theta={{ rope_theta }}$，频率是 $\omega_0=1$、$\omega_1=0.316$。第 0 行 $t=0$，角度为 0，cos 全是 1；第 1 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 2 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。HF 用 <code>torch.cat((freqs, freqs), dim=-1)</code> 生成这张表，所以第 $c$ 列和第 $c+d_h/2$ 列频率相同、数值也相同，它们是 rotate_half 配成的一对。
 
-              {{ cos | rope_wave:cos }}
+              下面两张图把位置延长到 24 个，横轴是位置 $t$。每条曲线是一个频率的 $\cos t\,\omega_i$（第二张图是 $\sin t\,\omega_i$），图例里的列 $i$ 对应表里的第 $i$ 列和第 $i+d_h/2$ 列，所以每条曲线代表两列。阴影是这里用到的前 {{ T }} 个位置。$\omega_0$ 的周期约 6.3 个位置，$\omega_1$ 约 20 个位置。
 
-              {{ sin | rope_wave:sin }}
+              {{ cos(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
+
+              {{ sin(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
 
               $$\cos={{ cos | matrix:3 }},\qquad \sin={{ sin | matrix:3 }}$$
       - id: mask
@@ -191,6 +193,7 @@ modules:
               $$\pfl{\viz{h_last}}={{ h_last.grad | matrix:3 }}$$
       - id: logits
         label: '$\viz{z}$'
+        title: lm_head
         show: lm_head
         text: |
           每个位置的 ${\viz{h_norm}}_t$ 都乘同一块 ${\viz{lm_head.weight}}^{\top}$，得到这个位置对下一个 token 的 logits。${\viz{h_norm}}_{t,k}$ 沿第 $k$ 行经过每个方块，每一列累加后落到 $z_{t,i}$。

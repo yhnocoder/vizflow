@@ -1,18 +1,16 @@
-import type { Graph, Node } from '../autograd';
+import { type Graph, type ValueExpr, evaluateValue } from '../autograd';
 import { renderText } from '../formula';
-import { WAVE_INVERSE, checkFigure } from './figure-spec';
+import { type Tensor, formatNumber } from '../tensor';
+import { type FigureArgs, checkFigure, decodeExpr, figureArgs } from './figure-spec';
 
-const WAVE_WIDTH = 340;
-const WAVE_HEIGHT = 112;
-const WAVE_POSITIONS = 24;
-const WAVE_TICK = 6;
-const WAVE_SAMPLES = 4;
+const LINES_WIDTH = 340;
+const LINES_HEIGHT = 112;
+const LINES_TICK = 6;
+const LINES_DASHES = ['', '4 3', '1.5 2.5', '7 2 1.5 2'];
 const LABEL_HEIGHT = 16;
 const TICK_BOX = 40;
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
-
-const WAVE_FN: Record<string, (x: number) => number> = { cos: Math.cos, sin: Math.sin };
 
 export const texAttr = (text: string) => text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
@@ -25,59 +23,77 @@ const svgLabel = (x: number, y: number, align: 'left' | 'center' | 'right', tex:
   return `<foreignObject x="${left}" y="${y - LABEL_HEIGHT / 2}" width="${TICK_BOX}" height="${LABEL_HEIGHT}"><div class="vf-fo" style="color:var(--muted);font-size:10px;text-align:${align}" data-vf-text="${texAttr(tex)}"></div></foreignObject>`;
 };
 
-function ropeWave(node: Node, args: string[]): string {
-  const kind = args[0];
-  const f = WAVE_FN[kind];
-  const inverse = WAVE_INVERSE[kind];
-  const N = args[1] === undefined ? WAVE_POSITIONS : Number(args[1]);
-  const T = node.shape[0];
-  const dh = node.shape[node.shape.length - 1];
-  const half = dh / 2;
-  const omegas = range(half).map((i) => inverse(node.value.data[dh + i]));
-  const x0 = 26;
-  const x1 = WAVE_WIDTH - 8;
+const dashAttr = (column: number) => {
+  const dash = LINES_DASHES[column % LINES_DASHES.length];
+  return dash === '' ? '' : `stroke-dasharray="${dash}"`;
+};
+
+function lines(value: Tensor, args: FigureArgs): string {
+  const [N, K] = value.shape;
+  const shade = args.shade ?? 0;
+  const at = (row: number, column: number) => value.data[row * K + column];
+  const finite = Array.from(value.data).filter(Number.isFinite);
+  const low = finite.length === 0 ? -1 : Math.min(...finite);
+  const high = finite.length === 0 ? 1 : Math.max(...finite);
+  const [lo, hi] = low === high ? [low - 1, high + 1] : [low, high];
+  const x0 = 46;
+  const x1 = LINES_WIDTH - 8;
   const y0 = 12;
-  const y1 = WAVE_HEIGHT - 22;
-  const X = (t: number) => x0 + ((x1 - x0) * t) / N;
-  const Y = (v: number) => (y0 + y1) / 2 - (v * (y1 - y0)) / 2;
-  const line = (w: number, style: string) => {
-    const d = range(N * WAVE_SAMPLES + 1)
-      .map((s) => `${s ? 'L' : 'M'}${X(s / WAVE_SAMPLES).toFixed(1)} ${Y(f((s / WAVE_SAMPLES) * w)).toFixed(1)}`)
+  const y1 = LINES_HEIGHT - 22;
+  const X = (row: number) => x0 + ((x1 - x0) * row) / (N - 1);
+  const Y = (v: number) => y1 - ((v - lo) * (y1 - y0)) / (hi - lo);
+  const curve = (column: number) => {
+    const d = range(N)
+      .filter((row) => Number.isFinite(at(row, column)))
+      .map((row, i) => `${i === 0 ? 'M' : 'L'}${X(row).toFixed(1)} ${Y(at(row, column)).toFixed(1)}`)
       .join('');
-    return `<path d="${d}" fill="none" stroke="var(--fg)" stroke-width="1.3" ${style}/>`;
+    return `<path d="${d}" fill="none" stroke="var(--fg)" stroke-width="1.3" ${dashAttr(column)}/>`;
   };
-  const dots = (w: number) =>
-    range(N + 1)
-      .map((t) => `<circle cx="${X(t).toFixed(1)}" cy="${Y(f(t * w)).toFixed(1)}" r="${t < T ? 2.8 : 1.6}" fill="var(--fg)" opacity="${t < T ? 1 : 0.45}"/>`)
+  const dots = (column: number) =>
+    range(N)
+      .filter((row) => Number.isFinite(at(row, column)))
+      .map((row) => `<circle cx="${X(row).toFixed(1)}" cy="${Y(at(row, column)).toFixed(1)}" r="${row < shade ? 2.8 : 1.6}" fill="var(--fg)" opacity="${row < shade ? 1 : 0.45}"/>`)
       .join('');
-  const lines = omegas.map((w, i) => line(w, i === 0 ? '' : 'stroke-dasharray="4 3" opacity="0.7"')).join('');
-  const ticks = range(Math.ceil(N / WAVE_TICK))
-    .map((i) => i * WAVE_TICK)
-    .map((t) => svgLabel(X(t), WAVE_HEIGHT - 12, 'center', `$t=${t}$`))
+  const band = shade > 0 ? `<rect x="${Math.max(x0 - 4, X(-0.4))}" y="${y0 - 4}" width="${Math.min(x1 + 4, X(shade - 0.6)) - Math.max(x0 - 4, X(-0.4))}" height="${y1 - y0 + 8}" fill="var(--ink)" opacity="0.06"/>` : '';
+  const zero = lo < 0 && hi > 0 ? `<line x1="${x0}" x2="${x1}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line-strong)"/>` : '';
+  const ticks = range(Math.ceil(N / LINES_TICK))
+    .map((i) => i * LINES_TICK)
+    .map((row) => svgLabel(X(row), LINES_HEIGHT - 12, 'center', `$${row}$`))
     .join('');
-  const legend = omegas.map((w, i) => `${i === 0 ? '实线' : '虚线'} $\\omega = ${Number(w.toFixed(3))}$（第 ${i + 1}、${i + 1 + half} 列）`).join('，');
-  const note = `横轴是 position_id $t$（从 0 开始，第 1 个 token 是 $t = 0$），阴影是这里用到的 $t = ${range(T).join(', ')}$。${legend}。`;
-  return `<svg viewBox="0 0 ${WAVE_WIDTH} ${WAVE_HEIGHT}" class="vf-wave" role="img" aria-label="${kind} 表延长到 ${N} 个位置">
-    <rect x="${X(-0.4)}" y="${y0 - 4}" width="${X(T - 0.6) - X(-0.4)}" height="${y1 - y0 + 8}" fill="var(--ink)" opacity="0.06"/>
-    <line x1="${x0}" x2="${x1}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line-strong)"/>
-    ${svgLabel(x0 - 6, Y(1), 'right', '$1$')}${svgLabel(x0 - 6, Y(-1), 'right', '$-1$')}
-    ${lines}${omegas.map(dots).join('')}
+  const number = (v: number) => `$${formatNumber(v, { digits: 2, tex: true })}$`;
+  const legend = range(K)
+    .map((column) => `<span class="vf-lines-key"><svg width="22" height="8" aria-hidden="true"><line x1="1" x2="21" y1="4" y2="4" stroke="var(--fg)" stroke-width="1.3" ${dashAttr(column)}/></svg>列 ${column}</span>`)
+    .join('');
+  return `<svg viewBox="0 0 ${LINES_WIDTH} ${LINES_HEIGHT}" class="vf-lines" role="img" aria-label="${K} 条曲线，横轴是行号 0 到 ${N - 1}">
+    ${band}${zero}
+    ${svgLabel(x0 - 6, Y(hi), 'right', number(hi))}${svgLabel(x0 - 6, Y(lo), 'right', number(lo))}
+    ${range(K).map(curve).join('')}${range(K).map(dots).join('')}
     ${ticks}
-    </svg><div class="vf-wave-note" data-vf-text="${texAttr(note)}"></div>`;
+    </svg><div class="vf-lines-legend">${legend}</div>`;
 }
 
-const DRAW: Record<string, (node: Node, args: string[]) => string> = { rope_wave: ropeWave };
+const DRAW: Record<string, (value: Tensor, args: FigureArgs) => string> = { lines };
 
 export function renderFigures(root: HTMLElement, g: Graph): void {
   for (const el of root.querySelectorAll<HTMLElement>('vf-figure')) {
     const name = el.getAttribute('name') ?? '';
-    const nodeName = el.getAttribute('node') ?? '';
-    const args = (el.getAttribute('args') ?? '').split(':').filter((a) => a !== '');
-    const node = g.nodes.find((n) => n.name === nodeName);
-    if (node === undefined) throw new Error(`figure ${name}: no node '${nodeName}'`);
-    const problem = checkFigure(name, node.shape, args);
-    if (problem !== undefined) throw new Error(`figure on '${nodeName}': ${problem}`);
-    el.innerHTML = DRAW[name](node, args);
+    const given = (el.getAttribute('args') ?? '').split(':').filter((a) => a !== '');
+    let expr: ValueExpr;
+    try {
+      expr = decodeExpr(el.getAttribute('expr') ?? '');
+    } catch {
+      throw new Error(`figure ${name}: expr is not an encoded expression`);
+    }
+    const value = evaluateValue(expr, (nodeName, grad) => {
+      const node = g.node(nodeName);
+      if (node === undefined) throw new Error(`figure ${name}: no node '${nodeName}'`);
+      if (!grad) return node.value;
+      if (node.grad === null) throw new Error(`figure ${name}: ${node.kind} '${nodeName}' has no gradient`);
+      return node.grad;
+    });
+    const problem = checkFigure(name, value.shape, given);
+    if (problem !== undefined) throw new Error(`figure ${name}: ${problem}`);
+    el.innerHTML = DRAW[name](value, figureArgs(name, given) as FigureArgs);
     fillTex(el);
   }
 }

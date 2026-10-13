@@ -1,26 +1,52 @@
-export const WAVE_INVERSE: Record<string, (y: number) => number> = {
-  cos: Math.acos,
-  sin: Math.asin,
-};
+import type { ValueExpr } from '../autograd';
 
-const CHECKS: Record<string, (shape: readonly number[], args: string[]) => string | undefined> = {
-  rope_wave(shape, args) {
-    if (!(args[0] in WAVE_INVERSE)) return `rope_wave needs cos or sin as its first argument, got '${args[0] ?? ''}'`;
-    if (args[1] !== undefined && !(Number.isInteger(Number(args[1])) && Number(args[1]) >= 1)) return `rope_wave positions must be a positive integer, got '${args[1]}'`;
-    if (args.length > 2) return 'rope_wave takes at most 2 arguments';
-    if (shape.length < 2 || shape.slice(1, -1).some((d) => d !== 1) || shape[0] < 2 || shape[shape.length - 1] % 2 !== 0) return 'rope_wave needs a (T, d_h) table with at least 2 rows and an even d_h; dimensions of size 1 may sit between them';
+export type FigureArgs = Record<string, number>;
+
+const KEYS: Record<string, readonly string[]> = { lines: ['shade'] };
+
+const CHECKS: Record<string, (shape: readonly number[], args: FigureArgs) => string | undefined> = {
+  lines(shape, args) {
+    if (shape.length !== 2 || shape[0] < 2 || shape[1] < 1) return `lines needs a (N, K) tensor with at least 2 rows, got shape (${shape.join(', ')})`;
+    const shade = args.shade;
+    if (shade !== undefined && !(Number.isInteger(shade) && shade >= 0 && shade <= shape[0])) return `lines shade must be an integer from 0 to ${shape[0]}, got ${shade}`;
     return undefined;
   },
 };
 
 export const figureNames: readonly string[] = Object.keys(CHECKS);
 
-export function checkFigure(name: string, shape: readonly number[], args: string[]): string | undefined {
-  const check = CHECKS[name];
-  if (check === undefined) return `unknown figure '${name}'`;
-  return check(shape, args);
+export function figureArgs(name: string, args: readonly string[]): FigureArgs | string {
+  const keys = KEYS[name];
+  if (keys === undefined) return `unknown figure '${name}'`;
+  const out: FigureArgs = {};
+  for (const arg of args) {
+    const eq = arg.indexOf('=');
+    const key = eq < 0 ? arg : arg.slice(0, eq).trim();
+    if (eq < 0 || !keys.includes(key)) return `${name} takes ${keys.map((k) => `${k}=value`).join(', ')}, got '${arg}'`;
+    if (key in out) return `${name} gives '${key}' twice`;
+    const value = Number(arg.slice(eq + 1).trim());
+    if (!Number.isFinite(value)) return `${name} ${key} must be a number, got '${arg.slice(eq + 1).trim()}'`;
+    out[key] = value;
+  }
+  return out;
 }
 
-export function figureTag(name: string, node: string, args: string[]): string {
-  return `<vf-figure name="${name}" node="${node}" args="${args.join(':')}"></vf-figure>`;
+export function checkFigure(name: string, shape: readonly number[], args: readonly string[]): string | undefined {
+  const parsed = figureArgs(name, args);
+  if (typeof parsed === 'string') return parsed;
+  return CHECKS[name](shape, parsed);
+}
+
+export function encodeExpr(expr: ValueExpr): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(expr));
+  return btoa(Array.from(bytes, (b) => String.fromCharCode(b)).join(''));
+}
+
+export function decodeExpr(text: string): ValueExpr {
+  const binary = atob(text);
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)))) as ValueExpr;
+}
+
+export function figureTag(name: string, expr: ValueExpr, args: readonly string[]): string {
+  return `<vf-figure name="${name}" expr="${encodeExpr(expr)}" args="${args.join(':')}"></vf-figure>`;
 }

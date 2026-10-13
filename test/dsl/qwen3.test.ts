@@ -3,7 +3,11 @@ import katex from 'katex';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { type CompiledPage, compilePage, parseYaml } from '../../src/dsl';
 import { elemTexOf } from '../../src/explain/elem';
+import { evaluateValue } from '../../src/core';
+import { renderText } from '../../src/formula';
 import { createSteps } from '../../src/steps';
+import { renderFigures } from '../../src/ui';
+import { decodeExpr } from '../../src/ui/figure-spec';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { examplesUrl, loadExample, readFileUrl } from './load';
 
@@ -67,7 +71,7 @@ describe('qwen3-dsl.yaml as written', () => {
     const titles = steps.list.map((s) => s.title);
     expect(titles[0]).toBe('模型如何预测下一个词');
     expect(steps.list.filter((s) => s.title === '乘 sin').length).toBeGreaterThan(0);
-    expect(page.steps.modules.map((m) => m.id)).toEqual(expect.arrayContaining(['layers[0]', 'layers[1]', 'layers[0].self_attn', 'layers[1].mlp']));
+    expect(page.modules.map((m) => m.id)).toEqual(expect.arrayContaining(['layers[0]', 'layers[1]', 'layers[0].self_attn', 'layers[1].mlp']));
     steps.dispose();
   });
 
@@ -91,12 +95,32 @@ describe('qwen3-dsl.yaml as written', () => {
     steps.setAllFolded(true);
     check();
     steps.dispose();
-    for (const m of page.steps.modules) if (m.formula !== undefined) renders(m.formula, `formula of ${m.id}`);
+    for (const m of page.modules) if (m.formula !== undefined) renders(m.formula, `formula of ${m.id}`);
     for (const n of page.graph.nodes) {
       renders(n.tex, n.name);
       renders(elemTexOf(n, n.shape.map(() => 0)), `${n.name} elem`);
     }
     expect([...failures]).toEqual([]);
+  });
+
+  it('draws the cos and sin curves of the rotary step from template expressions', () => {
+    const steps = createSteps(page.graph, page.steps);
+    const bodies = steps.list.map((_, i) => steps.text(i).body).filter((body) => body.includes('<vf-figure'));
+    steps.dispose();
+    expect(bodies).toHaveLength(1);
+    const el = document.createElement('div');
+    renderText(bodies[0], el);
+    const tags = [...el.querySelectorAll('vf-figure')];
+    expect(tags.map((t) => [t.getAttribute('name'), t.getAttribute('args')])).toEqual([['lines', 'shade=3'], ['lines', 'shade=3']]);
+    const inv = page.nodes.get('rotary_emb.inv_freq')!.value;
+    const read = (name: string) => page.nodes.get(name)!.value;
+    const [cos, sin] = tags.map((t) => evaluateValue(decodeExpr(t.getAttribute('expr')!), read));
+    expect(cos.shape).toEqual([24, 2]);
+    expect(cos.get([5, 1])).toBeCloseTo(Math.cos(5 * inv.data[1]), 12);
+    expect(sin.get([7, 0])).toBeCloseTo(Math.sin(7 * inv.data[0]), 12);
+    renderFigures(el, page.graph);
+    expect(el.querySelectorAll('svg.vf-lines')).toHaveLength(2);
+    expect([...el.querySelectorAll('.vf-lines-key')].map((k) => k.textContent)).toEqual(['列 0', '列 1', '列 0', '列 1']);
   });
 
   it('replaces the token sequence and recomputes ids and y from it', async () => {

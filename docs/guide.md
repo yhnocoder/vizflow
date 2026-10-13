@@ -182,7 +182,7 @@ page.createdSteps.go(1);
 
 ### 1.7 用 YAML 页面描述文件写页面
 
-由标准模块（RMSNorm、注意力、MLP、lm_head 与损失）拼成的页面，可以不写建图和布局代码，只写一份 YAML 页面描述文件，交给 `<vizflow-page>` 的 `src` 属性：
+按 HF 代码逐行搭起来的模型，可以不写建图和布局代码，只写一份 YAML 页面描述文件，交给 `<vizflow-page>` 的 `src` 属性：
 
 ```html
 <main class="vf-page">
@@ -193,77 +193,48 @@ import '@yhnocoder/vizflow/element';
 </script>
 ```
 
-元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，标题和导语由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3/qwen3-dsl.yaml`，页面 `examples/qwen3/qwen3-dsl.html`。
+元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，页面标题由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3/qwen3-dsl.yaml`，页面 `examples/qwen3/qwen3-dsl.html`。
 
 一个最小的页面文件：
 
 ```yaml
 title: RMSNorm 一步
-lede: 输入是 $\mathbf{x}$，形状 $(T, d)$。
 import:
   RMSNorm: vizflow/nn/rmsnorm
-dims: { T: 2, d: 4 }
-inputs:
-  x: { value: [[0.5, -1, 0.3, 0.8], [1.2, 0.1, -0.4, 0.6]] }
-body:
-  - norm: { use: RMSNorm, inputs: { x: x }, outputs: { out: h } }
-  - loss: mean(h ** 2)
+model: M
+config: { d: 4, dtype: fp32 }
+data:
+  x: [[0.5, -1, 0.3, 0.8], [1.2, 0.1, -0.4, 0.6]]
+modules:
+  M:
+    args: { d: dim, dtype: dtype }
+    inputs:
+      x: { type: tensor, shape: [T, d], dtype: dtype }
+    outputs:
+      loss: { type: tensor, shape: [], dtype: dtype }
+    init:
+      norm: { use: RMSNorm, args: { hidden_size: d } }
+    forward:
+      - h: norm(x)
+      - loss: (h ** 2).mean()
+    steps:
+      - id: norm
+      - id: loss
 panels:
-  - loss
-  - { matrix: h, title: h }
+  - loss: {}
 ```
 
 写法要点：
 
-- `body` 按顺序建图。表达式里 `inf` 是正无穷，`-inf` 是负无穷，`min(a, b)` 取编译期数值的最小值（示例值和真实值分别取），例如 `topk_mask(sc, min(B // c, T // c))`。`name: expr` 是一个节点，表达式按 PyTorch 写：`x @ W.T`、`x ** 2`、`rsqrt(ms + eps)`、`mean(sq, -1, keepdim=true)`、`view(x @ Wq.T, T, H, dh)`、`select(k, 1, h-1)`、`cat(o[1..H], dim=1)`。`view` 的形状逐个写在后面，可以写维度名，其中一个可以写 `-1`。数只能写在运算符右边，`1 - x` 要写成 `-x + 1`。
-- 带逗号的表达式要加引号：`{ op: 'embedding(ids, E)' }`。YAML 的 `{ ... }` 里不加引号的值遇到逗号就结束。
-- dtype 只用于显示：页面顶层写 `dtype: bf16` 给出模型的默认 dtype（不写时是 `fp32`），`weights`、`buffers` 和页面 `inputs` 的每一项可以单独写 `dtype`。运算节点按 torch 的类型提升从输入推导，只有模型显式转换类型的地方要写，例如 `sq: { op: x ** 2, dtype: fp32 }`；`dtype` 也可以写一个张量的名字，`out: { op: xh * weight, dtype: x }` 表示转回 `x` 的 dtype。可用的值是 `bool`、`uint8`、`int8`、`int16`、`int32`、`int64`、`fp8_e4m3`、`fp8_e5m2`、`fp16`、`bf16`、`fp32`、`fp64`，token id 和标签自动是 `int64`。
-- `name: { use: 模块, inputs: {...}, outputs: {...} }` 使用一个模块。`inputs` 要给全，`outputs` 把模块的输出绑定成本作用域的名字，没绑定的输出可以按路径 `实例名.名字` 引用。`params` 给模块参数，`weights: { 模块内名: 本作用域名 }` 共用已有的权重。`rmsnorm` 和 `glu` 的 `name` 参数默认取实例名，用在折叠标题和步骤标题里，例如实例 `input_layernorm` 的第一步标题是「input_layernorm：逐元素平方」；需要别的写法时在 `params` 里给 `name`。
-- `vizflow/nn/<名字>` 引用包内的核心模块：`rmsnorm`、`rmsnorm-zero-centered`、`rmsnorm-gated`、`l2norm`、`layernorm`、`gated-delta-rule`、`gated-delta-rule-chunk`、`glu`、`rope`、`gqa`、`mla`、`lightning-indexer`、`moe`、`experts`、`lm-head-nll`，以及按定义拆开的函数模块 `sigmoid`、`silu`、`softplus`、`gelu`、`relu`、`log-softmax`、`nll-loss`，和 DeepSeek V4 用的 `rmsnorm-unweighted`、`partial-rope`、`hyper-connection`、`hyper-connection-merge`、`hyper-head`、`compressor`、`compressed-indexer`、`compressed-attention`，后者的接口见 `docs/design/pages/dsl.html` 的模块表，用法见 `examples/deepseek_v4-dsl.yaml`；DeepSeek V4.1 用的 `apply-rotary-emb`（参考实现的 `apply_rotary_emb`，相邻两维一对，可选按 head、逆旋转和 YaRN）、`sparse-attn`（`sparse_attn` 按定义拆开）、`candidate-blocks`（`select_candidate_blocks`）、`csa2-indexer`、`csa2-attention`（滑动窗口加压缩 KV 的注意力，Full、Reindex、Reuse 三种层由参数选择）、`engram` 和 `ngram-hash`，接口同样见模块表，用法见 `examples/deepseek_v4_1-dsl.yaml` 和 `examples/deepseek_v4_1/`。`glu`、`experts` 的 `up_first` 和 `float_act`，`experts` 的 `fused`、`token_major`、`scale_hidden`，`rmsnorm` 的 `cast_last`，`hyper-connection` 的 `project_first`、`single_pass`，`hyper-connection-merge` 的 `broadcast`，`compressor` 的 `gated`、`bias`、`rotate`、`float_input`、`norm_cast_last` 让这些模块也能按 V4.1 参考实现的写法画，默认值保持原来的写法。参考实现里每个 `.float()`、`.to(dtype)`、`.type_as(x)` 在页面上都是一个类型转换：写成 `identity` 节点加 `dtype`，或者写在做这一步运算的节点的 `dtype` 上。页面里不要直接调用 `sigmoid(x)`、`silu(x)`、`softplus(x)`、`gelu(x)`、`logsumexp(x)`、`log_softmax(x)`、`nll_loss(...)` 这些复合运算，改用对应的模块，例如 `beta_sigmoid: { use: Sigmoid, inputs: { x: b }, outputs: { out: beta } }`，这样图上每个节点都是一个初等运算。`log-softmax` 不改 dtype；HF 在算损失前做的 `logits.float()` 由页面写成一个节点，例如 `zf: { op: identity(z), dtype: fp32 }`，再把 `zf` 交给 `log_softmax`。每个 Linear 单独写一步。每种模块在页面里第一次出现时不要写 `folded: true`，只有重复出现的实例折叠，并在实例的 `fold.text` 里写明它和哪一层的哪个实例相同。`glu` 的参数 `act` 是 module 类型，写 `act: SiLU`。`layernorm` 是 PyTorch 的 `nn.LayerNorm`，带权重和偏置，参数 `eps` 默认 `1e-5`。`rmsnorm-zero-centered` 是 Qwen3.5 的 RMSNorm，权重初值 0，乘的是 $1+\gamma$；`rmsnorm-gated` 多一个输入 `gate`，输出再乘 $\operatorname{act}(\mathit{gate})$，参数 `act` 是 module 类型，可选 `SiLU`（默认）和 `Sigmoid`；`gated-delta-rule-chunk` 是 Gated DeltaNet 在 prefill 和训练时的核心（HF 的 `torch_chunk_gated_delta_rule`），参数 `chunk` 是块长（默认 64），用法见 `examples/qwen3_5/gated-deltanet.yaml`；`gated-delta-rule` 是带缓存、一次一个 token 的 decode 用的逐个位置递推（HF 的 `torch_recurrent_gated_delta_rule`），两者的结果相同。`rmsnorm` 对最后一维归一化，输入可以是 `(T, d)`，也可以是按 head 分好的 `(T, H, d_h)`。`rope` 的输入是 `q: (T, H, d_h)` 和 `k: (T, H_kv, d_h)`，参数只有 `theta`，$d_h$ 由输入推出，cos、sin 表的 shape 是 `(T, 1, d_h)`。`gqa` 是 grouped-query attention：输入 `q: (T, H, d_h)`、`k: (T, H_kv, d_h)`、`v: (T, H_kv, d_v)`、`mask: (T, T_k)`（$T_k$ 是 key 的个数，可以大于 $T$），每个 query head 用 `select` 取出对应的 kv head（repeat_kv），各算一次 $S$、缩放、加 mask、softmax、$P\mathbf{v}$，输出 `o` 是各 head 并排拼成的 `(T, H d_v)`；$H=H_{kv}$ 时就是普通的多头注意力，$H=H_{kv}=1$ 时是单个 head 的注意力；写 `sink: true` 时多一个输入 `sinks: (H)`，每个 head 的 softmax 分母多加一项 $e^{s_h}$。`glu` 写 `clamped: true` 和 `limit` 时是 DeepSeek V4 带截断的 SwiGLU。`mla` 是 DeepSeek V2/V3 的 multi-head latent attention，输入 `x: (T, d)`，输出 `att`，参数 `H`、`dn`、`dr`、`dv`、`rq`、`rkv`（对应 HF 的 num_attention_heads、qk_nope_head_dim、qk_rope_head_dim、v_head_dim、q_lora_rank、kv_lora_rank）和 `theta`，用法见 `examples/deepseek_v3-dsl.yaml`。`mla` 写 `sparse: true` 时是 DeepSeek V3.2 的注意力：多建一个 `lightning-indexer` 实例 `indexer`，它和 HF 一样输出每一行选中的 key 的编号，MLA 再用 `scatter` 和 `masked_fill` 拼出稀疏 mask 代替 causal mask，这时还要给 `HI`、`dI`、`kI`（对应 index_n_heads、index_head_dim、index_topk），用法见 `examples/deepseek_v3_2-dsl.yaml`。`moe` 是 softmax 路由的稀疏 MoE（HF 的 `Qwen3MoeSparseMoeBlock`，`norm_topk_prob=True`），输入 `x: (T, d)`，输出 `out`，参数 `E`（专家个数）、`K`（每个位置选几个专家）和 `mf`（每个专家的中间维度），权重 `Wr: (E, d)`。它的 group `gate` 是 `Qwen3MoeTopKRouter`：`logits`，softmax 按定义拆成 `ex`（fp32 的 `exp(logits)`）、`Z`（按行求和）和 `p`（`ex / Z`），然后是 `idx`（`topk_indices`）、`top`（按 `idx` 取出的概率）、`den`、`rw`（归一化后的权重），步骤 id 是 `router`、`exp`、`sum`、`div`、`topk`、`gather`、`topsum`、`normalize`；之后用 `experts` 模块的实例 `experts` 算专家。共享专家不在模块里，需要时在外层加，用法见 `examples/qwen3_5_moe/moe.yaml`。`experts` 是 HF 的 `Qwen3MoeExperts`，按 `forward` 的每一行建节点，不管路由怎么算：输入 `x: (T, d)`、`idx: (T, K)`（每个位置选中的专家编号，即 `top_k_index`）、`w: (T, K)`（对应的权重，即 `top_k_weights`），输出 `out: (T, d)`；参数 `E`、`mf` 和 `act_fn`（module 类型，可选 `Sigmoid`、`ReLU`、`GELU`、`SiLU`，默认 `SiLU`，画成子实例 `act`，输出 `hact`），$K$ 由 `idx` 的 shape 推出；权重 `Wgu: (E, 2 mf, d)` 和 `Wd: (E, d, mf)`，对应 `gate_up_proj` 和 `down_proj`。HF 逐个专家循环，各专家的行数由路由决定；计算图的 shape 是固定的，所以这里把所有专家的行按 `nonzero_static` 的顺序（即 HF 的循环顺序）接成 $TK$ 行一次算完。节点和步骤 id：`expert_mask`（步骤 `mask`）、`expert_mask_p`（`permute`）、`count` 与 `expert_hit`（`hit`）、`nz`（`nonzero`）、`expert_idx`、`top_k_pos`、`token_idx`（`split`）、`current_state`（`gather`）、`gate_up`（`gate_up`）、`gate` 与 `up`（`chunk`）、`act`（激活模块的实例，输出 `hact`，步骤是激活模块的步骤）、`hidden`（`mul`）、`down`（`down`）、`weight`（`weight`）、`scaled`（`scale`）、`cast`（`cast`，`.to(final_hidden_states.dtype)`，dtype 是 `final` 的 dtype）、`out`（`index_add`），累加用的全 0 张量是 buffer `final`。路由不同的模型（例如 DeepSeek V3 的 sigmoid 分数与分组 top-k）自己算 `idx` 和 `w`，再接 `experts`，用法见 `examples/deepseek_v3/moe.yaml`。`./x.yaml` 引用相对于当前文件的模块文件；只在本页用的模块也可以写在页面的 `modules` 里。
-- 节点、实例、group、for、模块的步骤和步骤补丁可以写 `when: 表达式`，表达式求值成 `false` 时这一项不建。表达式里可以用 `bool` 类型的参数、`not c` 和条件表达式 `a if c else b`，例如 MLA 里 `- indexer: { use: LightningIndexer, when: sparse, ... }` 和 `inputs: { mask: M_sparse if sparse else M }`。模块参数没有值也没有默认值时，只在模块用到它的地方报错，所以只在 `when` 为 `true` 的部分用到的参数可以不写默认值。模块声明里的 `inputs`、`weights`、`buffers` 每一项也可以写 `when`：为 `false` 的输入不用给，给了也不读取，权重和 buffer 不建。模块 `formula` 里只属于被去掉的步骤的 `\step{...}{...}` 一段整段去掉。`min(a, b)`、`max(a, b)` 对数取最小值和最大值，例如 `topk_mask(x, min(kI, T), -1)`。模块声明的 `outputs` 每一项也可以写成 `{ name: C, when: kv_source }`：为 `false` 的输出不建，使用处对它的绑定直接跳过，所以一个实例可以对各种参数写同一套 `outputs` 绑定。实例和 group 的 `folded`、`fixed`、`split` 可以写成表达式，例如 `folded: not detail`，一个模块里的子实例按参数决定是否折叠。模块 `formula` 里 `\step{a,b}{...}` 列出的步骤只有一部分被去掉时，这一段保留，只对留下的步骤高亮；`\step{inst.*}` 的实例被 `when` 去掉时，这一段整段去掉。参数名不要和本模块的实例名或节点名相同，名字先按节点和实例查找，例如 `when: engram` 在有实例 `engram` 时取到的是实例，会报错 `'engram' is a module instance, not a value`。
-- 模块只能看到自己的名字：body 节点、inputs、weights、buffers、子实例绑定的输出和 params。要用页面上的东西，通过 `inputs` 或 `params` 传进去。
-- 模块的 `inputs: { x: { shape: [T, n] } }` 按位置对上实际输入的 shape：没见过的名字记成维度，已有的名字和表达式要相等。`...` 可以出现一次，对上任意个维度，例如 `[..., n]` 只要求最后一维。`buffers` 的 `value` 调用 `rope_cos(T, dh, theta, stride=1, interleaved=false)`、`rope_sin(...)`、`causal_mask(T, window?)`、`zeros(...)`、`ones(...)`、`full(..., value)`（最后一个参数是填充值，例如 `full(N - 1, eos)`）或 `arange(n)`（$0..n-1$）；`rope_cos`、`rope_sin` 另外可以写 `half=true`（只给每一对的一个角度，shape 是 $(T, d_h/2)$，对应复数写法的 `freqs_cis`）和 YaRN 的 `yarn_factor`、`yarn_original`、`beta_fast`（默认 32）、`beta_slow`（默认 1），`yarn_original` 大于 0 时按 DeepSeek 的 `precompute_freqs_cis` 调整频率；`rope2d_cos(nh, nw, dim, theta)`、`rope2d_sin(...)` 是 ViT 的二维 RoPE 表，第 $i$ 行第 $j$ 列的 patch 前一半角度乘行号、后一半乘列号，shape 是 $(n_h n_w, \mathit{dim})$；`window_topk_idxs(T, W)` 是滑动窗口里每个位置看到的 key 编号，shape 是 $(T, \min(T, W))$，不足的位置是 $-1$。`causal_mask` 给了 `window` 时是滑动窗口；写 `shape` 时按这个 shape 重排数值，元素个数必须相同，例如 `shape: [T, 1, dh]` 让表能和 `(T, H, d_h)` 广播。
-- 实例写 `inline: true` 时不单独成为一个模块：没有自己的大括号、折叠和步骤分组，节点和步骤算作外层模块的，路径仍然带实例名。它不能写 `title`、`subtitle`、`fixed`、`folded`、`split`、`fold`。
-- `{ for: h, in: '1..H', brace: 'head \of{h}', body: [...] }` 展开循环。循环里定义的名字带下标：`q[h]`，展开后是 `q[1]`、`q[2]`。各次迭代的步骤合并成一步：id 相同的步骤（包括子模块的步骤）和同一位置的自动步骤只出现一次，显示所有迭代的节点，文字用第一次迭代的。循环里的实例在场景里共用一个大括号，标题是去掉下标的实例名；`brace` 给迭代加一层大括号，各次迭代的括号合并成一个，标题用 ` · ` 连接（例如 `head 1 · head 2`），迭代的节点已经由实例的大括号标出时不必写。`cat(o[1..H], dim=1)` 这类按维度范围取出的列表，在真实模型里块数不同，编译器自动给 `cat` 加上 `pieces`，例如 `H` 在 `real` 里是 32、每块真实宽 128 时，拼接结果的真实 shape 是 `(T, 4096)`，后面的 o_proj 也按 4096 计算。后一次迭代要用前一次的结果时（例如按位置递推的状态 `S[t] = f(S[t-1])`）写 `sequential: true`：各次迭代按顺序往上叠，每次迭代的步骤单独成步；`S[0]` 写成 buffer，例如 `'S[0]': { value: 'zeros(H, dk, dv)' }`。表达式里的 `[a, b]` 是节点列表，例如 `cat([q_rot, q_pass], dim=2)`、`index(x, [token_idx])`；全是数时是数的列表，例如 `sum(m, [-1, -2])`。不是张量的位置参数也可以按关键字写，例如 `nonzero_static(m, size=T*K)`；尺寸参数可以写维度名的表达式，例如 `one_hot(idx, E + 1)`。
-- 实例、group 和 for 可以写 `beside: 名字`，让这一项画在前一项的旁边、从同一层开始。名字是紧挨着的前一项的名字，或者是已经 beside 前一项的某一项的名字，几项连成一组，每项一条竖道，从左到右按书写顺序；这一组之后的项从最高的竖道上方继续。for 要被引用时写 `name: 名字`。并排的同一个模块的实例，id 相同的步骤合并成一步：显示各实例的节点，标签和反向标签把各实例不同的标签用逗号连起来，标题和正文用第一个实例的（模块默认值或这个实例的补丁）。其余情况下 `beside` 只影响布局，步骤不变。实例的步骤补丁在所在的 body 全部建完后才编译，所以第一个实例的补丁可以引用后面并排实例的节点。Qwen3 的注意力里，q_norm 和 k_norm 是并排的两个 RMSNorm，合成 `q_norm $\cdot$ k_norm` 一组：
+- 页面用 `model` 指定根模块，`config` 给根模块的 `args` 取值，`data` 给根模块的输入。模块的 `args`、`inputs`、`outputs` 声明接口，`init` 建子模块、权重和 buffer，`forward` 按 PyTorch 写计算，`steps` 按顺序组织讲解。
+- `forward` 的每一行是 `名字: 表达式`，一行对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。
+- 参数的 dtype 由页面 `config.dtype` 统一设定；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
+- `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度。
+- `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`unsqueeze`、`contiguous`）的结果；其余的写进 `unshown`，否则编译报错。
+- tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
+- 3D 布局由库按模块结构自动排布，页面不写布局。
 
-  ```yaml
-  - q: 'view(x @ Wq.T, T, H, dh)'
-  - k: 'view(x @ Wk.T, T, Hkv, dh)'
-  - qk_norm:
-      title: q_norm $\cdot$ k_norm
-      body:
-        - q_norm: { use: RMSNorm, inline: true, suffix: q, inputs: { x: q }, outputs: { out: qn } }
-        - k_norm: { use: RMSNorm, inline: true, suffix: k, beside: q_norm, inputs: { x: k }, outputs: { out: kn } }
-  ```
-
-  两个实例的平方、均方根、归一化、乘权重各合成一步，例如均方根那一步的标签是 $\mathrm{ms}_{q},\ r_{q},\ \mathrm{ms}_{k},\ r_{k}$。不是 inline 的并排实例各有一个大括号，同一位置的大括号合并成一个。并排的项不能用同一组里前面一项算出的值，否则编译报错；名字不是前一项、写在单个节点上时也报错。
-- 全页的路径是实例名逐层拼接，例如 `layer.self_attn.eager_attention_forward.P[1]`。`panels`、`values`、`backward` 和步骤补丁都按路径写，graph 上的节点名就是路径。
-- 权重的数值默认按 `init`（`uniform`，即 $U(-1,1)$ 取两位小数，种子由页面的 `init: { seed }` 给出，默认 1）生成；要固定数值时写在页面的 `values: { 路径: 数组 }` 里。buffer 也可以这样给数值，例如 MoE 路由的偏置写成 `bias: { value: zeros(E) }`，页面里再写 `values: { moe_layer.mlp.bias: [...] }`。超过 $2^{53}$ 的整数要写成字符串，例如 `values: { layer.ple.ple_embedding.m: ['1582356468320383169', ...] }`，编译器按 bigint 精确读取；YAML 的数字字面量在这个范围已经丢了精度。
-- tex 默认由名字推出：`q` 是 $\mathbf{q}$，`Wq` 是 $W_{q}$，`x0` 是 $\mathbf{x}_{0}$。同一个模块用了几次时，库自动给实例内的 tex 加下标，用 `suffix` 或 `tex: { 名字: ... }` 改写；`tex` 里的名字也可以是 buffer，写的 tex 不含 `\of{}` 时仍会加上外层实例的下标。正文和 tex 里的 `\of{name}` 换成那个名字的 tex。`\hat{\of{x}}` 这类重音写法在 `x` 的 tex 带下标时把下标移到重音外面，例如 $\hat{\mathbf{x}}_0$。text 类型的参数在模块里展开，参数值里的 `\of{name}` 按模块内的名字查找。两个节点 tex 相同时，控制台有 `vizflow dsl:` 开头的警告。
-- 标签、标题和正文里的数学符号一律写成 LaTeX，例如 `label: '$\partial\of{x}$'`，不用 unicode 的数学字符。模块的步骤标签和反向标签用 `\of{...}` 引用节点，这样实例自动加的下标会出现在标签里。
-- 模块可以在顶层写 `fold: { label, title, text, backward: { label, title, text } }`，作为这个模块折叠后那一步的默认文字；实例的 `fold` 只需写不同的字段，没写的字段用模块的默认值。模块步骤的 `backward: { label, title, text }` 是对应反向步骤的默认文字，实例的步骤补丁可以只改其中几项。
-- 步骤写在模块和页面的 `steps` 里：`{ id, show, label, title, text }`，放在 `show` 里最早建出的节点之后。没被任何步骤显示的节点自动成一步。使用处的 `steps: { 'q_norm[1].square': { append: ... } }` 改写子模块的步骤。反向步骤自动生成，`backward: { 名字: { title, text } }` 改写某个节点所在的那一步。
-- 步骤、步骤补丁和 `overview` 可以写 `notes`，在场景里加作者的注释：一段文字和一条指向目标的手绘箭头，只在这一步显示。`at` 是张量名、张量的一个元素（下标从 0 开始，个数等于张量的维数）或模块实例名，`text` 是注释文字，可以有 `$...$` 公式和 `\of{...}`，`side` 是 `left`、`right`、`above`、`below` 之一，不写时库按空位选一边。目标不存在或下标越界时编译报错。
-
-  ```yaml
-  steps:
-    mask:
-      notes:
-        - at: 'M[0,2]'
-          side: left
-          text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'
-  ```
-
-- 模块、实例和 group 可以写 `formula`，给出这个模块的公式。公式按 LaTeX 写，`\step{步骤 id}{...}` 标出由哪一步算出的部分：前向走到这一步之前这一部分不显示，走到这一步时显示并用正色标出，之后保持显示；反向时整条公式都显示，当前反向步骤对应的部分用负色标出。步骤 id 写法与步骤补丁相同，子模块的步骤写 `子实例.id`，`子实例.*` 表示子实例的全部步骤，几个 id 用逗号隔开。id 不存在时编译报错并列出这个模块的步骤。公式显示在场景左下角当前步骤框的上方，取当前步骤所在的最内层有公式的模块，模块标题用小字写在公式上方；总览和输入步骤不显示。`rmsnorm`、`rope`、`glu`、`gqa` 自带公式，实例的 `formula` 覆盖模块的。inline 实例没有自己的模块，它的 `formula` 必须和 `brace` 一起写，标题取 `brace` 的标题。
-
-  ```yaml
-  module: RMSNorm
-  formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\operatorname{mean}\big(\step{square}{{\of{x}}^{2}}\big)+\epsilon}}'
-  ```
-
-- 正文里 `{{ r | matrix:3 }}`、`{{ a.grad | matrix }}` 展开成整个矩阵；`{{ A | slices:3 }}` 把超过 2 维的张量按最后两维切成一个个矩阵，每个矩阵下面标前面各维的下标（从 1 起），适合 `(N, C, C)` 这类按块排列的张量。其余 `{{...}}` 与第 4 节的模板相同，名字按作用域查找。
-- 3D 布局由库按 body 的结构自动排布，页面不写布局。
+目前只有 Qwen3 用到的内置模块按这套写法实现：`Linear`、`Embedding`（内置，不需要导入），以及 `vizflow/nn/` 下的 `rmsnorm`、`glu`、`silu`、`sigmoid`、`log-softmax`、`nll-loss`、`rope`、`gqa`、`rotary-embedding`。其余包内模块和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
 
 只需要编译结果、不需要元素时，用 `dsl` 入口：
 
@@ -271,12 +242,12 @@ panels:
 import { loadPage, compilePage, parseYaml } from '@yhnocoder/vizflow/dsl';
 
 const page = await loadPage('./my-page.yaml');
-page.graph;            // 计算图
-page.nodes.get('h');   // 按路径查节点
-const fromObject = await compilePage({ title: '...', dims: {}, inputs: {}, body: [] });
+page.graph;              // 计算图
+page.nodes.get('h');     // 按路径查节点
+const fromObject = await compilePage(parseYaml(text, 'my-page.yaml'), { base: location.href });
 ```
 
-`compilePage` 接受与 YAML 结构相同的 JavaScript 对象；对象里引用相对路径的模块时，要传 `{ base: 页面地址 }`。字段的完整列表和规则见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
+`compilePage` 接受与 YAML 结构相同的 JavaScript 对象；对象里引用相对路径的模块时，要传 `{ base: 页面地址 }`。
 
 ## 2. 建图
 
@@ -653,26 +624,26 @@ cannot parse template '{{q[0]}}': no node name matches 'q[0]'
 
 步骤正文和图文段落的 text 里可以放库自带的小图，标题里不能放。小图单独占一段，前后各空一行。
 
-YAML 里写成模板加小图名，参数用冒号隔开：
+YAML 里写成模板加小图名，参数写成 `名字=值`，几个参数用冒号隔开，值可以是表达式：
 
 ```yaml
 text: |
-  cos 表的每一行对应一个位置。下图把位置延长到 24。
+  下图把位置延长到 24 个，每条曲线是一个频率。
 
-  {{ apply_rotary_pos_emb.cos | rope_wave:cos }}
-
-  $$\cos={{ apply_rotary_pos_emb.cos | matrix:3 }}$$
+  {{ cos(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
 ```
 
-编译时这一项换成 `<vf-figure name="rope_wave" node="graph 上的节点名" args="cos"></vf-figure>`。用 JavaScript 写步骤时直接写这个标签，`node` 写 graph 上的节点名。步骤条和图文段落渲染正文后，把每个 `vf-figure` 换成对应的小图；数值都从节点读取，换模型尺寸时不用改正文。
+小图的数据由模板里的表达式算出。表达式可以引用张量和数，可以用 `arange`、库里的运算（例如 `cos`、`sin`、`exp`）、四则运算与广播、`@`、下标和切片，`[:, None]` 插入长度为 1 的维度。这个计算只用于显示，不在计算图里加节点；页面上的数值变化后，小图按新的数值重新计算。
+
+编译时这一项换成 `<vf-figure name="lines" expr="..." args="shade=3"></vf-figure>`，`expr` 是编码后的表达式，参数里的表达式已经算成数。用 JavaScript 写步骤时用 `ui` 入口的 `figureTag(名字, 表达式, 参数)` 生成这个标签，表达式是 `{ k: 'node', name: 'graph 上的节点名' }` 这样的对象。步骤条和图文段落渲染正文后，把每个 `vf-figure` 换成对应的小图。
 
 现有的小图：
 
-| 名字 | 节点 | 参数 | 画什么 |
+| 名字 | 数据 | 参数 | 画什么 |
 |---|---|---|---|
-| `rope_wave` | RoPE 的 cos 或 sin 表，形状 $(T, d_h)$，至少 2 行，$d_h$ 为偶数 | 第一个是 `cos` 或 `sin`；第二个是横轴的位置数，默认 24 | 每个频率一条曲线，第一个频率画实线，其余画虚线；表里实际用到的 $T$ 个位置画大点并加阴影。频率 $\omega_i$ 从表的第 2 行（$t=1$）反算，所以不需要另写 $\theta$ 和 $d_h$。图下方有一行说明，列出阴影里的位置和每个频率对应的两列。 |
+| `lines` | 形状 $(N, K)$，至少 2 行 | `shade`：前几行加阴影，0 到 $N$ 的整数，默认 0 | 每一列画成一条随行号 $0..N-1$ 变化的曲线，各列用不同的虚线样式；加阴影的行画大点。纵轴标出最大值和最小值，横轴每 6 行一个刻度，图下方的图例按列号 0 起标出每条曲线。 |
 
-小图名不存在、参数不对、节点形状不符时，编译报错，例如 `rope_wave needs cos or sin as its first argument, got 'tan' in '{{ cos | rope_wave:tan }}'`。
+小图名不存在、参数不对、数据形状不符时，编译报错，例如 `lines shade must be an integer from 0 to 3, got 4 in '{{ y | lines:shade=4 }}'`。
 
 ## 5. 面板与步骤条（ui）
 
@@ -771,11 +742,11 @@ YAML 页面的 `sections` 在场景下方画讲解段落。每一段是一张卡
 ```yaml
 sections:
   - title: RoPE：用旋转来编码位置
-    src: qwen3/rope.md
-    rope: { q: layer.self_attn.qn, k: layer.self_attn.kn, rows: [-1, 1], head: 1, theta: 10, dh: dh, positions: 24 }
+    src: ./rope.md
+    rope: { q: 'layers[0].self_attn.qn', k: 'layers[0].self_attn.kn', rows: [-1, 0], head: 0, theta: rope_theta, d_head: d_head, positions: 24 }
 ```
 
-`src` 相对于 YAML 文件解析，与 `import` 的模块路径相同，开发服务器和发布后的页面都在运行时读取这个文件，所以它要和 YAML 一起部署。`src` 和 `rows` 只能写一个。`rope` 给出 RoPE 组件读取的 q、k 节点、取哪一行（负数从末尾数）、第几个 head、$\theta$、$d_h$ 和曲线画到的位置数。q、k 可以是 $(T, H d_h)$ 的一个节点，也可以是 $(T, H, d_h)$ 的一个节点，或者每个 head 一个 $(T, d_h)$ 节点的列表。
+`src` 相对于 YAML 文件解析，与 `import` 的模块路径相同，开发服务器和发布后的页面都在运行时读取这个文件，所以它要和 YAML 一起部署。每一段都要写 `src`。`rope` 给出 RoPE 组件读取的数据，键是 `q`、`k`、`rows`、`head`、`theta`、`d_head`、`positions`：`q`、`k` 是节点路径，可以是 $(T, H d_h)$ 或 $(T, H, d_h)$ 的节点；`rows` 是 `[q 的行, k 的行]`，从 0 起，负数从末尾数，默认 `[-1, 0]`；`head` 是第几个 head，从 0 起，默认 0；`theta` 和 `d_head` 可以写 `config` 里的名字；`positions` 是曲线画到的位置数，默认 24。
 
 Markdown 文件的写法：
 
@@ -806,13 +777,13 @@ Markdown 文件的写法：
 ### 七、回到这一页
 
 ::: buttons
-- { label: 在图上看 RoPE 这几步, go: layer.self_attn.apply_rotary_pos_emb.qc }
-- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layer.self_attn.S[1]' }
+- { label: 在图上看 RoPE 这几步, go: 'layers[0].self_attn.apply_rotary_pos_emb.qc' }
+- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layers[0].self_attn.eager_attention_forward.S' }
 :::
 
 ::: rope_compare
-scores: 'layer.self_attn.Ss[1..H]'
-weights: 'layer.self_attn.P[1..H]'
+scores: 'layers[0].self_attn.eager_attention_forward.Ss'
+weights: 'layers[0].self_attn.eager_attention_forward.P'
 ids: ids
 :::
 ````
@@ -824,10 +795,8 @@ ids: ids
 - 单独一行 `---` 结束当前行，下一行从分隔线后开始。`columns` 块自己占一行，它前后的正文各成一行。
 - `columns 宽度...` 只能写在最外层，里面只能放 `column` 块，每栏一个宽度：数字是像素，其他写法（如 `1fr`）原样作为 CSS 网格宽度。窄屏下各栏改为上下排列。
 - `lead` 块的内容是开头段落，按 Markdown 渲染，字号稍大。
-- 其他名字是内置组件。`rope_dial`（两个箭头随 $t$、$s$ 转动的表盘）和 `rope_curve`（整个 head 的点积随 $t-s$ 变化的曲线）没有内容；`buttons` 的内容是 YAML 列表，每项 `{ label, go }`，点击后跳到第一个显示 `go` 节点的前向步骤，没有这样的步骤时跳到 `go` 所在模块折叠后的那一步；`rope_compare` 的内容是 YAML 映射，`scores`、`weights` 是每个 head 一个的打分和权重节点，`ids` 是 token 输入，用来对比加不加 RoPE 的打分。组件名后面不能带参数，参数写在内容里。
+- 其他名字是内置组件。`rope_dial`（两个箭头随 $t$、$s$ 转动的表盘）和 `rope_curve`（整个 head 的点积随 $t-s$ 变化的曲线）没有内容；`buttons` 的内容是 YAML 列表，每项 `{ label, go }`，点击后跳到第一个显示 `go` 节点的前向步骤，没有这样的步骤时跳到 `go` 所在模块折叠后的那一步；`rope_compare` 的内容是 YAML 映射，`scores`、`weights` 是形状为 $(H, T, T)$ 的打分和权重节点，`ids` 是 token 输入，用来对比加不加 RoPE 的打分。组件名后面不能带参数，参数写在内容里。
 - 出错时报告 Markdown 文件的行号，例如 `qwen3/rope.md:12:1: '::: lead' is not closed`。组件内容里的节点路径写错时，报告那一行。
-
-段落也可以直接写在 YAML 里：`rows` 是行的列表，一行是块的列表，或者 `{ columns: [300, 1fr], cells: [[块...], [块...]] }`；块写成 `rope_dial`、`rope_curve`、`{ text: Markdown }`、`{ lead: Markdown }`、`{ buttons: [...] }`、`{ rope_compare: {...} }`。
 
 ### 5.4 页面里自己的文字
 

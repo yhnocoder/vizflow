@@ -2,8 +2,6 @@ import { type Node, isIntegerDtype, moduleJacobian } from '../autograd';
 import { render, renderText } from '../formula';
 import type { StepModule } from '../steps';
 import { forEachIndex, formatNumber, formatShape, offsetOf } from '../tensor';
-import { WAVE_INVERSE, checkFigure, figureTag } from '../ui/figure-spec';
-import { renderFigures } from '../ui/figures';
 import { BOX_FOLDED_TEXT, type SceneBox } from './boxes';
 import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import type { SceneController } from './controller';
@@ -18,23 +16,6 @@ export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
 export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
 const TIP_DIGITS = 3;
-const ROPE_TOLERANCE = 1e-6;
-
-function ropeKind(node: Node): string | undefined {
-  const shape = node.shape;
-  if (shape.length < 2 || shape.slice(1, -1).some((size) => size !== 1)) return undefined;
-  const T = shape[0];
-  const dh = shape[shape.length - 1];
-  const at = (t: number, c: number) => node.value.get([t, ...shape.slice(1, -1).map(() => 0), c]);
-  return Object.keys(WAVE_INVERSE).find((kind) => {
-    if (checkFigure('rope_wave', shape, [kind]) !== undefined) return false;
-    const f = kind === 'cos' ? Math.cos : Math.sin;
-    const omegas = Array.from({ length: dh }, (_, c) => WAVE_INVERSE[kind](at(1, c)));
-    for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) if (Math.abs(at(t, c) - f(t * omegas[c])) > ROPE_TOLERANCE) return false;
-    return true;
-  });
-}
-
 function texTitle(title: string): string {
   const parts = title.split('$');
   return parts.map((part, i) => (i % 2 === 1 ? part : part.trim() === '' ? '' : `\\text{${part}}`)).join('');
@@ -131,14 +112,6 @@ export class ScenePopups {
     const c = this.c;
     this.pinned = { node, el };
     const card = nodeCardElement(c.explainer.nodeCard(node, c.state.dir), this.gridOf(node));
-    const wave = c.state.dir === 'forward' && node.kind === 'buffer' ? ropeKind(node) : undefined;
-    if (wave !== undefined) {
-      const figure = document.createElement('div');
-      figure.className = 'vf-pop-figure';
-      figure.innerHTML = figureTag('rope_wave', node.name, [wave]);
-      renderFigures(figure, c.g);
-      card.querySelector('.vf-eqs')?.after(figure);
-    }
     this.pop.replaceChildren(card);
     this.pop.hidden = false;
     this.tip.hidden = true;

@@ -1,4 +1,4 @@
-import { DTYPES, type Dtype, Node, opDef } from '../../autograd';
+import { DTYPES, type Dtype, Node, type ValueExpr, type ValueIndex, opDef } from '../../autograd';
 import { explainOf } from '../../explain';
 import { type Ast, type IndexItem, ParseError, parseExpr } from '../expr';
 import { DslError } from '../source';
@@ -313,6 +313,50 @@ export abstract class Expressions extends CompilerState {
     }
     if (opDef(name) === undefined) this.fail(env, `unknown function '${name}'`, at);
     return this.apply(name, given, options, env, make, top, at);
+  }
+
+  valueExpr(ast: Ast, env: Env, tensors: boolean): ValueExpr {
+    const inner = (item: Ast) => this.valueExpr(item, env, tensors);
+    switch (ast.k) {
+      case 'num':
+        return { k: 'num', v: ast.v };
+      case 'bool':
+        return { k: 'bool', v: ast.v };
+      case 'str':
+        return this.fail(env, 'a value cannot be a string here', ast.pos);
+      case 'list':
+        return { k: 'list', items: ast.items.map(inner) };
+      case 'neg':
+        return { k: 'neg', arg: inner(ast.arg) };
+      case 'bin':
+        return { k: 'bin', op: ast.op, a: inner(ast.a), b: inner(ast.b) };
+      case 'index':
+        return { k: 'index', obj: inner(ast.obj), items: ast.items.map((item) => this.valueIndex(item, env)) };
+      case 'call': {
+        const args = ast.args.map(inner);
+        const kwargs = ast.kwargs.map(([key, arg]): [string, ValueExpr] => [key, inner(arg)]);
+        if (ast.fn.k === 'member') {
+          if (ast.fn.name in METHOD_CASTS || ast.fn.name === 'to') return inner(ast.fn.obj);
+          return { k: 'call', fn: ast.fn.name, args: [inner(ast.fn.obj), ...args], kwargs };
+        }
+        if (ast.fn.k !== 'name') return this.fail(env, 'only names and methods can be called', ast.pos);
+        return { k: 'call', fn: ast.fn.name, args, kwargs };
+      }
+      case 'name':
+      case 'member': {
+        const value = this.evaluate(ast, env, undefined, false);
+        if (isNum(value)) return { k: 'num', v: value.toy };
+        if (tensors && value instanceof Node) return { k: 'node', name: value.name };
+        if (tensors && isView(value) && value.index.length === 0) return { k: 'node', name: value.node.name, grad: value.grad };
+        return this.fail(env, `${describe(value)} cannot be used here; ${tensors ? 'expected a number or a tensor' : 'a buffer value can only use numbers and args'}`, ast.pos);
+      }
+    }
+  }
+
+  valueIndex(item: IndexItem, env: Env): ValueIndex {
+    if (item.k === 'ellipsis') return { k: 'ellipsis' };
+    if (item.k === 'at') return item.value.k === 'name' && item.value.name === 'None' ? { k: 'new' } : { k: 'at', i: this.int(item.value, env, 0) };
+    return { k: 'slice', start: item.start === undefined ? undefined : this.int(item.start, env, 0), stop: item.stop === undefined ? undefined : this.int(item.stop, env, 0) };
   }
 
   apply(op: string, args: Value[], kwargs: Map<string, Value>, env: Env, make: Make | undefined, top: boolean, at: number, dtype?: Dtype): Node {

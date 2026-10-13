@@ -290,6 +290,7 @@ interface Graph {
 </table>
 <p>节点名重复时抛错。运算节点不给 <code>name</code> 时自动命名为运算名加序号，例如 <code>exp1</code>。</p>
 <p><code>core</code> 另外导出 <code>moduleJacobian(g, { nodes }, input, output): number[][]</code>：只沿 <code>nodes</code> 里的运算节点做反向，算出当前值下 <code>output</code> 对 <code>input</code> 的 Jacobian，行是 <code>output</code> 的元素、列是 <code>input</code> 的元素（都按行主序展平）。模块外的节点不参与，所以它是这个模块自己的 Jacobian。场景用它给折叠的模块画整体 Jacobian 的连线，见「折叠的模块」。</p>
+<p><code>core</code> 还导出 <code>evaluateValue(expr: ValueExpr, read: (name: string, grad: boolean) =&gt; Tensor): Tensor</code>：在计算图之外对一个已解析的表达式求值。<code>ValueExpr</code> 的节点有数、布尔值、按名字读取的张量（可取梯度）、列表、取负、二元运算（<code>+ - * / // ** @</code>，按广播规则逐元素计算）、函数调用（<code>arange</code> 和注册过的运算，参数按运算定义分成张量和属性）和下标（整数、切片、<code>...</code> 和新维度）。页面描述文件的 buffer 初值和内置小图的数据都用它计算。</p>
 
 <h3>节点</h3>
 <pre><code class="language-ts">class Node {
@@ -621,16 +622,16 @@ isLeafLike(node: Node): boolean</code></pre>
   <li>公式内的数用 <code>formatNumber(v, { tex: true })</code>，公式外用 U+2212 负号。</li>
   <li>不能解析的模板在创建 steps 时抛出带模板原文的错误，对 label 或 buffer 取 <code>.grad</code> 也在这时报错。模板只能读取节点的值与梯度，不执行任意 JavaScript。</li>
 </ul>
-<p><b>内置小图。</b>正文里的 <code>&lt;vf-figure name="rope_wave" node="节点名" args="cos:24"&gt;&lt;/vf-figure&gt;</code> 由 <code>ui</code> 的 <code>renderFigures(root, g)</code> 换成 SVG 小图，页面描述文件里写成 <code>{{ name | rope_wave:cos }}</code>。<code>figureNames</code> 列出已有的小图，目前只有 <code>rope_wave</code>：它从 RoPE 的 cos 或 sin 表的第 2 行反推每一对列的频率 $\omega$，把每个频率的 $\cos t\omega$（或 $\sin t\omega$）画成随位置 $t$ 变化的曲线，第一个频率用实线，其余用虚线，表里实际用到的前 $T$ 个位置画实心点并加阴影，下面一行说明各条线的 $\omega$ 和对应的列。<code>vf-figure</code> 按块级标签处理，不包进段落。名字、参数或节点形状不对时 <code>renderFigures</code> 抛错。</p>
+<p><b>内置小图。</b>正文里的 <code>&lt;vf-figure name="lines" expr="..." args="shade=3"&gt;&lt;/vf-figure&gt;</code> 由 <code>ui</code> 的 <code>renderFigures(root, g)</code> 换成 SVG 小图。<code>expr</code> 是 base64 编码的 JSON 表达式（<code>autograd</code> 的 <code>ValueExpr</code>），<code>renderFigures</code> 每次渲染时用 <code>evaluateValue</code> 从节点的当前值算出数据，计算不进计算图；<code>args</code> 是冒号分隔的 <code>名字=数</code>。<code>figureTag(name, expr, args)</code> 生成这个标签，页面描述文件里写成 <code>{{ 表达式 | lines:shade=T }}</code>。<code>figureNames</code> 列出已有的小图，目前只有 <code>lines</code>：数据形状是 $(N, K)$，至少 2 行，每一列画成一条随行号 $0..N-1$ 变化的曲线，各列按列号循环使用实线和几种虚线；<code>shade</code> 给出前几行加阴影，这些行画大点。纵轴标出最大值和最小值，跨过 0 时画一条 0 线；图下方的图例标出每条曲线的列号（从 0 起）。小图本身不带任何模型知识，曲线的含义由正文说明。<code>vf-figure</code> 按块级标签处理，不包进段落。名字、参数或数据形状不对时 <code>renderFigures</code> 抛错。</p>
 <table>
   <thead>
-    <tr><th><code>rope_wave</code> 的常量</th><th>值</th></tr>
+    <tr><th><code>lines</code> 的常量</th><th>值</th></tr>
   </thead>
   <tbody>
     <tr><td>画布尺寸（SVG viewBox）</td><td>340 × 112</td></tr>
-    <tr><td>默认画到的位置数</td><td>24，与讲解段落 <code>rope.positions</code> 的默认值相同</td></tr>
-    <tr><td>横轴刻度间隔</td><td>每 6 个位置</td></tr>
-    <tr><td>每个位置之间的采样数</td><td>4</td></tr>
+    <tr><td>横轴刻度间隔</td><td>每 6 行</td></tr>
+    <tr><td>曲线样式，按列号循环</td><td>实线，<code>4 3</code>、<code>1.5 2.5</code>、<code>7 2 1.5 2</code> 三种虚线</td></tr>
+    <tr><td>纵轴标签位数</td><td>2</td></tr>
   </tbody>
 </table>
 
@@ -955,7 +956,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
   <li>悬停柱子时，起点或终点是这个元素的连线不透明度提到至少 0.95，其余连线乘 0.3，读者能直接看出这个元素从哪里来、流向哪里。有 token 轴的张量，再在和这个元素同一个 token 的那些元素（token 轴上的下标相同，$(T, d)$ 的张量是一行，$(T, H, d_h)$ 的张量是所有 head 的这一行）底下画一个框：框比这些柱子的底面外扩 0.12，填充 <code>--pos</code>，不透明度 0.3，边线 0.9，抬高 0.012 以免与底板重叠。哪个轴是 token 按运算的语义沿计算图推导，不比较尺寸：input 和 label 的第 0 轴是 token；param 和 buffer 没有 token 轴；逐元素运算按广播把输入的 token 轴对到输出；matmul 保留左操作数没有被收缩的 token 轴，右操作数的 token 轴是最后一维时成为输出的最后一维；transpose 交换、select 去掉或前移、view、reshape 与 unsqueeze 在前面各维的乘积不变时保留这个轴；embedding 沿用索引的 token 轴；softmax 与 log_softmax 保留，sum、mean、max、logsumexp 沿 token 轴归约时去掉，否则按 keepdim 平移；没有列出规则的运算没有 token 轴。所以 $\mathbf{k}^{\top}$ 的 token 轴是第 1 维，悬停时框出的是一列；$T$ 与 $d_h$ 相等时结果也不变。</li>
   <li>反向时悬停连线显示连线卡片，并加粗这条连线。</li>
   <li>前向时点击 logits 或 $\log\mathbf{p}$ 的柱子，把它设为目标类，即更新对应的 label 节点；批量时同时选中这一行的样本。页面有序列输入（<code>sequence</code> 选项），并且这个 label 的值是序列里连续的一段时，改的是序列里对应位置的 token：标签是输入右移一位，所以输入和标签一起变化，图上其他位置的预测也随之改变。提示里的 token 名与类别标签相同，不加引号，前导空格显示为 ␣。</li>
-  <li>悬停层名显示层名卡片，点击层名把卡片固定住；buffer 是 $(T, d_h)$ 的 RoPE cos 或 sin 表时，前向卡片里还画出 <code>rope_wave</code> 小图。</li>
+  <li>悬停层名显示层名卡片，点击层名把卡片固定住。</li>
   <li>场景订阅 <code>theme</code>，主题切换时重新读取颜色。</li>
 </ul>
 
@@ -1123,8 +1124,8 @@ interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
 <p><b>从页面描述文件加载。</b>页面写 <code>&lt;vizflow-page src="page.yaml"&gt;</code>，或设置 JavaScript 属性 <code>src</code>（它与 HTML 属性同步）。</p>
 <ul>
   <li>设置 <code>src</code> 后，元素用动态 <code>import()</code> 加载 <code>dsl</code> 与 <code>scene3d</code>，以 <code>document.baseURI</code> 为基准把 <code>src</code> 解析成绝对地址，调用 <code>loadPage</code> 编译，再用 <code>autoLayout(compiled.tree, compiled.steps)</code> 算出布局、分层布局和模块大括号。没有设置 <code>src</code> 的页面不加载 YAML 解析器。</li>
-  <li>编译完成后，元素把 <code>graph</code>、<code>steps</code>、<code>panels</code>（列表为空时不画面板）、<code>sections</code>（列表为空时不画）、<code>sequence</code> 和 <code>scene</code>（<code>layout</code>、<code>modules</code>、<code>levels</code>、<code>sequence</code>、<code>hint</code>、<code>camera</code>）设为编译结果并立即挂载，然后派发 <code>load</code> 事件。<code>compiled</code> 是编译结果，未加载完成时为 <code>undefined</code>。</li>
-  <li>从 <code>src</code> 挂载时，元素在布局前面放一个 <code>header.vf-header</code>：<code>h1.vf-title</code> 是页面的 <code>title</code>，按纯文本显示；<code>p.vf-lede</code> 是 <code>lede</code>，用 <code>renderText</code> 渲染公式。页面之后又直接设置了 <code>graph</code> 时不画这个标题。</li>
+  <li>编译完成后，元素把 <code>graph</code>、<code>steps</code>、<code>panels</code>（列表为空时不画面板）、<code>sections</code>（列表为空时不画）、<code>sequence</code> 和 <code>scene</code>（<code>layout</code>、<code>modules</code>、<code>levels</code>、<code>sequence</code>、<code>camera</code>）设为编译结果并立即挂载，然后派发 <code>load</code> 事件。<code>compiled</code> 是编译结果，未加载完成时为 <code>undefined</code>。</li>
+  <li>从 <code>src</code> 挂载时，元素在布局前面放一个 <code>header.vf-header</code>：<code>h1.vf-title</code> 是页面的 <code>title</code>，按纯文本显示。页面之后又直接设置了 <code>graph</code> 时不画这个标题。</li>
   <li>读取或编译出错时，元素清空自己的内容，显示一段 <code>p.vf-load-error</code>，文字是 <code>src: 错误信息</code>，并用 <code>reportError</code> 报告错误。</li>
   <li>加载完成之前 <code>src</code> 又被改变时，只采用最后一次加载的结果。</li>
 </ul>
