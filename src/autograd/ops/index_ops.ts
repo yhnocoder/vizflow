@@ -339,6 +339,37 @@ export const repeatInterleaveOp: OpDef<RepeatInterleaveAttrs> = {
   cost: movement(true, [[]]),
 };
 
+export interface RepeatKvAttrs {
+  n_rep: number;
+}
+
+export function repeatKvAsInterleave(inputShape: readonly number[], attrs: RepeatKvAttrs): RepeatInterleaveAttrs {
+  if (inputShape.length < 3) throw new Error(`repeat_kv: input ${formatShape(inputShape)} must have a head dimension before (T, d)`);
+  return { repeats: attrs.n_rep, dim: inputShape.length - 3 };
+}
+
+export const repeatKvOp: OpDef<RepeatKvAttrs> = {
+  name: 'repeat_kv',
+  args: ['input', 'n_rep'],
+  tensors: ['input'],
+  sizes: ['n_rep'],
+  shape: ([input], attrs) => repeatInterleaveOp.shape([input], repeatKvAsInterleave(input, attrs)),
+  forward: ([input], attrs) => repeatInterleaveOp.forward([input], repeatKvAsInterleave(input.shape, attrs)),
+  backward: (gradOut, [input], out, attrs) => repeatInterleaveOp.backward(gradOut, [input], out, repeatKvAsInterleave(input.shape, attrs)),
+  cost: movement(true, [[]]),
+};
+
+export const contiguousOp: OpDef<Record<string, never>> = {
+  name: 'contiguous',
+  args: ['input'],
+  tensors: ['input'],
+  shape: ([input]) => [...input],
+  int64: true,
+  forward: ([input]) => input.clone(),
+  backward: (gradOut) => [gradOut.clone()],
+  cost: movement(false, [[]]),
+};
+
 function convShape(input: readonly number[], weight: readonly number[]): number[] {
   if (input.length !== 2 || weight.length !== 2 || input[1] !== weight[0]) {
     throw new Error(`causal_conv1d: input ${formatShape(input)} must be (T, C) and weight ${formatShape(weight)} must be (C, K)`);

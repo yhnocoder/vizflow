@@ -1,8 +1,8 @@
 import type { Node } from '../autograd';
-import { explainOf } from '../explain';
+import { batchedCells, explainOf } from '../explain';
 import { type StepModule, type StepsSpec, isLeafLike } from '../steps';
-import { indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Slab, type Vec3, labelBehind, rowCol, rowsCols } from './layout';
+import { forEachIndex, indexOf } from '../tensor';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plateAxes, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -130,6 +130,7 @@ interface BoardRef {
   a: Node;
   b: Node;
   linear: boolean;
+  batched: boolean;
 }
 
 export interface FoldBox {
@@ -222,6 +223,7 @@ class Plan implements LevelPlan {
   private readonly entries: Entry[] = [];
   private readonly entryOf = new Map<Node, Entry>();
   private readonly sourceOf = new Map<Node, Node>();
+  private readonly drawnOn = new Map<Node, Node[]>();
   private readonly copies: Copy[] = [];
   private readonly copyEntries = new Map<Copy, Entry>();
   private readonly boards = new Map<Node, BoardRef>();
@@ -240,7 +242,7 @@ class Plan implements LevelPlan {
     this.visible = [...new Set(spec.forward.flatMap((s) => list(s.show)))].sort((a, b) => a.id - b.id);
     this.computed = new Set(this.visible.filter((n) => !isLeafLike(n)));
     this.stream = this.lane(STREAM_X, STREAM_SPACING, true);
-    for (const n of this.computed) if (n.kind === 'op' && n.op === 'view') this.sourceOf.set(n, this.sourceOf.get(n.inputs[0]) ?? n.inputs[0]);
+    this.findSources();
     this.findBoards();
     this.findRowGroups();
     this.findCopies();
@@ -257,8 +259,31 @@ class Plan implements LevelPlan {
     return lane;
   }
 
+  private findSources(): void {
+    const shown = new Set(this.visible);
+    const operands = new Set([...this.computed].filter((u) => u.kind === 'op' && (u.op === 'matmul' || u.op === 'select_matmul')).map((u) => u.inputs[1]));
+    for (const n of this.visible[0]?.graph.nodes ?? []) {
+      if (!isLayoutOp(n) || shown.has(n) || isLeafLike(n) || operands.has(n)) continue;
+      const source = this.source(n.inputs[0]);
+      this.sourceOf.set(n, source);
+      if (n.shape.length === 3 && drawnAlike(n, source)) this.drawnOn.set(source, [...(this.drawnOn.get(source) ?? []), n]);
+    }
+  }
+
+  private source(n: Node): Node {
+    return this.sourceOf.get(n) ?? n;
+  }
+
+  private isOutput(m: StepModule, n: Node): boolean {
+    return m.outputs.some((o) => this.source(o) === n);
+  }
+
+  private isInput(m: StepModule, n: Node): boolean {
+    return m.inputs.some((i) => this.source(i) === n);
+  }
+
   private consumers(n: Node): Node[] {
-    return [...this.computed].filter((u) => u.inputs.includes(n));
+    return [...this.computed].filter((u) => u.inputs.some((i) => this.source(i) === n));
   }
 
   private chain(id: string | null | undefined): StepModule[] {
@@ -294,8 +319,9 @@ class Plan implements LevelPlan {
       if (u.kind !== 'op') continue;
       if ((u.op === 'matmul' || u.op === 'select_matmul') && u.inputs.length === 2) {
         const [input, b] = u.inputs;
-        const a = this.sourceOf.get(input) ?? input;
-        if ((input.shape.length === 2 || (u.op === 'select_matmul' && input.shape.length === 3)) && b.shape.length === 2 && u.shape.length === 2) this.boards.set(u, { op: u, a, b, linear: isLeafLike(b) });
+        const flat = (input.shape.length === 2 || (u.op === 'select_matmul' && input.shape.length === 3)) && b.shape.length === 2 && u.shape.length === 2;
+        const batched = batchedCells(u);
+        if (flat || batched) this.boards.set(u, { op: u, a: this.source(input), b, linear: isLeafLike(b), batched });
         continue;
       }
       const table = u.inputs.find((i) => i.kind === 'param' && i.shape.length === 2 && i.shape[1] === u.shape[u.shape.length - 1]);
@@ -414,7 +440,7 @@ class Plan implements LevelPlan {
       const column = (u: Node) => u.shape.length === 1 && u.shape[0] === n.shape[0] && !isLeafLike(u) && this.shapeOf(u)[1] === 1;
       return !isLeafLike(n) && main !== undefined && ((main.shape.length === 2 && main.shape[0] === n.shape[0]) || n.inputs.some(column)) ? [n.shape[0], 1] : [1, n.shape[0]];
     }
-    return rowsCols(n.shape);
+    return rowsCols(n);
   }
 
   private discMemo = new Map<Node, boolean>();
@@ -426,12 +452,14 @@ class Plan implements LevelPlan {
     const cols = this.shapeOf(n)[1];
     const result =
       !this.boards.has(n) && !isLeafLike(n) &&
-      (n.shape.length === 2 || (n.shape.length === 3 && n.shape[2] === 1)) &&
+      (n.shape.length === 2 || (n.shape.length === 3 && plates(n).width === 1)) &&
       this.consumers(n).some((u) => {
-        if (u.inputs[0] === n && u.shape.join() === n.shape.join() && this.isDisc(u)) return true;
         const main = u.inputs[0];
-        const broadcasts = explainOf(u.op as string)?.pattern === 'elementwise' && n.shape.length <= u.shape.length && n.shape.every((size, i) => size === 1 || size === u.shape[u.shape.length - n.shape.length + i]);
-        return main !== n && u.inputs.slice(1).includes(n) && main.shape.join() === u.shape.join() && broadcasts && this.shapeOf(u)[1] > cols;
+        if (this.source(main) === n) return u.shape.join() === main.shape.join() && this.isDisc(u);
+        const used = u.inputs.slice(1).find((i) => this.source(i) === n);
+        if (used === undefined) return false;
+        const broadcasts = explainOf(u.op as string)?.pattern === 'elementwise' && used.shape.length <= u.shape.length && used.shape.every((size, i) => size === 1 || size === u.shape[u.shape.length - used.shape.length + i]);
+        return main.shape.join() === u.shape.join() && broadcasts && this.shapeOf(u)[1] > cols;
       });
     this.discMemo.set(n, result);
     return result;
@@ -483,7 +511,7 @@ class Plan implements LevelPlan {
       const own = prod.filter((n) => !moveTo.has(n) && !this.sourceOf.has(n));
       if (own.length === 0) return;
       const depth = new Map<Node, number>();
-      for (const n of own) depth.set(n, Math.max(0, ...n.inputs.filter((i) => depth.has(i)).map((i) => depth.get(i)! + 1)));
+      for (const n of own) depth.set(n, Math.max(0, ...n.inputs.map((i) => this.source(i)).filter((i) => depth.has(i)).map((i) => depth.get(i)! + 1)));
       const levels = Array.from({ length: Math.max(...depth.values()) + 1 }, () => this.newLevel());
       for (const n of own) {
         const level = levels[depth.get(n)!];
@@ -520,7 +548,7 @@ class Plan implements LevelPlan {
       if (chains.every((c) => c[i] === chains[0][i])) common = chains[0][i];
       else break;
     }
-    if (common !== undefined && own.every((n) => common!.outputs.includes(n))) return common.parent;
+    if (common !== undefined && own.every((n) => this.isOutput(common!, n))) return common.parent;
     return common?.id ?? null;
   }
 
@@ -530,7 +558,7 @@ class Plan implements LevelPlan {
       if (this.computed.has(n) || this.entryOf.has(n) || n.kind === 'label' || transposed.has(n)) continue;
       const user = this.consumers(n)[0];
       if (user === undefined) continue;
-      const main = user.inputs[0] === n ? user : user.inputs[0];
+      const main = this.source(user.inputs[0]) === n ? user : user.inputs[0];
       const host = this.entryOf.get(main);
       if (host === undefined) continue;
       this.entry(n, host.level);
@@ -583,7 +611,7 @@ class Plan implements LevelPlan {
         }
         if (e.kind === 'vector') {
           const user = this.consumers(n)[0];
-          const host = this.entryOf.get(user.inputs[0] === n ? user : user.inputs[0])!;
+          const host = this.entryOf.get(this.source(user.inputs[0]) === n ? user : user.inputs[0])!;
           if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.slice(0, e.cols));
           continue;
         }
@@ -605,12 +633,17 @@ class Plan implements LevelPlan {
           beside.push([e, main]);
           continue;
         }
-        if (n.kind === 'op' && n.op === 'cat' && inputs.every((i) => i.lane === main.lane && i.lane !== undefined)) {
-          this.setLane(e, main.lane!, inputs.flatMap((i) => i.offsets));
-          continue;
-        }
         if (main.lane === undefined) {
           this.setLane(e, this.stream, range(0, e.cols));
+          continue;
+        }
+        const traced = this.tracedOffsets(e, main.lane);
+        if (traced !== undefined && !traced.some((o) => this.occupied(level, main.lane!, e).has(o))) {
+          this.setLane(e, main.lane, traced);
+          continue;
+        }
+        if (n.kind === 'op' && n.op === 'cat' && inputs.every((i) => i.lane === main.lane)) {
+          this.setLane(e, main.lane, inputs.flatMap((i) => i.offsets));
           continue;
         }
         const start = n.kind === 'op' && n.op === 'narrow' ? ((n.attrs as { start: number }).start ?? 0) : n.kind === 'op' && n.op === 'select' && n.inputs[0].shape.length === 3 && (n.attrs as { dim: number }).dim === 1 ? (n.attrs as { index: number }).index * n.inputs[0].shape[2] : 0;
@@ -631,9 +664,47 @@ class Plan implements LevelPlan {
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
   }
 
-  private placeBoardGroup(board: BoardRef, level: Level, done: Set<Entry>): void {
+  private tracedOffsets(e: Entry, lane: Lane): number[] | undefined {
+    const n = e.node;
+    const def = explainOf(n.op as string);
+    if (def?.pattern !== 'elementwise' || def.selected === undefined || e.cols !== rowsCols(n)[1]) return undefined;
+    const ctx = { node: n, inputs: n.inputs.map((i) => i.value), out: n.value, attrs: n.attrs };
+    const offsets: (number | undefined)[] = Array.from({ length: e.cols }, () => undefined);
+    let traced = true;
+    forEachIndex(n.shape, (index) => {
+      const [row, col] = rowCol(n, index);
+      if (!traced || row !== 0) return;
+      const picks = def.selected!(ctx, index);
+      const input = picks.length === 1 ? n.inputs[picks[0].arg] : undefined;
+      const from = input === undefined ? undefined : this.entryOf.get(input);
+      const at = from === undefined || from.lane !== lane || from.cols !== rowsCols(from.node)[1] ? undefined : sourceIndex(input!, from.node, picks[0].index);
+      if (at === undefined) traced = false;
+      else offsets[col] = from!.offsets[rowCol(from!.node, at)[1]];
+    });
+    if (!traced || offsets.some((o) => o === undefined) || new Set(offsets).size !== offsets.length) return undefined;
+    return offsets as number[];
+  }
+
+  private placeBatchedBoard(board: BoardRef, level: Level, done: Set<Entry>): void {
     const a = this.drawnA(board);
-    const group = [...this.boards.values()].filter((b) => this.entryOf.get(b.op)?.level === level && this.drawnA(b) === a).sort((p, q) => p.op.id - q.op.id);
+    const out = this.entryOf.get(board.op)!;
+    const tile = level.entries.find((e) => e.node === board.b && e.kind === 'tile')!;
+    const aXs = a.xs ?? (a.lane === undefined ? [0] : a.offsets.map((o) => position(a.lane!, o)));
+    const lane = this.lane(a.level === level ? Math.max(...aXs) + BOARD_GAP : Math.min(...aXs), a.lane?.spacing ?? STREAM_SPACING);
+    const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+    this.setLane(out, lane, range(out.cols));
+    this.setLane(tile, lane, range(tile.cols));
+    done.add(out);
+    done.add(tile);
+  }
+
+  private placeBoardGroup(board: BoardRef, level: Level, done: Set<Entry>): void {
+    if (board.batched) {
+      this.placeBatchedBoard(board, level, done);
+      return;
+    }
+    const a = this.drawnA(board);
+    const group = [...this.boards.values()].filter((b) => !b.batched && this.entryOf.get(b.op)?.level === level && this.drawnA(b) === a).sort((p, q) => p.op.id - q.op.id);
     const same = a.level === level;
     const total = group.reduce((sum, b) => sum + b.b.shape[1], 0);
     let lane: Lane;
@@ -689,13 +760,15 @@ class Plan implements LevelPlan {
   private groupSize(lane: Lane): number {
     let size = 0;
     for (const m of lane.members) {
-      const heads = m.node.shape.length === 3 && m.node.shape[1] > 1 && m.node.shape[2] > 1 ? m.node.shape[2] : 0;
-      if (heads > 0 && (size === 0 || heads < size)) size = heads;
-      for (const u of this.consumers(m.node)) {
-        if (u.kind !== 'op') continue;
-        const attrs = u.attrs as { size?: number; length?: number; dim?: number };
-        const s = typeof attrs.size === 'number' ? attrs.size : u.op === 'narrow' && attrs.dim === m.node.shape.length - 1 ? attrs.length : undefined;
-        if (s !== undefined && s > 0 && s < m.cols && (size === 0 || s < size)) size = s;
+      for (const node of [m.node, ...(this.drawnOn.get(m.node) ?? [])]) {
+        const { count, width } = plates(node);
+        if (node.shape.length === 3 && count > 1 && width > 1 && (size === 0 || width < size)) size = width;
+        for (const u of this.computed) {
+          if (u.kind !== 'op' || !u.inputs.includes(node)) continue;
+          const attrs = u.attrs as { size?: number; length?: number; dim?: number };
+          const s = typeof attrs.size === 'number' ? attrs.size : u.op === 'narrow' && attrs.dim === node.shape.length - 1 ? attrs.length : undefined;
+          if (s !== undefined && s > 0 && s < m.cols && (size === 0 || s < size)) size = s;
+        }
       }
     }
     return size;
@@ -742,7 +815,7 @@ class Plan implements LevelPlan {
     const norms = new Set(this.stepModules.filter((m) => !this.stepModules.some((c) => c.parent === m.id) && m.nodes.some((n) => this.computed.has(n) && this.isDisc(n))));
     for (const e of this.entries) {
       if (e.kind === 'vector') e.quiet = true;
-      if (e.copy === undefined && this.computed.has(e.node) && [...norms].some((m) => m.nodes.includes(e.node) && !m.outputs.includes(e.node))) e.quiet = true;
+      if (e.copy === undefined && this.computed.has(e.node) && [...norms].some((m) => m.nodes.includes(e.node) && !this.isOutput(m, e.node))) e.quiet = true;
     }
   }
 
@@ -781,7 +854,7 @@ class Plan implements LevelPlan {
   resolve(ctx: LevelContext): LevelLayout {
     const folded = (id: string) => ctx.folded(id);
     const isFolded = (m: StepModule) => m.fixed || folded(m.id);
-    const hiddenNode = (n: Node) => this.computed.has(n) && this.stepModules.some((m) => isFolded(m) && m.nodes.includes(n) && !m.outputs.includes(n));
+    const hiddenNode = (n: Node) => this.computed.has(n) && this.stepModules.some((m) => isFolded(m) && m.nodes.includes(n) && !this.isOutput(m, n));
     const outerFold = (id: string | null): StepModule | undefined => this.chain(id).find(isFolded);
     const hidden = new Map<Entry, boolean>();
     const hiddenOf = (e: Entry): boolean => {
@@ -814,7 +887,7 @@ class Plan implements LevelPlan {
         copy: level.copyOnly,
         copied: shown.some((e) => e.copy !== undefined),
         module: level.module,
-        fixedOutput: own.length > 0 && own.every((e) => this.stepModules.some((m) => m.fixed && m.outputs.includes(e.node))),
+        fixedOutput: own.length > 0 && own.every((e) => this.stepModules.some((m) => m.fixed && this.isOutput(m, e.node))),
       };
     };
     type Flags = ReturnType<typeof flags>;
@@ -881,7 +954,7 @@ class Plan implements LevelPlan {
 
     for (const m of this.stepModules) {
       if (!isFolded(m) || boxY.has(m.id) || outerFold(m.parent) !== undefined) continue;
-      const outLevel = this.levels.findIndex((l) => l.entries.some((e) => m.outputs.includes(e.node) && e.copy === undefined));
+      const outLevel = this.levels.findIndex((l) => l.entries.some((e) => this.isOutput(m, e.node) && e.copy === undefined));
       if (outLevel <= 0) continue;
       const below = [...this.levels.slice(0, outLevel)].reverse().find((l) => flags(l).visible);
       boxY.set(m.id, [(below?.y ?? 0) + FOLD.emptyBelow, this.levels[outLevel].y - FOLD.emptyAbove]);
@@ -910,7 +983,7 @@ class Plan implements LevelPlan {
         const l = e.level.module;
         return l !== null && this.chain(l).includes(m);
       });
-      const keys = inside.length > 0 ? inside : this.entries.filter((e) => e.copy === undefined && (m.outputs.includes(e.node) || m.inputs.includes(e.node)));
+      const keys = inside.length > 0 ? inside : this.entries.filter((e) => e.copy === undefined && (this.isOutput(m, e.node) || this.isInput(m, e.node)));
       const xs = keys.flatMap((e) => e.xs ?? []);
       const zs = keys.flatMap((e) => this.zs(e));
       boxes.push({ module: m, x: [Math.min(...xs) - BOX_MARGIN.left, Math.max(...xs) + BOX_MARGIN.right], z: [Math.min(...zs) - BOX_MARGIN.back, Math.max(...zs) + BOX_MARGIN.front], y: range });
@@ -929,7 +1002,7 @@ class Plan implements LevelPlan {
     };
     for (const m of this.stepModules) {
       if (outerFold(m.parent) !== undefined) continue;
-      const own = this.levels.filter((l) => (l.module !== null && this.chain(l.module).includes(m)) || l.entries.some((e) => e.copy === undefined && m.outputs.includes(e.node)));
+      const own = this.levels.filter((l) => (l.module !== null && this.chain(l.module).includes(m)) || l.entries.some((e) => e.copy === undefined && this.isOutput(m, e.node)));
       const range = isFolded(m) ? boxY.get(m.id) : spanOf(own);
       if (range !== undefined) ranges.set(m.id, range);
     }
@@ -950,7 +1023,7 @@ class Plan implements LevelPlan {
       const range = ranges.get(m.id);
       if (range === undefined || m.fixed || (isFolded(m) && this.split(m))) continue;
       const direct = (input: Node) => this.consumers(input).some((u) => m.nodes.includes(u) && !this.copies.some((c) => c.node === input && c.consumers.includes(u)));
-      const inputLevels = this.levels.filter((l) => flags(l).visible && l.y < range[0] && l.entries.some((e) => e.copy === undefined && !hiddenOf(e) && m.inputs.includes(e.node) && direct(e.node)));
+      const inputLevels = this.levels.filter((l) => flags(l).visible && l.y < range[0] && l.entries.some((e) => e.copy === undefined && !hiddenOf(e) && this.isInput(m, e.node) && direct(e.node)));
       const covered = (y: number) => [...ranges].some(([id, r]) => id !== m.id && sideOf.get(id) === sideOf.get(m.id) && r[0] <= range[0] && y <= r[1] && r[1] < range[1]);
       const lows = inputLevels.filter((l) => !covered(l.y)).map((l) => l.y - BRACE_PAD.below);
       if (lows.length > 0) ranges.set(m.id, [Math.min(range[0], ...lows), range[1]]);
@@ -960,7 +1033,7 @@ class Plan implements LevelPlan {
     for (const m of this.stepModules) {
       if (!isFolded(m) || outerFold(m.parent) !== undefined) continue;
       for (const output of m.outputs) {
-        const outside = this.copies.find((c) => c.node === output && c.consumers.some((u) => !m.nodes.includes(u)));
+        const outside = this.copies.find((c) => c.node === this.source(output) && c.consumers.some((u) => !m.nodes.includes(u)));
         const outputEntry = (outside === undefined ? undefined : this.copyEntries.get(outside)) ?? this.entryOf.get(output);
         if (outputEntry === undefined) continue;
         for (const input of m.inputs) if (this.entryOf.has(input)) io.push({ module: m, input, output, outputBlock: blockOf.get(outputEntry)!, split: this.split(m) });
@@ -994,7 +1067,7 @@ class Plan implements LevelPlan {
       top,
       sourceOf: this.sourceOf,
       copyFor: (node, consumer) => {
-        const copy = this.copyOf(node, consumer);
+        const copy = this.copyOf(this.source(node), consumer);
         const e = copy === undefined ? undefined : this.copyEntries.get(copy);
         return e === undefined ? undefined : blockOf.get(e);
       },
@@ -1050,7 +1123,7 @@ class Plan implements LevelPlan {
     for (let offset = 0; offset < size; offset++) {
       const index = indexOf(n.shape, offset);
       const slab = this.slabbed.has(n);
-      const [row, col] = slab ? [index[1], index[2]] : e.rows > 1 && e.cols === 1 ? [offset, 0] : n.shape.length >= 2 ? rowCol(n.shape, index) : [0, offset];
+      const [row, col] = slab ? [index[1], index[2]] : e.rows > 1 && e.cols === 1 ? [offset, 0] : n.shape.length >= 2 ? rowCol(n, index) : [0, offset];
       const z = slab ? this.slabZ(n, index[0], row) : zs[Math.min(row, zs.length - 1)];
       elements.push({ index, row, col, x: xs[Math.min(col, xs.length - 1)], y, z });
     }
@@ -1085,6 +1158,7 @@ class Plan implements LevelPlan {
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
     const slabs = this.slabsOf(e, elements, footprint, y);
+    const chunks = slabs === undefined && !scalar ? chunksOf(n, elements, footprint, y) : undefined;
     const slabGroup = this.slabbed.get(n);
     const slabLabels = slabGroup === undefined ? undefined : slabs!.map((slab, g) => ({ text: groupText(slabGroup, g), col: g, x: x1 + ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: slab.plate.z, anchor: 'right' as const }));
     const classLabels = (named ?? []).slice(0, e.cols).map((text, col) =>
@@ -1111,6 +1185,7 @@ class Plan implements LevelPlan {
       footprint,
       plate: scalar ? undefined : { x: (x0 + x1) / 2, y, z: (z0 + z1) / 2, w: x1 - x0 + footprint[0] + PLATE_MARGIN, d: z1 - z0 + footprint[1] + PLATE_MARGIN },
       slabs,
+      chunks,
       rowGroups: this.rowGroupsOf(e),
       title,
       classLabels,
@@ -1128,6 +1203,29 @@ export const TILE_FRAME_PAD: [number, number] = [0.42, 0.3];
 
 function groupText(group: Node, value: number): string {
   return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;
+}
+
+function chunksOf(n: Node, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
+  const { count } = plates(n);
+  if (n.shape.length !== 3 || count < 2) return undefined;
+  const { chunk } = plateAxes(n);
+  return Array.from({ length: count }, (_, p) => {
+    const members = elements.filter((el) => el.index[chunk] === p);
+    const xs = members.map((el) => el.x);
+    const zs = members.map((el) => el.z);
+    const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
+    return { x: (x0 + x1) / 2, y, z: (z0 + z1) / 2, w: x1 - x0 + footprint[0] + PLATE_MARGIN, d: z1 - z0 + footprint[1] + PLATE_MARGIN };
+  });
+}
+
+function drawnAlike(n: Node, source: Node): boolean {
+  if (rowsCols(n).join() !== rowsCols(source).join()) return false;
+  let alike = true;
+  forEachIndex(n.shape, (index) => {
+    const at = sourceIndex(n, source, index);
+    if (alike && (at === undefined || rowCol(n, index).join() !== rowCol(source, at).join())) alike = false;
+  });
+  return alike;
 }
 
 function slabXs(e: Entry): number[] {

@@ -1,7 +1,8 @@
 import type { Node } from '../autograd';
+import { broadcastIndex } from '../tensor';
 
 export type ElemRef = { node: Node; index: number[] };
-export type CellRef = { cell: { op: Node; index: [number, number, number] } };
+export type CellRef = { cell: { op: Node; index: number[] } };
 
 export function isCell(ref: ElemRef | CellRef): ref is CellRef {
   return 'cell' in ref;
@@ -30,9 +31,13 @@ export function elemTexOf(node: Node, index: readonly number[]): string {
   return `${merged.base}_{${merged.inner},${shown.join(',')}}`;
 }
 
-export function matmulOperands(op: Node, index: readonly [number, number, number]): { a: number[]; b: number[]; out: number[] } {
-  const [r, k, i] = index;
+export function matmulOperands(op: Node, index: readonly number[]): { a: number[]; b: number[]; out: number[] } {
+  const [r, k, i] = index.slice(-3);
   const [A, B] = op.inputs;
+  if (index.length > 3) {
+    const batch = index.slice(0, -3);
+    return { a: [...broadcastIndex(batch, A.shape.slice(0, -2)), r, k], b: [...broadcastIndex(batch, B.shape.slice(0, -2)), k, i], out: [...batch, r, i] };
+  }
   const head = (op.attrs as { index?: number }).index;
   return {
     a: A.shape.length === 1 ? [k] : head === undefined ? [r, k] : [r, head, k],

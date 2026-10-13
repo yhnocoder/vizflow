@@ -57,6 +57,8 @@ import {
   padOp,
   permuteOp,
   repeatInterleaveOp,
+  repeatKvOp,
+  contiguousOp,
   repeatOp,
   reshapeOp,
   scatterOp,
@@ -164,6 +166,8 @@ export interface BuiltinOps {
   select(input: Node, dim: number, index: number, options?: OpOptions): Node;
   select_matmul(input: Node, other: Node, index: number, options?: OpOptions): Node;
   repeat_interleave(input: Node, repeats: number | string, dim: number, options?: OpOptions): Node;
+  repeat_kv(input: Node, n_rep: number | string, options?: OpOptions): Node;
+  contiguous(input: Node, options?: OpOptions): Node;
   causal_conv1d(input: Node, weight: Node, options?: ConvOptions): Node;
   remainder(input: Node, other: Node | number, options?: OpOptions): Node;
   floor_divide(input: Node, other: Node | number, options?: OpOptions): Node;
@@ -284,6 +288,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   indexPutOp,
   expandOp,
   reshapeOp,
+  repeatKvOp,
+  contiguousOp,
 ];
 
 for (const def of builtinOps) defineOp(def);

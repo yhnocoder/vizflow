@@ -161,7 +161,11 @@ export const transposeExplain: OpExplain = {
   pattern: 'elementwise',
   local: () => 1,
   tex: {
-    forward: (s) => transposedTex(s.in[0]),
+    forward: (s) => {
+      const { dim0, dim1 } = s.attrs as { dim0: number; dim1: number };
+      const matrix = new Set([dim0, dim1]);
+      return (matrix.has(0) && matrix.has(1)) || (matrix.has(-2) && matrix.has(-1)) ? transposedTex(s.in[0]) : `\\operatorname{transpose}(${s.in[0]},${dim0},${dim1})`;
+    },
     local: () => '1',
   },
   selected: (ctx, out) => {

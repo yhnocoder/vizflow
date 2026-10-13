@@ -59,6 +59,9 @@ describe('op costs', () => {
       return [product(forward), ...backward.map(product)];
     };
     expect(flops('matmul', [[2, 3], [3, 5]], [2, 5])).toEqual([60, 60, 60]);
+    expect(flops('matmul', [[2, 3, 4], [2, 4, 5]], [2, 3, 5])).toEqual([240, 240, 240]);
+    expect(flops('repeat_kv', [[1, 3, 4]], [2, 3, 4])).toEqual([0, 24]);
+    for (const name of ['view', 'reshape', 'transpose', 'unsqueeze', 'contiguous']) expect(flops(name, [[2, 3, 4]], [2, 3, 4]), name).toEqual([0, 0]);
     expect(flops('add', [[2, 3], [3]], [2, 3])).toEqual([6, 0, 6]);
     expect(flops('sub', [[2, 3], [2, 3]], [2, 3])).toEqual([6, 0, 6]);
     expect(flops('div', [[2, 3], [2, 3]], [2, 3])).toEqual([6, 6, 18]);

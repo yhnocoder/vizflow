@@ -209,6 +209,21 @@ const cases: Case[] = [
       return { out: g.repeat_interleave(x, 3, 1), inputs: [x] };
     },
   },
+  {
+    op: 'repeat_kv',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.repeat_kv(x, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'contiguous',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.contiguous(g.transpose(x, 0, 1)), inputs: [x] };
+    },
+  },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [1, 3, 4], [2, 4, 3]) },
   { op: 'logical_not', build: (g, r) => unary(g, r, 'logical_not', [2, 3]) },
   {
     op: 'scatter',

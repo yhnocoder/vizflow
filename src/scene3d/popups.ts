@@ -1,7 +1,7 @@
 import { type Node, isIntegerDtype, moduleJacobian } from '../autograd';
 import { render, renderText } from '../formula';
 import type { StepModule } from '../steps';
-import { formatNumber, formatShape, offsetOf } from '../tensor';
+import { forEachIndex, formatNumber, formatShape, offsetOf } from '../tensor';
 import { WAVE_INVERSE, checkFigure, figureTag } from '../ui/figure-spec';
 import { renderFigures } from '../ui/figures';
 import { BOX_FOLDED_TEXT, type SceneBox } from './boxes';
@@ -9,7 +9,7 @@ import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, v
 import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
-import { rowsCols, tokenText } from './layout';
+import { plates, rowCol, rowsCols, tokenText } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
@@ -116,9 +116,15 @@ export class ScenePopups {
   }
 
   private gridOf(node: Node): ValueGrid {
-    const [, cols] = rowsCols(node.shape);
+    const [, cols] = rowsCols(node);
     const backward = this.c.state.dir === 'backward';
-    return { label: backward ? '梯度' : '当前值', values: valuesOf(this.c, node), cols, heads: node.shape.length === 3 ? node.shape[1] : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
+    const values = valuesOf(this.c, node);
+    const ordered = new Float64Array(values.length);
+    forEachIndex(node.shape, (index, offset) => {
+      const [row, col] = rowCol(node, index);
+      ordered[row * cols + col] = values[offset];
+    });
+    return { label: backward ? '梯度' : '当前值', values: ordered, cols, heads: node.shape.length === 3 ? plates(node).count : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
   }
 
   showNodeCard(node: Node, el: HTMLElement): void {

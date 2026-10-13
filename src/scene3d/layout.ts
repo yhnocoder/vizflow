@@ -1,6 +1,6 @@
 import type { Node } from '../autograd';
 import { explainOf } from '../explain';
-import { formatShape, indexOf } from '../tensor';
+import { formatShape, indexOf, normDim, offsetOf } from '../tensor';
 import type { LevelLayout, LevelPlan } from './levels';
 
 export type Vec3 = [number, number, number];
@@ -45,7 +45,7 @@ export function stack(...items: (Node | StackOptions)[]): LayoutItem {
 }
 
 export function node(n: Node, options: { at?: Vec3 } = {}): LayoutItem {
-  const [, cols] = rowsCols(n.shape);
+  const [, cols] = rowsCols(n);
   if (cols > 1) throw new Error(`node: '${n.name}' has shape (${n.shape.join(', ')}); use stack for tensors with more than one element per row`);
   return { template: 'node', node: n, options };
 }
@@ -128,6 +128,7 @@ export interface Block {
   footprint: readonly [number, number];
   plate?: Plate;
   slabs?: Slab[];
+  chunks?: Plate[];
   rowGroups?: number[];
   axis?: { x: number; z: number };
   title: Anchor;
@@ -170,18 +171,111 @@ export interface LayoutContext {
   plan?: LevelPlan;
 }
 
-export function rowsCols(shape: readonly number[]): [number, number] {
+const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'unsqueeze', 'contiguous']);
+
+export function isLayoutOp(n: Node): boolean {
+  return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);
+}
+
+export function layoutSourceIndex(n: Node, index: readonly number[]): number[] {
+  const input = n.inputs[0];
+  if (n.op === 'transpose') {
+    const { dim0, dim1 } = n.attrs as { dim0: number; dim1: number };
+    const d0 = normDim(dim0, index.length);
+    const d1 = normDim(dim1, index.length);
+    const out = [...index];
+    out[d0] = index[d1];
+    out[d1] = index[d0];
+    return out;
+  }
+  return indexOf(input.shape, offsetOf(n.shape, index));
+}
+
+export function sourceIndex(n: Node, source: Node, index: readonly number[]): number[] | undefined {
+  let node = n;
+  let at = [...index];
+  while (node !== source) {
+    if (!isLayoutOp(node)) return undefined;
+    at = layoutSourceIndex(node, at);
+    node = node.inputs[0];
+  }
+  return at;
+}
+
+function splitsLastDim(input: readonly number[], out: readonly number[]): boolean {
+  return out.length === input.length + 1 && input.slice(0, -1).every((size, d) => size === out[d]) && out[out.length - 2] * out[out.length - 1] === input[input.length - 1];
+}
+
+const chunkAxes = new WeakMap<Node, number>();
+
+function derivedChunkAxis(n: Node): number {
+  if (n.kind !== 'op') return 0;
+  const input = n.inputs[0];
+  const inherited = n.inputs.find((i) => i.shape.length === 3);
+  switch (n.op) {
+    case 'view':
+    case 'reshape':
+      if (splitsLastDim(input.shape, n.shape)) return n.shape.length - 2;
+      return input.shape.join() === n.shape.join() ? chunkAxis(input) : 0;
+    case 'transpose': {
+      if (input.shape.length !== 3) return 0;
+      const { dim0, dim1 } = n.attrs as { dim0: number; dim1: number };
+      const axis = chunkAxis(input);
+      const d0 = normDim(dim0, 3);
+      const d1 = normDim(dim1, 3);
+      return axis === d0 ? d1 : axis === d1 ? d0 : axis;
+    }
+    case 'permute':
+      return input.shape.length === 3 ? (n.attrs as { dims: number[] }).dims.map((d) => normDim(d, 3)).indexOf(chunkAxis(input)) : 0;
+    case 'unsqueeze':
+      return input.shape.length === 2 ? normDim((n.attrs as { dim: number }).dim, 3) : 0;
+    case 'matmul':
+    case 'repeat_kv':
+      return 0;
+  }
+  return inherited === undefined ? 0 : chunkAxis(inherited);
+}
+
+export function chunkAxis(n: Node): number {
+  const known = chunkAxes.get(n);
+  if (known !== undefined) return known;
+  const axis = n.shape.length === 3 ? derivedChunkAxis(n) : 0;
+  chunkAxes.set(n, axis);
+  return axis;
+}
+
+export function plateAxes(n: Node): { chunk: number; row: number; col: number } {
+  const chunk = chunkAxis(n);
+  const [row, col] = [0, 1, 2].filter((d) => d !== chunk);
+  return { chunk, row, col };
+}
+
+export function rowsCols(n: Node): [number, number] {
+  const { shape } = n;
   if (shape.length === 0) return [1, 1];
   if (shape.length === 1) return [1, shape[0]];
-  if (shape.length === 3) return [shape[0], shape[1] * shape[2]];
+  if (shape.length === 3) {
+    const { chunk, row, col } = plateAxes(n);
+    return [shape[row], shape[chunk] * shape[col]];
+  }
   return [shape[0], shape[1]];
 }
 
-export function rowCol(shape: readonly number[], index: readonly number[]): [number, number] {
+export function rowCol(n: Node, index: readonly number[]): [number, number] {
+  const { shape } = n;
   if (shape.length === 0) return [0, 0];
   if (shape.length === 1) return [0, index[0]];
-  if (shape.length === 3) return [index[0], index[1] * shape[2] + index[2]];
+  if (shape.length === 3) {
+    const { chunk, row, col } = plateAxes(n);
+    return [index[row], index[chunk] * shape[col] + index[col]];
+  }
   return [index[0], index[1]];
+}
+
+export function plates(n: Node): { count: number; width: number } {
+  if (n.shape.length !== 3) return { count: 1, width: rowsCols(n)[1] };
+  const { chunk, col } = plateAxes(n);
+  return { count: n.shape[chunk], width: n.shape[col] };
 }
 
 function checkDims(n: Node): void {
@@ -193,7 +287,7 @@ function elementsOf(n: Node, position: (row: number, col: number) => Vec3): Elem
   const elements: Element[] = [];
   for (let offset = 0; offset < n.value.size; offset++) {
     const index = indexOf(n.shape, offset);
-    const [row, col] = rowCol(n.shape, index);
+    const [row, col] = rowCol(n, index);
     const [x, y, z] = position(row, col);
     elements.push({ index, row, col, x, y, z });
   }
@@ -263,7 +357,7 @@ function layoutBoard(item: Extract<LayoutItem, { template: 'board' }>, ctx: Layo
   checkDims(out);
   if (b.shape.length !== 2) throw new Error(`board: node '${b.name}' with shape ${formatShape(b.shape)} must be two-dimensional`);
   const [d, V] = b.shape;
-  const [B] = rowsCols(out.shape);
+  const [B] = rowsCols(out);
   const xs = (i: number) => ax + (i - (V - 1) / 2) * BOARD_COLUMN_SPACING * s;
   const zf = az + BOARD_FRONT * s;
   const wr = (k: number) => zf - BOARD_BACK_OFFSET * s - (d - 1 - k) * gap * s;
@@ -394,7 +488,7 @@ function placedSource(n: Node, placed: Map<Node, Block>): Block | undefined {
 }
 
 function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: LayoutContext, options: StackOptions): Block {
-  const [rows, cols] = rowsCols(n.shape);
+  const [rows, cols] = rowsCols(n);
   const s = options.scale ?? 1;
   const axisX = xs[0] - AXIS_OFFSET * s;
   const front = Math.max(...zs);
@@ -422,7 +516,7 @@ function planarBlock(n: Node, y: number, xs: number[], zs: number[], ctx: Layout
 }
 
 function scalarBlock(n: Node, shape: 'disc' | 'box', position: (row: number) => Vec3, options: TemplateOptions, extent: Vec3[] = [], anchor: Anchor['anchor'] = 'above'): Block {
-  const [rows] = rowsCols(n.shape);
+  const [rows] = rowsCols(n);
   const elements = elementsOf(n, (r) => position(r));
   const top = shape === 'disc' ? DISC_HEIGHT : BOX_HEIGHT;
   const first = elements[0];
@@ -471,7 +565,7 @@ function layoutStack(item: Extract<LayoutItem, { template: 'stack' }>, ctx: Layo
       continue;
     }
     if (!ctx.visible.includes(n)) continue;
-    const [rows, cols] = rowsCols(n.shape);
+    const [rows, cols] = rowsCols(n);
     const source = placedSource(n, placed);
     const pattern = patternOf(n);
     let block: Block;

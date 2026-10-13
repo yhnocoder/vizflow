@@ -4,7 +4,7 @@ import { offsetOf } from '../tensor';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
 import type { SceneController } from './controller';
 import type { Label } from './labels';
-import { type Block, type Element, type Vec3, elementAt, targetColumn } from './layout';
+import { type Block, type Element, type Vec3, elementAt, sourceIndex, targetColumn } from './layout';
 import { TICK_COUNT, capFor, niceTicks, scaleFor } from './scales';
 import { Transition } from './transition';
 
@@ -108,7 +108,9 @@ export function renderableFor(c: SceneController, block: Block): Renderable | un
 }
 
 export function elementOf(block: Block, node: Node, index: readonly number[]): Element {
-  return block.node === node ? elementAt(block, index) : block.elements[offsetOf(node.shape, index as number[])];
+  if (block.node === node) return elementAt(block, index);
+  const mapped = sourceIndex(node, block.node, index);
+  return mapped === undefined ? block.elements[offsetOf(node.shape, index as number[])] : elementAt(block, mapped);
 }
 
 export function shown(block: Block | undefined): boolean {
@@ -130,12 +132,12 @@ export function anchorOut(c: SceneController, node: Node, index: number[], rende
   if (renderable === undefined) return undefined;
   const element = elementOf(renderable.block, node, index);
   if (renderable.nodes !== undefined) return renderable.nodes.anchorOut(element);
-  return barTop(element, renderable.transition.current[offsetOf(node.shape, index)]);
+  return barTop(element, renderable.transition.current[offsetOf(renderable.block.node.shape, element.index)]);
 }
 
 export function anchorIn(c: SceneController, node: Node, index: number[], renderable = renderableOf(c, node)): Vec3 | undefined {
   if (renderable === undefined) return undefined;
   const element = elementOf(renderable.block, node, index);
   if (renderable.nodes !== undefined) return renderable.nodes.anchorIn(element);
-  return barBottom(element, renderable.transition.current[offsetOf(node.shape, index)]);
+  return barBottom(element, renderable.transition.current[offsetOf(renderable.block.node.shape, element.index)]);
 }

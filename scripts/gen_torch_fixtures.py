@@ -840,6 +840,14 @@ def floor_divide_cases():
     ]
 
 
+def attention_layout_cases():
+    cases = []
+    for shape, n_rep in [((2, 3, 4), 2), ((2, 2, 3, 2), 3)]:
+        dim = len(shape) - 3
+        cases.append(op_case("repeat_kv", f"{shape} n_rep {n_rep}", lambda x, n_rep=n_rep, dim=dim: torch.repeat_interleave(x, n_rep, dim), [("input", randn(*shape))], [tensor_arg(0), n_rep]))
+    cases.append(op_case("contiguous", "(2, 3, 4)", lambda x: x.contiguous(), [("input", randn(2, 3, 4))], [tensor_arg(0)]))
+    return cases
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -855,7 +863,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases())
     write("pages.json", pages + stable_pages)
 
 

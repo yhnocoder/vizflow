@@ -165,10 +165,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   title.setData('node', node.name);
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
-  const view = block.copyOf === undefined ? [...(c.levelLayout?.sourceOf ?? [])].find(([, source]) => source === node)?.[0] : undefined;
-  const continued = c.levelLayout?.boards.some((b) => b.op === node && b.previous !== undefined) === true;
-  const tex = view === undefined ? node.tex : continued ? view.tex : `${view.tex}=${node.tex}`;
-  texOf(title, backward ? `\\partial\\ell/\\partial ${(view ?? node).tex}` : tex);
+  texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
   if (renderable.bars !== undefined) {
     title.pos = [block.title.x, block.title.y, block.title.z];
     title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';

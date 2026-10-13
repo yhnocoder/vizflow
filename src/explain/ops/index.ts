@@ -56,6 +56,8 @@ import {
   permuteExplain,
   repeatExplain,
   repeatInterleaveExplain,
+  repeatKvExplain,
+  contiguousExplain,
   reshapeExplain,
   scatterExplain,
   selectExplain,
@@ -146,6 +148,8 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   index_put: indexPutExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
+  repeat_kv: repeatKvExplain,
+  contiguous: contiguousExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

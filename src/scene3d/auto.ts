@@ -61,7 +61,7 @@ class Sink {
   }
 }
 
-const colsOf = (n: Node) => rowsCols(n.shape)[1];
+const colsOf = (n: Node) => rowsCols(n)[1];
 const halfSpan = (cols: number) => ((cols - 1) / 2) * BOARD_COLUMN_SPACING;
 const leftReach = (cols: number) => halfSpan(cols) + AXIS_OFFSET + AUTO_LABEL_ROOM;
 const rightReach = (cols: number) => halfSpan(cols) + PLATE_SIDE_MARGIN;
@@ -151,7 +151,7 @@ export function autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: Layou
       const [l, r] = reaches[i];
       const ax = group.length === 1 ? x : edge + l;
       edge += l + r + AUTO_BOARD_GAP;
-      const rows = rowsCols(out.shape)[0];
+      const rows = rowsCols(out)[0];
       sink.items.push(board(a, b, out, { at: [ax, level * AUTO_LEVEL, -(BOARD_FRONT + (rows - 1) * BATCH_ROW_SPACING)] }));
       sink.spans.push({ level, left: ax - l, right: ax + r });
       if (!sink.placed.has(a)) sink.place(a, level, ax - BOARD_A_OFFSET);

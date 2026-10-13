@@ -12,7 +12,8 @@ const DH = 2;
 
 function headGraph() {
   const g = graph({ dims: { T, H, dh: DH } });
-  const x = g.input('x', [T, H, DH], Array.from({ length: T }, (_, t) => Array.from({ length: H }, (_, h) => Array.from({ length: DH }, (_, c) => Math.sin(1 + t * 1.3 + h * 0.7 + c * 0.4)))));
+  const flat = g.input('flat', [T, H * DH], Array.from({ length: T }, (_, t) => Array.from({ length: H * DH }, (_, k) => Math.sin(1 + t * 1.3 + Math.floor(k / DH) * 0.7 + (k % DH) * 0.4))));
+  const x = g.view(flat, [T, H, DH], { name: 'x' });
   const gamma = g.param('gamma', [DH], [0.9, 1.1]);
   const sq = g.pow(x, 2, { name: 'sq' });
   const ms = g.mean(sq, -1, { keepdim: true, name: 'ms' });
@@ -39,7 +40,7 @@ function headGraph() {
   const step = (show: Node[], extra: Partial<StepsSpec['forward'][number]> = {}) => ({ show, title: show.map((n) => n.name).join(', '), segment: 'norm', module: 'norm', ...extra });
   const spec: StepsSpec = {
     forward: [
-      { show: [x, gamma], title: 'inputs', kind: 'inputs' },
+      { show: [flat, gamma], title: 'inputs', kind: 'inputs' },
       step([sq]),
       step([ms, g.node('shifted')!, r]),
       step([hat]),
@@ -49,20 +50,23 @@ function headGraph() {
     backward: 'reverse',
     modules: [module],
   };
-  return { spec, x, ms, r, hat, y };
+  return { spec, flat, x, ms, r, hat, y };
 }
 
 const blockOf = (blocks: Block[], node: Node) => blocks.find((b) => b.node === node && b.copyOf === undefined)!;
 
 describe('levelPlan with rank-3 tensors', () => {
   it('draws (T, H, dh) as T rows of H side-by-side boards with a gap between heads', () => {
-    const { spec, x, hat } = headGraph();
-    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
-    for (const node of [x, hat]) {
+    const { spec, flat, x, hat } = headGraph();
+    const layout = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const blocks = layout.blocks;
+    expect(layout.sourceOf.get(x)).toBe(flat);
+    expect(blocks.some((b) => b.node === x)).toBe(false);
+    const element = blockOf(blocks, hat).elements.find((e) => e.index.join() === '1,2,1')!;
+    expect([element.row, element.col]).toEqual([1, 2 * DH + 1]);
+    for (const node of [flat, hat]) {
       const block = blockOf(blocks, node);
       expect([block.rows, block.cols, block.shape]).toEqual([T, H * DH, 'bar']);
-      const element = block.elements.find((e) => e.index.join() === '1,2,1')!;
-      expect([element.row, element.col]).toEqual([1, 2 * DH + 1]);
       const xs = Array.from({ length: H * DH }, (_, col) => block.elements.find((e) => e.row === 0 && e.col === col)!.x);
       const steps = xs.slice(1).map((v, i) => v - xs[i]);
       const inside = steps.filter((_, i) => (i + 1) % DH !== 0);
@@ -73,9 +77,9 @@ describe('levelPlan with rank-3 tensors', () => {
   });
 
   it('draws one disc per row and head for a (T, H, 1) reduction, beside each head', () => {
-    const { spec, x, ms, r } = headGraph();
+    const { spec, flat, ms, r } = headGraph();
     const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
-    const xBlock = blockOf(blocks, x);
+    const xBlock = blockOf(blocks, flat);
     for (const node of [ms, r]) {
       const block = blockOf(blocks, node);
       expect([block.shape, block.rows, block.cols]).toEqual(['disc', T, H]);
@@ -190,14 +194,16 @@ describe('levelPlan with views and head-selecting boards', () => {
     const flat = g.mul(x, 2, { name: 'flat' });
     const heads = g.view(flat, T, 2, DH);
     const S = g.select_matmul(heads, K, 1, { name: 'S' });
-    const loss = g.loss(g.sum(S, null, { name: 'loss' }));
+    const other = g.mul(x, 3, { name: 'other' });
+    const loss = g.loss(g.add(g.sum(S, null), g.sum(other, null), { name: 'loss' }));
     const module: StepModule = {
       id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], fixed: false, folded: false, segment: 'att', forward: {}, backward: {},
     };
     const spec: StepsSpec = {
       forward: [
         { show: [x, K], title: 'inputs', kind: 'inputs' },
-        { show: [flat, heads], title: 'flat', segment: 'att', module: 'att' },
+        { show: [flat], title: 'flat', segment: 'att', module: 'att' },
+        { show: [other], title: 'other', segment: 'other' },
         { show: [S], title: 'S', segment: 'att', module: 'att' },
         { show: [loss], title: 'loss', segment: 'loss' },
       ],

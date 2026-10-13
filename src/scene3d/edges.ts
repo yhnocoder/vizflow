@@ -1,10 +1,11 @@
 import type { Graph, Node } from '../autograd';
 import { moduleJacobians } from '../autograd/jacobian';
-import { type FlowEdge, matmulOperands } from '../explain';
+import { type CellRef, type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
 import { LONG_EDGE } from './edgelines';
 import { tokenAxes } from './hover';
+import { indexOf } from '../tensor';
 import { type Block, type Element, LINE_HEIGHT, type Vec3, elementAt } from './layout';
 import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
@@ -105,11 +106,12 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const bR = renderableFor(c, board.b);
       const oR = renderableFor(c, board.out);
       if (aR === undefined || bR === undefined || oR === undefined || !shown(board.out) || !shown(board.b) || !shown(board.a)) continue;
-      const index = 'cell' in edge.to ? edge.to.cell.index : (edge.from as { cell: { index: [number, number, number] } }).cell.index;
-      const [r, k, i] = index;
+      const index = 'cell' in edge.to ? edge.to.cell.index : (edge.from as CellRef).cell.index;
+      const [r, k, i] = index.slice(-3);
+      const batch = index.slice(0, -3);
       const operands = matmulOperands(edge.op, index);
       const y = board.y + LINE_HEIGHT;
-      const tile = (block: Block, kk: number, ii: number) => block.elements.find((e) => e.row === kk && e.col === ii)!;
+      const tile = (block: Block, kk: number, ii: number) => (block === board.b ? elementAt(block, matmulOperands(edge.op, [...batch, r, kk, ii]).b) : block.elements.find((e) => e.row === kk && e.col === ii)!);
       const [tileW, tileD] = board.b.footprint;
       const outElement = elementAt(board.out, operands.out);
       const rows = [board.out.batched ? r : undefined];
@@ -144,9 +146,9 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const fromR = copy === undefined ? renderableOf(c, from.node) : renderableFor(c, copy);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
-    const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
     const fromElement = elementOf(fromR.block, from.node, from.index);
     const toElement = elementOf(toR.block, to.node, to.index);
+    const rows = [rowOf(fromR, fromElement.index), rowOf(toR, toElement.index)];
     let entry: EdgeEntry;
     if (fromR.block.table !== undefined && Math.abs(fromElement.y - toElement.y) < SAME_LEVEL) {
       const y = toElement.y + LINE_HEIGHT;
@@ -179,9 +181,11 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     J.forEach((row, oi) => {
       row.forEach((value, ii) => {
         if (Math.abs(value) <= JACOBIAN_EPSILON) return;
-        const fromElement = inR.block.elements[ii];
-        const toElement = outR.block.elements[oi];
-        const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromElement.index }, to: { node: pair.output, index: toElement.index } };
+        const fromIndex = indexOf(pair.input.shape, ii);
+        const toIndex = indexOf(pair.output.shape, oi);
+        const fromElement = elementOf(inR.block, pair.input, fromIndex);
+        const toElement = elementOf(outR.block, pair.output, toIndex);
+        const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromIndex }, to: { node: pair.output, index: toIndex } };
         const entry = {
           edge,
           fromNode: pair.input,
