@@ -9,9 +9,11 @@ args:
   d_head: dim
   num_heads: dim
   num_kv_heads: dim
-  theta: { type: float, default: 1e6 }
 inputs:
   x: { type: tensor, shape: [T, d_model], dtype: dtype }
+  mask: { type: tensor, shape: [T, T], dtype: dtype }
+  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
+  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
 outputs:
   att: { type: tensor, shape: [T, d_model], dtype: dtype }
 
@@ -31,28 +33,29 @@ init:
   k_norm:
     use: RMSNorm
     args: { hidden_size: d_head }
-  apply_rotary_pos_emb:
-    use: RoPE
-    args: [theta]
+  apply_rotary_pos_emb: RoPE
   eager_attention_forward: GQA
   o_proj:
     use: Linear
     args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
 
 forward:
-  - M: causal_mask(T)
   - q_linear: q_proj(x)
-  - q: view(q_linear, T, num_heads, d_head)
-  - k_linear: k_proj(x)
-  - k: view(k_linear, T, num_kv_heads, d_head)
-  - v_linear: v_proj(x)
-  - v: view(v_linear, T, num_kv_heads, d_head)
+  - q: q_linear.view(T, num_heads, d_head)
   - qn: q_norm(q)
+  - qt: qn.transpose(0, 1)
+  - k_linear: k_proj(x)
+  - k: k_linear.view(T, num_kv_heads, d_head)
   - kn: k_norm(k)
-  - rotated: apply_rotary_pos_emb(q=qn, k=kn)
+  - kt: kn.transpose(0, 1)
+  - v_linear: v_proj(x)
+  - v: v_linear.view(T, num_kv_heads, d_head)
+  - vt: v.transpose(0, 1)
+  - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
   - qr: rotated.q_embed
   - kr: rotated.k_embed
-  - o: eager_attention_forward(q=qr, k=kr, v=v, mask=M)
+  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask)
+  - o: attn_output.reshape(T, num_heads * d_head)
   - att: o_proj(o)
 
 tex:
@@ -65,7 +68,7 @@ tex:
   kr: "\\mathbf{k}'"
   o: '\mathbf{o}'
   att: '\mathbf{att}'
-  M: 'M'
+  mask: 'M'
   q_proj.weight: 'W_q'
   k_proj.weight: 'W_k'
   v_proj.weight: 'W_v'
@@ -230,11 +233,9 @@ steps:
       cos:
         title: RoPE：乘 cos
         text: |
-          RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。cos/sin 表的每一行对应一个位置；列按频率排，$\omega_i=\theta^{-2i/d_h}$，Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h=4$ 和 3 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta=10$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 position_id $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs))</code> 生成这张表，所以它们的频率相同、数值也相同。两个 q head 和 k 用的是同一张表。下图把位置延长到 24，阴影是这里用到的前 3 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
+          RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。cos 和 sin 是模型开头由 rotary_emb 算好、传进每一层的同一张表，形状是 $T\times d_h$；q 的 {{ num_heads }} 个 head 和 k 都乘同一张表。HF 的 <code>apply_rotary_pos_emb</code> 先把 cos、sin 在 head 维上 <code>unsqueeze</code>，这里没有 batch 维，按广播直接相乘。
 
-          {{ apply_rotary_pos_emb.cos | rope_wave:cos }}
-
-          $$\cos={{ apply_rotary_pos_emb.cos | matrix:3 }},\qquad \bar{\mathbf{q}}\odot\cos={{ apply_rotary_pos_emb.qc | matrix:2 }}$$
+          $$\cos={{ cos | matrix:3 }},\qquad \bar{\mathbf{q}}\odot\cos={{ apply_rotary_pos_emb.qc | matrix:2 }}$$
         backward:
           title: 传到 $\viz{qn}$、$\viz{kn}$
           text: |
@@ -249,14 +250,12 @@ steps:
       sin:
         title: 乘 sin
         notes:
-          - at: 'apply_rotary_pos_emb.sin[0,0,1]'
+          - at: 'sin[0, 1]'
             text: '$t=0$ 时 $\sin 0=0$，这一行全是 0'
         text: |
           第 1 行（$t=0$）的 sin 全是 0，所以第一行在这一步全部变成 0。sin 表同样是周期的，和 cos 差四分之一个周期。
 
-          {{ apply_rotary_pos_emb.sin | rope_wave:sin }}
-
-          $$\sin={{ apply_rotary_pos_emb.sin | matrix:3 }},\qquad \mathrm{rh}(\bar{\mathbf{q}})\odot\sin={{ apply_rotary_pos_emb.qs | matrix:2 }}$$
+          $$\sin={{ sin | matrix:3 }},\qquad \mathrm{rh}(\bar{\mathbf{q}})\odot\sin={{ apply_rotary_pos_emb.qs | matrix:2 }}$$
         backward:
           title: 传到 rotate_half 的输出
           text: |
@@ -305,7 +304,7 @@ steps:
         title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
         text: |
           每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。$q'_{t,c}$ 沿第 $c$ 行经过 $T$ 个方块，每一列累加后落到 $S_{t,s}$。
-          $$S^{(1)}={{ eager_attention_forward.S[1] | matrix:2 }},\qquad S^{({{ num_heads }})}={{ eager_attention_forward.S[num_heads] | matrix:2 }}$$
+          $$S^{(1)}={{ eager_attention_forward.S[0] | matrix:2 }},\qquad S^{({{ num_heads }})}={{ eager_attention_forward.S[num_heads - 1] | matrix:2 }}$$
         backward:
           title: 传到 $\viz{qr}$ 和 $\mathbf{k}^{\top}$
           text: |
@@ -315,21 +314,21 @@ steps:
         title: 缩放
         text: |
           乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。
-          $$\tilde{S}^{(1)}={{ eager_attention_forward.Ss[1] | matrix:2 }},\qquad \tilde{S}^{({{ num_heads }})}={{ eager_attention_forward.Ss[num_heads] | matrix:2 }}$$
+          $$\tilde{S}^{(1)}={{ eager_attention_forward.Ss[0] | matrix:2 }},\qquad \tilde{S}^{({{ num_heads }})}={{ eager_attention_forward.Ss[num_heads - 1] | matrix:2 }}$$
         backward:
           title: 穿过缩放
           text: |
             局部导数是 $1/\sqrt{d_h}=0.5$。
-            $$\frac{\partial\ell}{\partial S^{(1)}}={{ eager_attention_forward.S[1].grad | matrix:3 }}$$
+            $$\frac{\partial\ell}{\partial S^{(1)}}={{ eager_attention_forward.S[0].grad | matrix:3 }}$$
       mask:
         title: causal mask
         notes:
-          - at: 'M[0,2]'
+          - at: 'mask[0, 2]'
             side: left
             text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'
         text: |
           加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 实现里填的不是真正的 $-\infty$，而是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
-          $$M={{ M | matrix:2 }},\qquad \bar{S}^{(1)}={{ eager_attention_forward.Sm[1] | matrix:2 }}$$
+          $$M={{ mask | matrix:2 }},\qquad \bar{S}^{(1)}={{ eager_attention_forward.Sm[0] | matrix:2 }}$$
         backward:
           title: 穿过 mask
           text: 加常量，梯度原样传下去。mask 本身不需要梯度。
@@ -337,53 +336,55 @@ steps:
         title: softmax：取 exp
         text: |
           softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。torch 的 softmax kernel 会先减去每行的最大值再取 exp，防止溢出；这一项在相除时会约掉，结果和梯度都不变，这里为了看清结构按定义画。
-          $$\mathrm{ex}^{(1)}={{ eager_attention_forward.ex[1] | matrix:3 }},\qquad \mathrm{ex}^{({{ num_heads }})}={{ eager_attention_forward.ex[num_heads] | matrix:3 }}$$
+          $$\mathrm{ex}^{(1)}={{ eager_attention_forward.ex[0] | matrix:3 }},\qquad \mathrm{ex}^{({{ num_heads }})}={{ eager_attention_forward.ex[num_heads - 1] | matrix:3 }}$$
         backward:
           title: 穿过 exp
           text: |
             exp 的导数是它自己。合起来就是熟悉的 softmax 反向：$\frac{\partial\ell}{\partial\bar S_{t,s}}=P_{t,s}\big(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}\big)$，其中 $g=\partial\ell/\partial P$。被 mask 的格子 ex 是 0，梯度也是 0。
-            $$\frac{\partial\ell}{\partial\bar{S}^{(1)}}={{ eager_attention_forward.Sm[1].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{S}^{({{ num_heads }})}}={{ eager_attention_forward.Sm[num_heads].grad | matrix:3 }}$$
+            $$\frac{\partial\ell}{\partial\bar{S}^{(1)}}={{ eager_attention_forward.Sm[0].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{S}^{({{ num_heads }})}}={{ eager_attention_forward.Sm[num_heads - 1].grad | matrix:3 }}$$
       sum:
         title: 按行求和
         text: |
           每个 head、每一行各有一个 $Z$。
-          $$Z^{(1)}={{ eager_attention_forward.Z[1] | matrix:3 }},\qquad Z^{({{ num_heads }})}={{ eager_attention_forward.Z[num_heads] | matrix:3 }}$$
+          $$Z^{(1)}={{ eager_attention_forward.Z[0] | matrix:3 }},\qquad Z^{({{ num_heads }})}={{ eager_attention_forward.Z[num_heads - 1] | matrix:3 }}$$
         backward:
           title: 传回 ex
           text: |
             求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
-            $$\frac{\partial\ell}{\partial\,\mathrm{ex}^{(1)}}={{ eager_attention_forward.ex[1].grad | matrix:3 }}$$
+            $$\frac{\partial\ell}{\partial\,\mathrm{ex}^{(1)}}={{ eager_attention_forward.ex[0].grad | matrix:3 }}$$
       div:
         title: 注意力权重
         notes:
-          - at: 'eager_attention_forward.P[1][0,0]'
+          - at: 'eager_attention_forward.P[0, 0, 0]'
             text: '第一个位置只能看到自己，$P_{1,1}=1$'
         text: |
           每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以 $P_{1,1}=1$。Qwen3 的 attention_dropout 是 0，这里没有 dropout。
-          $$P^{(1)}={{ eager_attention_forward.P[1] | matrix:3 }},\qquad P^{({{ num_heads }})}={{ eager_attention_forward.P[num_heads] | matrix:3 }}$$
+          $$P^{(1)}={{ eager_attention_forward.P[0] | matrix:3 }},\qquad P^{({{ num_heads }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
         backward:
           title: softmax 反向：穿过相除
           text: |
             $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$；同时 $Z_t$ 连到这一行每个 $P$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$。
-            $$\frac{\partial\ell}{\partial Z^{(1)}}={{ eager_attention_forward.Z[1].grad | matrix:3 }}$$
+            $$\frac{\partial\ell}{\partial Z^{(1)}}={{ eager_attention_forward.Z[0].grad | matrix:3 }}$$
       pv:
         title: P v
         text: |
           每个 head 用注意力权重对 $\mathbf{v}$ 的各行做加权平均。板的行是位置 $s$，列是 $d_h$；$P_{t,s}$ 沿第 $s$ 行经过 $d_h$ 个方块。
-          $$\mathbf{o}^{(1)}=P^{(1)}\mathbf{v}^{(1)}={{ eager_attention_forward.o[1] | matrix:2 }},\qquad \mathbf{o}^{({{ num_heads }})}={{ eager_attention_forward.o[num_heads] | matrix:2 }}$$
+          $$\mathbf{o}^{(1)}=P^{(1)}\mathbf{v}^{(1)}={{ eager_attention_forward.attn_output[0] | matrix:2 }},\qquad \mathbf{o}^{({{ num_heads }})}={{ eager_attention_forward.attn_output[num_heads - 1] | matrix:2 }}$$
         backward:
           title: 传到 P 和 v
           text: |
             $\partial\ell/\partial P=\frac{\partial\ell}{\partial\mathbf{o}}\mathbf{v}^{\top}$，$\partial\ell/\partial\mathbf{v}=P^{\top}\frac{\partial\ell}{\partial\mathbf{o}}$。被 mask 的格子 $P_{t,s}=0$，所以它们不会把梯度传给后面位置的 v。
-            $$\frac{\partial\ell}{\partial P^{(1)}}={{ eager_attention_forward.P[1].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\mathbf{v}^{(1)}}={{ eager_attention_forward.V[1].grad | matrix:3 }}$$
-      concat:
-        title: 拼回 $T\times{{ num_heads*d_head }}$
-        text: |
-          <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code> 把两个 head 的输出并排拼回去。只是换轴和重排，局部导数是 1。
-          $$\mathbf{o}=[\,\mathbf{o}^{(1)}\,|\,\mathbf{o}^{(2)}\,]={{ o | matrix:2 }}$$
-        backward:
-          title: 拆回两个 head
-          text: 拼接的反向是把梯度按列切回去。
+            $$\frac{\partial\ell}{\partial P^{(1)}}={{ eager_attention_forward.P[0].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\mathbf{v}^{(1)}}={{ eager_attention_forward.value_states[0].grad | matrix:3 }}$$
+  - id: reshape
+    show: o
+    label: '$\viz{o}$'
+    title: 拼回 $T\times{{ num_heads*d_head }}$
+    text: |
+      eager_attention_forward 返回前已经做了 <code>attn_output.transpose(1, 2).contiguous()</code>，把 head 维换到位置维后面；这里的 <code>attn_output.reshape(*input_shape, -1)</code> 再把 {{ num_heads }} 个 head 的输出并排拼成一行。<code>contiguous</code> 会按新的顺序复制一次数据，数值不变，局部导数是 1。
+      $$\mathbf{o}=[\,\mathbf{o}^{(1)}\,|\,\cdots\,|\,\mathbf{o}^{({{ num_heads }})}\,]={{ o | matrix:2 }}$$
+    backward:
+      title: 拆回各个 head
+      text: 拼接的反向是把梯度按列切回去。
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
     show: [o_proj.weight.T, att]

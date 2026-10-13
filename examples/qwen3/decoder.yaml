@@ -11,9 +11,11 @@ args:
   d_ff: dim
   num_heads: dim
   num_kv_heads: dim
-  theta: { type: float, default: 1e6 }
 inputs:
   x: { type: tensor, shape: [T, d_model], dtype: dtype }
+  mask: { type: tensor, shape: [T, T], dtype: dtype }
+  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
+  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
 outputs:
   x_out: { type: tensor, shape: [T, d_model], dtype: dtype }
 
@@ -23,7 +25,7 @@ init:
     args: { hidden_size: d_model }
   self_attn:
     use: Qwen3Attention
-    args: [d_model, d_head, num_heads, num_kv_heads, theta]
+    args: [d_model, d_head, num_heads, num_kv_heads]
   post_attention_layernorm:
     use: RMSNorm
     args: { hidden_size: d_model }
@@ -33,7 +35,7 @@ init:
 
 forward:
   - n1: input_layernorm(x)
-  - att: self_attn(n1)
+  - att: self_attn(n1, mask=mask, cos=cos, sin=sin)
   - a: x + att
   - n: post_attention_layernorm(a)
   - down: mlp(n)

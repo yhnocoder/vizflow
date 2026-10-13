@@ -5,6 +5,7 @@ import:
   NLLLoss: vizflow/nn/nll-loss
   RMSNorm: vizflow/nn/rmsnorm
   GLU: vizflow/nn/glu
+  RotaryEmbedding: vizflow/nn/rotary-embedding
   Qwen3DecoderLayer: ./decoder.yaml
 
 preamble: ../preamble.sty
@@ -19,13 +20,14 @@ config:
   num_heads: 2
   num_kv_heads: 1
   num_layers: 2
+  rope_theta: 10
   dtype: bf16
   seed: 20261010
   tokenizer:
     vocab: [on, mat, the, sat, cat]
   real:
-    qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28 }
-    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36 }
+    qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28, rope_theta: 1000000 }
+    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
 
 data:
   tokens: [the, cat, sat, on]
@@ -42,6 +44,7 @@ modules:
       num_heads: dim
       num_kv_heads: dim
       num_layers: int
+      rope_theta: float
       dtype: dtype
     inputs:
       tokens: { type: list, dtype: str }
@@ -52,13 +55,16 @@ modules:
       loss: { type: tensor, shape: [], dtype: fp32 }
 
     init:
-      embedding:
+      embed_tokens:
         use: Embedding
         args: { num_embeddings: V, embedding_dim: d_model }
       layers:
         use: list[Qwen3DecoderLayer]
         count: num_layers
-        args: [d_model, d_head, d_ff, num_heads, num_kv_heads, { theta: 10 }]
+        args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+      rotary_emb:
+        use: RotaryEmbedding
+        args: [d_head, rope_theta]
       norm:
         use: RMSNorm
         args: { hidden_size: d_model }
@@ -69,8 +75,13 @@ modules:
       nll_loss: NLLLoss
 
     forward:
-      - e: embedding(ids)
-      - h_last: layers(e)
+      - e: embed_tokens(ids)
+      - position_ids: arange(T)
+      - position_embeddings: rotary_emb(e, position_ids)
+      - cos: position_embeddings.cos
+      - sin: position_embeddings.sin
+      - M: causal_mask(T)
+      - h_last: layers(e, mask=M, cos=cos, sin=sin)
       - h_norm: norm(h_last)
       - z: lm_head(h_norm)
       - zf: z.float()
@@ -88,7 +99,11 @@ modules:
       zf: '\mathbf{z}_{\mathrm{fp32}}'
       loss: '\ell'
       lt: '\ell_t'
-      embedding.weight: 'E'
+      position_ids: 't'
+      cos: '\cos'
+      sin: '\sin'
+      M: 'M'
+      embed_tokens.weight: 'E'
       lm_head.weight: 'W'
 
     steps:
@@ -121,17 +136,37 @@ modules:
 
           下一步，我们先看 embedding 如何把 token 编号转换成向量。
       - id: embed
-        label: '$\viz{e}=\viz{embedding.weight}[\viz{ids}]$'
+        label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
         brace: { title: embed_tokens, subtitle: nn.Embedding }
-        show: [ids, e, embedding.weight]
+        show: [ids, e, embed_tokens.weight]
         text: |
           embedding 表 $E$ 的每一行是一个 token 的向量。用输入编号 $x_t$ 取出对应的行，就得到这个位置的向量 $\mathbf{e}_t$。
-          $$\viz{e}_t=\viz{embedding.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
+          $$\viz{e}_t=\viz{embed_tokens.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
         backward:
-          label: '$\pfl{\viz{embedding.weight}}$'
+          label: '$\pfl{\viz{embed_tokens.weight}}$'
           text: |
             取行的反向是把梯度加回被取到的那一行（scatter-add）。没有出现在输入里的 token，那一行的梯度是 0；同一个 token 出现几次，它那一行就累加几次。
-            $$\pfl{\viz{embedding.weight}[v]}=\sum_{t:\,x_t=v}\pfl{\viz{e}_t},\qquad \pfl{\viz{embedding.weight}}={{ embedding.weight.grad | matrix:3 }}$$
+            $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{\viz{e}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
+      - id: rotary_emb
+        title: 位置编码表
+        subtitle: Qwen3RotaryEmbedding
+        steps:
+          cos_sin:
+            text: |
+              RoPE 用的 cos、sin 表在进入 decoder 层之前只算一次，之后传给每一层。表的每一行对应一个位置 $t$（position_id），列按频率排：$\omega_i=\theta^{-2i/d_h}$。Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h={{ d_head }}$ 和 {{ T }} 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta={{ rope_theta }}$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs), dim=-1)</code> 生成这张表，所以它们的频率相同、数值也相同。下图把位置延长到 24，阴影是这里用到的前 {{ T }} 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
+
+              {{ cos | rope_wave:cos }}
+
+              {{ sin | rope_wave:sin }}
+
+              $$\cos={{ cos | matrix:3 }},\qquad \sin={{ sin | matrix:3 }}$$
+      - id: mask
+        show: M
+        label: '$\viz{M}$'
+        title: causal mask
+        text: |
+          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次 mask，传给每一层。$s>t$ 的格子是这个 dtype 能表示的最小值，这里画成 $-\infty$；其余是 0。mask 是常量，不需要梯度。
+          $$\viz{M}={{ M | matrix:2 }}$$
       - id: layers
         loop: layer = layers[i]
 
@@ -197,7 +232,7 @@ panels:
     reset: true
   - title: 对应的 PyTorch 计算
     code: |-
-      e = embedding(ids)
+      e = embed_tokens(ids)
       h_last = e
       for layer in layers:
           h_last = layer(h_last)
@@ -219,6 +254,6 @@ sections:
       k: layers[0].self_attn.kn
       rows: [-1, 1]
       head: 1
-      theta: 10
+      theta: rope_theta
       d_head: d_head
       positions: 24
