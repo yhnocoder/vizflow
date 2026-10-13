@@ -227,10 +227,11 @@ panels:
 写法要点：
 
 - 页面用 `model` 指定根模块，`config` 给根模块的 `args` 取值，`data` 给根模块的输入。模块的 `args`、`inputs`、`outputs` 声明接口，`init` 建子模块、权重和 buffer，`forward` 按 PyTorch 写计算，`steps` 按顺序组织讲解。
-- `forward` 的每一行是 `名字: 表达式`，一行对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。
-- 参数的 dtype 由页面 `config.dtype` 统一设定；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
-- `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度。
-- `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`unsqueeze`、`contiguous`）的结果；其余的写进 `unshown`，否则编译报错。
+- `forward` 的每一行是 `名字: 表达式`，一行对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。表达式按 Python 的语义计算：`cat([a, b])` 的参数是列表，`1 - x`、`1 / x` 是反射运算，`x[:, None]` 加一维。
+- 参数的 dtype 由页面 `config.dtype` 统一设定，根模块声明了 `dtype` 参数时也传给它；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
+- `Linear` 的 `bias` 默认是 `True`，与 `nn.Linear` 相同；HF 写了 `bias=False` 的地方页面也写 `bias: False`。自己的模块要可选的权重时写 `{ shape, present: 参数名 }`，参数为假时权重不创建，`forward` 里它是 `None`。
+- `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度。绑定的名字在模块里只出现这一次时编译报错，通常是参数名拼错了。
+- `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`permute`、`unsqueeze`、`contiguous`）或类型转换的结果；其余的写进 `unshown`，否则编译报错。
 - tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
 - 3D 布局由库按模块结构自动排布，页面不写布局。
 
@@ -327,7 +328,11 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `softplus` | `g.softplus(a)` | 逐元素 $\log(1+e^{x})$；$x>20$ 时直接输出 $x$，与 torch 的默认值相同 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `clamp` | `g.clamp(a, { min, max })` | 与 `torch.clamp` 相同，可以只给一个界；界内局部导数是 1，界上和界外是 0。DSL 里写 `clamp(x, max=L)` |
-| `pow` | `g.pow(a, 2)` | `exponent` 是数 |
+| `pow` | `g.pow(a, 2)`、`g.pow(10, b)` | 与 `torch.pow` 相同，底数和指数可以是节点或数，至少一个是节点 |
+| `rsub` | `g.rsub(a, 1)` | 计算 $1-a$，DSL 里的 `1 - x` |
+| `arange` | `g.arange('T')`、`g.arange(0, 'd', 2, { dtype: 'fp32' })` | 与 `torch.arange` 相同，默认 int64，步长为 0 时报错；没有输入 |
+| `causal_mask` | `g.causal_mask('T', 'bf16')` | $(T,T)$，$s>t$ 的格子是 `torch.finfo(dtype).min`，其余是 0，与 HF `create_causal_mask` 相同 |
+| `linear` | `g.linear(x, W)`、`g.linear(x, W, b)` | 组合运算，展开成 `x @ W.T`，给了 `b` 时再加 `b`，与 `F.linear` 相同 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合；任一边超过 2 维时与 `torch.matmul` 相同，最后两维做矩阵乘，前面的 batch 维按广播规则对齐，例如 `(N, C, d)` 乘 `(N, d, C)` 得到 `(N, C, C)` |
 | `transpose` | `g.transpose(a, dim0, dim1)` | 二维节点也可以写 `W.T` |
 | `sum` `mean` | `g.sum(a)`、`g.sum(a, -1, { keepdim: true })` | 省略 `dim` 时对全部元素归约；`dim` 可以是数或数组 |
@@ -630,12 +635,20 @@ YAML 里写成模板加小图名，参数写成 `名字=值`，几个参数用�
 text: |
   下图把位置延长到 24 个，每条曲线是一个频率。
 
-  {{ cos(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
+  {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).cos() | lines:shade=T }}
 ```
 
-小图的数据由模板里的表达式算出。表达式可以引用张量和数，可以用 `arange`、库里的运算（例如 `cos`、`sin`、`exp`）、四则运算与广播、`@`、下标和切片，`[:, None]` 插入长度为 1 的维度。这个计算只用于显示，不在计算图里加节点；页面上的数值变化后，小图按新的数值重新计算。
+小图的数据由模板里的表达式算出。表达式可以引用张量和数，可以用 `arange`、库里的运算（例如 `cos`、`sin`、`exp`）、四则运算与广播、`@`、下标和切片，`[:, None]` 插入长度为 1 的维度。这个计算只用于显示，不在计算图里加节点；页面上的数值变化后，小图按新的数值重新计算。作用域里有同名的结果时（例如模块里的 `cos`），函数写法会读到那个结果，这时用方法写法 `.cos()`。
 
-编译时这一项换成 `<vf-figure name="lines" expr="..." args="shade=3"></vf-figure>`，`expr` 是编码后的表达式，参数里的表达式已经算成数。用 JavaScript 写步骤时用 `ui` 入口的 `figureTag(名字, 表达式, 参数)` 生成这个标签，表达式是 `{ k: 'node', name: 'graph 上的节点名' }` 这样的对象。步骤条和图文段落渲染正文后，把每个 `vf-figure` 换成对应的小图。
+编译时这一项换成 `<vf-figure name="lines" program="..." args="shade=3"></vf-figure>`，`program` 是编码后的运算程序，参数里的表达式已经算成数。用 JavaScript 写步骤时用 `core` 入口的 `ProgramBuilder` 记录程序，再用 `ui` 入口的 `figureTag(名字, 程序, 参数)` 生成这个标签：
+
+```js
+const b = new ProgramBuilder();
+const angles = b.op('mul', [b.op('unsqueeze', [b.op('arange', [], { start: 24, end: null, step: 1, dtype: null })], { dim: 1 }), b.read('inv_freq', false)], {});
+const tag = figureTag('lines', b.program(b.op('cos', [angles], {})), ['shade=3']);
+```
+
+`b.read(名字, 是否取梯度)` 读 graph 上的节点。步骤条和图文段落渲染正文后，把每个 `vf-figure` 换成对应的小图。
 
 现有的小图：
 
@@ -682,16 +695,7 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 { cost: { title: '显存与计算量', dims: 'real' } }
 ```
 
-卡片显示当前步骤已分配的显存和峰值，按参数、输入、缓冲区、为反向保存的激活、临时激活、参数梯度、激活梯度分类堆叠成一根横条；指针移到一段上列出这一类的张量、shape 和大小。下面是本步的 FLOP 与前向、反向累计，指针移到「本步」上列出这一步的运算和 FLOP 公式；再下面是每一步一根柱子的 FLOP 图，叠一条显存折线，点柱子跳到那一步。点击会固定弹出的列表，触屏也能查看。图有 `real` 时卡片上可以在页面尺寸和真实尺寸之间切换，`dims` 是初始选择，默认用真实尺寸。统计方式（按 PyTorch eager 的 autograd 推算哪些张量还活着，FLOP 计数表）在卡片底部的「怎么统计的」里，自定义运算要给 `cost` 才计入，见 2.3。YAML 页面写 `- cost`。真实尺寸下的序列长度取 `real` 里的 `T`，例如 `real: { name: Qwen3-8B, T: 4096, d: 4096, ... }`。真实尺寸下卡片上有 $B$（批大小）和 $T$（序列长度）两个滑块，数字随之重算。`for` 循环在图里只画几份（例如 2 个 head）时，真实尺寸按 `real` 里的份数统计，列表里标出倍数。占位盒子写 `repeat` 后，盒子里的层按画出的同类层推算并画斜线标出，例如：
-
-```yaml
-- layers:
-    title: $\cdots$ 第 1 到 $N-1$ 层
-    fixed: true
-    repeat: [{ like: layer, count: 35 }]
-```
-
-不写 `repeat` 的占位盒子不计入。
+卡片显示当前步骤已分配的显存和峰值，按参数、输入、缓冲区、为反向保存的激活、临时激活、参数梯度、激活梯度分类堆叠成一根横条；指针移到一段上列出这一类的张量、shape 和大小。下面是本步的 FLOP 与前向、反向累计，指针移到「本步」上列出这一步的运算和 FLOP 公式；再下面是每一步一根柱子的 FLOP 图，叠一条显存折线，点柱子跳到那一步。点击会固定弹出的列表，触屏也能查看。图有 `real` 时卡片上可以在页面尺寸和真实尺寸之间切换，`dims` 是初始选择，默认用真实尺寸。统计方式（按 PyTorch eager 的 autograd 推算哪些张量还活着，FLOP 计数表）在卡片底部的「怎么统计的」里，自定义运算要给 `cost` 才计入，见 2.3。YAML 页面写 `- cost`。真实尺寸下的序列长度取 `real` 里的 `T`，例如 `real: { name: Qwen3-8B, T: 4096, d: 4096, ... }`。真实尺寸下卡片上有 $B$（批大小）和 $T$（序列长度）两个滑块，数字随之重算。`for` 循环在图里只画几份（例如 2 个 head）时，真实尺寸按 `real` 里的份数统计，列表里标出倍数。图里没有画出的层不计入。
 
 **sliders**：一个节点的每个元素一个滑块。
 

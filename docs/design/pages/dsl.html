@@ -70,7 +70,15 @@
     <tr><td>LaTeX</td><td><code>tex</code> 的值、<code>formula</code></td><td>整个值就是 LaTeX，不加 <code>$</code>。</td></tr>
   </tbody>
 </table>
-<p>表达式支持 <code>+ - * / // ** @</code>、一元负号、函数调用和关键字参数、方法调用、成员访问、下标与切片、列表、字符串字面量和 <code>True</code>、<code>False</code>。下标从 0 开始，可以是负数，和 Python 一致。dtype 名（<code>bf16</code>、<code>fp32</code> 等）和导入的模块名是表达式里可用的名字。含 <code>[</code>、<code>:</code> 等字符的表达式在 YAML 里加引号。</p>
+<p>表达式支持 <code>+ - * / // ** @</code>、一元负号、函数调用和关键字参数、方法调用、成员访问、下标与切片、列表、字符串字面量和 <code>True</code>、<code>False</code>、<code>None</code>。下标从 0 开始，可以是负数，和 Python 一致。dtype 名（<code>bf16</code>、<code>fp32</code> 等）和导入的模块名是表达式里可用的名字。含 <code>[</code>、<code>:</code> 等字符的表达式在 YAML 里加引号。</p>
+<p>所有表达式由同一个求值器按 Python 的语义计算，只是结果的去处不同：<code>forward</code> 里的运算建成计算图的节点；buffer 的 <code>value</code>、<code>data</code> 的 <code>expr</code> 在编译时算出值；小图的表达式记录成一段库运算的程序，页面数值变化后重新执行。<code>args</code>、<code>shape</code>、<code>count</code> 等只算数和维度。同一段表达式在这几处的含义相同，例如：</p>
+<ul>
+  <li>列表就是列表，不自动拼成张量：<code>cat([a, b], dim=-1)</code> 的第一个参数是两个张量的列表；<code>x.permute([1, 0])</code> 与 <code>x.permute(1, 0)</code>、<code>x.view([T, d])</code> 与 <code>x.view(T, d)</code> 相同。</li>
+  <li>数在左边的运算按 Python 的反射运算计算：<code>1 - x</code> 是 <code>rsub</code>，<code>1 / x</code> 是 <code>reciprocal</code> 乘 1，<code>rope_theta ** e</code> 是底数为数的 <code>pow</code>。</li>
+  <li>下标里的 <code>None</code> 加一个长度为 1 的维度，<code>...</code> 补齐其余维度：<code>x[:, None]</code>、<code>position_ids[..., None]</code>。整数下标是 <code>select</code>，切片是 <code>narrow</code>，覆盖整个维度的切片（<code>x[1, :]</code> 里的 <code>:</code>）不产生节点。</li>
+  <li>转换到当前 dtype 的 <code>.float()</code>、<code>.to(x.dtype)</code> 不产生节点，与 torch 返回原张量一致。</li>
+  <li>名字先在当前作用域里找：<code>forward</code> 里定义的 <code>cos</code> 会遮住同名的运算 <code>cos</code>，这时用方法写法 <code>x.cos()</code>。</li>
+</ul>
 
 <h2>模块的参数与输入</h2>
 <h3>args</h3>
@@ -85,21 +93,22 @@
     args: [d_model, d_ff, { act: SiLU }]</code></pre>
 
 <h3>inputs、outputs 与形状绑定</h3>
-<p>输入输出写成 <code>{ type: tensor, shape, dtype }</code>，页面根模块的 token 列表写成 <code>{ type: list, dtype: str }</code>。<code>shape</code> 和 <code>dtype</code> 里不是参数的名字在调用时从实际输入绑定，已经绑定或声明过的名字只做检查；<code>outputs</code> 里的名字必须已经绑定，用来检查结果。<code>'...'</code> 可以在 shape 里出现一次，对上任意个维度，例如 RMSNorm 的 <code>['...', hidden_size]</code> 只要求最后一维。</p>
+<p>输入输出写成 <code>{ type: tensor, shape, dtype }</code>，页面根模块的 token 列表写成 <code>{ type: list, dtype: str }</code>。<code>shape</code> 和 <code>dtype</code> 里不是参数的名字在调用时从实际输入绑定，已经绑定或声明过的名字只做检查；<code>outputs</code> 里的名字必须已经绑定，用来检查结果。从输入绑定的名字在模块里至少还要再出现一次，否则编译报错 <code>'dd' takes its value from this input but is used nowhere else in M; if it should be an arg, check the spelling</code>：只出现一次的名字多半是参数名拼错了，按绑定处理会让形状检查失效。<code>'...'</code> 可以在 shape 里出现一次，对上任意个维度，例如 RMSNorm 的 <code>['...', hidden_size]</code> 只要求最后一维。</p>
 <ul>
   <li>序列长度 <code>T</code> 是数据的维度，不作为参数传入，同一个实例可以用不同的 <code>T</code> 调用。</li>
   <li><code>init</code> 只能使用 <code>args</code> 中的名字。这和 HF 的 <code>__init__</code> 一致：建参数需要的维度都由调用者传入。</li>
-  <li>依赖输入形状的常量在 <code>forward</code> 里计算，例如 <code>M: causal_mask(T)</code>，不写成 buffer。</li>
+  <li>依赖输入形状的常量在 <code>forward</code> 里计算，例如 <code>position_ids: arange(T)</code>、<code>M: causal_mask(T, dtype=e.dtype)</code>，不写成 buffer。</li>
+  <li>根模块输入的维度（例如 <code>T</code>）是页面的维度，显存与计算量面板的 $T$ 滑块改变它。由它算出的尺寸（<code>arange(T)</code> 的长度、<code>T // chunk</code> 这样的循环次数）记录成算式，滑块改变时重新计算；它们不登记成新的维度名，所以两个碰巧相等的尺寸不会被当成同一个维度。</li>
 </ul>
 
 <h3>dtype</h3>
-<p>参数的 dtype 由页面 <code>config.dtype</code> 统一设定，相当于 <code>model.to(torch.bfloat16)</code>；不写时是 <code>fp32</code>。模块的 <code>args</code> 不声明参数 dtype，<code>init</code> 也不读它。输入的 <code>dtype</code> 从实际输入绑定，用来检查输出。运算的结果按 torch 的类型提升推导，matmul 两侧的 dtype 必须相同，否则编译报错 <code>expected inputs of the same dtype</code>；有意的转换在 <code>forward</code> 里写出来，例如 <code>z.float()</code>、<code>xh.to(x.dtype)</code>。这样页面上的每个类型转换都是 HF 代码里的一次转换。</p>
+<p>参数的 dtype 由页面 <code>config.dtype</code> 统一设定，相当于 <code>model.to(torch.bfloat16)</code>；不写时是 <code>fp32</code>，写了 dtype 以外的值时报错 <code>config.dtype: dtype must be one of ...</code>。根模块声明了 <code>dtype</code> 参数（<code>dtype: dtype</code>）时，<code>config.dtype</code> 同时传给这个参数，模块可以把它继续传给子模块；没有声明时它只设定参数的 dtype。模块的 <code>args</code> 不另外声明参数 dtype，<code>init</code> 也不读它。输入的 <code>dtype</code> 从实际输入绑定，用来检查输出。运算的结果按 torch 的类型提升推导，matmul 两侧的 dtype 必须相同，否则编译报错 <code>expected inputs of the same dtype</code>；有意的转换在 <code>forward</code> 里写出来，例如 <code>z.float()</code>、<code>xh.to(x.dtype)</code>。这样页面上的每个类型转换都是 HF 代码里的一次转换。</p>
 
 <h2>init：子模块、权重与 buffer</h2>
 <pre><code class="language-yaml">init:
   q_proj:
     use: Linear
-    args: { in_features: d_model, out_features: num_heads * d_head, bias: false }
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: False }
   layers:
     use: list[Qwen3DecoderLayer]
     count: num_layers
@@ -112,14 +121,14 @@
       type: tensor
       shape: [d_head // 2]
       dtype: fp32
-      value: 1.0 / rope_theta ** (arange(0, d_head, 2).float() / d_head)</code></pre>
+      value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=fp32) / d_head)</code></pre>
 <ul>
   <li>子模块写 <code>{ use, args }</code>，没有参数时可以只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建参数独立的层列表，第 $i$ 层的路径是 <code>layers[i]</code>。</li>
-  <li><code>weights</code> 的 <code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>，默认 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数，随机数的种子是页面的 <code>config.seed</code>，默认 0。</li>
-  <li><code>buffers</code> 的 <code>value</code> 是在编译时求值的表达式，可以用数、参数、<code>arange</code>、库里的运算、四则运算与广播、下标和类型转换，不能读张量；结果的形状必须等于声明的 <code>shape</code>。它和插值里小图的表达式用同一个求值函数 <code>evaluateValue</code>。</li>
-  <li>内置的 <code>Linear</code> 和 <code>Embedding</code> 使用 PyTorch 的参数名：<code>Linear</code> 是 <code>in_features</code>、<code>out_features</code>、<code>bias</code>（默认 <code>true</code>），<code>Embedding</code> 是 <code>num_embeddings</code>、<code>embedding_dim</code>；两者的参数都叫 <code>weight</code>，形状与 PyTorch 相同。带 bias 的 Linear 还没有实现，写 <code>bias: true</code> 时编译报错。</li>
+  <li><code>weights</code> 写成 <code>{ shape, init, present }</code>。<code>present</code> 是一个 bool 参数的名字，参数为假时这个权重不创建，<code>forward</code> 里它的名字是 <code>None</code>，例如 <code>Linear</code> 的 <code>bias: { shape: [out_features], present: bias }</code>。这对应 HF 里 <code>self.bias = None</code> 的写法，参数路径和 <code>state_dict</code> 一致。<code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>，默认 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数，随机数的种子是页面的 <code>config.seed</code>，默认 0。</li>
+  <li><code>buffers</code> 的 <code>value</code> 是在编译时求值的表达式，可以用数、参数、库里的运算（包括 <code>arange</code>）、四则运算与广播、下标和类型转换，不能读张量；结果的形状和 dtype 必须等于声明的 <code>shape</code> 和 <code>dtype</code>，不做隐式转换。和 HF 一样，需要浮点的整数序列直接写 <code>arange(..., dtype=fp32)</code>。</li>
+  <li>内置的 <code>Linear</code> 和 <code>Embedding</code> 使用 PyTorch 的参数名：<code>Linear</code> 是 <code>in_features</code>、<code>out_features</code>、<code>bias</code>，<code>Embedding</code> 是 <code>num_embeddings</code>、<code>embedding_dim</code>；两者的权重都叫 <code>weight</code>，形状与 PyTorch 相同。<code>bias</code> 默认是 <code>True</code>，与 <code>nn.Linear</code> 的签名一致，这样照抄 HF 的构造参数就得到同样的参数集合；HF 写了 <code>bias=False</code> 的地方（Qwen3 的投影和 <code>lm_head</code>）页面也写 <code>bias: False</code>。<code>Linear</code> 的 <code>forward</code> 是 <code>linear(x, weight, bias)</code>，与 <code>F.linear</code> 相同。</li>
 </ul>
-<p>参数的路径沿 <code>init</code> 树拼接，与 PyTorch <code>state_dict</code> 的键一致，例如 <code>layers[0].self_attn.q_proj.weight</code>、<code>lm_head.weight</code>。graph 上参数的节点名就是这个路径，测试据此把 transformers 的参数写进页面。</p>
+<p>参数的路径沿 <code>init</code> 树拼接，与 PyTorch <code>state_dict</code> 的键一致，例如 <code>model.layers[0].self_attn.q_proj.weight</code>、<code>lm_head.weight</code>。graph 上参数的节点名就是这个路径，测试据此把 transformers 的参数写进页面。</p>
 
 <h2>forward：计算</h2>
 <pre><code class="language-yaml">forward:
@@ -128,17 +137,18 @@
   - qt: q_norm(q).transpose(0, 1)
   - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
   - qr: rotated.q_embed
-  - M: causal_mask(T)
+  - M: causal_mask(T, dtype=e.dtype)
   - h_last: layers(e, mask=M, cos=cos, sin=sin)
   - zf: z.float()</code></pre>
 <ul>
   <li>每一项只有一个结果名。表达式里的函数和方法是 autograd 的运算，例如 <code>x @ weight.T</code>、<code>x ** 2</code>、<code>rsqrt(mse)</code>、<code>sq.mean(-1, keepdim=True)</code>、<code>cat([nq2, q1], dim=-1)</code>、<code>repeat_kv(k, n_rep)</code>、<code>q[..., : d_head // 2]</code>。类型转换写成 <code>x.float()</code>、<code>x.double()</code>、<code>x.half()</code>、<code>x.bfloat16()</code> 或 <code>x.to(dtype)</code>。</li>
-  <li><code>arange(n)</code> 建一个 int64 的常量，<code>causal_mask(T)</code> 建一个 $T\times T$ 的常量，$s&gt;t$ 的格子是 $-\infty$，其余是 0，dtype 是页面的 dtype。</li>
+  <li><code>arange(start, end, step, dtype=...)</code> 与 <code>torch.arange</code> 相同，默认 int64，步长为 0 时报错。<code>causal_mask(T, dtype=...)</code> 建一个 $T\times T$ 的常量，$s&gt;t$ 的格子是 <code>torch.finfo(dtype).min</code>，其余是 0，与 HF <code>create_causal_mask</code> 一致。两者都是注册的运算，没有输入，在步骤里占自己的一层；滑动窗口、分块注意力的 mask 也按这种方式加成运算，不在页面里拼。</li>
+  <li><code>linear(x, weight, bias)</code> 是组合运算，展开成 <code>x @ weight.T</code>，<code>bias</code> 不是 <code>None</code> 时再加上它。</li>
   <li>调用子模块写 <code>实例(位置参数, 名字=值)</code>。单输出的模块返回张量；多输出的模块返回具名结果，用 <code>result.名字</code> 取出。</li>
   <li>同一个实例可以调用多次，各次共用参数，每次调用的中间结果独立：第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。</li>
   <li>调用层列表时依次执行各层，第一个位置参数逐层串联，其余关键字参数原样传给每一层，返回最后一层的输出。</li>
   <li>子模块调用是赋值的整个表达式时，模块的输出用调用处的名字命名：<code>n1: input_layernorm(x)</code> 的输出节点名是 <code>layers[0].n1</code>，tex 也取调用处的。多输出的模块按 <code>qr: rotated.q_embed</code> 这样的赋值命名各个输出。</li>
-  <li>表达式里间接产生的节点（例如 <code>x.float().exp()</code> 里的类型转换）的名字是结果名加 <code>/序号</code>，例如 <code>ex/1</code>，随结果一起展示。</li>
+  <li>表达式里间接产生的节点（例如 <code>x.float().exp()</code> 里的类型转换）的名字是结果名加 <code>/序号</code>，例如 <code>ex/1</code>，序号按路径计数，模块输出用了调用处的名字时也不会重名。这些节点随结果一起展示，其中的布局运算和类型转换不单独画，画在最近的已画出的源节点上，例如 <code>position_ids[..., None].float()</code> 画在 <code>position_ids</code> 上。</li>
 </ul>
 
 <h2>页面：config、data 与 real</h2>
@@ -209,7 +219,7 @@ data:
       subtitle: 最后一层</code></pre>
 <p><code>loop</code> 对列表的每一项生成一步，<code>layer</code> 是当前项，<code>i</code> 从 0 开始，可以引用 <code>layers[i + 1]</code>。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则（<code>at</code> 可以是负数），再求值模板，越界引用报错。<code>show</code> 默认是循环变量。</p>
 <h3>每个结果都要展示</h3>
-<p>编译器检查每个被展示的模块调用：<code>forward</code> 的每个结果要么出现在某一步的 <code>show</code> 里，要么是某个被展示的模块调用的输入，要么由一个被展示的子模块调用产生，要么是布局运算（<code>view</code>、<code>reshape</code>、<code>transpose</code>、<code>unsqueeze</code>、<code>contiguous</code>）作用在已展示的张量上的结果，这类结果画在输入上。都不满足时报错，指向 <code>forward</code> 里那一项。确实不需要单独展示的结果写进模块的 <code>unshown</code>。没有被任何一步展示的参数和 buffer 放进第一个展示其使用者的步骤。</p>
+<p>编译器检查每个被展示的模块调用：<code>forward</code> 的每个结果要么出现在某一步的 <code>show</code> 里，要么是某个被展示的模块调用的输入，要么由一个被展示的子模块调用产生，要么是布局运算（<code>view</code>、<code>reshape</code>、<code>transpose</code>、<code>permute</code>、<code>unsqueeze</code>、<code>contiguous</code>）或类型转换作用在已展示的张量上的结果，这类结果画在输入上。都不满足时报错，指向 <code>forward</code> 里那一项。确实不需要单独展示的结果写进模块的 <code>unshown</code>。没有被任何一步展示的参数和 buffer 放进第一个展示其使用者的步骤。</p>
 
 <h2>公式与插值</h2>
 <p><code>formula</code> 是模块的公式，<code>\step{步骤 id}{公式片段}</code> 标出由哪一步算出的部分：前向走到这一步之前这部分不显示，走到这一步时用正色标出；反向时整条公式显示，当前步骤对应的部分用负色标出。id 的写法与补丁相同，<code>子实例.*</code> 表示子实例的全部步骤，几个 id 用逗号隔开。编译后 <code>\step</code> 变成 <code>\htmlData{vf-step=s序号}</code>，对应步骤的 <code>marks</code>。</p>
@@ -220,7 +230,7 @@ data:
   <tbody>
     <tr><td><code>matrix:位数</code></td><td>整个张量写成 pmatrix；超过 2 维时按最后两维切块，每块下标标出前面各维（从 0 开始）。块横向排列，一行的列数合计不超过 8，超过时换行，使宽的张量也能放进讲解卡片。</td></tr>
     <tr><td><code>join: "分隔符"</code></td><td>一维张量或 token 列表的各项用分隔符连接，token 列表显示 token 文字。</td></tr>
-    <tr><td><code>lines:shade=T</code></td><td>内置小图。这时表达式可以计算新的值：<code>arange</code>、库里的运算、四则运算与广播、下标、切片和 <code>[:, None]</code>，计算只用于显示，不进计算图，页面数值变化后重新计算。参数写成 <code>名字=表达式</code>，在编译时算成数。小图的名字和参数见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</td></tr>
+    <tr><td><code>lines:shade=T</code></td><td>内置小图。这时表达式可以计算新的值：<code>arange</code>、库里的运算、四则运算与广播、下标、切片和 <code>[:, None]</code>，计算编译成一段运算程序，只用于显示，不进计算图，页面数值变化后重新执行。参数写成 <code>名字=表达式</code>，在编译时算成数。小图的名字和参数见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</td></tr>
   </tbody>
 </table>
 <p>插值编译成运行时模板 <code>{{节点名[下标]:位数}}</code>，数值随页面更新；<code>x.grad</code> 取梯度。</p>
@@ -252,7 +262,7 @@ data:
 <table>
   <thead><tr><th>模块</th><th>args</th><th>输入 → 输出</th><th>步骤 id</th></tr></thead>
   <tbody>
-    <tr><td><code>Linear</code>（内置）</td><td><code>in_features</code>、<code>out_features</code>、<code>bias</code></td><td><code>x</code> → <code>y = x @ weight.T</code></td><td>没有步骤，展示时是一步</td></tr>
+    <tr><td><code>Linear</code>（内置）</td><td><code>in_features</code>、<code>out_features</code>、<code>bias</code>（默认 <code>True</code>）</td><td><code>x</code> → <code>y = linear(x, weight, bias)</code></td><td>没有步骤，展示时是一步</td></tr>
     <tr><td><code>Embedding</code>（内置）</td><td><code>num_embeddings</code>、<code>embedding_dim</code></td><td><code>x</code>（int64）→ <code>out</code></td><td>没有步骤</td></tr>
     <tr><td><code>vizflow/nn/rmsnorm</code></td><td><code>hidden_size</code>、<code>eps</code>（默认 1e-6）</td><td><code>x: [..., hidden_size]</code> → <code>out</code>；中间结果 <code>xf</code>、<code>sq</code>、<code>ms</code>、<code>mse</code>、<code>r</code>、<code>xh</code>、<code>xc</code></td><td><code>float</code>、<code>square</code>、<code>mean</code>、<code>eps</code>、<code>rms</code>、<code>normalize</code>、<code>cast</code>、<code>scale</code></td></tr>
     <tr><td><code>vizflow/nn/glu</code></td><td><code>d_model</code>、<code>d_ff</code>、<code>act</code>（module，默认 SiLU）</td><td><code>x</code> → <code>down</code>；子模块 <code>gate_proj</code>、<code>up_proj</code>、<code>down_proj</code>、<code>act_fn</code>，中间结果 <code>gate</code>、<code>a</code>、<code>up</code>、<code>m</code></td><td><code>gate_proj</code>、<code>act_fn</code>、<code>up_proj</code>、<code>gate</code>、<code>down</code></td></tr>
@@ -262,7 +272,7 @@ data:
     <tr><td><code>vizflow/nn/nll-loss</code></td><td>无</td><td><code>logp: [N, C]</code>、<code>y: [N]</code> → <code>loss</code>、<code>lt</code></td><td><code>pick</code>、<code>neg</code>、<code>mean</code></td></tr>
     <tr><td><code>vizflow/nn/rope</code></td><td>无</td><td><code>q: [H, T, d_head]</code>、<code>k: [H_kv, T, d_head]</code>、<code>cos</code>、<code>sin: [T, d_head]</code> → <code>q_embed</code>、<code>k_embed</code></td><td><code>cos</code>、<code>half</code>、<code>neg</code>、<code>rh</code>、<code>sin</code>、<code>add</code></td></tr>
     <tr><td><code>vizflow/nn/gqa</code></td><td>无</td><td><code>q: [H, T, d_head]</code>、<code>k</code>、<code>v: [H_kv, T, d_head]</code>、<code>mask: [T, T]</code> → <code>o: [T, H, d_head]</code>；中间结果 <code>key_states</code>、<code>value_states</code>、<code>kT</code>、<code>S</code>、<code>Ss</code>、<code>Sm</code>、<code>ex</code>、<code>Z</code>、<code>P</code>、<code>attn_output</code></td><td><code>krep</code>、<code>vrep</code>、<code>kT</code>、<code>S</code>、<code>Ssc</code>、<code>mask</code>、<code>exp</code>、<code>sum</code>、<code>div</code>、<code>pv</code></td></tr>
-    <tr><td><code>vizflow/nn/rotary-embedding</code></td><td><code>d_head</code>、<code>rope_theta</code></td><td><code>x: [T, hidden]</code>、<code>position_ids: [T]</code> → <code>cos</code>、<code>sin</code>；buffer <code>inv_freq</code></td><td><code>freqs</code>、<code>emb</code>、<code>cos_sin</code></td></tr>
+    <tr><td><code>vizflow/nn/rotary-embedding</code></td><td><code>d_head</code>、<code>rope_theta</code></td><td><code>x: [...]</code>（只取 dtype）、<code>position_ids: [T]</code> → <code>cos</code>、<code>sin</code>；buffer <code>inv_freq</code></td><td><code>freqs</code>、<code>emb</code>、<code>cos_sin</code></td></tr>
   </tbody>
 </table>
 <ul>
@@ -291,7 +301,7 @@ function parseYaml(text: string, file: string): unknown;</code></pre>
 <ul>
   <li><code>base</code> 是相对引用的基准地址，也是错误信息里的文件名。<code>loadPage</code> 读取 <code>url</code>，以它为基准地址编译。两者都用同一个读取函数读模块文件、<code>preamble</code> 和讲解段落。</li>
   <li><code>nodes</code> 按路径查节点：根模块的名字没有前缀，子模块里的名字是 <code>实例路径.名字</code>，参数是 <code>state_dict</code> 的键。</li>
-  <li><code>steps.backward</code> 是 <code>'reverse'</code>，<code>steps.modules</code> 与 <code>modules</code> 是同一组模块记录。模块记录的 <code>id</code> 是调用的路径前缀，例如 <code>layers[0].self_attn</code>。</li>
+  <li><code>steps.backward</code> 是 <code>'reverse'</code>，<code>steps.modules</code> 与 <code>modules</code> 是同一组模块记录。模块记录的 <code>id</code> 是调用的路径前缀，例如 <code>model.layers[0].self_attn</code>。</li>
   <li>错误信息的格式是 <code>文件:行:列 路径: 说明</code>，例如 <code>attention.yaml:44:7 forward[3].qt: name 'qnn' is not defined in 'layers[0].self_attn' (Qwen3Attention)</code>。</li>
   <li><code>dsl</code> 入口另外导出 <code>PageFile</code>、<code>ModuleFile</code> 等描述文件的类型和 <code>DslError</code>。</li>
 </ul>

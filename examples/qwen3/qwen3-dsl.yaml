@@ -259,7 +259,7 @@ modules:
           label: '$\pfl{\viz{z}}$'
           title: '$\pfl{\viz{z}}$'
           text: |
-            局部导数是 1。反向时梯度从 float32 转回 bfloat16，这次转换会舍入。
+            局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
             $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
       - id: log_softmax
         subtitle: F.cross_entropy 的第一部分：log_softmax
