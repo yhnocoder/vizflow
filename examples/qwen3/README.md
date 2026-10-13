@@ -6,7 +6,7 @@
 
 ## 结构
 
-- 页面用 `model` 指定根模块；顶层 `config` 提供本次示例的配置，`inputs` 提供输入值。根模块的 `args` 按同名从页面 `config` 取值，`seed`、`tokenizer`、`real` 只属于页面。
+- 页面用 `model` 指定根模块；顶层 `config` 提供本次示例的配置，`data` 提供根模块的输入值，按名字对应根模块的 `inputs` 声明。根模块的 `args` 按同名从页面 `config` 取值，`seed`、`tokenizer`、`real` 只属于页面。
 - 模块的 `args`、`inputs`、`outputs` 声明接口；模块只能读取声明的参数、输入及自身定义的对象。
 - `init` 声明参数、buffer 和子模块；`forward` 只描述计算；`steps` 按顺序组织讲解。
 - `tex` 集中定义数学名称；`formula` 和 `fold` 描述模块整体公式与折叠展示。子模块不额外生成总览步骤。
@@ -67,10 +67,10 @@ formula: |-
 
 表达式里的字符串字面量写引号，dtype 名（`bf16`、`fp32`）和导入的模块名（`SiLU`）是表达式里可用的名字。
 
-页面的 `config` 和 `inputs` 是数据，按 YAML 字面值读取；需要计算时写 `{ expr: ... }`。含 `[`、`:` 等字符的表达式在 YAML 里加引号。
+页面的 `config` 和 `data` 是数据，按 YAML 字面值读取；需要计算时写 `{ expr: ... }`。含 `[`、`:` 等字符的表达式在 YAML 里加引号。
 
 ```yaml
-inputs:
+data:
   tokens: [the, cat, sat, on]
   ids: { expr: 'tokens_to_ids(tokens[:-1])' }
 ```

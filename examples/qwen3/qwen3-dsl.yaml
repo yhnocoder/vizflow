@@ -27,7 +27,7 @@ config:
     qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28 }
     qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36 }
 
-inputs:
+data:
   tokens: [the, cat, sat, on]
   ids: { expr: 'tokens_to_ids(tokens[:-1])' }
   y: { expr: 'tokens_to_ids(tokens[1:])' }

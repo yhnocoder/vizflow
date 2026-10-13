@@ -45,7 +45,7 @@ export declare class Page {
   preamble?: string;
   model: string;
   config: PageConfig;
-  inputs: Record<string, Value>;
+  data: Record<string, Value>;
   modules: Record<string, Module>;
   panels?: Panel[];
   sections?: Section[];
