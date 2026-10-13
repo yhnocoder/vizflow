@@ -864,6 +864,36 @@ def creation_and_reverse_cases():
     return cases
 
 
+DTYPE_NAMES = {torch.bool: "bool", torch.int32: "int32", torch.int64: "int64", torch.bfloat16: "bf16", torch.float32: "fp32"}
+
+
+def dtype_case(op, fn, dtypes, args=()):
+    inputs = [torch.tensor([1, 2]).to(dtype) for dtype in dtypes]
+    return {"op": op, "inputs": [DTYPE_NAMES[d] for d in dtypes], "args": list(args), "output": DTYPE_NAMES[fn(*inputs, *args).dtype]}
+
+
+def promotion_cases():
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    floating = {
+        "exp": torch.exp, "log": torch.log, "cos": torch.cos, "sin": torch.sin, "sqrt": torch.sqrt, "rsqrt": torch.rsqrt,
+        "reciprocal": torch.reciprocal, "sigmoid": torch.sigmoid, "erf": torch.erf, "logsumexp": torch.logsumexp,
+    }
+    cases = []
+    for op, fn in floating.items():
+        args = (-1,) if op == "logsumexp" else ()
+        for dtype in [torch.bool, torch.int32, torch.int64, torch.bfloat16]:
+            cases.append(dtype_case(op, fn, [dtype], args))
+    for pair in [(torch.int64, torch.int64), (torch.bool, torch.bool), (torch.int32, torch.int64), (torch.int64, torch.bfloat16)]:
+        cases.append(dtype_case("div", torch.div, list(pair)))
+    for op, fn in {"neg": torch.neg, "abs": torch.abs, "relu": torch.relu}.items():
+        cases.append(dtype_case(op, fn, [torch.int64]))
+    for op, fn in {"add": torch.add, "mul": torch.mul}.items():
+        cases.append(dtype_case(op, fn, [torch.int32, torch.int64]))
+    torch.set_default_dtype(previous)
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -881,6 +911,7 @@ def main():
     transformer_ops = transformer_op_fixtures()
     write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
     write("pages.json", pages + stable_pages)
+    write("dtypes.json", promotion_cases())
 
 
 if __name__ == "__main__":

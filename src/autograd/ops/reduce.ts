@@ -105,6 +105,7 @@ export const logsumexpOp: OpDef<ReduceAttrs> = {
   args: ['input', 'dim'],
   tensors: ['input'],
   defaults: { keepdim: false },
+  floating: true,
   shape: ([a], attrs) => reducedShapeOf(a, attrs),
   forward: ([a], attrs) => {
     const { shape, map, argmax } = argmaxGroups(a, attrs);

@@ -1,4 +1,4 @@
-import { type Dtype, promoteDtypes } from './dtype';
+import { type Dtype, isIntegerDtype, promoteDtypes } from './dtype';
 import type { AnyOpDef, CompositeDef, OpDef } from './op';
 
 export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
@@ -190,7 +190,8 @@ export function outputDtype(def: AnyOpDef, inputs: readonly { name: string; dtyp
   }
   if (given !== undefined) return given;
   if (typeof def.dtype === 'function') return def.dtype(attrs);
-  return def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), fallback, where);
+  const promoted = def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), fallback, where);
+  return def.floating === true && isIntegerDtype(promoted) ? fallback : promoted;
 }
 
 export function inputDifferentiable(def: AnyOpDef, input: number): boolean {
