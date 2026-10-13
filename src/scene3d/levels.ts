@@ -200,6 +200,10 @@ function laneSpacing(cols: number): number {
   return Math.min(SPACING_MAX, Math.max(SPACING_MIN, SPACING_SPAN / cols));
 }
 
+function consecutive(start: number, n: number): number[] {
+  return Array.from({ length: n }, (_, i) => start + i);
+}
+
 function position(lane: Lane, i: number): number {
   let breaks = 0;
   for (const b of lane.breaks) if (b <= i) breaks++;
@@ -589,7 +593,6 @@ class Plan implements LevelPlan {
   private assignColumns(): void {
     const done = new Set<Entry>();
     const beside: [Entry, Entry][] = [];
-    const range = (start: number, n: number) => Array.from({ length: n }, (_, i) => start + i);
     for (const level of this.levels) {
       const ordered = [...level.entries].sort((p, q) => rank(p) - rank(q));
       for (const e of ordered) {
@@ -605,7 +608,7 @@ class Plan implements LevelPlan {
         if (e.kind === 'tile' && e.table === undefined) continue;
         const table = e.table ?? (this.tables.has(n) ? n : undefined);
         if (table !== undefined) {
-          this.setLane(e, this.stream, range(0, e.cols));
+          this.setLane(e, this.stream, consecutive(0, e.cols));
           continue;
         }
         const board = this.boards.get(n);
@@ -617,21 +620,21 @@ class Plan implements LevelPlan {
           const user = this.consumers(n)[0];
           const target = this.entryOf.get(user);
           const host = target?.level === e.level ? target : this.entryOf.get(this.source(user.inputs[0]) === n ? user : user.inputs[0])!;
-          if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.length >= e.cols ? host.offsets.slice(0, e.cols) : range(host.offsets[0] ?? 0, e.cols));
+          if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.length >= e.cols ? host.offsets.slice(0, e.cols) : consecutive(host.offsets[0] ?? 0, e.cols));
           continue;
         }
         if (isLeafLike(n)) {
           const partners = new Set(this.consumers(n).flatMap((u) => u.inputs).filter((i) => i !== n).map((i) => this.entryOf.get(this.sourceOf.get(i) ?? i)));
           const taken = this.occupied(level, this.stream, e);
-          const blocked = level.entries.some((o) => partners.has(o) && o.lane === this.stream && range(0, e.cols).some((k) => o.offsets.includes(k)));
+          const blocked = level.entries.some((o) => partners.has(o) && o.lane === this.stream && consecutive(0, e.cols).some((k) => o.offsets.includes(k)));
           const start = blocked ? Math.max(...taken) + 3 : 0;
-          this.setLane(e, this.stream, range(start, e.cols));
+          this.setLane(e, this.stream, consecutive(start, e.cols));
           continue;
         }
         const inputs = n.inputs.map((i) => this.entryOf.get(i)).filter((i): i is Entry => i !== undefined);
         const main = inputs[0];
         if (main === undefined) {
-          this.setLane(e, this.stream, range(0, e.cols));
+          this.setLane(e, this.stream, consecutive(0, e.cols));
           continue;
         }
         if (e.kind === 'disc' || e.kind === 'box' || e.cols === 1) {
@@ -639,7 +642,7 @@ class Plan implements LevelPlan {
           continue;
         }
         if (main.lane === undefined) {
-          this.setLane(e, this.stream, range(0, e.cols));
+          this.setLane(e, this.stream, consecutive(0, e.cols));
           continue;
         }
         const traced = this.tracedOffsets(e, main.lane);
@@ -652,9 +655,9 @@ class Plan implements LevelPlan {
           continue;
         }
         const start = n.kind === 'op' && n.op === 'narrow' ? ((n.attrs as { start: number }).start ?? 0) : n.kind === 'op' && n.op === 'select' && n.inputs[0].shape.length === 3 && (n.attrs as { dim: number }).dim === 1 ? (n.attrs as { index: number }).index * n.inputs[0].shape[2] : 0;
-        let offsets = main.offsets.length >= start + e.cols ? main.offsets.slice(start, start + e.cols) : range(main.offsets[0] ?? 0, e.cols);
+        let offsets = main.offsets.length >= start + e.cols ? main.offsets.slice(start, start + e.cols) : consecutive(main.offsets[0] ?? 0, e.cols);
         const taken = this.occupied(level, main.lane, e);
-        if (offsets.some((o) => taken.has(o))) offsets = range(Math.max(...taken) + 1, e.cols);
+        if (offsets.some((o) => taken.has(o))) offsets = consecutive(Math.max(...taken) + 1, e.cols);
         this.setLane(e, main.lane, offsets);
       }
     }
@@ -696,9 +699,8 @@ class Plan implements LevelPlan {
     const tile = level.entries.find((e) => e.node === board.b && e.kind === 'tile')!;
     const aXs = a.xs ?? (a.lane === undefined ? [0] : a.offsets.map((o) => position(a.lane!, o)));
     const lane = this.lane(a.level === level ? Math.max(...aXs) + BOARD_GAP : Math.min(...aXs), a.lane?.spacing ?? STREAM_SPACING);
-    const range = (n: number) => Array.from({ length: n }, (_, i) => i);
-    this.setLane(out, lane, range(out.cols));
-    this.setLane(tile, lane, range(tile.cols));
+    this.setLane(out, lane, consecutive(0, out.cols));
+    this.setLane(tile, lane, consecutive(0, tile.cols));
     done.add(out);
     done.add(tile);
   }
@@ -752,7 +754,7 @@ class Plan implements LevelPlan {
       if (e.kind === 'box') return [mainXs[0]];
       return mainXs.slice(0, e.cols);
     }
-    if (e.cols > main.cols && main.lane !== undefined) return Array.from({ length: e.cols }, (_, k) => position(main.lane!, (main.offsets[0] ?? 0) + k) + DISC_GROUP_SIDE);
+    if (e.cols > main.cols && main.lane !== undefined) return consecutive(main.offsets[0] ?? 0, e.cols).map((o) => position(main.lane!, o) + DISC_GROUP_SIDE);
     if (e.cols > 1) {
       const size = main.cols / e.cols;
       return Array.from({ length: e.cols }, (_, g) => mainXs[Math.min(mainXs.length - 1, Math.ceil((g + 1) * size) - 1)] + DISC_GROUP_SIDE);
