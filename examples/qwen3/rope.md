@@ -107,12 +107,12 @@ q_norm、k_norm 在 RoPE 之前，旋转不改变模长，所以 norm 给出的�
 在模型里，RoPE 是位置信息唯一的显式来源：embedding、RMSNorm、MLP 都逐位置计算，不知道自己在第几位。所以加和不加 RoPE 的差别就是位置带来的全部差别。下面用第 0 层同一组 $\bar{\mathbf{q}}$、$\bar{\mathbf{k}}$ 对比两者的分数与注意力权重。
 
 ::: buttons
-- { label: 在图上看 RoPE 这几步, go: 'layers[0].self_attn.apply_rotary_pos_emb.qc' }
-- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layers[0].self_attn.eager_attention_forward.S' }
+- { label: 在图上看 RoPE 这几步, go: 'model.layers[0].self_attn.apply_rotary_pos_emb.qc' }
+- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'model.layers[0].self_attn.eager_attention_forward.S' }
 :::
 
 ::: rope_compare
-scores: 'layers[0].self_attn.eager_attention_forward.Ss'
-weights: 'layers[0].self_attn.eager_attention_forward.P'
+scores: 'model.layers[0].self_attn.eager_attention_forward.Ss'
+weights: 'model.layers[0].self_attn.eager_attention_forward.P'
 ids: ids
 :::

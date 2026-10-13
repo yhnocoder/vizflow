@@ -121,7 +121,7 @@ fold:
 steps:
   - id: q_proj
     brace: { title: q_proj, subtitle: nn.Linear }
-    show: [q_proj.weight.T, q_linear]
+    show: q_proj
     label: '$\viz{q}$'
     title: q_proj
     text: |
@@ -138,7 +138,7 @@ steps:
         第一个式子展开是 $\sum_t\mathbf{x}_t^{\top}\pfl{\mathbf{q}_t}$，每个位置贡献一个外积，矩阵乘法把它们加在一起。view 的反向只是把形状改回去。
   - id: k_proj
     brace: { title: k_proj, subtitle: nn.Linear }
-    show: [k_proj.weight.T, k_linear]
+    show: k_proj
     label: '$\viz{k}$'
     title: k_proj
     text: |
@@ -153,7 +153,7 @@ steps:
         和 q_proj 相同：$\pf{\ell}{W_k^{\top}}={\viz{x}}^{\top}\pfl{\viz{k}}$，$\viz{x}$ 再加上 $\pfl{\viz{k}}W_k$。
   - id: v_proj
     brace: { title: v_proj, subtitle: nn.Linear }
-    show: [v_proj.weight.T, v_linear]
+    show: v_proj
     label: '$\viz{v}$'
     title: v_proj
     text: |
@@ -292,7 +292,7 @@ steps:
       text: 把梯度按列切回 {{ num_heads }} 个 head。
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
-    show: [o_proj.weight.T, att]
+    show: o_proj
     label: o_proj
     title: o_proj
     text: |

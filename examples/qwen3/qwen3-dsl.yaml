@@ -34,6 +34,113 @@ data:
   y: { expr: 'tokens_to_ids(tokens[1:])' }
 
 modules:
+  Qwen3Model:
+    args:
+      V: dim
+      d_model: dim
+      d_head: dim
+      d_ff: dim
+      num_heads: dim
+      num_kv_heads: dim
+      num_layers: int
+      rope_theta: float
+      dtype: dtype
+    inputs:
+      ids: { type: tensor, shape: [T], dtype: int64 }
+    outputs:
+      h_norm: { type: tensor, shape: [T, d_model], dtype: dtype }
+
+    init:
+      embed_tokens:
+        use: Embedding
+        args: { num_embeddings: V, embedding_dim: d_model }
+      layers:
+        use: list[Qwen3DecoderLayer]
+        count: num_layers
+        args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+      norm:
+        use: RMSNorm
+        args: { hidden_size: d_model }
+      rotary_emb:
+        use: RotaryEmbedding
+        args: [d_head, rope_theta]
+
+    forward:
+      - e: embed_tokens(ids)
+      - position_ids: arange(T)
+      - M: causal_mask(T, dtype=e.dtype)
+      - position_embeddings: rotary_emb(e, position_ids)
+      - cos: position_embeddings.cos
+      - sin: position_embeddings.sin
+      - h_last: layers(e, mask=M, cos=cos, sin=sin)
+      - h_norm: norm(h_last)
+
+    tex:
+      e: '\mathbf{e}'
+      h_last: '\mathbf{h}_{\mathrm{last}}'
+      h_norm: '\mathbf{h}_{\mathrm{norm}}'
+      position_ids: 't'
+      cos: '\cos'
+      sin: '\sin'
+      M: 'M'
+      embed_tokens.weight: 'E'
+
+    steps:
+      - id: embed
+        label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
+        title: embedding：按编号取行
+        brace: { title: embed_tokens, subtitle: nn.Embedding }
+        show: [ids, e, embed_tokens.weight]
+        text: |
+          <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
+          $${\viz{e}}_t=\viz{embed_tokens.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
+          把取行写成矩阵乘法是为了反向推导：令 $O_{t,v}=[x_t=v]$ 是 one-hot 矩阵，则 $\viz{e}=O\,\viz{embed_tokens.weight}$。
+        backward:
+          label: '$\pfl{\viz{embed_tokens.weight}}$'
+          text: |
+            由 $\viz{e}=O\,\viz{embed_tokens.weight}$ 得 $\pfl{\viz{embed_tokens.weight}}=O^{\top}\pfl{\viz{e}}$。$O^{\top}$ 的第 $v$ 行只在 $x_t=v$ 的位置为 1，所以：
+            $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
+            也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
+      - id: mask
+        show: M
+        label: '$\viz{M}$'
+        title: causal mask
+        text: |
+          训练时 $T$ 个位置同时预测，位置 $t$ 的目标是 $x_{t+1}$。位置 $t+1$ 的输入正是位置 $t$ 的目标，所以如果位置 $t$ 的注意力能看到位置 $t+1$，模型可以直接读出答案。这就像把答案印在试卷上，模型只要学会抄就能把损失降到很低，却什么也没学到。所以位置 $t$ 只能看 $s\le t$。
+
+          做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
+          $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
+          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
+      - id: rotary_emb
+        title: 位置编码表
+        subtitle: Qwen3RotaryEmbedding
+        steps:
+          cos_sin:
+            append: |
+              HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
+      - id: layers
+        loop: layer = layers[i]
+
+        defaults:
+          show: layer
+          title: Qwen3DecoderLayer
+          subtitle: 第 {{ i }} 层（layers[{{ i }}]）
+
+        rules:
+          - at: 0
+            subtitle: 第 0 层，输入是 embedding
+          - at: -1
+            subtitle: 最后一层，输出交给 model.norm
+      - id: norm
+        title: model.norm
+        subtitle: Qwen3RMSNorm
+        text: |-
+          <code>hidden_states = self.norm(hidden_states)</code>，在全部 decoder 层之后、lm_head 之前。Pre-Norm 结构里残差路径从不归一化，$\viz{h_last}$ 是 embedding 加上 {{ num_layers }} 层全部增量的和，尺度没有约束，所以要再做一次 RMSNorm，归一化后才交给 lm_head。
+        fold:
+          backward:
+            text: |
+              $$\pfl{\viz{h_last}}={{ h_last.grad | matrix:3 }}$$
+
   Qwen3ForCausalLM:
     args:
       V: dim
@@ -54,34 +161,17 @@ modules:
       loss: { type: tensor, shape: [], dtype: fp32 }
 
     init:
-      embed_tokens:
-        use: Embedding
-        args: { num_embeddings: V, embedding_dim: d_model }
-      layers:
-        use: list[Qwen3DecoderLayer]
-        count: num_layers
-        args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
-      rotary_emb:
-        use: RotaryEmbedding
-        args: [d_head, rope_theta]
-      norm:
-        use: RMSNorm
-        args: { hidden_size: d_model }
+      model:
+        use: Qwen3Model
+        args: [V, d_model, d_head, d_ff, num_heads, num_kv_heads, num_layers, rope_theta, dtype]
       lm_head:
         use: Linear
-        args: { in_features: d_model, out_features: V, bias: false }
+        args: { in_features: d_model, out_features: V, bias: False }
       log_softmax: LogSoftmax
       nll_loss: NLLLoss
 
     forward:
-      - e: embed_tokens(ids)
-      - position_ids: arange(T)
-      - position_embeddings: rotary_emb(e, position_ids)
-      - cos: position_embeddings.cos
-      - sin: position_embeddings.sin
-      - M: causal_mask(T)
-      - h_last: layers(e, mask=M, cos=cos, sin=sin)
-      - h_norm: norm(h_last)
+      - h_norm: model(ids)
       - z: lm_head(h_norm)
       - zf: z.float()
       - logp: log_softmax(zf)
@@ -91,18 +181,11 @@ modules:
 
     tex:
       ids: 'x'
-      e: '\mathbf{e}'
-      h_last: '\mathbf{h}_{\mathrm{last}}'
       h_norm: '\mathbf{h}_{\mathrm{norm}}'
       z: '\mathbf{z}'
       zf: '\mathbf{z}_{\mathrm{fp32}}'
       loss: '\ell'
       lt: '\ell_t'
-      position_ids: 't'
-      cos: '\cos'
-      sin: '\sin'
-      M: 'M'
-      embed_tokens.weight: 'E'
       lm_head.weight: 'W'
 
     steps:
@@ -134,66 +217,16 @@ modules:
           HF 的 <code>ForCausalLMLoss</code> 收到的标签和输入相同，在函数里做这次错位，而这里直接给出错位后的 $\viz{y}$，两种做法结果一样。
 
           输入之外的另一类张量是参数。参数决定每一步计算的结果，所以训练通过调整参数来降低损失。
-      - id: embed
-        label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
-        title: embedding：按编号取行
-        brace: { title: embed_tokens, subtitle: nn.Embedding }
-        show: [ids, e, embed_tokens.weight]
-        text: |
-          <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
-          $${\viz{e}}_t=\viz{embed_tokens.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
-          把取行写成矩阵乘法是为了反向推导：令 $O_{t,v}=[x_t=v]$ 是 one-hot 矩阵，则 $\viz{e}=O\,\viz{embed_tokens.weight}$。
-        backward:
-          label: '$\pfl{\viz{embed_tokens.weight}}$'
-          text: |
-            由 $\viz{e}=O\,\viz{embed_tokens.weight}$ 得 $\pfl{\viz{embed_tokens.weight}}=O^{\top}\pfl{\viz{e}}$。$O^{\top}$ 的第 $v$ 行只在 $x_t=v$ 的位置为 1，所以：
-            $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
-            也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
-      - id: rotary_emb
-        title: 位置编码表
-        subtitle: Qwen3RotaryEmbedding
+      - id: model
+        inline: true
         steps:
-          cos_sin:
+          rotary_emb.cos_sin:
             append: |
-              HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
-
               第 $c$ 列的周期是 $2\pi/\omega_c$ 个位置，频率越小周期越长，$\theta$ 的取值要让最慢一组在 $T$ 个位置内也能看出转动。{{ real['qwen3-8b'].name }} 的 $d_h$ 是 {{ real['qwen3-8b'].d_head }}，有 {{ real['qwen3-8b'].d_head // 2 }} 组频率，$\theta={{ real['qwen3-8b'].rope_theta }}$。而这一页 $d_h={{ d_head }}$，只有 {{ d_head // 2 }} 组，如果也用这个 $\theta$，最慢一组的频率是 $\theta^{-(d_h-2)/d_h}={{ real['qwen3-8b'].rope_theta ** (-(d_head - 2) / d_head) }}$，在 {{ T }} 个位置内几乎不转，表上看不出变化。所以这一页取 $\theta={{ rope_theta }}$。下面把位置延长到 24，阴影是这一页用到的前 {{ T }} 个位置。
 
-              {{ cos(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
+              {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).cos() | lines:shade=T }}
 
-              {{ sin(arange(24)[:, None] * rotary_emb.inv_freq) | lines:shade=T }}
-      - id: mask
-        show: M
-        label: '$\viz{M}$'
-        title: causal mask
-        text: |
-          训练时 $T$ 个位置同时预测，位置 $t$ 的目标是 $x_{t+1}$。位置 $t+1$ 的输入正是位置 $t$ 的目标，所以如果位置 $t$ 的注意力能看到位置 $t+1$，模型可以直接读出答案。这就像把答案印在试卷上，模型只要学会抄就能把损失降到很低，却什么也没学到。所以位置 $t$ 只能看 $s\le t$。
-
-          做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
-          $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
-          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
-      - id: layers
-        loop: layer = layers[i]
-
-        defaults:
-          show: layer
-          title: Qwen3DecoderLayer
-          subtitle: 第 {{ i }} 层（layers[{{ i }}]）
-
-        rules:
-          - at: 0
-            subtitle: 第 0 层，输入是 embedding
-          - at: -1
-            subtitle: 最后一层，输出交给 model.norm
-      - id: norm
-        title: model.norm
-        subtitle: Qwen3RMSNorm
-        text: |-
-          <code>hidden_states = self.norm(hidden_states)</code>，在全部 decoder 层之后、lm_head 之前。Pre-Norm 结构里残差路径从不归一化，$\viz{h_last}$ 是 embedding 加上 {{ num_layers }} 层全部增量的和，尺度没有约束，所以要再做一次 RMSNorm，归一化后才交给 lm_head。
-        fold:
-          backward:
-            text: |
-              $$\pfl{\viz{h_last}}={{ h_last.grad | matrix:3 }}$$
+              {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).sin() | lines:shade=T }}
       - id: logits
         label: '$\viz{z}$'
         title: lm_head
@@ -213,12 +246,12 @@ modules:
         label: '$\viz{zf}$'
         title: 转成 float32
         text: |
-          HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。{{ dtype }} 的每个值都能在 float32 里精确表示，所以这一步不改变数值。
+          HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
         backward:
           label: '$\pfl{\viz{z}}$'
           title: '$\pfl{\viz{z}}$'
           text: |
-            局部导数是 1。前向转换不改变数值，而反向时梯度从 float32 转回 {{ dtype }} 会舍入。
+            局部导数是 1。反向时梯度从 float32 转回 bfloat16，这次转换会舍入。
             $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
       - id: log_softmax
         subtitle: F.cross_entropy 的第一部分：log_softmax
@@ -264,8 +297,8 @@ sections:
   - title: RoPE：用旋转来编码位置
     src: ./rope.md
     rope:
-      q: layers[0].self_attn.qn
-      k: layers[0].self_attn.kn
+      q: model.layers[0].self_attn.qn
+      k: model.layers[0].self_attn.kn
       rows: [-1, 0]
       head: 0
       theta: rope_theta

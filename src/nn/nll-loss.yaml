@@ -31,7 +31,7 @@ steps:
     label: '$\viz{pick}$'
     title: nll_loss：按标签取格
     text: |
-      <code>F.nll_loss(logp, y)</code> 对每一行 $n$ 算 $-\log p_{n,y_n}$，默认 <code>reduction='mean'</code> 再取平均。第一步每一行按自己的标签取出一格，相当于 <code>logp.gather(-1, y.view(-1, 1))</code>。
+      <code>F.nll_loss(logp, y)</code> 对每一行 $n$ 算 $-\log p_{n,y_n}$，默认 <code>reduction='mean'</code> 再取平均。$\viz{logp}$ 有 $N={{ N }}$ 行，每行是 $C={{ C }}$ 个类别的对数概率。第一步每一行按自己的标签取出一格，相当于 <code>logp.gather(-1, y.view(-1, 1))</code>。
       $$\viz{pick}={{ pick | matrix:3 }}$$
     backward:
       label: '$\partial\viz{logp}$'

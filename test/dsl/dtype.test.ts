@@ -30,10 +30,10 @@ describe('dtype', () => {
     const p = await loadExample('qwen3/qwen3-dsl.yaml');
     const dtype = (name: string) => p.nodes.get(name)!.dtype;
     expect(p.graph.dtype).toBe('bf16');
-    expect(['ids', 'y', 'embed_tokens.weight', 'e', 'rotary_emb.inv_freq', 'cos', 'M'].map(dtype)).toEqual(['int64', 'int64', 'bf16', 'bf16', 'fp32', 'bf16', 'bf16']);
-    const norm = 'layers[0].input_layernorm';
+    expect(['ids', 'y', 'model.embed_tokens.weight', 'model.e', 'model.rotary_emb.inv_freq', 'model.cos', 'model.M'].map(dtype)).toEqual(['int64', 'int64', 'bf16', 'bf16', 'fp32', 'bf16', 'bf16']);
+    const norm = 'model.layers[0].input_layernorm';
     expect(['xf', 'ms', 'r', 'xh', 'xc'].map((n) => dtype(`${norm}.${n}`))).toEqual(['fp32', 'fp32', 'fp32', 'fp32', 'bf16']);
-    const gqa = 'layers[0].self_attn.eager_attention_forward';
+    const gqa = 'model.layers[0].self_attn.eager_attention_forward';
     expect(['S', 'ex', 'Z', 'P', 'attn_output'].map((n) => dtype(`${gqa}.${n}`))).toEqual(['bf16', 'fp32', 'fp32', 'bf16', 'bf16']);
     expect(['z', 'zf', 'logp', 'loss'].map(dtype)).toEqual(['bf16', 'fp32', 'fp32', 'fp32']);
   });
@@ -41,7 +41,7 @@ describe('dtype', () => {
   it('sets the parameter dtype from config and rejects an unknown one', async () => {
     const ok = await page('bf16', '    forward:\n      - y: proj(x)\n      - l: y.float().mean()');
     expect(['x', 'proj.weight', 'y', 'l'].map((n) => ok.nodes.get(n)!.dtype)).toEqual(['bf16', 'bf16', 'bf16', 'fp32']);
-    await expect(page('float', '    forward:\n      - l: x.mean()')).rejects.toThrow(/unknown dtype 'float'/);
+    await expect(page('float', '    forward:\n      - l: x.mean()')).rejects.toThrow(/config\.dtype: dtype must be one of bool, /);
   });
 
   it('lets matmul reject an input whose dtype differs from the weight', async () => {

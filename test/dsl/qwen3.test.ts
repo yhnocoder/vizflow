@@ -3,11 +3,11 @@ import katex from 'katex';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { type CompiledPage, compilePage, parseYaml } from '../../src/dsl';
 import { elemTexOf } from '../../src/explain/elem';
-import { evaluateValue } from '../../src/core';
+import { runProgram } from '../../src/core';
 import { renderText } from '../../src/formula';
 import { createSteps } from '../../src/steps';
 import { renderFigures } from '../../src/ui';
-import { decodeExpr } from '../../src/ui/figure-spec';
+import { decodeProgram } from '../../src/ui/figure-spec';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { examplesUrl, loadExample, readFileUrl } from './load';
 
@@ -61,7 +61,7 @@ describe('qwen3-dsl.yaml as written', () => {
   });
 
   it('computes in bf16 and casts the logits to float32 before the loss', () => {
-    expect(page.nodes.get('e')!.dtype).toBe('bf16');
+    expect(page.nodes.get('model.e')!.dtype).toBe('bf16');
     expect(page.nodes.get('zf')!.dtype).toBe('fp32');
     expect(page.nodes.get('loss')!.dtype).toBe('fp32');
   });
@@ -71,7 +71,7 @@ describe('qwen3-dsl.yaml as written', () => {
     const titles = steps.list.map((s) => s.title);
     expect(titles[0]).toBe('模型如何预测下一个词');
     expect(steps.list.filter((s) => s.title === 'RoPE：乘 sin').length).toBeGreaterThan(0);
-    expect(page.modules.map((m) => m.id)).toEqual(expect.arrayContaining(['layers[0]', 'layers[1]', 'layers[0].self_attn', 'layers[1].mlp']));
+    expect(page.modules.map((m) => m.id)).toEqual(expect.arrayContaining(['model.rotary_emb', 'model.layers[0]', 'model.layers[1]', 'model.layers[0].self_attn', 'model.layers[1].mlp']));
     steps.dispose();
   });
 
@@ -112,9 +112,9 @@ describe('qwen3-dsl.yaml as written', () => {
     renderText(bodies[0], el);
     const tags = [...el.querySelectorAll('vf-figure')];
     expect(tags.map((t) => [t.getAttribute('name'), t.getAttribute('args')])).toEqual([['lines', 'shade=3'], ['lines', 'shade=3']]);
-    const inv = page.nodes.get('rotary_emb.inv_freq')!.value;
+    const inv = page.nodes.get('model.rotary_emb.inv_freq')!.value;
     const read = (name: string) => page.nodes.get(name)!.value;
-    const [cos, sin] = tags.map((t) => evaluateValue(decodeExpr(t.getAttribute('expr')!), read));
+    const [cos, sin] = tags.map((t) => runProgram(decodeProgram(t.getAttribute('program')!), read));
     expect(cos.shape).toEqual([24, 2]);
     expect(cos.get([5, 1])).toBeCloseTo(Math.cos(5 * inv.data[1]), 12);
     expect(sin.get([7, 0])).toBeCloseTo(Math.sin(7 * inv.data[0]), 12);

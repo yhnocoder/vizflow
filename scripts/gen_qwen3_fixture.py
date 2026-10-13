@@ -68,7 +68,7 @@ def config():
 
 
 def page_path(key):
-    return re.sub(r"\.(\d+)\.", r"[\1].", key.removeprefix("model."))
+    return re.sub(r"\.(\d+)\.", r"[\1].", key)
 
 
 def fill(params, generator):
@@ -91,12 +91,11 @@ def main():
     model = Qwen3ForCausalLM(config()).double().eval()
     params = {page_path(key): p for key, p in model.named_parameters()}
     fill(params, generator)
-    ids = torch.tensor([SEQUENCE[:-1]])
-    labels = torch.tensor(SEQUENCE[1:])
-    logits = model(input_ids=ids).logits[0]
-    logp = F.log_softmax(logits.float(), -1)
-    loss = F.nll_loss(logp, labels)
-    loss.backward()
+    tokens = torch.tensor([SEQUENCE])
+    output = model(input_ids=tokens, labels=tokens)
+    output.loss.backward()
+    loss = output.loss
+    logits = output.logits[0, :-1]
     payload = {
         "torch": torch.__version__,
         "transformers": transformers.__version__,
