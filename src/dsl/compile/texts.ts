@@ -5,6 +5,7 @@ import { numberTex } from '../tex';
 import { describe, isDtype, isView, viewShape } from './expressions';
 import { Modules } from './instance';
 import { Eager, type Env, type TensorView, type Value, type ViewIndex } from './types';
+import { INTERPOLATION, VIZ, figureArgs, interpolation } from './template';
 import { isNum } from './util';
 
 export interface Macro {
@@ -38,21 +39,6 @@ export function parsePreamble(text: string, file: string): Map<string, Macro> {
   return macros;
 }
 
-function splitFilter(source: string): { expr: string; filter: string | undefined } {
-  let depth = 0;
-  let quote = '';
-  for (let i = 0; i < source.length; i++) {
-    const c = source[i];
-    if (quote !== '') {
-      if (c === quote) quote = '';
-    } else if (c === '"' || c === "'") quote = c;
-    else if (c === '[' || c === '(') depth++;
-    else if (c === ']' || c === ')') depth--;
-    else if (c === '|' && depth === 0) return { expr: source.slice(0, i).trim(), filter: source.slice(i + 1).trim() };
-  }
-  return { expr: source.trim(), filter: undefined };
-}
-
 function pmatrix(lines: string[][]): string {
   return `\\begin{pmatrix}${lines.map((line) => line.map((cell) => ` ${cell} `).join('&')).join('\\\\')}\\end{pmatrix}`;
 }
@@ -66,7 +52,7 @@ export abstract class Texts extends Modules {
   }
 
   viz(text: string, env: Env): string {
-    return text.replace(/\\viz\{([^{}]+)\}/g, (_match, ref: string, offset: number, whole: string) => {
+    return text.replace(VIZ, (_match, ref: string, offset: number, whole: string) => {
       const value = this.vizValue(ref.trim(), env);
       return /\\[A-Za-z]+$/.test(whole.slice(0, offset)) && /^[A-Za-z]/.test(value) ? ` ${value}` : value;
     });
@@ -113,7 +99,7 @@ export abstract class Texts extends Modules {
   text(value: unknown, env: Env): string {
     if (value === undefined) return '';
     if (typeof value !== 'string') this.fail(env, 'expected text');
-    const interpolated = value.replace(/\{\{([^{}]*)\}\}/g, (_m, inner: string) => this.interpolate(inner, env));
+    const interpolated = value.replace(INTERPOLATION, (_m, inner: string) => this.interpolate(inner, env));
     return this.expandMacros(this.viz(interpolated, env), env);
   }
 
@@ -123,10 +109,7 @@ export abstract class Texts extends Modules {
   }
 
   interpolate(source: string, env: Env): string {
-    const { expr, filter } = splitFilter(source);
-    const colon = filter === undefined ? -1 : filter.indexOf(':');
-    const name = filter === undefined ? undefined : (colon < 0 ? filter : filter.slice(0, colon)).trim();
-    const arg = filter === undefined || colon < 0 ? undefined : filter.slice(colon + 1).trim();
+    const { expr, format: name, arg } = interpolation(source);
     if (name !== undefined && figureNames.includes(name)) return this.figure(name, expr, arg, source, env);
     const found = this.reference(expr, env);
     if (name === undefined) return this.plain(found, source, env);
@@ -147,11 +130,7 @@ export abstract class Texts extends Modules {
   }
 
   private figure(name: string, expr: string, arg: string | undefined, source: string, env: Env): string {
-    const args = (arg === undefined ? [] : arg.split(':')).map((part) => {
-      const eq = part.indexOf('=');
-      if (eq < 0) return part.trim();
-      return `${part.slice(0, eq).trim()}=${this.number(part.slice(eq + 1).trim(), env).toy}`;
-    });
+    const args = figureArgs(arg).map((item) => (typeof item === 'string' ? item : `${item[0]}=${this.number(item[1], env).toy}`));
     const program = new ProgramBuilder();
     const value = this.computed(expr, env, program, true);
     if (!(value instanceof Eager) || value.ref === undefined) return this.fail(env, `'{{${source}}}' is ${describe(value)}, not a tensor computed from the page`);

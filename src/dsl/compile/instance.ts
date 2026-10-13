@@ -1,10 +1,12 @@
 import { DTYPES, Node, ProgramBuilder } from '../../autograd';
 import { Tensor } from '../../tensor';
+import type { Ast } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
 import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Num, Result, type Value } from './types';
+import { templateExpressions, vizReferences } from './template';
 import { checkKeys, isNum, isRecord, join, record } from './util';
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'dtype', 'module']);
@@ -18,6 +20,48 @@ const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+type Reader = (text: string, where: Where) => void;
+
+function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
+  if (ast === undefined) return;
+  switch (ast.k) {
+    case 'name':
+      counts.set(ast.name, (counts.get(ast.name) ?? 0) + 1);
+      return;
+    case 'member':
+      countNames(ast.obj, counts);
+      return;
+    case 'index':
+      countNames(ast.obj, counts);
+      for (const item of ast.items) {
+        if (item.k === 'at') countNames(item.value, counts);
+        if (item.k === 'slice') for (const bound of [item.start, item.stop]) countNames(bound, counts);
+      }
+      return;
+    case 'call':
+      for (const part of [ast.fn, ...ast.args, ...ast.kwargs.map(([, value]) => value)]) countNames(part, counts);
+      return;
+    case 'list':
+      for (const item of ast.items) countNames(item, counts);
+      return;
+    case 'neg':
+      countNames(ast.arg, counts);
+      return;
+    case 'bin':
+      countNames(ast.a, counts);
+      countNames(ast.b, counts);
+      return;
+    default:
+      return;
+  }
+}
+
+function walk(value: unknown, where: Where, read: Reader): void {
+  if (typeof value === 'string') read(value, where);
+  else if (Array.isArray(value)) value.forEach((item, i) => walk(item, child(where, value, i), read));
+  else if (isRecord(value)) for (const [key, item] of Object.entries(value)) walk(item, child(where, value, key), read);
+}
+
 export function listMark(i: number): string {
   return `^{[${i}]}`;
 }
@@ -27,7 +71,7 @@ export abstract class Modules extends Expressions {
   readonly producers = new Map<Node, Call>();
   readonly anon = new Map<Node, Node[]>();
   readonly instances: Instance[] = [];
-  private readonly declText = new Map<ModuleDef, string>();
+  private readonly structuralNames = new Map<ModuleDef, Map<string, number>>();
 
   instanceEnv(instance: Instance, where: Where = instance.def.where): Env {
     return { instance, call: undefined, locals: new Map(), where };
@@ -313,11 +357,11 @@ export abstract class Modules extends Expressions {
     if (rest !== shape.lastIndexOf('...')) fail(shapeWhere, "a shape can hold '...' once");
     if (rest < 0 ? shape.length !== node.shape.length : shape.length - 1 > node.shape.length) mismatch(`expected ${rest < 0 ? '' : 'at least '}${shape.length - (rest < 0 ? 0 : 1)} dimensions (${shape.join(', ')}), got shape (${node.shape.join(', ')})`);
     shape.forEach((entry, k) => {
-      if (k === rest) return;
+      if (k === rest || entry === '_') return;
       const d = rest >= 0 && k > rest ? node.shape.length - (shape.length - k) : k;
       const at = child(shapeWhere, shape, k);
       if (bind && typeof entry === 'string' && NAME.test(entry) && !call.instance.args.has(entry) && !call.bound.has(entry) && !call.values.has(entry)) {
-        this.checkUsed(call.instance.def, entry, at);
+        this.checkUsed(call, entry, at);
         call.bound.set(entry, { toy: node.shape[d], real: node.realShape[d], derive: (_sizes, shapes) => shapes[node.id][d] });
         return;
       }
@@ -328,7 +372,7 @@ export abstract class Modules extends Expressions {
     const dtype = field.dtype;
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
-      this.checkUsed(call.instance.def, dtype, dtypeWhere);
+      this.checkUsed(call, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
       return;
     }
@@ -337,14 +381,60 @@ export abstract class Modules extends Expressions {
     if (expected.dtype !== node.dtype) mismatch(`expected dtype ${expected.dtype}, got ${node.dtype}`);
   }
 
-  private checkUsed(def: ModuleDef, name: string, where: Where): void {
-    let text = this.declText.get(def);
-    if (text === undefined) {
-      text = JSON.stringify(def.decl);
-      this.declText.set(def, text);
+  private checkUsed(call: Call, name: string, where: Where): void {
+    if ((this.namesOf(call).get(name) ?? 0) < 2) {
+      fail(where, `'${name}' takes its value from this input but is used nowhere else in ${call.instance.def.name}; if it should be an arg, check the spelling, and write _ for a dimension that needs no name`);
     }
-    const uses = text.match(new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`, 'g'))?.length ?? 0;
-    if (uses < 2) fail(where, `'${name}' takes its value from this input but is used nowhere else in ${def.name}; if it should be an arg, check the spelling`);
+  }
+
+  private namesOf(call: Call): Map<string, number> {
+    const def = call.instance.def;
+    const cached = this.structuralNames.get(def);
+    if (cached !== undefined) return cached;
+    const counts = new Map<string, number>();
+    this.structuralNames.set(def, counts);
+    const decl = def.decl;
+    const section = (key: string) => child(def.where, decl, key);
+    const expression: Reader = (text, where) => {
+      if (text !== '...') countNames(this.parse(text, this.callEnv(call, where)), counts);
+    };
+    const latex: Reader = (text, where) => vizReferences(text).forEach((ref) => expression(ref, where));
+    const template: Reader = (text, where) => templateExpressions(text).forEach((expr) => expression(expr, where));
+    const fields = (value: unknown, where: Where, keys: readonly string[]) => {
+      if (isRecord(value)) for (const key of keys) walk(value[key], child(where, value, key), expression);
+    };
+    const each = (value: unknown, where: Where, visit: (item: unknown, at: Where) => void) => {
+      if (isRecord(value)) for (const [key, item] of Object.entries(value)) visit(item, child(where, value, key));
+    };
+    const options = (value: unknown, where: Where): void => {
+      each(value, where, (item, at) => {
+        const key = at.key as string;
+        if (key === 'steps') each(item, at, options);
+        else if (key === 'rules' && Array.isArray(item)) item.forEach((rule, i) => options(rule, child(at, item, i)));
+        else if (key === 'defaults' || key === 'fold' || key === 'backward' || key === 'brace') options(item, at);
+        else if (key === 'notes' && Array.isArray(item)) item.forEach((note, i) => {
+          fields(note, child(at, item, i), ['at']);
+          if (isRecord(note)) walk(note.text, child(child(at, item, i), note, 'text'), template);
+        });
+        else if (key === 'show' || key === 'beside') walk(item, at, expression);
+        else if (key === 'formula') walk(item, at, latex);
+        else if (key !== 'id' && key !== 'loop' && key !== 'side') walk(item, at, template);
+      });
+    };
+    each(decl.args, section('args'), (arg, at) => fields(arg, at, ['default']));
+    for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(field, at, ['shape', 'dtype']));
+    each(decl.init, section('init'), (entry, at) => {
+      if (at.key === 'weights') each(entry, at, (weight, w) => fields(weight, w, ['shape', 'present']));
+      else if (at.key === 'buffers') each(entry, at, (buffer, b) => fields(buffer, b, ['shape', 'dtype', 'value']));
+      else fields(entry, at, ['args', 'count']);
+    });
+    walk(decl.forward, section('forward'), expression);
+    walk(decl.unshown, section('unshown'), expression);
+    walk(decl.tex, section('tex'), latex);
+    walk(decl.formula, section('formula'), latex);
+    options(decl.fold, section('fold'));
+    if (Array.isArray(decl.steps)) decl.steps.forEach((step, i) => options(step, child(section('steps'), decl.steps as unknown[], i)));
+    return counts;
   }
 
   runForward(call: Call): void {

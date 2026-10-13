@@ -100,6 +100,7 @@ export interface Initializers {
 export interface Weight {
   shape: Dimension[];
   init?: 'ones' | 'zeros' | 'normal' | 'uniform';
+  present?: Expression;
 }
 
 export interface Buffer extends TensorField {

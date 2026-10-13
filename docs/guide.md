@@ -230,7 +230,7 @@ panels:
 - `forward` 的每一行是 `名字: 表达式`，一行对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。表达式按 Python 的语义计算：`cat([a, b])` 的参数是列表，`1 - x`、`1 / x` 是反射运算，`x[:, None]` 加一维。
 - 参数的 dtype 由页面 `config.dtype` 统一设定，根模块声明了 `dtype` 参数时也传给它；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
 - `Linear` 的 `bias` 默认是 `True`，与 `nn.Linear` 相同；HF 写了 `bias=False` 的地方页面也写 `bias: False`。自己的模块要可选的权重时写 `{ shape, present: 参数名 }`，参数为假时权重不创建，`forward` 里它是 `None`。
-- `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度。绑定的名字在模块里只出现这一次时编译报错，通常是参数名拼错了。
+- `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度，`_` 对上一个维度但不绑定名字。绑定的名字在模块的 shape、dtype、`init`、`forward`、步骤的 `show` 以及讲解文本的 `{{ }}` 和 `\viz{}` 里都没有再被引用时编译报错，通常是参数名拼错了；讲解正文里直接写出的名字不算引用。不需要名字的维度写 `_`。
 - `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`permute`、`unsqueeze`、`contiguous`）或类型转换的结果；其余的写进 `unshown`，否则编译报错。
 - tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
 - 3D 布局由库按模块结构自动排布，页面不写布局。
@@ -1035,6 +1035,7 @@ const y = g.square(x, { name: 'y' });
 - `defaults` 写 torch 里按关键字传的参数及默认值，它们出现在选项对象里；`differentiable` 标出每个张量参数是否求梯度（例如整数下标为 `false`）。
 - `list` 写一个接受节点数组的张量参数名，例如内置的 `cat` 写 `args: ['tensors', 'dim']`、`tensors: ['tensors']`、`list: 'tensors'`。数组里的节点按顺序展开成输入，`forward`、`backward`、`shape` 收到的输入个数是前面的张量参数个数加上数组长度。这个参数必须是 `tensors` 的最后一个，例如内置的 `index` 写 `tensors: ['input', 'indices']`、`list: 'indices'`。`differentiable` 里它的那一项对数组里的每个节点都适用。
 - `dtype` 写输出固定的 dtype，例如内置的 `one_hot` 写 `dtype: 'int64'`、`greater` 写 `dtype: 'bool'`；不写时按输入的类型提升推导。
+- `floating: true` 表示整数或 bool 输入得到图的浮点 dtype，与 torch 的 `exp`、`sqrt`、真除法等运算相同。
 - `scalars` 列出可以传数的张量参数，例如内置的 `add` 写 `scalars: ['other']`。传数时它不成为输入，存进 `attrs` 的同名字段，`forward` 收到的输入少一个。
 - `sizes` 列出可以写维度名的非张量参数，例如内置的 `narrow` 写 `sizes: ['length']`；参数是数组时逐个元素换算；只按关键字传的参数也可以列在这里，例如内置的 `cat` 写 `sizes: ['pieces']`，`pieces` 只出现在 `defaults` 里。
 - `rest` 写最后一个参数名，调用时从这个位置起的位置参数收集成一个数组，例如内置的 `view` 写 `args: ['input', 'shape']`、`rest: 'shape'`，`g.view(a, T, H, dh)` 与 `g.view(a, [T, H, dh])` 相同。规则见 2.3 的「尺寸参数写维度名」。

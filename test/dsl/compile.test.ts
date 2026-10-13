@@ -143,6 +143,12 @@ c: { use: Scale, args: [n] }`,
     const typo = SCALE.replace("x: { type: tensor, shape: ['...', n]", "x: { type: tensor, shape: ['...', nn]");
     const yaml = root({ init: 'a: { use: Scale, args: { n: d } }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l' });
     await expect(page(yaml, { [SCALE_FILE]: typo })).rejects.toThrow(/'nn' takes its value from this input but is used nowhere else in Scale; if it should be an arg, check the spelling/);
+    const prose = typo.replace("text: 'h = {{ h | matrix:1 }}'", "text: 'nn rows: {{ h | matrix:1 }}'");
+    await expect(page(yaml, { [SCALE_FILE]: prose })).rejects.toThrow(/'nn' takes its value/);
+    const shown = typo.replace("text: 'h = {{ h | matrix:1 }}'", "text: '{{ nn }} rows: {{ h | matrix:1 }}'");
+    expect((await page(yaml, { [SCALE_FILE]: shown })).nodes.get('y')!.shape).toEqual([3, 2]);
+    const anonymous = SCALE.replace("x: { type: tensor, shape: ['...', n]", "x: { type: tensor, shape: ['...', _]");
+    expect((await page(yaml, { [SCALE_FILE]: anonymous })).nodes.get('y')!.shape).toEqual([3, 2]);
   });
 
   it('checks input shapes and keeps init to the args', async () => {
@@ -313,7 +319,7 @@ describe('templates and tex', () => {
   });
 
   it('evaluates buffer values with ops and broadcasting', async () => {
-    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2, dtype=fp32)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
+    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
     expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
   });
 
