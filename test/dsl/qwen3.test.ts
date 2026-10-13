@@ -70,7 +70,7 @@ describe('qwen3-dsl.yaml as written', () => {
     const steps = createSteps(page.graph, page.steps);
     const titles = steps.list.map((s) => s.title);
     expect(titles[0]).toBe('模型如何预测下一个词');
-    expect(steps.list.filter((s) => s.title === '乘 sin').length).toBeGreaterThan(0);
+    expect(steps.list.filter((s) => s.title === 'RoPE：乘 sin').length).toBeGreaterThan(0);
     expect(page.modules.map((m) => m.id)).toEqual(expect.arrayContaining(['layers[0]', 'layers[1]', 'layers[0].self_attn', 'layers[1].mlp']));
     steps.dispose();
   });

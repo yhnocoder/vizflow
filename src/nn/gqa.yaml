@@ -32,117 +32,145 @@ tex:
 formula: '\step{pv}{\viz{attn_output}=}\step{exp,sum,div}{\operatorname{softmax}\big(}\step{S}{\viz{q}\step{kT}{{\step{krep}{\mathrm{repeat\_kv}(\viz{k})}}^{\top}}}\step{Ssc}{/\sqrt{d_h}}\step{mask}{+\viz{mask}}\step{exp,sum,div}{\big)}\step{vrep,pv}{\mathrm{repeat\_kv}(\viz{v})}'
 fold:
   label: '$\viz{o}$'
-  title: 注意力（已折叠）
+  title: 注意力
   text: |
-    {{ num_heads }} 个 query head 共用 {{ num_kv_heads }} 个 kv head，所有 head 一起做一次批量的因果注意力，再把 head 维换回位置维后面。
-    $$\viz{attn_output}={{ attn_output | matrix:2 }}$$
+    $$\mathbf{o}^{(h)}=\operatorname{softmax}\Big(\frac{\mathbf{q}^{(h)}\mathbf{k}^{(h)\top}}{\sqrt{d_h}}+M\Big)\mathbf{v}^{(h)}$$
+    $$\viz{o}={{ o | matrix:2 }}$$
   backward:
     label: '$\partial\viz{q},\ \partial\viz{k},\ \partial\viz{v}$'
-    title: 穿过注意力（已折叠）
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}},\ \frac{\partial\ell}{\partial \viz{v}}$'
     text: |
-      $$\frac{\partial\ell}{\partial\viz{q}}={{ q.grad | matrix:3 }}$$
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial \viz{k}}={{ k.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial \viz{v}}={{ v.grad | matrix:3 }}$$
 
 steps:
   - id: krep
     show: key_states
-    label: '$\viz{key_states}$'
+    label: '$\mathrm{repeat\_kv}(\viz{k})$'
     title: repeat_kv：复制 k
     text: |
-      {{ num_heads }} 个 query head 共用 {{ num_kv_heads }} 个 kv head。<code>key_states = repeat_kv(key, module.num_key_value_groups)</code> 把每个 kv head 的 k 复制 $n_\text{rep}={{ num_heads // num_kv_heads }}$ 份，每个 query head 拿到一份。复制的局部导数是 1。
+      <code>key_states = repeat_kv(key, module.num_key_value_groups)</code>。$H$ 个 query head 共用 $H_{kv}$ 个 kv head，每 $n_{\mathrm{rep}}=H/H_{kv}$ 个相邻的 query head 一组，共用一个 kv head。repeat_kv 把第 $j$ 个 kv head 复制到第 $j\,n_{\mathrm{rep}},\dots,(j+1)n_{\mathrm{rep}}-1$ 个位置，之后 k 和 q 的 head 数相同，可以按 head 批量矩阵乘。复制的局部导数是 1。
     backward:
       label: '$\partial\viz{k}$'
       title: repeat_kv 反向：几份加回一份
       text: |
-        复制给几个 query head 的 k，反向时梯度在这里相加，回到各自的 kv head。
-        $$\frac{\partial\ell}{\partial\viz{k}}={{ k.grad | matrix:3 }}$$
+        同一个 kv head 被 $n_{\mathrm{rep}}$ 个 query head 使用，梯度是这几份之和：
+        $$\frac{\partial\ell}{\partial \mathbf{k}^{(j)}}=\sum_{h=j\,n_{\mathrm{rep}}}^{(j+1)n_{\mathrm{rep}}-1}\frac{\partial\ell}{\partial \mathbf{k}^{(h)}_{\mathrm{rep}}},\qquad \frac{\partial\ell}{\partial \viz{k}}={{ k.grad | matrix:3 }}$$
   - id: vrep
     show: value_states
-    label: '$\viz{value_states}$'
+    label: '$\mathrm{repeat\_kv}(\viz{v})$'
     title: repeat_kv：复制 v
-    text: <code>value_states = repeat_kv(value, module.num_key_value_groups)</code>：v 也按同样的方式复制，每个 query head 拿到一份。
+    text: v 按同样的方式复制，每个 query head 拿到所在组的那一份。
     backward:
       label: '$\partial\viz{v}$'
       title: v 的几份加回一份
       text: |
-        $$\frac{\partial\ell}{\partial\viz{v}}={{ v.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial \viz{v}}={{ v.grad | matrix:3 }}$$
   - id: kT
-    label: '$\viz{kT}$'
+    label: '$\mathbf{k}^{\top}$'
     title: 转置
-    text: <code>key_states.transpose(2, 3)</code>：把 $d_h$ 换到行、位置换到列。转置只是换轴，局部导数是 1。
+    text: <code>key_states.transpose(2, 3)</code> 交换最后两个轴，每个 head 的 k 从 $T_k\times d_h$ 变成 $d_h\times T_k$，下一步的矩阵乘因此得到 $T\times T_k$ 的分数表。转置只换轴，局部导数是 1。
     backward:
-      label: '$\partial\viz{key_states}$'
+      label: '$\partial\mathbf{k}_{\mathrm{rep}}$'
       title: 转置回去
-      text: 把梯度转置回 $T\times d_h$。
+      text: 把梯度转置回 $T_k\times d_h$。
   - id: S
-    label: '$\viz{q}\viz{kT}$'
+    label: '$\mathbf{q}\mathbf{k}^{\top}$'
     title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
     text: |
-      <code>torch.matmul(query, key_states.transpose(2, 3))</code>：每个 head 各自算一个 $T\times T$ 的分数表，$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。
+      <code>torch.matmul(query, key_states.transpose(2, 3))</code>，每个 head 各算一张 $T\times T_k$ 的表，$S^{(h)}_{t,s}=\mathbf{q}^{(h)}_t\cdot\mathbf{k}^{(h)}_s$。点积大，表示位置 $t$ 的 query 和位置 $s$ 的 key 方向接近。
       $$S^{(0)}={{ S[0] | matrix:2 }}$$
     backward:
-      label: '$\partial\viz{q},\ \partial\viz{kT}$'
-      title: 传到 $\viz{q}$ 和 $\viz{kT}$
+      label: '$\partial\viz{q},\ \partial\mathbf{k}^{\top}$'
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \mathbf{k}^{\top}}$'
       text: |
-        $$\frac{\partial\ell}{\partial\viz{q}}={{ q.grad | matrix:3 }}$$
+        两边都是激活，各自的梯度是另一边乘 $\frac{\partial\ell}{\partial S}$：
+        $$\frac{\partial\ell}{\partial \mathbf{q}}=\frac{\partial\ell}{\partial S}\,\mathbf{k},\qquad \frac{\partial\ell}{\partial \mathbf{k}^{\top}}=\mathbf{q}^{\top}\frac{\partial\ell}{\partial S}$$
+        被 mask 的格子 $\frac{\partial\ell}{\partial S_{t,s}}=0$，所以位置 $t$ 的 query 只从 $s\le t$ 的 key 拿到梯度。
+        $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
   - id: Ssc
     show: Ss
     label: '$\times\,d_h^{-1/2}$'
     title: 缩放
-    text: '<code>* scaling</code>：乘上 $1/\sqrt{d_h}$。点积的方差随 $d_h$ 增长，缩放让 softmax 的输入不至于太大。'
+    text: |
+      <code>* scaling</code>，<code>scaling = head_dim**-0.5</code>。为什么要缩放？假设 q、k 的各分量独立，均值为 0，方差为 1，则
+      $$\mathbb{E}\big[(\mathbf{q}\cdot\mathbf{k})^2\big]=\sum_{c,c'}\mathbb{E}[q_cq_{c'}]\,\mathbb{E}[k_ck_{c'}]=\sum_c\mathbb{E}[q_c^2]\,\mathbb{E}[k_c^2]=d_h$$
+      也就是说，点积的标准差是 $\sqrt{d_h}$。$d_h$ 大时分数之间相差很大，exp 把差距进一步放大，softmax 的结果接近 one-hot，实际上退化成了 argmax。这时 softmax 的梯度 $P_{t,s}(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'})$ 几乎为 0，q、k 收不到梯度。所以乘上 $1/\sqrt{d_h}$，把标准差拉回 1。
+      $$\tilde S^{(0)}={{ Ss[0] | matrix:2 }}$$
     backward:
-      label: '$\partial\viz{S}$'
-      title: 穿过缩放
-      text: 局部导数是 $1/\sqrt{d_h}$。
+      label: '$\partial S$'
+      title: '$\frac{\partial\ell}{\partial S}$'
+      text: |
+        局部导数是常数 $1/\sqrt{d_h}$。
+        $$\frac{\partial\ell}{\partial S^{(0)}}={{ S[0].grad | matrix:3 }}$$
   - id: mask
     show: Sm
     label: '$+\,\viz{mask}$'
-    title: causal mask
+    title: 加上 mask
     text: |
-      <code>attn_weights = attn_weights + causal_mask</code>：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 填的是这个 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，取 exp 以后和 $-\infty$ 一样是 0，这里写成 $-\infty$。
-      $$\viz{mask}={{ mask | matrix:2 }}$$
+      <code>attn_weights = attn_weights + attention_mask</code>。被 mask 的格子加上 dtype 的最小值，下一步取 exp 后为 0，相当于 softmax 只在允许的位置上归一化。mask 对所有 head 相同，按广播相加。
+      $$\viz{mask}={{ mask | matrix:2 }},\qquad \bar S^{(0)}={{ Sm[0] | matrix:2 }}$$
     backward:
-      label: '$\partial\viz{Ss}$'
-      title: 穿过 mask
-      text: 加常量，梯度原样传下去。
+      label: '$\partial\tilde S$'
+      title: '$\frac{\partial\ell}{\partial \tilde S}$'
+      text: 加常量的局部导数是 1，梯度原样传下去。mask 没有梯度。
   - id: exp
     show: ex
     label: '$\exp$'
-    title: softmax：取 exp
-    text: HF 调用的是 <code>softmax(attn_weights, dim=-1, dtype=torch.float32)</code>，先转成 float32 再算。softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。kernel 会先给每一行减去这一行的最大值再取 exp，防止溢出；这一项在结果和梯度里都抵消，这里按定义画。
+    title: softmax：转成 float32 并取 exp
+    text: |
+      <code>nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32)</code> 先把分数转成 float32，再做 softmax。按定义，softmax 是取 exp、按行求和、相除。被 mask 的格子 $e^{\bar S}=0$。
+
+      kernel 实际算的是 $e^{\bar S_{t,s}-m_t}$，$m_t$ 是这一行的最大值。减去它以后指数都不超过 0，exp 不会溢出；又因为分子分母同乘 $e^{-m_t}$，比值不变：
+      $$\frac{e^{\bar S_{t,s}-m_t}}{\sum_{s'}e^{\bar S_{t,s'}-m_t}}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}$$
+      $$\mathrm{ex}^{(0)}={{ ex[0] | matrix:3 }}$$
     backward:
-      label: '$\partial\viz{Sm}$'
-      title: 穿过 exp
-      text: exp 的导数是它自己。
+      label: '$\partial\bar S$'
+      title: '$\frac{\partial\ell}{\partial \bar S}$'
+      text: |
+        exp 的局部导数是它自己。把相除、求和、exp 三步连起来，记 $g=\frac{\partial\ell}{\partial P}$：
+        $$\frac{\partial\ell}{\partial \mathrm{ex}_{t,s}}=\frac{g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}}{Z_t},\qquad \frac{\partial\ell}{\partial \bar S_{t,s}}=\mathrm{ex}_{t,s}\frac{\partial\ell}{\partial \mathrm{ex}_{t,s}}=P_{t,s}\Big(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}\Big)$$
+        被 mask 的格子 $P=0$，梯度为 0。每行的梯度之和为 0，因为给一行分数同时加一个常数不改变 softmax。
+        $$\frac{\partial\ell}{\partial \bar S^{(0)}}={{ Sm[0].grad | matrix:3 }}$$
   - id: sum
     show: Z
-    label: '$\viz{Z}$'
-    title: 按行求和
+    label: '$Z$'
+    title: softmax：按行求和
     text: |
-      每个 head、每一行各有一个 $Z$。
+      每个 head、每一行求和，$Z_t=\sum_{s}\mathrm{ex}_{t,s}$，是下一步的分母。
       $$Z^{(0)}={{ Z[0] | matrix:3 }}$$
     backward:
-      label: '$\partial\viz{ex}$'
-      title: 传回 ex
-      text: 求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
+      label: '$\partial\,\mathrm{ex}$'
+      title: '$\frac{\partial\ell}{\partial \mathrm{ex}}$'
+      text: |
+        求和的局部导数是 1，$\frac{\partial\ell}{\partial Z_t}$ 复制给这一行的每个 $\mathrm{ex}_{t,s}$，再和相除那一步的直连相加。
+        $$\frac{\partial\ell}{\partial \mathrm{ex}^{(0)}}={{ ex[0].grad | matrix:3 }}$$
   - id: div
     show: P
-    label: '$\viz{P}$'
-    title: 注意力权重
+    label: '$P$'
+    title: softmax：相除得到注意力权重
     text: |
-      每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。<code>.to(query.dtype)</code> 把结果转回 q 的 dtype。HF 接着做 <code>nn.functional.dropout(attn_weights, p=dropout)</code>；Qwen3 的 attention_dropout 是 0，dropout 什么也不做，图里没有这一步。
+      $P_{t,s}=\mathrm{ex}_{t,s}/Z_t$，每一行是位置 $t$ 在可见位置上的分布，非负，和为 1。随后 <code>.to(query.dtype)</code> 转回 q 的 dtype。HF 接着调用 dropout，<code>attention_dropout</code> 为 0 或处于推理时它不改变数值，所以这一页省去这一步。
       $$P^{(0)}={{ P[0] | matrix:3 }}$$
     backward:
-      label: '$\partial\viz{ex},\ \partial\viz{Z}$'
-      title: softmax 反向：穿过相除
-      text: $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$；同时 $Z_t$ 连到这一行每个 $P$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$。
+      label: '$\partial\,\mathrm{ex},\ \partial Z$'
+      title: '$\frac{\partial\ell}{\partial \mathrm{ex}},\ \frac{\partial\ell}{\partial Z}$'
+      text: |
+        $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$。$Z_t$ 连到这一行每个 $P_{t,s}$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$，相加得 $\frac{\partial\ell}{\partial Z_t}=-\frac{1}{Z_t}\sum_sP_{t,s}g_{t,s}$。
+        $$\frac{\partial\ell}{\partial Z^{(0)}}={{ Z[0].grad | matrix:3 }}$$
   - id: pv
     show: attn_output
-    label: '$\viz{P}\viz{value_states}$'
-    title: P v
+    label: '$P\viz{v}$'
+    title: 加权平均 v
     text: |
-      <code>attn_output = torch.matmul(attn_weights, value_states)</code>：每个 head 用注意力权重对 v 的各行做加权平均。随后的 <code>attn_output.transpose(1, 2).contiguous()</code> 把 head 维换回位置维后面，只是换轴和复制，数值不变。
-      $${\viz{attn_output}}^{(0)}={{ attn_output[0] | matrix:2 }}$$
+      <code>torch.matmul(attn_weights, value_states)</code>：$\mathbf{o}^{(h)}_t=\sum_sP^{(h)}_{t,s}\mathbf{v}^{(h)}_s$。$P$ 的每行和为 1，所以输出是可见位置的 v 的加权平均。
+      $$\mathbf{o}^{(0)}={{ attn_output[0] | matrix:2 }}$$
+      <code>attn_output.transpose(1, 2).contiguous()</code> 把形状从 $H\times T\times d_h$ 换回 $T\times H\times d_h$。transpose 只改变步长，contiguous 按新的顺序复制一次数据，数值不变，局部导数是 1。
+      $$\viz{o}={{ o | matrix:2 }}$$
     backward:
-      label: '$\partial\viz{P},\ \partial\viz{value_states}$'
-      title: 传到 P 和 v
-      text: $\partial\ell/\partial P=\frac{\partial\ell}{\partial\mathbf{o}}\mathbf{v}^{\top}$，$\partial\ell/\partial\mathbf{v}=P^{\top}\frac{\partial\ell}{\partial\mathbf{o}}$。
+      label: '$\partial P,\ \partial{\viz{v}}_{\mathrm{rep}}$'
+      title: '$\frac{\partial\ell}{\partial P},\ \frac{\partial\ell}{\partial {\viz{v}}_{\mathrm{rep}}}$'
+      text: |
+        把梯度的轴换回去。
+        $$\frac{\partial\ell}{\partial P}=\frac{\partial\ell}{\partial \mathbf{o}}\,\mathbf{v}^{\top},\qquad \frac{\partial\ell}{\partial \mathbf{v}}=P^{\top}\frac{\partial\ell}{\partial \mathbf{o}}$$
+        $P^{\top}$ 是上三角，所以 $\mathbf{v}_s$ 只从 $t\ge s$ 的输出收到梯度。
+        $$\frac{\partial\ell}{\partial P^{(0)}}={{ P[0].grad | matrix:3 }}$$

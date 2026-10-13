@@ -16,67 +16,69 @@ tex:
 formula: '\step{sub}{\viz{out}=\viz{x}-}\step{log}{\log}\step{sum}{\sum_{j}}\step{exp}{e^{x_{j}}}'
 fold:
   label: '$\viz{out}$'
-  title: log_softmax（已折叠）
+  title: log_softmax
   text: |
-    取 exp、按行求和、取 log、相减收在盒子里，对应一次 <code>F.log_softmax(x, -1)</code>。每一行只和自己那一行有关。
+    每一行只和自己有关。
     $$\viz{out}={{ out | matrix:3 }}$$
   backward:
     label: '$\partial\viz{x}$'
-    title: 穿过 log_softmax（已折叠）
+    title: '$\frac{\partial\ell}{\partial \viz{x}}$'
     text: |
-      两条路合起来，$\frac{\partial\ell}{\partial x_{i}}=g_{i}-p_{i}\sum_{j}g_{j}$，其中 $g=\partial\ell/\partial\viz{out}$，$p=e^{\viz{out}}$。
-      $$\frac{\partial\ell}{\partial\viz{x}}={{ x.grad | matrix:3 }}$$
+      两路合起来，记 $g=\frac{\partial\ell}{\partial \viz{out}}$，$p=e^{\viz{out}}$：
+      $$\frac{\partial\ell}{\partial x_i}=g_i-p_i\sum_jg_j,\qquad \frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
 
 steps:
   - id: exp
     show: ex
-    label: '$\viz{ex}$'
+    label: '$e^{\viz{x}}$'
     title: log_softmax：取 exp
     text: |
-      log_softmax 的定义是 $\log p_{i}=x_{i}-\log\sum_{j}e^{x_{j}}$，这里按定义拆成四步：取 exp、按行求和、取 log、相减。PyTorch 的 kernel 会先减去每一行的最大值 $m$ 再取 exp，算的是 $x_{i}-m-\log\sum_{j}e^{x_{j}-m}$，防止溢出；$m$ 在式子里正好抵消，结果和梯度都不变，这一页的数值也远不会溢出，所以按定义画。
+      softmax 把一行 logits 变成概率 $p_i=e^{x_i}/\sum_je^{x_j}$。损失要用的是 $\log p_i$，直接写成
+      $$\log p_i=x_i-\log\sum_je^{x_j}$$
+      先算 $p$ 再取 log 的话，$p_i$ 很小时会下溢为 0，log 后变成 $-\infty$，所以直接按这个式子算。kernel 还先减去每行最大值 $m$ 来避免 exp 溢出，$\log\sum_je^{x_j}=m+\log\sum_je^{x_j-m}$，结果和梯度都不变。
       $$\viz{ex}={{ ex | matrix:3 }}$$
     backward:
       label: '$\partial\viz{x}$'
-      title: log_softmax：穿过 exp
+      title: '$\frac{\partial\ell}{\partial \viz{x}}$'
       text: |
-        exp 的导数是它自己。这一条和相减那一步的直连那条在 $\viz{x}$ 上相加。
-        $$\frac{\partial\ell}{\partial\viz{x}}={{ x.grad | matrix:3 }}$$
+        exp 的局部导数是它自己。这一路和相减那一步的直连在 $\viz{x}$ 上相加。
+        $$\frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
   - id: sum
     show: S
     label: '$\viz{S}$'
     title: log_softmax：按行求和
     text: |
-      每一行各有一个 $S$，是这一行所有 exp 的和。
+      $S=\sum_je^{x_j}$，每一行一个。
       $$\viz{S}={{ S | matrix:3 }}$$
     backward:
       label: '$\partial\viz{ex}$'
-      title: log_softmax：穿过求和
+      title: '$\frac{\partial\ell}{\partial \viz{ex}}$'
       text: |
-        求和的局部导数是 1，$S$ 的梯度复制给这一行的每个 $e^{x}$。
-        $$\frac{\partial\ell}{\partial\viz{ex}}={{ ex.grad | matrix:3 }}$$
+        局部导数是 1，$\frac{\partial\ell}{\partial S}$ 复制给这一行的每个 $e^{x_j}$。
+        $$\frac{\partial\ell}{\partial \viz{ex}}={{ ex.grad | matrix:3 }}$$
   - id: log
     show: LSE
     label: '$\viz{LSE}$'
     title: log_softmax：取 log
     text: |
-      $\log S$ 就是 log-sum-exp，每一行一个。
+      $\mathrm{LSE}=\log S$，即 log-sum-exp。它是 $\max_jx_j$ 的光滑近似：$\max_jx_j\le\mathrm{LSE}\le\max_jx_j+\log n$。
       $$\viz{LSE}={{ LSE | matrix:3 }}$$
     backward:
       label: '$\partial\viz{S}$'
-      title: log_softmax：穿过 log
+      title: '$\frac{\partial\ell}{\partial \viz{S}}$'
       text: |
-        log 的局部导数是 $1/S$。
-        $$\frac{\partial\ell}{\partial\viz{S}}={{ S.grad | matrix:3 }}$$
+        局部导数是 $1/S$。
+        $$\frac{\partial\ell}{\partial \viz{S}}={{ S.grad | matrix:3 }}$$
   - id: sub
     show: out
     label: '$\viz{out}$'
     title: log_softmax：减去 LSE
     text: |
-      每个元素减去自己那一行的 LSE。$e^{\log p}$ 每一行加起来是 1。
+      每个元素减去这一行的 LSE，得到 $\log p_i$，所以每一行的 $e^{\log p_i}$ 之和为 1。
       $$\viz{out}={{ out | matrix:3 }}$$
     backward:
       label: '$\partial\viz{x},\ \partial\viz{LSE}$'
-      title: log_softmax：穿过相减
+      title: '$\frac{\partial\ell}{\partial \viz{x}},\ \frac{\partial\ell}{\partial \viz{LSE}}$'
       text: |
-        $\viz{x}$ 的直连那条局部导数是 1，原样拿到 $\partial\ell/\partial\viz{out}$。LSE 连到这一行的每个元素，局部导数是 $-1$，所以它收到这一行梯度之和的相反数。
-        $$\frac{\partial\ell}{\partial\viz{LSE}}={{ LSE.grad | matrix:3 }}$$
+        $\viz{x}$ 的直连局部导数是 1；LSE 连到这一行的每个元素，局部导数是 $-1$，收到这一行梯度之和的相反数。
+        $$\frac{\partial\ell}{\partial \viz{LSE}}={{ LSE.grad | matrix:3 }}$$

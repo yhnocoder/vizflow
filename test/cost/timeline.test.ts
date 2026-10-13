@@ -154,7 +154,7 @@ describe('costTimeline on the Qwen3 page', () => {
     const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;
     expect(bytesOf(last, 'param_grad')).toBe(bytesOf(last, 'param'));
     expect(bytesOf(last, 'saved') + bytesOf(last, 'grad') + bytesOf(last, 'temp')).toBe(0);
-    expect([steps.list[t.peakStep].dir, steps.list[t.peakStep].title]).toEqual(['backward', 'log_softmax：穿过求和']);
+    expect([steps.list[t.peakStep].dir, steps.list[t.peakStep].title]).toEqual(['backward', '$\\frac{\\partial\\ell}{\\partial e^{\\mathbf{z}_{\\mathrm{fp32}}}}$']);
     expect(t.backward / t.forward).toBeCloseTo(2, 1);
   });
 });
