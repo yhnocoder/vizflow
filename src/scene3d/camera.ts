@@ -131,8 +131,7 @@ export class CameraRig {
     return { lo, hi };
   }
 
-  private followSide(zoom: number, keys: Renderable[]): number {
-    const points = allPoints(this.c);
+  private followSide(zoom: number, keys: Renderable[], points: Vec3[]): number {
     const scene = this.sideRange(points);
     const middle = center(points).dot(this.sideAxis());
     const half = this.halfWidth() / zoom - FOLLOW_SIDE_ROOM;
@@ -141,8 +140,8 @@ export class CameraRig {
     return Math.min(Math.max((step.lo + step.hi) / 2, scene.lo + half), scene.hi - half);
   }
 
-  private sideZoom(keys: Renderable[], cap: number): number {
-    const scene = this.sideRange(allPoints(this.c));
+  private sideZoom(keys: Renderable[], cap: number, points: Vec3[]): number {
+    const scene = this.sideRange(points);
     const width = 2 * (this.halfWidth() - FOLLOW_SIDE_ROOM);
     if (cap === 1 && scene.hi - scene.lo <= width) return 1;
     const step = this.sideRange(framingPoints(keys));
@@ -188,16 +187,17 @@ export class CameraRig {
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
+    const points = allPoints(c);
     if (keys.length === 0) {
       const zoom = Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN));
-      return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys), zoom };
+      return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys, points), zoom };
     }
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
     const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
-    const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap));
-    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys), zoom };
+    const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap, points));
+    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom };
   }
 
   placeCamera(): void {

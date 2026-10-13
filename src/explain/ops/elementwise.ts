@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
 import { broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -175,12 +175,17 @@ export const transposeExplain: OpExplain = {
   },
 };
 
+function whereLocal(ctx: OpCtx, out: number[], arg: number): number {
+  const keep = operand(ctx, 0, out) !== 0;
+  return (arg === 1 && keep) || (arg === 2 && !keep) ? 1 : 0;
+}
+
 export const whereExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, out, arg) => (arg === 1 && operand(ctx, 0, out) !== 0 ? 1 : 0),
+  local: (ctx, out, arg) => whereLocal(ctx, out, arg),
   tex: {
-    forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${scalarTex(s.attrs)})`,
-    local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
+    forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${s.in[2] ?? scalarTex(s.attrs)})`,
+    local: (s) => String(whereLocal(s.ctx, s.outIndex, s.arg)),
   },
 };
 
@@ -219,6 +224,13 @@ export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0')
 export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
 export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
 export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');
+export const ltExplain = binary((a, b) => `\\mathbf{1}[${a}<${b}]`, () => 0, () => '0');
+export const bitwiseOrExplain = binary((a, b) => `${a}\\vee ${b}`, () => 0, () => '0');
+export const copysignExplain = binary(
+  (a, b) => `\\operatorname{copysign}(${a},${b})`,
+  (a, b, arg) => (arg === 0 ? copysignLocal(a, b) : 0),
+  (a, b, arg) => (arg === 0 ? `\\operatorname{sign}(${a})\\operatorname{sign}(${b})` : '0'),
+);
 export const absExplain = unary((a) => `\\lvert ${a}\\rvert`, (x) => Math.sign(x), (x) => `\\operatorname{sign}(${x})`);
 export const signExplain = unary((a) => `\\operatorname{sign}(${a})`, () => 0, () => '0');
 const minOf = (attrs: object) => (attrs as { min: number }).min;

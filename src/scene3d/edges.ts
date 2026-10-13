@@ -1,4 +1,5 @@
-import { type Graph, type Node, moduleJacobian } from '../autograd';
+import type { Graph, Node } from '../autograd';
+import { moduleJacobians } from '../autograd/jacobian';
 import { type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
@@ -36,21 +37,21 @@ export interface DrawnEdge {
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
 
 const crossRowCache = new WeakMap<object, Set<Node>>();
-const jacobianCache = new WeakMap<Graph, { version: number; byPair: Map<string, number[][]> }>();
+const jacobianCache = new WeakMap<Graph, { version: number; byOutput: Map<string, Map<Node, number[][]>> }>();
 
 function cachedJacobian(g: Graph, module: StepModule, input: Node, output: Node): number[][] {
   let cache = jacobianCache.get(g);
   if (cache === undefined || cache.version !== g.version) {
-    cache = { version: g.version, byPair: new Map() };
+    cache = { version: g.version, byOutput: new Map() };
     jacobianCache.set(g, cache);
   }
-  const key = `${module.id}:${input.id}:${output.id}`;
-  let J = cache.byPair.get(key);
-  if (J === undefined) {
-    J = moduleJacobian(g, module, input, output);
-    cache.byPair.set(key, J);
+  const key = `${module.id}:${output.id}`;
+  let byInput = cache.byOutput.get(key);
+  if (byInput === undefined) {
+    byInput = moduleJacobians(g, module, module.inputs, output);
+    cache.byOutput.set(key, byInput);
   }
-  return J;
+  return byInput.get(input)!;
 }
 
 function crossRowOps(c: SceneController): Set<Node> {
@@ -172,7 +173,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   for (const pair of levels.io) {
     const inR = renderableOf(c, pair.input);
     const outR = renderableFor(c, pair.outputBlock);
-    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block)) continue;
+    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block) || (inR.far && outR.far)) continue;
     const J = cachedJacobian(c.g, pair.module, pair.input, pair.output);
     const grad = pair.output.grad;
     J.forEach((row, oi) => {
@@ -201,14 +202,15 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     if (origR === undefined || copyR === undefined || !shown(link.original) || !shown(link.copy) || (origR.far && copyR.far)) continue;
     const node = link.original.node;
     const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
-    link.copy.elements.forEach((element) => {
-      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index: element.index }, to: { node, index: element.index } };
+    link.copy.elements.forEach((element, i) => {
+      const index = link.original.elements[i].index;
+      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index }, to: { node, index } };
       drawn.push({
         edge,
         fromNode: node,
         toNode: node,
         contract: false,
-        endpoints: () => [anchorOut(c, node, element.index, origR)!, anchorIn(c, node, element.index, copyR)!],
+        endpoints: () => [anchorOut(c, node, index, origR)!, anchorIn(c, link.copy.node, element.index, copyR)!],
         flat: false,
         link: true,
         points: [],

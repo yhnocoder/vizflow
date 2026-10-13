@@ -37,7 +37,10 @@ import {
   absOp,
   signOp,
   clampMinOp,
+  ltOp,
+  bitwiseOrOp,
   logicalNotOp,
+  copysignOp,
 } from './elementwise';
 import {
   catOp,
@@ -62,6 +65,8 @@ import {
   topkMaskOp,
   unsqueezeOp,
   viewOp,
+  sortOp,
+  indexPutOp,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { groupedLinearOp, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
@@ -109,6 +114,10 @@ export interface NonzeroStaticOptions extends OpOptions {
 export interface SolveTriangularOptions extends OpOptions {
   upper?: boolean;
   unitriangular?: boolean;
+}
+
+export interface PadOptions extends OpOptions {
+  value?: number;
 }
 
 export interface TriuOptions extends OpOptions {
@@ -169,7 +178,7 @@ export interface BuiltinOps {
   repeat(input: Node, ...sizes: (number | string)[]): Node;
   cummax(input: Node, dim: number, options?: OpOptions): Node;
   topk_mask(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
-  where(condition: Node, input: Node, other: number, options?: OpOptions): Node;
+  where(condition: Node, input: Node, other: Node | number, options?: OpOptions): Node;
   greater(input: Node, other: Node | number, options?: OpOptions): Node;
   topk_indices(input: Node, k: number | string, dim?: number, options?: OpOptions): Node;
   one_hot(input: Node, num_classes: number | string, options?: OpOptions): Node;
@@ -182,17 +191,22 @@ export interface BuiltinOps {
   grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
   cumsum(input: Node, dim: number, options?: OpOptions): Node;
   unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
-  pad(input: Node, pad: (number | string)[], options?: OpOptions): Node;
+  pad(input: Node, pad: (number | string)[], options?: PadOptions): Node;
   pad(input: Node, ...pad: (number | string)[]): Node;
   triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
   masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
-  logical_not(input: Node, options?: OpOptions): Node;
-  scatter(input: Node, dim: number, index: Node, value: number, options?: OpOptions): Node;
   expand(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
   expand(input: Node, ...sizes: (number | string)[]): Node;
   reshape(input: Node, shape: (number | string)[], options?: OpOptions): Node;
   reshape(input: Node, ...shape: (number | string)[]): Node;
   solve_triangular(A: Node, B: Node, options: SolveTriangularOptions): Node;
+  lt(input: Node, other: Node | number, options?: OpOptions): Node;
+  bitwise_or(input: Node, other: Node | number, options?: OpOptions): Node;
+  logical_not(input: Node, options?: OpOptions): Node;
+  copysign(input: Node, other: Node | number, options?: OpOptions): Node;
+  sort(input: Node, dim?: number, options?: OpOptions): Node;
+  scatter(input: Node, dim: number, index: Node, src: Node | number, options?: OpOptions): Node;
+  index_put(input: Node, mask: Node, values: Node, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -261,8 +275,13 @@ export const builtinOps: readonly AnyOpDef[] = [
   clampMinOp,
   repeatOp,
   cummaxOp,
+  ltOp,
+  bitwiseOrOp,
   logicalNotOp,
+  copysignOp,
+  sortOp,
   scatterOp,
+  indexPutOp,
   expandOp,
   reshapeOp,
 ];

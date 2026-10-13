@@ -1,0 +1,488 @@
+title: DeepSeek V4.1：图片、Engram 和三种压缩注意力，从像素和 token 到损失
+lede: DeepSeek V4.1 在 V4 的基础上多了三样东西。一张图片先切成 patch，经过 ViT 和 aligner 变成几个图片 token，插进文字序列里。一部分层在注意力之前多一个 Engram：按每个位置结尾的 n-gram 查一张哈希表，把查到的向量门控后写进 residual stream。压缩注意力分成三种：自己压缩 KV 并且自己选条目的层、只重新选条目的层、直接沿用前面某一层选好的条目的层。这一页从像素和 token id 开始，经过 ViT、aligner、6 个展开的层和 3 个占位盒子、final norm、head 和 nll_loss 得到损失，前向和反向都逐步画出来，每一个运算都按参考实现的写法画成单独的节点。参考实现里的 FP8、FP4 量化不画，说明见总览。点两侧的大括号可以折叠或展开一个模块。
+hint: 拖动旋转 · 右键拖动平移 · Ctrl + 滚轮缩放 · 点 log p 的柱子换标签 · 反向时悬停连线
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  LogSoftmax: vizflow/nn/log-softmax
+  NLLLoss:    vizflow/nn/nll-loss
+  RMSNorm:    vizflow/nn/rmsnorm
+  NgramHash:  vizflow/nn/ngram-hash
+  ViT:        ./deepseek_v4_1/vit.yaml
+  Aligner:    ./deepseek_v4_1/aligner.yaml
+  Block:      ./deepseek_v4_1/block.yaml
+dims: { T: 13, d: 4, V: 10, H: 2, D: 6, rd: 4, rq: 3, g: 2, dg: 2, sw: 4, HI: 2, cI: 6, kI: 2, B: 2, bs: 2, N: 2, Ne: 4, K: 2, f: 2, nmax: 3, Hg: 2, dgr: 2, Le: 1, Vg: 36, dv: 4, Hv: 1, fv: 4, p: 2, r: 3, nh: 4, nw: 2 }
+dtype: bf16
+real: { name: DeepSeek-V4.1-Flash, d: 5120, V: 129280, H: 64, D: 512, rd: 64, rq: 1280, g: 8, dg: 1024, sw: 128, HI: 32, cI: 128, kI: 512, B: 2048, bs: 8, N: 4, Ne: 384, K: 6, f: 2304, nmax: 4, Hg: 8, dgr: 256, dv: 1024, Hv: 16, fv: 2816, r: 3 }
+vocab: ['<bos>', '<eos>', '<pad>', The, the, cat, sat, 'on', mat, '<image>']
+init: { seed: 20261011 }
+sequence: { tokens: ['<bos>', The, cat, '<image>', '<image>', '<image>', '<image>', '<image>', '<image>', the, cat, sat, 'on', mat], input: ids, label: y }
+inputs:
+  pixels:
+    value: [[[120, 216, 83], [11, 90, 30], [151, 43, 80], [243, 162, 231]], [[54, 242, 237], [110, 136, 199], [114, 188, 188], [203, 186, 200]], [[160, 3, 40], [8, 98, 157], [55, 85, 50], [127, 52, 1]], [[96, 204, 175], [127, 33, 155], [18, 107, 118], [179, 197, 162]], [[117, 54, 186], [81, 1, 158], [2, 146, 150], [239, 62, 34]], [[227, 176, 225], [178, 12, 27], [9, 206, 203], [6, 0, 93]], [[244, 190, 5], [197, 104, 171], [62, 246, 31], [235, 194, 149]], [[182, 126, 201], [5, 101, 136], [193, 101, 84], [70, 23, 42]]]
+    dtype: fp32
+  types:
+    value: [-1, -1, -1, 0, 1, 2, 1, 2, 3, -1, -1, -1, -1]
+    dtype: int64
+weights:
+  E:             { shape: [V, d] }
+  image_start:   { shape: [d], tex: '\mathbf{e}_{\mathrm{start}}' }
+  image_newline: { shape: [d], tex: '\mathbf{e}_{\mathrm{nl}}' }
+  image_end:     { shape: [d], tex: '\mathbf{e}_{\mathrm{end}}' }
+  W:             { shape: [V, d], dtype: fp32 }
+buffers:
+  pre_first: { value: 'ones(T, 1)', dtype: fp32, tex: '\mathbf{1}' }
+  pre_rest:  { value: 'zeros(T, N - 1)', dtype: fp32, tex: '\mathbf{0}' }
+overview:
+  label: 总览
+  title: 整张图
+  text: |
+    这一页从像素和 token id 一直画到损失。图片是 $8\times4$ 个像素，切成 $\of{nh}\times\of{nw}$ 个 $\of{p}\times\of{p}$ 的 patch，经过 ViT 后由 aligner 每 $\of{r}\times\of{r}$ 个 patch 合成一个 token，得到 2 个图片 token。序列里 <code>&lt;image&gt;</code> 占的 6 个位置依次是 [START]、IMAGE、[NEWLINE]、IMAGE、[NEWLINE]、[END]：两个 IMAGE 位置放 aligner 的输出，其余位置放学出来的向量。
+    DeepSeek-V4.1-Flash 有 40 层，按注意力分四种。第 0、1 层只有滑动窗口注意力。第 2 到 19 层每 2 个 token 压成一个条目；其中第 2、8、14 层自己压缩 KV、自己用 indexer 选条目（这一页叫 Full 层），其余 15 层沿用前面最近的 Full 层压好的 KV 和选好的条目（Reuse 层）。第 20 到 39 层每个 token 一个条目；第 20 层是 Full 层，并且从它的 indexer 分数里挑出候选块；第 24、28、32、36 层沿用第 20 层的 KV，只在候选块里重新选条目（Reindex 层）；其余 15 层是 Reuse 层。第 1 层和第 14 层在注意力之前有 Engram。真实模型的第 40 到 42 层是给投机解码用的 MTP 层，不参与这一页的损失。
+    这一页展开第 0 层（滑动窗口）、第 1 层（Engram）、第 2 层（Full，$m=2$）、第 20 层（Full，$m=1$，挑候选块）、第 24 层（Reindex）和第 25 层（Reuse），每种机制都画一次；第 3 到 19 层、第 21 到 23 层、第 26 到 39 层收成占位盒子，按恒等映射处理。尺寸用 $d=\of{d}$、$V=\of{V}$、$T=\of{T}$；注意力 $\of{H}$ 个 head，每个宽 $D=\of{D}$，最后 $\of{rd}$ 维做 RoPE；滑动窗口 $\of{sw}$；indexer 每个位置选 $\of{kI}$ 个条目；MoE 有 $\of{Ne}$ 个路由专家，每个位置选 $\of{K}$ 个。
+    参考实现的 config.json 写的是 <code>"dtype": "fp8"</code> 和 <code>"expert_dtype": "fp4"</code>：Linear 的权重存成 FP8，路由专家的权重存成 FP4，各带分块的 scale；激活是 bf16，乘这些权重之前先用 <code>act_quant</code> 量化成 FP8。另外有四处量化在 <code>dtype</code> 是 bf16 时也执行：滑动窗口的 kv 量化成 FP8，压缩 KV、indexer 的 key 和 query 量化成 FP4。这一页不画这些量化：页面的 dtype 写 bf16，指激活的 dtype，权重也按 bf16 写，数值按 float64 算。所以这一页的数值和真实模型相差量化误差，显存面板里参数的字节数按 bf16 算，比真实模型多。四处量化的位置在对应的 apply_rotary_emb 盒子里说明。
+    参考实现用 <code>torch.topk</code> 选专家、选压缩条目和候选块。分数相等时 <code>torch.topk</code> 不保证先选哪一个；这一页在分数相等时先选编号小的，相当于把 <code>torch.topk</code> 换成 <code>x.sort(dim=dim, descending=True, stable=True)</code> 后取前 $k$ 个，对照用的 PyTorch 结果也做了同样的替换。分数各不相同时两种写法选出的编号相同。
+    $$\ell=\frac{1}{T}\sum_{t=1}^{T}-\log\operatorname{softmax}(\mathbf{z}_t)_{y_t}={{loss:3}}$$
+  backward:
+    label: 总览
+    title: 反向总览
+    text: |
+      整条反向路径一起显示。梯度从损失一路传回 ViT 的 patch_embed 和 embedding 表。indexer 和挑选候选块只决定每个位置看哪些压缩条目，它们的输出是位置编号，top-k 不可导，这里没有梯度；MoE 里挑选专家的那部分计算、n-gram 哈希和 token 类型的判断同样没有梯度。
+      $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+leaves:
+  label: 输入
+  title: 输入和参数
+  text: |
+    输入是像素、token id 和每个位置的类型：文字是 $-1$，图片里的 [START]、IMAGE、[NEWLINE]、[END] 分别是 0、1、2、3。类型由图片的网格决定，参考实现的 <code>image_token_types</code> 生成它。其余都是参数和常量。ViT 有 patch_embed、每个 block 的两个 RMSNorm、wqkv、wo、MLP 的 w1、w2；aligner 有两个带偏置的 Linear；语言模型每层有两组 mHC 参数、注意力的 wq_a、wq_b、wkv、wo_a、wo_b 和 sink，压缩层另有 compressor 和 indexer；MoE 的 gate 有 $W_r$ 和两组偏置，每个专家有 w1、w2、w3。Engram 有一张哈希表和一个投影。哈希用的乘数、质数和偏移是常量。
+    $$x=({{ids[0]}},{{ids[1]}},{{ids[2]}},\dots),\qquad y=({{y[0]}},{{y[1]}},{{y[2]}},\dots)$$
+
+body:
+  - image_processor:
+      title: image_processor
+      subtitle: load_image，像素切成 patch
+      body:
+        - chw:     { op: 'permute(pixels, 2, 0, 1)', tex: '\mathbf{I}^{\mathrm{chw}}' }
+        - unit:    { op: chw / 255, tex: '\mathbf{I}/255' }
+        - centered: { op: unit - 0.5, tex: '\mathbf{I}/255-0.5' }
+        - scaled:  { op: centered / 0.5, tex: '\hat{\mathbf{I}}' }
+        - scaled_c: { op: identity(scaled), tex: '\hat{\mathbf{I}}_{\mathrm{bf16}}', dtype: bf16 }
+        - grid:    { op: 'view(scaled_c, 3, nh, p, nw, p)', tex: '\hat{\mathbf{I}}^{\mathrm{grid}}' }
+        - moved:   { op: 'permute(grid, 1, 3, 0, 2, 4)', tex: '\hat{\mathbf{I}}^{\mathrm{perm}}' }
+        - patches: { op: 'view(moved, nh * nw, 3, p, p)', tex: '\mathbf{P}' }
+  - image_mask:  { op: 'ge(types, 0)', tex: '\mathbf{m}^{\mathrm{img}}' }
+  - engram_mask: { op: 'logical_not(image_mask)', tex: '\mathbf{m}^{\mathrm{eng}}' }
+  - engram_hash:
+      use: NgramHash
+      title: engram_hash
+      subtitle: NgramHashState，每个位置的 n-gram 哈希
+      params: { nmax: nmax, pad: 2, V: V, Le: Le, Hg: Hg }
+      inputs: { ids: ids, mask: engram_mask }
+      outputs: { hashes: hashes }
+  - e: { op: 'embedding(ids, E)', tex: '\mathbf{e}' }
+  - merge:
+      title: merge_image_embeddings
+      subtitle: 图片 token 放进序列
+      body:
+        - is_start:   { op: 'eq(types, 0)', tex: '[\,\mathrm{type}=\mathrm{START}\,]' }
+        - e_start:    { op: 'index_put(e, is_start, image_start)', tex: '\mathbf{e}^{(1)}' }
+        - is_end:     { op: 'eq(types, 3)', tex: '[\,\mathrm{type}=\mathrm{END}\,]' }
+        - e_end:      { op: 'index_put(e_start, is_end, image_end)', tex: '\mathbf{e}^{(2)}' }
+        - is_newline: { op: 'eq(types, 2)', tex: '[\,\mathrm{type}=\mathrm{NL}\,]' }
+        - e_newline:  { op: 'index_put(e_end, is_newline, image_newline)', tex: '\mathbf{e}^{(3)}' }
+        - vision:
+            use: ViT
+            title: vision
+            subtitle: DeepSeek-ViT
+            suffix: v
+            params: { dv: dv, nh: nh, nw: nw, Hv: Hv, fv: fv }
+            inputs: { patches: patches }
+            outputs: { out: vis }
+            tex: { out: '\mathbf{v}' }
+        - aligner:
+            use: Aligner
+            title: aligner
+            subtitle: pixel unshuffle 和两层 MLP
+            params: { d: d, nh: nh, nw: nw, r: r }
+            inputs: { x: vis }
+            outputs: { out: img }
+            tex: { out: '\mathbf{img}' }
+        - is_image:   { op: 'eq(types, 1)', tex: '[\,\mathrm{type}=\mathrm{IMAGE}\,]' }
+        - h:          { op: 'index_put(e_newline, is_image, img)', tex: '\mathbf{h}' }
+  - Xin: { op: 'repeat(unsqueeze(h, 1), 1, N, 1)', tex: '\mathbf{X}_{\mathrm{in}}' }
+  - pre_id: { op: 'cat([pre_first, pre_rest], -1)', tex: '\mathbf{pre}_{\mathrm{init}}' }
+  - layer0:
+      use: Block
+      suffix: '0'
+      title: Block
+      subtitle: 第 0 层，只有滑动窗口
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 1e4, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, hc_detail: true, attn_open: true, attn_detail: true, ffn_detail: true }
+      inputs: { X: Xin, pre_in: pre_id, image_mask: image_mask }
+      outputs: { X_out: X0, pre: pre0 }
+      tex: { X_out: '\mathbf{X}_{0}', pre: '\mathbf{pre}_{0}' }
+  - hash1: { op: 'select(hashes, 1, 0)', tex: '\mathbf{id}_{1}' }
+  - layer1:
+      use: Block
+      suffix: '1'
+      title: Block
+      subtitle: 第 1 层，Engram 和滑动窗口
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 1e4, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, has_engram: true, Vg: Vg, dgr: dgr }
+      inputs: { X: X0, pre_in: pre0, image_mask: image_mask, hash: hash1, engram_mask: engram_mask }
+      outputs: { X_out: X1, pre: pre1 }
+      tex: { X_out: '\mathbf{X}_{1}', pre: '\mathbf{pre}_{1}' }
+  - layer2:
+      use: Block
+      suffix: '2'
+      title: Block
+      subtitle: 第 2 层，Full，每 2 个 token 压成一个条目
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 160000, yarn_factor: 16, yarn_original: 65536, compress: true, m: 2, gated: true, kv_source: true, index_source: true, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, attn_open: true, index_detail: true }
+      inputs: { X: X1, pre_in: pre1, image_mask: image_mask }
+      outputs: { X_out: X2, pre: pre2 }
+      tex: { X_out: '\mathbf{X}_{2}', pre: '\mathbf{pre}_{2}' }
+  - layers_3_19:
+      title: $\cdots$ 第 3 到 19 层
+      subtitle: Block $\times$ 17
+      fixed: true
+      repeat: [{ like: layer2, count: 2 }, { like: layer25, count: 15 }, { like: layer1.engram, count: 1 }]
+      fold:
+        label: '$\of{X19}$'
+        title: $\cdots$ 第 3 到 19 层（占位）
+        text: |
+          第 3 到 19 层都每 2 个 token 压成一个条目。第 8 层和第 14 层是 Full 层，和第 2 层一样自己压缩 KV、自己选条目；其余 15 层是 Reuse 层，和第 25 层一样沿用前面最近的 Full 层的结果。第 14 层在注意力之前还有一个 Engram，和第 1 层的相同。这里把它们收成一个盒子，只用来示意：盒子里没有真实计算，\of{N} 条 stream 和 pre 都按恒等映射处理。这个盒子不能展开。
+          $$\of{X19}=\mathrm{layers}_{3..19}(\of{X2})\;\approx\;\of{X2}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{X2}$'
+          title: 穿过占位的第 3 到 19 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{X2}}={{ X2.grad | matrix:3 }}$$
+      body:
+        - X19:   { op: identity(X2), tex: '\mathbf{X}_{19}' }
+        - pre19: { op: identity(pre2), tex: '\mathbf{pre}_{19}' }
+  - layer20:
+      use: Block
+      suffix: '20'
+      title: Block
+      subtitle: 第 20 层，Full，每个 token 一个条目，挑出候选块
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 160000, yarn_factor: 16, yarn_original: 65536, compress: true, m: 1, kv_source: true, index_source: true, cand_source: true, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, attn_open: true, index_detail: true }
+      inputs: { X: X19, pre_in: pre19, image_mask: image_mask }
+      outputs: { X_out: X20, pre: pre20, C: C20, KI: K20, cand: cand20 }
+      tex: { X_out: '\mathbf{X}_{20}', pre: '\mathbf{pre}_{20}', C: '\mathbf{C}_{20}', KI: '\mathbf{K}^{I}_{20}', cand: '\mathbf{cand}_{20}' }
+  - layers_21_23:
+      title: $\cdots$ 第 21 到 23 层
+      subtitle: Block $\times$ 3
+      fixed: true
+      repeat: [{ like: layer25, count: 3 }]
+      fold:
+        label: '$\of{X23}$'
+        title: $\cdots$ 第 21 到 23 层（占位）
+        text: |
+          第 21 到 23 层是 Reuse 层，和第 25 层一样沿用第 20 层压好的 KV 和选好的条目。这里收成一个只用来示意的盒子，按恒等映射处理。
+          $$\of{X23}=\mathrm{layers}_{21..23}(\of{X20})\;\approx\;\of{X20}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{X20}$'
+          title: 穿过占位的第 21 到 23 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{X20}}={{ X20.grad | matrix:3 }}$$
+      body:
+        - X23:   { op: identity(X20), tex: '\mathbf{X}_{23}' }
+        - pre23: { op: identity(pre20), tex: '\mathbf{pre}_{23}' }
+  - layer24:
+      use: Block
+      suffix: '24'
+      title: Block
+      subtitle: 第 24 层，Reindex，只在候选块里重新选条目
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 160000, yarn_factor: 16, yarn_original: 65536, compress: true, m: 1, index_source: true, use_cand: true, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, attn_open: true, index_detail: true }
+      inputs: { X: X23, pre_in: pre23, image_mask: image_mask, C_in: C20, K_in: K20, cand_in: cand20 }
+      outputs: { X_out: X24, pre: pre24, idx: idx24 }
+      tex: { X_out: '\mathbf{X}_{24}', pre: '\mathbf{pre}_{24}', idx: '\mathbf{i}^{I}_{24}' }
+  - layer25:
+      use: Block
+      suffix: '25'
+      title: Block
+      subtitle: 第 25 层，Reuse，沿用第 24 层选好的条目
+      split: true
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: sw, theta: 160000, yarn_factor: 16, yarn_original: 65536, compress: true, m: 1, HI: HI, cI: cI, kI: kI, B: B, bs: bs, E: Ne, K: K, f: f, limit: 1.0, iters: 3, Vg: Vg, dgr: dgr, attn_open: true }
+      inputs: { X: X24, pre_in: pre24, image_mask: image_mask, C_in: C20, idx_in: idx24 }
+      outputs: { X_out: X25, pre: pre25 }
+      tex: { X_out: '\mathbf{X}_{25}', pre: '\mathbf{pre}_{25}' }
+  - layers_26_39:
+      title: $\cdots$ 第 26 到 39 层
+      subtitle: Block $\times$ 14
+      fixed: true
+      repeat: [{ like: layer24, count: 3 }, { like: layer25, count: 11 }]
+      fold:
+        label: '$\of{X39}$'
+        title: $\cdots$ 第 26 到 39 层（占位）
+        text: |
+          第 28、32、36 层是 Reindex 层，和第 24 层一样在第 20 层的候选块里重新选条目；其余 11 层是 Reuse 层，沿用前面最近的 Reindex 层选好的条目。这里收成一个只用来示意的盒子，按恒等映射处理。
+          $$\of{X39}=\mathrm{layers}_{26..39}(\of{X25})\;\approx\;\of{X25}\quad(\text{示意})$$
+        backward:
+          label: '$\partial\of{X25}$'
+          title: 穿过占位的第 26 到 39 层
+          text: |
+            $$\frac{\partial\ell}{\partial\of{X25}}={{ X25.grad | matrix:3 }}$$
+      body:
+        - X39:   { op: identity(X25), tex: '\mathbf{X}_{39}' }
+        - pre39: { op: identity(pre25), tex: '\mathbf{pre}_{39}' }
+  - hc_pre:
+      title: hc_pre
+      subtitle: 最后一次合成一条
+      body:
+        - pre_col: { op: 'view(pre39, T, N, 1)', tex: '\mathbf{pre}_{39}^{\mathrm{col}}' }
+        - weighted: { op: pre_col * X39, tex: '\mathbf{pre}\odot\mathbf{X}', dtype: fp32 }
+        - collapsed: { op: 'sum(weighted, 1)', tex: '\mathbf{x}_{\mathrm{out}}', dtype: X39 }
+  - norm:
+      use: RMSNorm
+      title: norm
+      subtitle: RMSNorm，$\epsilon=10^{-20}$
+      params:
+        eps: 1e-20
+        cast_last: true
+        name: final norm
+        intro: 从这里开始是 final norm（<code>self.norm</code>），在最后一次 hc_pre 之后、head 之前。
+        out_note: $\of{out}$ 是 head 的输入。
+      inputs: { x: collapsed }
+      outputs: { out: hn }
+      folded: true
+      fold:
+        text: |
+          计算和 ViT block 的 norm1 相同，那里展开画了每一步；$\epsilon=10^{-20}$，权重是 final norm 自己的。
+          $$\of{hn}={{ hn | matrix:2 }}$$
+  - hf: { op: identity(hn), tex: '\mathbf{h}_{\mathrm{fp32}}', dtype: fp32 }
+  - z: { op: hf @ W.T, tex: '\mathbf{z}' }
+  - log_softmax:
+      use: LogSoftmax
+      subtitle: F.log_softmax(logits, -1)
+      inputs: { x: z }
+      outputs: { out: logp }
+  - nll_loss:
+      use: NLLLoss
+      subtitle: "F.nll_loss(logp, labels)，reduction='mean'"
+      inputs: { logp: logp, y: y }
+      outputs: { loss: loss, lt: lt }
+      tex: { lt: '\ell_t' }
+      steps:
+        pick:
+          append: 参考实现只有推理代码，没有训练用的损失；这里按通常的写法，对每个位置取下一个 token 的 $-\log p$ 再求平均，图片里的位置也算在内。
+steps:
+  - id: chw
+    show: chw
+    label: '$\of{chw}$'
+    title: 通道放到最前面
+    text: |
+      <code>torch.from_numpy(np.asarray(image, dtype=np.float32)).permute(2, 0, 1)</code>：图片读进来是 (高, 宽, 通道)，这里是 $8\times4\times3$ 个 0 到 255 的整数，换成 (通道, 高, 宽)。真实模型会先把图片缩放或补边到 patch 的整数倍，这一页的图片已经是 $\of{p}$ 的整数倍。
+    backward:
+      label: 像素没有梯度
+      title: 像素是输入
+  - id: normalize
+    show: [unit, centered, scaled]
+    label: '$\of{scaled}$'
+    title: 归一化到 $[-1, 1]$
+    text: |
+      <code>.permute(2, 0, 1) / 255</code> 先缩到 $[0, 1]$，<code>x = ((x - 0.5) / 0.5).to(torch.bfloat16)</code> 里的 <code>(x - 0.5) / 0.5</code> 再减 0.5、除以 0.5，都在 float32 里算。
+      $$\of{scaled}={{ scaled | matrix:2 }}$$
+    backward:
+      label: 像素没有梯度
+      title: 像素是输入
+  - id: cast
+    show: scaled_c
+    label: '$\of{scaled_c}$'
+    title: 转成 bfloat16
+    text: |
+      同一行末尾的 <code>.to(torch.bfloat16)</code> 把归一化后的像素转成 bfloat16，之后 ViT 在 bfloat16 里算。类型转换不改变这一页的数值。
+    backward:
+      label: 像素没有梯度
+      title: 像素是输入
+  - id: patchify
+    show: [grid, moved, patches]
+    label: '$\of{patches}$'
+    title: 切成 $\of{p}\times\of{p}$ 的 patch
+    text: |
+      <code>patches = x.reshape(3, n_vit_h, p, n_vit_w, p).permute(1, 3, 0, 2, 4).reshape(n_vit_h * n_vit_w, 3, p, p)</code>：<code>n_vit_h</code> 是 $\of{nh}$，<code>n_vit_w</code> 是 $\of{nw}$，按行优先得到 $\of{nh*nw}$ 个 patch，每个 patch 是 $3\times\of{p}\times\of{p}$。
+    backward:
+      label: 像素没有梯度
+      title: 像素是输入
+  - id: masks
+    show: [image_mask, engram_mask]
+    label: '$\of{image_mask},\ \of{engram_mask}$'
+    title: 哪些位置是图片
+    text: |
+      <code>image_mask = None if token_types is None else token_types &gt;= 0</code>，<code>engram_mask = None if image_mask is None else ~image_mask</code>。图片位置不参与 n-gram，也不加 Engram；MoE 的 gate 在图片位置换用另一组偏置 bias_vl。
+    backward:
+      label: 无梯度
+      title: mask 是常量
+  - id: embed
+    show: [E, e]
+    segment: embed
+    brace: { title: embed, subtitle: ParallelEmbedding }
+    label: '$\of{e}=E[x]$'
+    title: embed
+    text: |
+      每个位置按自己的 token id 从 $E$ 里取出一行。图片的 6 个位置都是 <code>&lt;image&gt;</code>，取到的是同一行，下一步会被覆盖。
+      $$\mathbf{e}={{ e | matrix:2 }}$$
+    backward:
+      label: '$\partial E$'
+      title: 传到 embedding 表
+      text: |
+        取行的反向是把梯度加回被取到的那一行。被覆盖的位置没有梯度传回来。
+        $$\frac{\partial\ell}{\partial E}={{ E.grad | matrix:3 }}$$
+  - id: merge_start
+    show: [is_start, image_start, e_start]
+    label: '$\of{e_start}$'
+    title: '[START] 的位置放学出来的向量'
+    text: |
+      <code>span[types == IMAGE_START] = self.image_start</code>：类型是 0 的位置整行换成参数 $\mathbf{e}_{\mathrm{start}}$。参考实现只在图片那一段里比较类型，这里对整个序列比较，文字位置的类型是 $-1$，结果相同。
+      $$\of{e_start}={{ e_start | matrix:2 }}$$
+    backward:
+      label: '$\partial\mathbf{e}_{\mathrm{start}},\ \partial\of{e}$'
+      title: 被换掉的行梯度给参数
+  - id: merge_end
+    show: [is_end, image_end, e_end]
+    label: '$\of{e_end}$'
+    title: '[END] 的位置'
+    text: |
+      <code>span[types == IMAGE_END] = self.image_end</code>。
+    backward:
+      label: '$\partial\mathbf{e}_{\mathrm{end}},\ \partial\of{e_start}$'
+      title: 被换掉的行梯度给参数
+  - id: merge_newline
+    show: [is_newline, image_newline, e_newline]
+    label: '$\of{e_newline}$'
+    title: '每行末尾的 [NEWLINE]'
+    text: |
+      <code>span[types == IMAGE_NEW_LINE] = self.image_newline</code>：aligner 的网格每一行后面有一个 [NEWLINE]，这一页的网格是 2 行 1 列，所以有 2 个。所有 [NEWLINE] 用同一个向量，它的梯度是这几个位置的梯度之和。写完这三种标记以后，参考实现才调用 <code>embeds = self.encode_image(img.patches.to(h.device), img.n_vit_h, img.n_vit_w)</code>，接下来是 ViT 和 aligner。
+    backward:
+      label: '$\partial\mathbf{e}_{\mathrm{nl}},\ \partial\of{e_end}$'
+      title: 几个位置的梯度加起来
+  - id: merge_image
+    show: [is_image, h]
+    label: '$\of{h}$'
+    title: IMAGE 的位置放 aligner 的输出
+    text: |
+      <code>span[types == IMAGE] = embeds</code>：aligner 的输出按行优先依次放进类型是 1 的位置。这是图片信息进入语言模型的唯一入口。
+      $$\of{h}={{ h | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{img},\ \partial\of{e_newline}$'
+      title: 图片位置的梯度传回 aligner
+      text: |
+        $$\frac{\partial\ell}{\partial\of{img}}={{ img.grad | matrix:3 }}$$
+  - id: expand
+    show: Xin
+    segment: 复制成 $N$ 条 stream
+    brace: { title: 复制成 $N$ 条 stream, subtitle: 'unsqueeze(2).repeat' }
+    label: '$\of{Xin}$'
+    title: 复制成 \of{N} 条 stream
+    text: |
+      <code>h.unsqueeze(2).repeat(1, 1, self.hc_mult, 1)</code>：复制成 $N=\of{N}$ 条相同的 residual stream，真实模型 hc_mult $=4$。
+      $$\of{Xin}={{ Xin | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{h}$'
+      title: 各条 stream 的梯度加起来
+  - id: pre_init
+    show: [pre_first, pre_rest, pre_id]
+    label: '$\of{pre_id}$'
+    title: 第一个 pre 是 one-hot
+    text: |
+      <code>make_identity_pre_mix</code>：V4.1 的 mHC 只算一遍系数，每组算出的 pre 交给下一个子层合成输入。第 0 层的注意力之前还没有算过 pre，用 one-hot 的 $(1, 0, \dots)$，也就是只取第 1 条 stream；这时各条 stream 相同，结果就是 $\of{h}$。
+    backward:
+      label: 无梯度
+      title: one-hot 是常量
+  - id: hash_select
+    show: hash1
+    label: '$\of{hash1}$'
+    title: 取出第 1 层用的哈希
+    text: |
+      <code>engram_hashes[:, :, layer.engram.layer_hash_index, :]</code>：哈希一次算出所有 Engram 层用的行号，每层的乘数不同。真实模型第 1 层和第 14 层各一组，这一页只有第 1 层。
+      $$\of{hash1}={{ hash1 | matrix:2 }}$$
+    backward:
+      label: 无梯度
+      title: 行号是整数
+  - id: collapse
+    show: [pre_col, weighted]
+    segment: hc_pre
+    label: '$\of{weighted}$'
+    title: 用最后一组 pre 合成一条
+    text: |
+      <code>h = layer.hc_pre(h, pre_mix)</code>：最后一层 FFN 的那组 mHC 算出的 pre 没有下一个子层用，交给 head 之前的这次合成：$\sum_n \mathrm{pre}_n\,\mathbf{X}_n$。V4 用一个单独的 hc_head 模块，V4.1 直接用这组 pre。乘法写作 <code>pre_mix.unsqueeze(-1) * x.float()</code>，在 float32 里做。
+    backward:
+      label: '$\partial\of{pre39},\ \partial\of{X39}$'
+      title: 梯度分给 pre 和每条 stream
+  - id: collapse_sum
+    show: collapsed
+    segment: hc_pre
+    label: '$\of{collapsed}$'
+    title: 对 stream 求和
+    text: |
+      <code>y = torch.sum(pre_mix.unsqueeze(-1) * x.float(), dim=2)</code> 在 float32 里求和，<code>y.to(x.dtype)</code> 再转回 stream 的 dtype。
+      $$\of{collapsed}={{ collapsed | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{weighted}$'
+      title: 求和的梯度复制给每条 stream
+  - id: float
+    show: hf
+    segment: head
+    label: '$\of{hf}$'
+    title: 转成 float32
+    text: |
+      ParallelHead 的 <code>logits = F.linear(x.float(), self.weight)</code> 先做 <code>x.float()</code>，head 的矩阵乘法在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{hn}$'
+      title: 穿过类型转换
+  - id: logits
+    show: [W.T, z]
+    segment: head
+    brace: { title: head, subtitle: ParallelHead }
+    label: '$\of{z}$'
+    title: head
+    text: |
+      每个位置的向量乘同一块 $W^{\top}$，得到下一个 token 的 logits。head 不和 embedding 共享权重。参考实现的 <code>ParallelHead.forward(x, full_logits=False)</code> 默认先做 <code>x = x[:, -1]</code>，只算最后一个位置，生成时只需要它；这一页对每个位置算损失，按 <code>full_logits=True</code> 画，所有位置都算 logits。
+      $$\mathbf{z}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial W,\ \partial\of{hf}$'
+      title: 传到 head 权重
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
+  - sequence: true
+    title: 序列
+    note: 前 13 个是输入，后 13 个是标签。中间 6 个 <code>&lt;image&gt;</code> 的位置由图片决定，换成别的 token 也会被图片覆盖。
+    sgd: { params: all, lr: 0.5, label: 更新一步全部参数 }
+    reset: true
+  - title: 对应的 PyTorch
+    code: |-
+      # DeepSeek-V4.1 inference/model.py，Transformer.forward
+      image_mask = token_types >= 0
+      engram_mask = ~image_mask
+      hashes = self.engram_hash(input_ids, 0, engram_mask)
+      h = self.embed(input_ids)
+      self.merge_image_embeddings(images, h)             # vision -> aligner -> 换掉图片位置
+      h = h.unsqueeze(2).repeat(1, 1, self.hc_mult, 1)
+      pre_mix = make_identity_pre_mix(h, self.hc_mult)
+      for layer in self.layers:                           # 图里展开第 0、1、2、20、24、25 层
+          if layer.engram is not None:
+              h = layer.engram(h, hashes[:, :, layer.engram.layer_hash_index, :], engram_mask)
+          h, pre_mix = layer(h, 0, pre_mix, image_mask)
+      h = layer.hc_pre(h, pre_mix)
+      logits = self.head(self.norm(h), full_logits=True)  # 默认只算最后一个位置
+      loss = F.nll_loss(F.log_softmax(logits, -1), labels)  # 参考实现没有训练损失
+    note: DeepSeek-V4.1-Flash：d = 5120，40 层，另有 3 个 MTP 层；注意力 64 个 head，head_dim = 512，其中最后 64 维做 RoPE，q_lora_rank = 1280，o_groups = 8，o_lora_rank = 1024，window_size = 128；压缩层的 rope_theta = 160000，并用 YaRN（factor 16）；indexer 32 个 head，index_head_dim = 128，index_topk = 512；候选块 2048 个，每块 8 个条目；hc_mult = 4，hc_sinkhorn_iters = 20；MoE 384 个路由专家，每个 token 选 6 个，另有 1 个共享专家，moe_inter_dim = 2304，route_scale = 1.5，swiglu_limit = 10；Engram 用最长 4-gram，8 个 head，每个 256 维；ViT 32 个 block，宽 1024，16 个 head，patch 14，aligner 每 $3\times3$ 个 patch 合成一个 token。这一页用 Sinkhorn 3 轮、swiglu_limit = 1，让截断在小数值上也能看到。
+values:
+  engram_hash.token_map: [0, 1, 2, 3, 3, 4, 5, 6, 7, 8]
+  engram_hash.mult: [['843736406823848137', '53288111315402585', '395923983274329303']]
+  engram_hash.primes: [[[5, 7], [11, 13]]]
+  engram_hash.offsets: [[0, 5, 12, 23]]
+  layer0.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer0.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]
+  layer1.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer1.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]
+  layer2.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer2.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]
+  layer20.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer20.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]
+  layer24.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer24.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]
+  layer25.ffn.gate.bias: [0, 0.1, -0.05, 0.02]
+  layer25.ffn.gate.bias_vl: [0.3, -0.2, 0, 0.1]

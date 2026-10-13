@@ -33,14 +33,27 @@ function focusRef(g: Graph, source: string): void {
   if (g.node('b') !== undefined) throw fail(source, "'b' is the current sample index; rename node 'b'");
 }
 
-function matchName(g: Graph, text: string, source: string): { node: Node; rest: string } {
-  let best: Node | undefined;
+const compactNames = new WeakMap<Graph, { count: number; byName: Map<string, Node> }>();
+
+function namesOf(g: Graph): Map<string, Node> {
+  const cached = compactNames.get(g);
+  if (cached !== undefined && cached.count === g.nodes.length) return cached.byName;
+  const byName = new Map<string, Node>();
   for (const node of g.nodes) {
     const name = compact(node.name);
-    if (text.startsWith(name) && (best === undefined || name.length > compact(best.name).length)) best = node;
+    if (!byName.has(name)) byName.set(name, node);
   }
-  if (best === undefined) throw fail(source, `no node name matches '${text}'`);
-  return { node: best, rest: text.slice(compact(best.name).length) };
+  compactNames.set(g, { count: g.nodes.length, byName });
+  return byName;
+}
+
+function matchName(g: Graph, text: string, source: string): { node: Node; rest: string } {
+  const byName = namesOf(g);
+  for (let end = text.length; end > 0; end--) {
+    const node = byName.get(text.slice(0, end));
+    if (node !== undefined) return { node, rest: text.slice(end) };
+  }
+  throw fail(source, `no node name matches '${text}'`);
 }
 
 function splitTopLevel(text: string): string[] {

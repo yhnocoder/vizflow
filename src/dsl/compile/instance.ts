@@ -75,14 +75,29 @@ export function compileInstance(
   }
   const outputsWhere = child(where, decl, 'outputs');
   if (!Array.isArray(decl.outputs)) fail(outputsWhere, 'outputs must be a list of names');
-  const outputs = decl.outputs as unknown[];
+  const declared: string[] = [];
+  const outputs: string[] = [];
+  (decl.outputs as unknown[]).forEach((entry, at) => {
+    const entryWhere = child(outputsWhere, decl.outputs as object, at);
+    if (typeof entry === 'string') {
+      declared.push(entry);
+      outputs.push(entry);
+      return;
+    }
+    const spec = record(entry, entryWhere, 'output');
+    checkKeys(spec, new Set(['name', 'when']), entryWhere);
+    if (typeof spec.name !== 'string') fail(entryWhere, 'an output needs a name');
+    declared.push(spec.name);
+    if (c.enabled(spec, { ...childEnv, where: entryWhere })) outputs.push(spec.name);
+  });
   const boundWhere = child(env.where, use, 'outputs');
   const bound = record(use.outputs, boundWhere, 'outputs');
   const bindings: [string, string, Where][] = [];
   for (const [output, target] of Object.entries(bound)) {
     const at = child(boundWhere, bound, output);
-    if (!outputs.includes(output)) fail(at, `module ${def.name} has no output '${output}'`);
+    if (!declared.includes(output)) fail(at, `module ${def.name} has no output '${output}'`);
     if (typeof target !== 'string') fail(at, 'an output binding must be a name');
+    if (!outputs.includes(output)) continue;
     const concrete = c.concreteName(target, { ...env, where: at });
     bindings.push([output, concrete.name, at]);
     const outer = parent.texOverride.get(concrete.name) ?? parent.texOverride.get(concrete.base);
@@ -104,7 +119,7 @@ export function compileInstance(
   declareBuffers(c, scope, decl, childEnv, tree.children);
   const { slots } = compileBody(c, scope, decl, childEnv, tree.children);
   for (const output of outputs) {
-    if (typeof output !== 'string' || !(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${String(output)}' of ${def.name} is not defined in its body`);
+    if (!(scope.entries.get(output) instanceof Node)) fail(outputsWhere, `output '${output}' of ${def.name} is not defined in its body`);
   }
   const steps = moduleSteps(c, scope, decl, childEnv, slots);
   const formulaSources = [{ decl, env: childEnv }, { decl: use, env }];

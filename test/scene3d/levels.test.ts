@@ -158,6 +158,30 @@ describe('levelPlan with rank-2 activations', () => {
   });
 });
 
+describe('levelPlan with a matrix operand shaped like a statistic', () => {
+  it('draws the right operand of a matmul as bars even when the output has the shape of the left operand', () => {
+    const g = graph({ dims: {} });
+    const q = g.input('q', [2, 3, 3], Array.from({ length: 2 }, (_, t) => Array.from({ length: 3 }, (_, h) => [t + h, t - h, 0.5])));
+    const k = g.input('k', [3, 3], [[1, 0, 2], [0, 1, -1], [2, 1, 0]]);
+    const kt = g.transpose(k, 0, 1, { name: 'kt' });
+    const s = g.matmul(q, kt, { name: 's' });
+    const loss = g.loss(g.sum(s, null, { name: 'loss' }));
+    const spec: StepsSpec = {
+      forward: [
+        { show: [q, k], title: 'inputs', kind: 'inputs' },
+        { show: [kt], title: 'kt', segment: 'kt' },
+        { show: [s], title: 's', segment: 's' },
+        { show: [loss], title: 'loss', segment: 'loss' },
+      ],
+      backward: 'reverse',
+    };
+    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const block = blockOf(blocks, kt);
+    expect([block.shape, block.cols]).toEqual(['bar', 3]);
+    expect(blocks.every((b) => b.elements.every((e) => Number.isFinite(e.x) && Number.isFinite(e.z)))).toBe(true);
+  });
+});
+
 describe('levelPlan with views and head-selecting boards', () => {
   it('draws a view on its input and reads each head of a rank-3 operand under its own columns', () => {
     const g = graph({ dims: { T, H: 2, dh: DH } });

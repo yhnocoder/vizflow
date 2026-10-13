@@ -181,10 +181,13 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
   const [batch, setBatch] = createSignal(1);
   const [tip, setTip] = createSignal<MemoryKind | 'flops' | null>(null);
   const [pinned, setPinned] = createSignal(false);
-  const timeline = createMemo(() => {
+  const list = createMemo(() => {
     props.stepsVersion();
+    return props.steps?.list ?? [];
+  });
+  const timeline = createMemo(() => {
     const T = sequence();
-    return costTimeline(g, props.steps?.list ?? [], {
+    return costTimeline(g, list(), {
       real: real(),
       batch: batch(),
       ...(T === undefined ? {} : { dims: { T } }),

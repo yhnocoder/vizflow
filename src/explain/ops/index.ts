@@ -35,7 +35,10 @@ import {
   absExplain,
   signExplain,
   clampMinExplain,
+  ltExplain,
+  bitwiseOrExplain,
   logicalNotExplain,
+  copysignExplain,
 } from './elementwise';
 import {
   catExplain,
@@ -60,6 +63,8 @@ import {
   topkMaskExplain,
   unsqueezeExplain,
   viewExplain,
+  sortExplain,
+  indexPutExplain,
 } from './index_ops';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
@@ -132,8 +137,13 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   clamp_min: clampMinExplain,
   repeat: repeatExplain,
   cummax: cummaxExplain,
+  lt: ltExplain,
+  bitwise_or: bitwiseOrExplain,
   logical_not: logicalNotExplain,
+  copysign: copysignExplain,
+  sort: sortExplain,
   scatter: scatterExplain,
+  index_put: indexPutExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
 };
