@@ -223,6 +223,7 @@ class Plan implements LevelPlan {
   private readonly entryOf = new Map<Node, Entry>();
   private readonly sourceOf = new Map<Node, Node>();
   private readonly drawnOn = new Map<Node, Node[]>();
+  private readonly columns = new Set<Node>();
   private readonly copies: Copy[] = [];
   private readonly copyEntries = new Map<Copy, Entry>();
   private readonly boards = new Map<Node, BoardRef>();
@@ -262,6 +263,7 @@ class Plan implements LevelPlan {
     const shown = new Set(this.visible);
     const operands = new Set([...this.computed].filter((u) => u.kind === 'op' && (u.op === 'matmul' || u.op === 'select_matmul')).map((u) => u.inputs[1]));
     for (const n of this.visible[0]?.graph.nodes ?? []) {
+      if (n.kind === 'op' && n.op === 'unsqueeze' && n.shape.length === 2 && n.shape[1] === 1) this.columns.add(n.inputs[0]);
       if (!isLayoutOp(n) || shown.has(n) || isLeafLike(n) || operands.has(n)) continue;
       const source = this.source(n.inputs[0]);
       this.sourceOf.set(n, source);
@@ -437,7 +439,8 @@ class Plan implements LevelPlan {
     if (n.shape.length === 1) {
       const main = n.inputs[0];
       const column = (u: Node) => u.shape.length === 1 && u.shape[0] === n.shape[0] && !isLeafLike(u) && this.shapeOf(u)[1] === 1;
-      return !isLeafLike(n) && main !== undefined && ((main.shape.length === 2 && main.shape[0] === n.shape[0]) || n.inputs.some(column)) ? [n.shape[0], 1] : [1, n.shape[0]];
+      if (isLeafLike(n)) return [1, n.shape[0]];
+      return this.columns.has(n) || (main !== undefined && ((main.shape.length === 2 && main.shape[0] === n.shape[0]) || n.inputs.some(column))) ? [n.shape[0], 1] : [1, n.shape[0]];
     }
     return rowsCols(n);
   }
@@ -450,7 +453,7 @@ class Plan implements LevelPlan {
     this.discMemo.set(n, false);
     const cols = this.shapeOf(n)[1];
     const result =
-      !this.boards.has(n) && !isLeafLike(n) &&
+      !this.boards.has(n) && !isLeafLike(n) && n.inputs.length > 0 &&
       (n.shape.length === 2 || (n.shape.length === 3 && plates(n).width === 1)) &&
       this.consumers(n).some((u) => {
         const main = u.inputs[0];
@@ -560,7 +563,9 @@ class Plan implements LevelPlan {
       const main = this.source(user.inputs[0]) === n ? user : user.inputs[0];
       const host = this.entryOf.get(main);
       if (host === undefined) continue;
-      this.entry(n, host.level);
+      const target = this.entryOf.get(user);
+      const apart = target !== undefined && this.levels.indexOf(target.level) - this.levels.indexOf(host.level) > 1;
+      this.entry(n, apart ? target.level : host.level);
     }
   }
 
@@ -610,8 +615,9 @@ class Plan implements LevelPlan {
         }
         if (e.kind === 'vector') {
           const user = this.consumers(n)[0];
-          const host = this.entryOf.get(this.source(user.inputs[0]) === n ? user : user.inputs[0])!;
-          if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.slice(0, e.cols));
+          const target = this.entryOf.get(user);
+          const host = target?.level === e.level ? target : this.entryOf.get(this.source(user.inputs[0]) === n ? user : user.inputs[0])!;
+          if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.length >= e.cols ? host.offsets.slice(0, e.cols) : range(host.offsets[0] ?? 0, e.cols));
           continue;
         }
         if (isLeafLike(n)) {
@@ -746,6 +752,7 @@ class Plan implements LevelPlan {
       if (e.kind === 'box') return [mainXs[0]];
       return mainXs.slice(0, e.cols);
     }
+    if (e.cols > main.cols && main.lane !== undefined) return Array.from({ length: e.cols }, (_, k) => position(main.lane!, (main.offsets[0] ?? 0) + k) + DISC_GROUP_SIDE);
     if (e.cols > 1) {
       const size = main.cols / e.cols;
       return Array.from({ length: e.cols }, (_, g) => mainXs[Math.min(mainXs.length - 1, Math.ceil((g + 1) * size) - 1)] + DISC_GROUP_SIDE);

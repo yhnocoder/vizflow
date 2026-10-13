@@ -385,6 +385,7 @@ class StepsImpl implements Steps {
         withNotes(withMarks(info, step), step.notes);
       }
       prod.forEach((n) => revealed.add(n));
+      active.filter(isLeafLike).forEach((n) => revealed.add(n));
       forwardIds.set(group, info.id);
       entries.push(this.entry(info, new Set(revealed), new Set(active)));
     }

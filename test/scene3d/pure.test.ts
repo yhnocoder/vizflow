@@ -20,9 +20,9 @@ const theme: ThemeColors = {
 
 describe('scales', () => {
   it('maps the initial maximum to 0.8 of the cap', () => {
-    expect(scaleFor([0.5, -2, 1])).toBeCloseTo(0.48, 12);
-    expect(scaleFor([0.5, -2, 1], 0.85)).toBeCloseTo(0.34, 12);
-    expect(scaleFor([])).toBe(1);
+    expect(scaleFor([0.5, -2, 1], 'fp32')).toBeCloseTo(0.48, 12);
+    expect(scaleFor([0.5, -2, 1], 'fp32', 0.85)).toBeCloseTo(0.34, 12);
+    expect(scaleFor([], 'fp32')).toBe(1);
   });
 
   it('picks the cap by shape', () => {
@@ -42,20 +42,20 @@ describe('scales', () => {
 
   it('chooses three round ticks covering the data', () => {
     const q = [-0.32, -1.07, -2.36, -3.7, -2.9];
-    expect(niceTicks(q, scaleFor(q))).toEqual([-4, -2, 0]);
+    expect(niceTicks(q, 'fp32', scaleFor(q, 'fp32'))).toEqual([-4, -2, 0]);
     const gq = [-1, 0, 0, 0, 0];
-    expect(niceTicks(gq, scaleFor(gq))).toEqual([-1, -0.5, 0]);
+    expect(niceTicks(gq, 'fp32', scaleFor(gq, 'fp32'))).toEqual([-1, -0.5, 0]);
     const z = [2.37, 1.62, 0.33, -0.95, -0.21];
-    const ticks = niceTicks(z, scaleFor(z));
+    const ticks = niceTicks(z, 'fp32', scaleFor(z, 'fp32'));
     expect(ticks).toContain(0);
     expect(ticks.length).toBeGreaterThanOrEqual(2);
-    expect(ticks.every((v) => Math.abs(v) * scaleFor(z) <= HEIGHT_CAP + 1e-9)).toBe(true);
+    expect(ticks.every((v) => Math.abs(v) * scaleFor(z, 'fp32') <= HEIGHT_CAP + 1e-9)).toBe(true);
   });
 
-  it('ignores infinite values such as a causal mask', () => {
-    const masked = [0.5, -Infinity, -2, -Infinity];
-    expect(scaleFor(masked)).toBeCloseTo(0.48, 12);
-    expect(niceTicks(masked, scaleFor(masked))).toEqual(niceTicks([0.5, -2], scaleFor([0.5, -2])));
+  it('ignores infinite and saturated values such as a causal mask', () => {
+    const masked = [0.5, -Infinity, -2, -3.3895313892515355e38];
+    expect(scaleFor(masked, 'bf16')).toBeCloseTo(0.48, 12);
+    expect(niceTicks(masked, 'bf16', scaleFor(masked, 'bf16'))).toEqual(niceTicks([0.5, -2], 'bf16', scaleFor([0.5, -2], 'bf16')));
     expect(barHeight(-Infinity, 0.8, true)).toEqual({ height: -HEIGHT_CAP, clipped: true });
   });
 });

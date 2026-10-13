@@ -171,7 +171,7 @@ export interface LayoutContext {
   plan?: LevelPlan;
 }
 
-const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'unsqueeze', 'contiguous']);
+const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'identity']);
 
 export function isLayoutOp(n: Node): boolean {
   return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);
@@ -186,6 +186,14 @@ export function layoutSourceIndex(n: Node, index: readonly number[]): number[] {
     const out = [...index];
     out[d0] = index[d1];
     out[d1] = index[d0];
+    return out;
+  }
+  if (n.op === 'permute') {
+    const dims = (n.attrs as { dims: number[] }).dims.map((d) => normDim(d, index.length));
+    const out = [...index];
+    dims.forEach((d, k) => {
+      out[d] = index[k];
+    });
     return out;
   }
   return indexOf(input.shape, offsetOf(n.shape, index));
@@ -229,10 +237,8 @@ function derivedChunkAxis(n: Node): number {
       return input.shape.length === 3 ? (n.attrs as { dims: number[] }).dims.map((d) => normDim(d, 3)).indexOf(chunkAxis(input)) : 0;
     case 'unsqueeze':
       return input.shape.length === 2 ? normDim((n.attrs as { dim: number }).dim, 3) : 0;
-    case 'matmul':
-    case 'repeat_kv':
-      return 0;
   }
+  if (explainOf(n.op as string)?.pattern === 'contract') return 0;
   return inherited === undefined ? 0 : chunkAxis(inherited);
 }
 

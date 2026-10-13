@@ -1,4 +1,5 @@
 import { Node } from '../../autograd';
+import { isLayoutOp } from '../../scene3d/layout';
 import { type BackwardOverride, type ForwardStep, type StepModule, type StepsSpec, isLeafLike } from '../../steps';
 import { type Where, child, fail, merged } from '../source';
 import { markSteps } from '../tex';
@@ -217,7 +218,7 @@ export class StepCompiler {
   }
 
   private withAnon(nodes: Node[]): Node[] {
-    return unique(nodes.flatMap((n) => [...(this.c.anon.get(n) ?? []), n]));
+    return unique(nodes.flatMap((n) => [...(this.c.anon.get(n) ?? []).filter((a) => !isLayoutOp(a)), n]));
   }
 
   private stepless(call: Call): Node[] {

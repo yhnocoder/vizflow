@@ -45,7 +45,7 @@ steps:
       $$\omega_i=\theta^{-2i/d_h},\qquad i=0,\dots,d_h/2-1,\qquad \viz{inv_freq}={{ inv_freq | matrix:3 }}$$
       代码是 <code>1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))</code>，<code>arange(0, dim, 2)</code> 给出的正是 $2i$。$i$ 越大，$\omega_i$ 越小，转得越慢。
 
-      有了频率，再乘上位置就得到角度：<code>freqs = position_ids[..., None].float() * self.inv_freq</code> 是位置与频率的外积，得到 $T\times d_h/2$ 的表：
+      有了频率，再乘上位置就得到角度：<code>freqs = position_ids[..., None].float() * self.inv_freq.to(device=x.device, dtype=torch.float)</code> 是位置与频率的外积，得到 $T\times d_h/2$ 的表：
       $${\viz{freqs}}_{t,i}=t\,\omega_i,\qquad \viz{freqs}={{ freqs | matrix:3 }}$$
   - id: emb
     label: '$\viz{emb}$'

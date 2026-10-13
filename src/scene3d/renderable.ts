@@ -33,8 +33,8 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
   const grad = node.grad;
   const cap = capFor(block.shape, node.shape.length);
   const scale = {
-    forward: block.scales.forward ?? scaleFor(node.value.data, cap),
-    backward: block.scales.backward ?? scaleFor(grad === null ? [] : grad.data, cap),
+    forward: block.scales.forward ?? scaleFor(node.value.data, node.dtype, cap),
+    backward: block.scales.backward ?? scaleFor(grad === null ? [] : grad.data, node.dtype, cap),
   };
   const renderable: Renderable = {
     block,
@@ -45,8 +45,8 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     seeThrough: false,
     scale,
     ticks: {
-      forward: block.axis === undefined ? [] : niceTicks(node.value.data, scale.forward, TICK_COUNT, cap),
-      backward: block.axis === undefined || grad === null ? [] : niceTicks(grad.data, scale.backward, TICK_COUNT, cap),
+      forward: block.axis === undefined ? [] : niceTicks(node.value.data, node.dtype, scale.forward, TICK_COUNT, cap),
+      backward: block.axis === undefined || grad === null ? [] : niceTicks(grad.data, node.dtype, scale.backward, TICK_COUNT, cap),
     },
     title: undefined,
     values: [],

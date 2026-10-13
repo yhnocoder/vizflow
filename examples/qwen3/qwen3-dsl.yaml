@@ -101,6 +101,14 @@ modules:
             由 $\viz{e}=O\,\viz{embed_tokens.weight}$ 得 $\pfl{\viz{embed_tokens.weight}}=O^{\top}\pfl{\viz{e}}$。$O^{\top}$ 的第 $v$ 行只在 $x_t=v$ 的位置为 1，所以：
             $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
             也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
+      - id: position_ids
+        show: position_ids
+        label: '$\viz{position_ids}$'
+        title: 位置编号
+        text: |
+          调用时没有传 <code>position_ids</code>，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。这里没有 batch 维，训练时也没有 KV cache，<code>past_seen_tokens</code> 是 0，所以位置编号就是 $0,\dots,T-1$：
+          $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
+          位置编号是整数常量，没有梯度，只在 RoPE 里用来算角度。
       - id: mask
         show: M
         label: '$\viz{M}$'

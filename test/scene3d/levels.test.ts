@@ -4,7 +4,7 @@ import { graph } from '../../src/core';
 import '../../src/explain';
 import type { Block } from '../../src/scene3d/layout';
 import { levelPlan } from '../../src/scene3d/levels';
-import type { StepModule, StepsSpec } from '../../src/steps';
+import { type StepModule, type StepsSpec, createSteps } from '../../src/steps';
 
 const T = 2;
 const H = 3;
@@ -157,6 +157,29 @@ describe('levelPlan with rank-2 activations', () => {
       const block = blockOf(blocks, node);
       expect([node.name, block.shape, block.rows, block.cols]).toEqual([node.name, 'disc', T, 1]);
     }
+  });
+});
+
+describe('levelPlan with an outer product of positions and frequencies', () => {
+  it('draws the positions as a column, the frequency buffer under the columns of the product, and no node for the new axis or the cast', () => {
+    const g = graph({ dims: { T: 3, K: 2 } });
+    const t = g.arange('T', { name: 't' });
+    const w = g.buffer('w', ['K'], [1, 0.5]);
+    const column = g.unsqueeze(t, -1, { name: 'column' });
+    const cast = g.identity(column, { dtype: 'fp32', name: 'cast' });
+    const y = g.mul(cast, w, { name: 'y' });
+    const loss = g.loss(g.sum(y, null, { name: 'loss' }));
+    const spec: StepsSpec = { forward: [{ show: [t], title: 't' }, { show: [w, y], title: 'y' }, { show: [loss], title: 'loss' }], backward: 'reverse' };
+    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    expect(blocks.some((b) => b.node === column || b.node === cast)).toBe(false);
+    const xs = (node: Node) => [...new Set(blockOf(blocks, node).elements.map((e) => e.x))];
+    expect([blockOf(blocks, t).rows, blockOf(blocks, t).cols]).toEqual([3, 1]);
+    expect(xs(w)).toEqual(xs(y));
+    expect(blockOf(blocks, w).elements[0].y).toBe(blockOf(blocks, t).elements[0].y);
+    const steps = createSteps(g, spec);
+    steps.go(2);
+    expect(steps.state().revealed(w)).toBe(true);
+    steps.dispose();
   });
 });
 
