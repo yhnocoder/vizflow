@@ -26,8 +26,8 @@ config:
   tokenizer:
     vocab: [on, mat, the, sat, cat]
   real:
-    qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28, rope_theta: 1000000 }
     qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
+    qwen3-1.7b: { name: Qwen3-1.7B, T: 8192, V: 151936, d_model: 2048, d_head: 128, d_ff: 6144, num_heads: 16, num_kv_heads: 8, num_layers: 28, rope_theta: 1000000 }
 
 data:
   tokens: [the, cat, sat, on]
@@ -193,12 +193,12 @@ modules:
         label: '$\viz{z}$'
         show: lm_head
         text: |
-          每个位置的 ${\viz{h_norm}}_t$ 都乘同一块 $\viz{lm_head.weight}^{\top}$，得到这个位置对下一个 token 的 logits。${\viz{h_norm}}_{t,k}$ 沿第 $k$ 行经过每个方块，每一列累加后落到 $z_{t,i}$。
-          $$\viz{z}=\viz{h_norm}\viz{lm_head.weight}^{\top}={{ z | matrix:2 }}$$
+          每个位置的 ${\viz{h_norm}}_t$ 都乘同一块 ${\viz{lm_head.weight}}^{\top}$，得到这个位置对下一个 token 的 logits。${\viz{h_norm}}_{t,k}$ 沿第 $k$ 行经过每个方块，每一列累加后落到 $z_{t,i}$。
+          $$\viz{z}=\viz{h_norm}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
         backward:
           label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{h_norm}}$'
           text: |
-            $\pf{\ell}{\viz{lm_head.weight}^{\top}}=\viz{h_norm}^{\top}\pfl{\viz{z}}$，各个位置的外积加在一起。
+            $\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{h_norm}}^{\top}\pfl{\viz{z}}$，各个位置的外积加在一起。
             $$\pfl{\viz{h_norm}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ h_norm.grad | matrix:3 }}$$
       - id: float
         show: zf
@@ -252,8 +252,8 @@ sections:
     rope:
       q: layers[0].self_attn.qn
       k: layers[0].self_attn.kn
-      rows: [-1, 1]
-      head: 1
+      rows: [-1, 0]
+      head: 0
       theta: rope_theta
       d_head: d_head
       positions: 24

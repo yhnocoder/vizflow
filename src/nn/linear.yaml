@@ -1,0 +1,16 @@
+module: Linear
+args:
+  in_features: dim
+  out_features: dim
+  bias: { type: bool, default: True }
+inputs:
+  x: { type: tensor, shape: ['...', in_features], dtype: dtype }
+outputs:
+  y: { type: tensor, shape: ['...', out_features], dtype: dtype }
+init:
+  weights:
+    weight: { shape: [out_features, in_features], init: uniform }
+forward:
+  - y: x @ weight.T
+tex:
+  weight: W

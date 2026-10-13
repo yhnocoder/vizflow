@@ -3,6 +3,7 @@ import { type Where, child, fail, parseYaml } from './source';
 const bundled: Record<string, string> = import.meta.glob('../nn/*.yaml', { query: '?raw', import: 'default', eager: true });
 
 export const PACKAGE_PREFIX = 'vizflow/nn/';
+const BUILTINS: Readonly<Record<string, string>> = { Linear: `${PACKAGE_PREFIX}linear`, Embedding: `${PACKAGE_PREFIX}embedding` };
 
 export interface ModuleDef {
   name: string;
@@ -29,10 +30,6 @@ export async function defaultRead(url: string): Promise<string> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function isModuleRef(value: string): boolean {
-  return value.startsWith(PACKAGE_PREFIX) || value.startsWith('./') || value.startsWith('../') || value.includes('/') || value.endsWith('.yaml');
 }
 
 export class Loader {
@@ -91,31 +88,10 @@ export class Loader {
         namespace.set(name, await this.module(this.resolve(ref, file, at), chain, at));
       }
     }
-    await this.directUses(decl, file, chain, where, namespace);
+    for (const [name, ref] of Object.entries(BUILTINS)) {
+      if (namespace.has(name) || chain.includes(ref)) continue;
+      namespace.set(name, await this.module(ref, chain, where));
+    }
     return namespace;
-  }
-
-  async directUses(decl: Record<string, unknown>, file: string | undefined, chain: readonly string[], where: Where, namespace: Map<string, ModuleDef>): Promise<void> {
-    const visit = async (items: unknown, at: Where): Promise<void> => {
-      if (!Array.isArray(items)) return;
-      for (const [i, item] of items.entries()) {
-        if (!isRecord(item)) continue;
-        const itemWhere = child(at, items, i);
-        if ('for' in item) {
-          await visit(item.body, child(itemWhere, item, 'body'));
-          continue;
-        }
-        for (const [key, value] of Object.entries(item)) {
-          if (!isRecord(value)) continue;
-          const valueWhere = child(itemWhere, item, key);
-          if (typeof value.use === 'string' && !namespace.has(value.use) && isModuleRef(value.use)) {
-            const useWhere = child(valueWhere, value, 'use');
-            namespace.set(value.use, await this.module(this.resolve(value.use, file, useWhere), chain, useWhere));
-          }
-          if (Array.isArray(value.body)) await visit(value.body, child(valueWhere, value, 'body'));
-        }
-      }
-    };
-    await visit(decl.body, child(where, decl, 'body'));
   }
 }

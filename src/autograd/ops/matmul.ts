@@ -152,6 +152,7 @@ export const matmulOp: OpDef<NoAttrs> = {
   name: 'matmul',
   args: ['input', 'other'],
   tensors: ['input', 'other'],
+  sameDtype: true,
   shape: ([a, b]) => matmulShape(a, b),
   forward: ([a, b]) => (isBatched(a.shape, b.shape) ? batchedForward(a, b) : multiply(a, b, matmulShape(a.shape, b.shape))),
   backward: (gradOut, [a, b]) => {

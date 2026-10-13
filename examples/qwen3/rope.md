@@ -91,12 +91,12 @@ RoPE 没有参数。cos 和 sin 只由位置决定，不需要梯度。
 那么，它到底改变了什么？下面用同一组 $\bar{\mathbf{q}}$、$\bar{\mathbf{k}}$，对比加和不加 RoPE 的结果。
 
 ::: buttons
-- { label: 在图上看 RoPE 这几步, go: layer.self_attn.apply_rotary_pos_emb.qc }
-- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layer.self_attn.eager_attention_forward.S[1]' }
+- { label: 在图上看 RoPE 这几步, go: 'layers[0].self_attn.apply_rotary_pos_emb.qc' }
+- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'layers[0].self_attn.eager_attention_forward.S' }
 :::
 
 ::: rope_compare
-scores: 'layer.self_attn.eager_attention_forward.Ss[1..H]'
-weights: 'layer.self_attn.eager_attention_forward.P[1..H]'
+scores: 'layers[0].self_attn.eager_attention_forward.Ss'
+weights: 'layers[0].self_attn.eager_attention_forward.P'
 ids: ids
 :::

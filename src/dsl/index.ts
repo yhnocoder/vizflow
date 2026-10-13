@@ -11,7 +11,6 @@ export interface CompileOptions {
 
 export type { CompiledPage } from './compile';
 export { DslError, parseYaml } from './source';
-export { OP_TEX } from './tex';
 export type * from './types';
 
 export function compilePage(spec: PageFile, options: CompileOptions = {}): Promise<CompiledPage> {

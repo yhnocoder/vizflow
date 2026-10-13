@@ -380,6 +380,9 @@ class GraphImpl {
     const realShape =
       this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
     const name = options.name ?? this.autoName(def.name);
+    if (def.sameDtype && new Set(inputs.map((n) => n.dtype)).size > 1) {
+      throw new Error(`${def.name} '${name}': expected inputs of the same dtype, got ${inputs.map((n) => `${n.name} (${n.dtype})`).join(' and ')}`);
+    }
     const dtype =
       options.dtype !== undefined ? checkDtype(options.dtype, `node '${name}'`) : (def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`));
     checkExact(def, inputs, name);

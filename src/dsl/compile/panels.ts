@@ -1,101 +1,103 @@
+import type { Node } from '../../autograd';
 import type { PanelItem } from '../../ui';
 import { type Where, child, fail } from '../source';
-import type { Compiler } from './text';
+import type { PageCompiler } from './page';
 import type { Env } from './types';
-import { isRecord, list } from './util';
+import { checkKeys, isRecord, record } from './util';
 
-export function compilePanels(c: Compiler, env: Env): PanelItem[] {
+const TEXT_KEYS = ['title', 'note'];
+
+export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
   const page = c.page;
   if (page.panels === undefined) return [];
   const where = child(c.pageWhere, page, 'panels');
   if (!Array.isArray(page.panels)) fail(where, 'panels must be a list');
-  const nodeAt = (value: unknown, at: Where) => c.node(value, { ...env, where: at });
-  const textAt = (value: unknown, at: Where) => c.text(value, { ...env, where: at });
-  const nodesAt = (value: unknown, at: Where) =>
-    Array.isArray(value) ? value.flatMap((v, k) => c.nodeList(v, { ...env, where: child(at, value, k) })) : c.nodeList(value, { ...env, where: at });
-  return page.panels.map((panel, i): PanelItem => {
-    const at = child(where, page.panels as unknown[], i);
-    if (panel === 'loss' || panel === 'cost') return panel;
-    if (!isRecord(panel)) fail(at, "a panel must be 'loss', 'cost' or a mapping");
-    const out: Record<string, unknown> = { ...panel };
-    const field = (key: string) => child(at, panel, key);
-    for (const key of ['title', 'note', 'caption']) if (typeof panel[key] === 'string') out[key] = textAt(panel[key], field(key));
-    for (const key of ['tokens', 'matrix', 'sliders', 'ids']) {
-      if (panel[key] === undefined) continue;
-      out[key] = nodeAt(panel[key], field(key));
-    }
-    if (panel.attention !== undefined) out.attention = nodesAt(panel.attention, field('attention'));
-    if (panel.extra_keys !== undefined) {
-      const extra = panel.extra_keys;
-      if (!Array.isArray(extra) || extra.some((label) => typeof label !== 'string')) fail(field('extra_keys'), 'extra_keys must be a list of strings');
-      out.extra_keys = extra.map((label, k) => textAt(label, child(field('extra_keys'), extra, k)));
-    }
-    if (panel.highlight !== undefined) {
-      const highlight = panel.highlight;
-      out.highlight = isRecord(highlight) ? { ...highlight, node: nodeAt(highlight.node, child(field('highlight'), highlight, 'node')) } : nodeAt(highlight, field('highlight'));
-    }
-    if (panel.matrices !== undefined) {
-      const matrices = panel.matrices;
-      if (!Array.isArray(matrices)) fail(field('matrices'), 'matrices must be a list');
-      out.matrices = matrices.map((entry, k) => {
-        const entryAt = child(field('matrices'), matrices, k);
-        if (!isRecord(entry)) fail(entryAt, 'a matrices entry must be a mapping');
-        const converted: Record<string, unknown> = { ...entry, matrix: nodeAt(entry.matrix, child(entryAt, entry, 'matrix')) };
-        if (typeof entry.caption === 'string') converted.caption = textAt(entry.caption, child(entryAt, entry, 'caption'));
-        return converted;
-      });
-    }
-    if (Array.isArray(panel.columns)) {
-      const columns = panel.columns;
-      out.columns = columns.map((column, k) => {
-        const columnAt = child(field('columns'), columns, k);
-        if (isRecord(column)) {
-          const converted: Record<string, unknown> = { ...column, node: nodeAt(column.node, child(columnAt, column, 'node')) };
-          if (typeof column.title === 'string') converted.title = textAt(column.title, child(columnAt, column, 'title'));
-          return converted;
-        }
-        return nodeAt(column, columnAt);
-      });
+  const panels = page.panels;
+  return panels.map((panel, i): PanelItem => {
+    const at = child(where, panels, i);
+    if (panel === 'cost') return 'cost';
+    if (!isRecord(panel)) fail(at, "a panel must be 'cost' or a mapping");
+    const field = (key: string): Env => ({ ...env, where: child(at, panel, key) });
+    const node = (key: string, obj: Record<string, unknown> = panel, base: Where = at): Node => c.node(obj[key], { ...env, where: child(base, obj, key) });
+    const texts = (allowed: string[]): Record<string, string> => {
+      const out: Record<string, string> = {};
+      for (const key of allowed) if (panel[key] !== undefined) out[key] = c.text(panel[key], field(key));
+      return out;
+    };
+    if (panel.loss !== undefined) {
+      checkKeys(panel, new Set(['loss']), at);
+      const loss = record(panel.loss, child(at, panel, 'loss'), 'loss');
+      const lossWhere = child(at, panel, 'loss');
+      checkKeys(loss, new Set(['parts', 'hint']), lossWhere);
+      const out: { parts?: Node; hint?: string } = {};
+      if (loss.parts !== undefined) out.parts = node('parts', loss, lossWhere);
+      if (loss.hint !== undefined) out.hint = c.text(loss.hint, { ...env, where: child(lossWhere, loss, 'hint') });
+      return { loss: out };
     }
     if (panel.sequence !== undefined) {
-      if (panel.sequence !== true) fail(field('sequence'), 'sequence must be true');
-      Object.assign(out, trainable(c, panel, ['sgd'], env, at));
+      checkKeys(panel, new Set(['sequence', 'tokens', 'input', 'label', 'labels', 'sgd', 'random', 'reset', ...TEXT_KEYS]), at);
+      if (panel.sequence !== true) fail(field('sequence').where, 'sequence must be true');
+      const out: Extract<PanelItem, { sequence: true }> = { sequence: true, ...texts(TEXT_KEYS) };
+      if (panel.labels !== undefined) {
+        if (!Array.isArray(panel.labels)) fail(field('labels').where, 'labels must be a list');
+        out.labels = panel.labels.map((label, k) => c.text(label, { ...env, where: child(field('labels').where, panel.labels as unknown[], k) }));
+      }
+      if (panel.sgd !== undefined) {
+        const sgdWhere = field('sgd').where;
+        const sgd = record(panel.sgd, sgdWhere, 'sgd');
+        checkKeys(sgd, new Set(['params', 'lr', 'label']), sgdWhere);
+        if (typeof sgd.lr !== 'number') fail(child(sgdWhere, sgd, 'lr'), 'lr must be a number');
+        const paramsWhere = child(sgdWhere, sgd, 'params');
+        const params =
+          sgd.params === 'all'
+            ? c.g.nodes.filter((n) => n.kind === 'param')
+            : Array.isArray(sgd.params)
+              ? sgd.params.map((p, k) => c.node(p, { ...env, where: child(paramsWhere, sgd.params as unknown[], k) }))
+              : fail(paramsWhere, "params must be 'all' or a list of parameters");
+        out.sgd = { params, lr: sgd.lr, ...(sgd.label === undefined ? {} : { label: c.text(sgd.label, { ...env, where: child(sgdWhere, sgd, 'label') }) }) };
+      }
+      for (const key of ['random', 'reset'] as const) {
+        if (panel[key] === undefined) continue;
+        if (typeof panel[key] !== 'boolean') fail(field(key).where, `${key} must be true or false`);
+        out[key] = panel[key] as boolean;
+      }
+      return out;
     }
-    if (isRecord(panel.loss)) out.loss = lossPanel(c, panel.loss, { ...env, where: field('loss') });
-    if (isRecord(panel.cost)) out.cost = costPanel(c, panel.cost, { ...env, where: field('cost') });
-    return out as PanelItem;
+    if (panel.code !== undefined) {
+      checkKeys(panel, new Set(['code', ...TEXT_KEYS]), at);
+      if (typeof panel.code !== 'string') fail(field('code').where, 'code must be text');
+      return { code: panel.code, ...texts(TEXT_KEYS) };
+    }
+    if (panel.attention !== undefined) {
+      checkKeys(panel, new Set(['attention', 'ids', ...TEXT_KEYS]), at);
+      return { attention: [node('attention')], ids: node('ids'), ...texts(TEXT_KEYS) };
+    }
+    if (panel.matrices !== undefined) {
+      checkKeys(panel, new Set(['matrices', 'highlight', 'rows', ...TEXT_KEYS]), at);
+      const matrices = panel.matrices;
+      if (!Array.isArray(matrices)) fail(field('matrices').where, 'matrices must be a list');
+      const out: Extract<PanelItem, { matrices: unknown }> = {
+        matrices: matrices.map((entry, k) => {
+          const entryAt = child(field('matrices').where, matrices, k);
+          const spec = record(entry, entryAt, 'a matrix');
+          checkKeys(spec, new Set(['matrix', 'grad', 'caption', 'limit']), entryAt);
+          const item: { matrix: Node; grad?: boolean; caption?: string; limit?: number } = { matrix: node('matrix', spec, entryAt) };
+          if (typeof spec.grad === 'boolean') item.grad = spec.grad;
+          if (spec.caption !== undefined) item.caption = c.text(spec.caption, { ...env, where: child(entryAt, spec, 'caption') });
+          if (typeof spec.limit === 'number') item.limit = spec.limit;
+          return item;
+        }),
+        ...texts(TEXT_KEYS),
+      };
+      if (panel.highlight !== undefined) {
+        const highlightWhere = field('highlight').where;
+        const highlight = record(panel.highlight, highlightWhere, 'highlight');
+        checkKeys(highlight, new Set(['node', 'all']), highlightWhere);
+        out.highlight = { node: node('node', highlight, highlightWhere), ...(typeof highlight.all === 'boolean' ? { all: highlight.all } : {}) };
+      }
+      if (panel.rows !== undefined) out.rows = node('rows').name;
+      return out;
+    }
+    return fail(at, 'a panel needs one of loss, sequence, code, attention or matrices, or is cost');
   });
-}
-
-function lossPanel(c: Compiler, loss: Record<string, unknown>, env: Env): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...loss, ...trainable(c, loss, ['sgd', 'random'], env, env.where) };
-  const at = (key: string, obj: object = loss) => ({ ...env, where: child(env.where, obj, key) });
-  if (typeof loss.text === 'string') out.text = c.text(loss.text, at('text'));
-  if (loss.parts !== undefined) out.parts = c.node(loss.parts, at('parts'));
-  return out;
-}
-
-function trainable(c: Compiler, spec: Record<string, unknown>, keys: string[], env: Env, where: Where): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const key of keys) {
-    const value = spec[key];
-    if (value === undefined) continue;
-    const keyWhere = child(where, spec, key);
-    if (!isRecord(value)) fail(keyWhere, `${key} must be a mapping`);
-    const nodesKey = key === 'sgd' ? 'params' : 'nodes';
-    const selected = value[nodesKey];
-    const nodesWhere = child(keyWhere, value, nodesKey);
-    const nodes = selected === 'all'
-      ? c.g.nodes.filter((n) => n.kind === 'param')
-      : list(selected as unknown).flatMap((s) => c.nodeList(s, { ...env, where: nodesWhere }));
-    out[key] = { ...value, [nodesKey]: nodes };
-  }
-  return out;
-}
-
-function costPanel(c: Compiler, cost: Record<string, unknown>, env: Env): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...cost };
-  if (typeof cost.title === 'string') out.title = c.text(cost.title, { ...env, where: child(env.where, cost, 'title') });
-  if (cost.dims !== undefined && cost.dims !== 'toy' && cost.dims !== 'real') fail(child(env.where, cost, 'dims'), "dims must be 'toy' or 'real'");
-  return out;
 }

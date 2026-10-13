@@ -848,6 +848,11 @@ def attention_layout_cases():
     cases.append(op_case("contiguous", "(2, 3, 4)", lambda x: x.contiguous(), [("input", randn(2, 3, 4))], [tensor_arg(0)]))
     return cases
 
+
+def trigonometric_cases():
+    return unary_cases("cos", torch.cos) + unary_cases("sin", torch.sin)
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -863,7 +868,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases())
     write("pages.json", pages + stable_pages)
 
 

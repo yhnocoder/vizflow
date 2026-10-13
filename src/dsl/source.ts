@@ -45,6 +45,21 @@ function quoteShift(node: YamlNode): number {
   return node.type === 'QUOTE_DOUBLE' || node.type === 'QUOTE_SINGLE' ? 1 : 0;
 }
 
+export function merged(sources: readonly object[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const keys = new Map<string | number, Pos>();
+  for (const source of sources) {
+    for (const [key, value] of Object.entries(source)) {
+      out[key] = value;
+      const pos = positions.get(source)?.get(key);
+      if (pos === undefined) keys.delete(key);
+      else keys.set(key, pos);
+    }
+  }
+  positions.set(out, keys);
+  return out;
+}
+
 export function place(obj: object, key: string | number | undefined, file: string, line: number): void {
   const pos = { file, line, col: 1, shift: 0 };
   if (key === undefined) {

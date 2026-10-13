@@ -1,239 +1,87 @@
 module: GLU
-subtitle: 门控 MLP：GLU、ReGLU、GEGLU、SwiGLU
-formula: '\step{down}{\of{down}=\big(}\step{act_fn.*}{\of{act}\big(}\step{clamp_gate}{\min\big(}\step{gate_proj}{\of{x}{\of{Wg}}^{\top}}\step{clamp_gate}{,\,\of{limit}\big)}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{clamp_up}{\operatorname{clamp}\big(}\step{up_proj}{\of{x}{\of{Wu}}^{\top}}\step{clamp_up}{,\,-\of{limit},\,\of{limit}\big)}\step{down}{\big){\of{Wd}}^{\top}}'
 import:
-  Sigmoid: vizflow/nn/sigmoid
-  ReLU:    vizflow/nn/relu
-  GELU:    vizflow/nn/gelu
-  SiLU:    vizflow/nn/silu
-params:
-  act:  { type: module, values: [Sigmoid, ReLU, GELU, SiLU], default: SiLU }
-  f:    { type: dim }
-  name: { type: text, default_key: true }
-  clamped: { type: bool, default: false }
-  limit: { type: float }
-  up_first: { type: bool, default: false }
-  float_act: { type: bool, default: false }
+  SiLU: vizflow/nn/silu
+args:
+  d_model: dim
+  d_ff: dim
+  act: { type: module, default: SiLU }
 inputs:
-  x: { shape: [T, d] }
-outputs: [down]
-weights:
-  Wg: { shape: [f, d] }
-  Wu: { shape: [f, d] }
-  Wd: { shape: [d, f] }
+  x: { type: tensor, shape: ['...', d_model], dtype: dtype }
+outputs:
+  down: { type: tensor, shape: ['...', d_model], dtype: dtype }
+init:
+  gate_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: d_ff, bias: False }
+  up_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: d_ff, bias: False }
+  down_proj:
+    use: Linear
+    args: { in_features: d_ff, out_features: d_model, bias: False }
+  act_fn: act
+forward:
+  - gate: gate_proj(x)
+  - a: act_fn(gate)
+  - up: up_proj(x)
+  - m: a * up
+  - down: down_proj(m)
+tex:
+  gate: '\mathbf{gate}'
+  a: '\phi(\mathbf{gate})'
+  up: '\mathbf{up}'
+  m: '\mathbf{m}'
+  gate_proj.weight: 'W_g'
+  up_proj.weight: 'W_u'
+  down_proj.weight: 'W_d'
+formula: '\step{down}{\viz{down}=\big(}\step{act_fn.*}{\phi\big(}\step{gate_proj}{\viz{x}{\viz{gate_proj.weight}}^{\top}}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{up_proj}{\viz{x}{\viz{up_proj.weight}}^{\top}}\step{down}{\big){\viz{down_proj.weight}}^{\top}}'
 fold:
-  label: '$\of{down}=\mathrm{\of{name}}(\of{x})$'
-  title: \of{name}（已折叠）
+  label: '$\viz{down}=\mathrm{mlp}(\viz{x})$'
+  title: MLP（已折叠）
   text: |
-    $$\of{down}=\mathrm{\of{name}}(\of{x})={{ down | matrix:2 }}$$
+    $$\viz{down}=\mathrm{mlp}(\viz{x})={{ down | matrix:2 }}$$
   backward:
-    label: '$\partial$参数, $\partial\of{x}$'
-    title: 穿过 \of{name}（已折叠）
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: 穿过 MLP（已折叠）
     text: |
-      $$\frac{\partial\ell}{\partial\of{x}}=\frac{\partial\ell}{\partial\of{down}}J_{\mathrm{\of{name}}}={{ x.grad | matrix:3 }}$$
-body:
-  - gate: x @ Wg.T
-  - gate32: { op: identity(gate), tex: '\mathbf{gate}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
-  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: 'false if up_first else clamped' }
-  - act_fn:
-      use: act
-      when: not clamped
-      inputs: { x: 'gate32 if float_act else gate' }
-      outputs: { out: a }
-      tex: { out: '\of{act}(\mathbf{gate})' }
-  - up:   x @ Wu.T
-  - up32: { op: identity(up), tex: '\mathbf{up}_{\mathrm{fp32}}', dtype: fp32, when: float_act }
-  - uc:   { op: 'clamp(up32 if float_act else up, min=-limit, max=limit)', tex: '\bar{\mathbf{up}}', when: clamped }
-  - gc:   { op: 'clamp(gate32 if float_act else gate, max=limit)', tex: '\bar{\mathbf{gate}}', when: up_first }
-  - act_fn:
-      use: act
-      when: clamped
-      inputs: { x: gc }
-      outputs: { out: a }
-      tex: { out: '\of{act}(\bar{\mathbf{gate}})' }
-  - m:    { op: 'a * uc if clamped else a * up32 if float_act else a * up' }
-  - mc:   { op: identity(m), tex: '\mathbf{m}_{\mathrm{cast}}', dtype: x, when: float_act }
-  - down: { op: 'mc @ Wd.T if float_act else m @ Wd.T' }
+      $$\frac{\partial\ell}{\partial\viz{x}}=\frac{\partial\ell}{\partial\viz{down}}J_{\mathrm{mlp}}={{ x.grad | matrix:3 }}$$
+
 steps:
   - id: gate_proj
-    when: up_first
-    show: [Wg.T, gate]
-    label: '$\mathbf{gate}$'
-    title: w1
-    text: |
-      <code>gate = self.w1(x).float()</code> 里的 w1：把 $\of{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
-      $$\mathbf{gate}=\of{x}W_g^{\top}={{ gate | matrix:2 }}$$
-    backward:
-      label: '$\partial W_g,\ \partial\of{x}$'
-      title: 传到 w1 权重和 $\of{x}$
-  - id: gate_proj
-    when: not up_first
-    show: [Wg.T, gate]
-    label: '$\mathbf{gate}$'
+    label: '$\viz{gate}$'
     title: gate_proj
     text: |
-      gate_proj 把 $\of{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
-      $$\mathbf{gate}=\of{x}W_g^{\top}={{ gate | matrix:2 }}$$
+      <code>self.gate_proj(x)</code>：把 $\viz{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
+      $$\viz{gate}=\viz{x}{\viz{gate_proj.weight}}^{\top}={{ gate | matrix:2 }}$$
     backward:
-      label: '$\partial W_g,\ \partial\of{x}$'
-      title: 传到 gate_proj 权重和 $\of{x}$
-  - id: gate_float
-    when: float_act
-    show: gate32
-    label: '$\of{gate32}$'
-    title: gate 转成 float32
-    text: |
-      <code>gate = self.w1(x).float()</code>：投影的结果先转成 float32，截断和激活在 float32 里算。
-    backward:
-      label: '$\partial\mathbf{gate}$'
-      title: 穿过类型转换
-      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
-  - id: clamp_gate
-    when: 'false if up_first else clamped'
-    show: gc
-    label: '$\bar{\mathbf{gate}}$'
-    title: 截断 gate 的上界
-    text: |
-      进入激活之前，gate 只截上界：大于 $L=\of{limit}$ 的值变成 $L$，对应 <code>self.gate_proj(x).clamp(max=self.limit)</code>。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断。
-      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{gate}$'
-      title: 穿过截断
-      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
+      label: '$\partial\viz{gate_proj.weight},\ \partial\viz{x}$'
+      title: 传到 gate_proj 权重和 $\viz{x}$
+  - id: act_fn
   - id: up_proj
-    show: [Wu.T, up]
-    label: '$\mathbf{up}$'
+    label: '$\viz{up}$'
     title: up_proj
     text: |
-      up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 写的是 <code>self.act_fn(self.gate_proj(x)) * self.up_proj(x)</code>，先算 gate_proj 和激活，再算 up_proj。
-      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
-    when: not clamped
+      <code>self.up_proj(x)</code>：输入也是 $\viz{x}$，同样投影到 $f$ 维，没有 bias。HF 写的是 <code>self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))</code>，先算 gate_proj 和激活，再算 up_proj。
+      $$\viz{up}=\viz{x}{\viz{up_proj.weight}}^{\top}={{ up | matrix:2 }}$$
     backward:
-      label: '$\partial W_u,\ \partial\of{x}$'
-      title: 传到 up_proj 权重和 $\of{x}$
+      label: '$\partial\viz{up_proj.weight},\ \partial\viz{x}$'
+      title: 传到 up_proj 权重和 $\viz{x}$
       text: |
-        $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: up_proj
-    when: 'false if up_first else clamped'
-    show: [Wu.T, up]
-    label: '$\mathbf{up}$'
-    title: up_proj
-    text: |
-      up_proj 的输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。HF 的 <code>DeepseekV4MLP</code> 先算 gate_proj 并截断，再算 up_proj 并截断，激活放在两个截断之后。
-      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
-    backward:
-      label: '$\partial W_u,\ \partial\of{x}$'
-      title: 传到 up_proj 权重和 $\of{x}$
-      text: |
-        $\of{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: up_proj
-    when: 'clamped if up_first else false'
-    show: [Wu.T, up]
-    label: '$\mathbf{up}$'
-    title: w3
-    text: |
-      <code>up = self.w3(x).float()</code> 里的 w3：输入也是 $\of{x}$，同样投影到 $f$ 维，没有 bias。参考实现的 <code>Expert.forward</code> 先算完 w1 和 w3，再截 up、截 gate，最后做激活。
-      $$\mathbf{up}=\of{x}W_u^{\top}={{ up | matrix:2 }}$$
-    backward:
-      label: '$\partial W_u,\ \partial\of{x}$'
-      title: 传到 w3 权重和 $\of{x}$
-      text: |
-        $\of{x}$ 同时用在 w1 和 w3 两处，它的梯度是两条路相加。
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-  - id: up_float
-    when: float_act
-    show: up32
-    label: '$\of{up32}$'
-    title: up 转成 float32
-    text: |
-      <code>up = self.w3(x).float()</code>：up 也先转成 float32。
-    backward:
-      label: '$\partial\mathbf{up}$'
-      title: 穿过类型转换
-      text: 类型转换的局部导数是 1，梯度转回投影输出的 dtype。
-  - id: clamp_up
-    when: 'false if up_first else clamped'
-    show: uc
-    label: '$\bar{\mathbf{up}}$'
-    title: 截断 up 的两侧
-    text: |
-      up 两边都截，限制在 $[-L, L]$，对应 <code>self.up_proj(x).clamp(min=-self.limit, max=self.limit)</code>。个别很大的 gate 或 up 值因此不会让输出变得很大。
-      $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{up}$'
-      title: 穿过截断
-      text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
-  - id: clamp_up
-    when: 'clamped if up_first else false'
-    show: uc
-    label: '$\bar{\mathbf{up}}$'
-    title: 截断 up 的两侧
-    text: |
-      <code>up = torch.clamp(up, min=-self.swiglu_limit, max=self.swiglu_limit)</code>：先截 up，两边都截，限制在 $[-L, L]$，$L=\of{limit}$。
-      $$\bar{\mathbf{up}}=\operatorname{clamp}(\mathbf{up},-L,L)={{ uc | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{up}$'
-      title: 穿过截断
-      text: 落在 $(-L, L)$ 里的元素局部导数是 1，其余是 0。
-  - id: clamp_gate
-    when: 'clamped if up_first else false'
-    show: gc
-    label: '$\bar{\mathbf{gate}}$'
-    title: 截断 gate 的上界
-    text: |
-      <code>gate = torch.clamp(gate, max=self.swiglu_limit)</code>：再截 gate，只截上界，大于 $L$ 的值变成 $L$。
-      $$\bar{\mathbf{gate}}=\min(\mathbf{gate},L)={{ gc | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{gate}$'
-      title: 穿过截断
-      text: 没被截断的元素局部导数是 1，被截断的元素局部导数是 0，梯度在这里停下。PyTorch 对正好等于边界的值也给 0。
+        $\viz{x}$ 同时用在 gate_proj 和 up_proj 两处，它的梯度是两条路相加。
+        $$\frac{\partial\ell}{\partial\viz{x}}={{ x.grad | matrix:3 }}$$
   - id: gate
-    when: not clamped
     show: m
-    label: '$\of{a}\odot\mathbf{up}$'
+    label: '$\viz{a}\odot\viz{up}$'
     title: 门控相乘
     text: 激活后的 gate 和 up 逐元素相乘，决定 up 的每个分量放行多少。
     backward:
-      label: '$\partial\of{a},\ \partial\mathbf{up}$'
-  - id: gate
-    when: clamped
-    show: m
-    label: '$\of{a}\odot\bar{\mathbf{up}}$'
-    title: 门控相乘
-    text: 激活后的 gate 和截断后的 up 逐元素相乘，决定 up 的每个分量放行多少。
-    backward:
-      label: '$\partial\of{a},\ \partial\bar{\mathbf{up}}$'
-  - id: cast
-    when: float_act
-    show: mc
-    label: '$\of{mc}$'
-    title: 转回输入的 dtype
-    text: |
-      <code>return self.w2(x.to(dtype))</code>：float32 里算出的乘积先转回输入的 dtype，<code>dtype</code> 是开头记下的 <code>x.dtype</code>，再进 w2。
-      $$\of{mc}={{ mc | matrix:2 }}$$
-    backward:
-      label: '$\partial\mathbf{m}$'
-      title: 穿过类型转换
-      text: 类型转换的局部导数是 1，梯度转回 float32。
+      label: '$\partial\viz{a},\ \partial\viz{up}$'
   - id: down
-    when: up_first
-    show: [Wd.T, down]
-    label: '$\of{down}$'
-    title: w2
-    text: |
-      <code>return self.w2(x.to(dtype))</code> 里的 w2：再投影回 $d$ 维。
-      $$\of{down} = {{ down | matrix }}$$
-    backward:
-      label: '$\partial W_d,\ \partial\of{m}$'
-  - id: down
-    when: not up_first
-    show: [Wd.T, down]
-    label: '$\of{down}$'
+    show: down_proj
+    label: '$\viz{down}$'
     title: down_proj
     text: |
-      再投影回 $d$ 维。
-      $$\of{down} = \of{m}W_d^{\top} = {{ down | matrix }}$$
+      <code>self.down_proj(...)</code>：再投影回 $d$ 维。
+      $$\viz{down}=\viz{m}{\viz{down_proj.weight}}^{\top}={{ down | matrix:2 }}$$
     backward:
-      label: '$\partial W_d,\ \partial\of{m}$'
+      label: '$\partial\viz{down_proj.weight},\ \partial\viz{m}$'

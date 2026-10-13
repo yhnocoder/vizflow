@@ -80,7 +80,7 @@ steps:
   - id: input_layernorm
     subtitle: Qwen3RMSNorm
     steps:
-      square:
+      float:
         append: attention 之前先做一次 RMSNorm，也就是 input_layernorm。
         backward:
           append: $\viz{x}$ 还会沿残差直接收到 $\pfl{\viz{a}}$，图里显示的是相加后的总量。
@@ -116,7 +116,7 @@ steps:
   - id: post_attention_layernorm
     subtitle: Qwen3RMSNorm
     steps:
-      square:
+      float:
         append: MLP 之前再做一次 RMSNorm，计算和 input_layernorm 相同。
         backward:
           append: $\viz{a}$ 还会沿 MLP 的残差直接收到 $\pfl{\viz{x_out}}$，图里显示的是相加后的总量。

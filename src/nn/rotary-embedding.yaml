@@ -1,0 +1,55 @@
+module: RotaryEmbedding
+args:
+  d_head: dim
+  rope_theta: float
+inputs:
+  x: { type: tensor, shape: [T, hidden_size], dtype: dtype }
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
+  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
+init:
+  buffers:
+    inv_freq:
+      type: tensor
+      shape: [d_head // 2]
+      dtype: fp32
+      value: 1.0 / rope_theta ** (arange(0, d_head, 2).float() / d_head)
+forward:
+  - freqs: (inv_freq.unsqueeze(1) @ position_ids.float().unsqueeze(0)).transpose(0, 1)
+  - emb: cat([freqs, freqs], dim=-1)
+  - cos: emb.cos().to(x.dtype)
+  - sin: emb.sin().to(x.dtype)
+tex:
+  inv_freq: '\boldsymbol{\omega}'
+  freqs: 't\,\boldsymbol{\omega}'
+  emb: '\boldsymbol{\theta}'
+  cos: '\cos'
+  sin: '\sin'
+formula: '\step{cos_sin}{\viz{cos}=\cos\big(}\step{emb}{\operatorname{cat}\big(}\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}}\step{emb}{,\ \cdot\big)}\step{cos_sin}{\big)}'
+fold:
+  label: '$\viz{cos},\ \viz{sin}$'
+  title: RotaryEmbedding（已折叠）
+  text: |
+    $$\viz{cos}={{ cos | matrix:3 }}$$
+
+steps:
+  - id: freqs
+    label: '$\viz{freqs}$'
+    title: 每个位置的旋转角度
+    text: |
+      <code>inv_freq</code> 在 <code>__init__</code> 里算好：<code>1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))</code>，$\omega_i=\theta^{-2i/d_h}$，$\theta={{ rope_theta }}$，一共 $d_h/2={{ d_head // 2 }}$ 个频率。<code>forward</code> 里 <code>(inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)</code> 是一个外积：第 $t$ 行第 $i$ 列是位置 $t$ 在频率 $\omega_i$ 上转过的角度 $t\,\omega_i$。
+      $$\viz{freqs}={{ freqs | matrix:3 }}$$
+  - id: emb
+    label: '$\viz{emb}$'
+    title: 角度表拼成两份
+    text: |
+      <code>torch.cat((freqs, freqs), dim=-1)</code>：把角度表横向拼两份，宽度变成 $d_h$。第 $c$ 列和第 $c+d_h/2$ 列的角度相同，正好对上 rotate_half 配成的一对。
+      $$\viz{emb}={{ emb | matrix:3 }}$$
+  - id: cos_sin
+    show: [cos, sin]
+    label: '$\viz{cos},\ \viz{sin}$'
+    title: cos 和 sin
+    text: |
+      <code>emb.cos() * self.attention_scaling</code> 和 <code>emb.sin() * self.attention_scaling</code>，再 <code>.to(x.dtype)</code> 转成输入的 dtype。默认的 rope 类型 attention_scaling 是 1，乘 1 不改变数值，图里没有画。cos、sin 是常量，不需要梯度。
+      $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$

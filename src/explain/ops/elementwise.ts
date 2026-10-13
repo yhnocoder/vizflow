@@ -62,6 +62,8 @@ export const divExplain = binary(
 );
 export const negExplain = unary((a) => `-${a}`, () => -1, () => '-1');
 export const expExplain = unary((a) => `\\exp(${a})`, (_x, y) => y, (x) => `e^{${x}}`);
+export const cosExplain = unary((a) => `\\cos ${a}`, (x) => -Math.sin(x), (x) => `-\\sin ${x}`);
+export const sinExplain = unary((a) => `\\sin ${a}`, (x) => Math.cos(x), (x) => `\\cos ${x}`);
 export const logExplain = unary((a) => `\\log ${a}`, (x) => 1 / x, (x) => `\\frac{1}{${x}}`);
 const rsqrtBase = unary(
   (a) => `\\frac{1}{\\sqrt{${a}}}`,

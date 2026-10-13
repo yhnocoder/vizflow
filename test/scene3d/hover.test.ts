@@ -24,9 +24,10 @@ describe('tokenAxes', () => {
     const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const axes = tokenAxes(page.graph.nodes);
     const axis = (name: string) => axes.get(page.nodes.get(name)!);
-    const attn = 'layer.self_attn';
-    const gqa = `${attn}.eager_attention_forward`;
-    expect(['ids', 'x0', 'layer.input_layernorm.out', `${gqa}.S[1]`, `${gqa}.P[1]`, `${gqa}.o`, 'z', 'logp'].map(axis)).toEqual([0, 0, 0, 0, 0, 0, 0, 0]);
-    expect(['E', `${attn}.Wq.T`, 'layer.input_layernorm.weight', `${gqa}.kT[1]`].map(axis)).toEqual([undefined, undefined, undefined, 1]);
+    const gqa = 'layers[0].self_attn.eager_attention_forward';
+    expect(['ids', 'e', 'layers[0].n1', 'layers[0].self_attn.q', 'layers[0].att', 'z', 'logp'].map(axis)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect([`${gqa}.S`, `${gqa}.P`, `${gqa}.attn_output`].map(axis)).toEqual([1, 1, 1]);
+    expect(['embed_tokens.weight', 'layers[0].self_attn.q_proj.weight.T', 'layers[0].input_layernorm.weight', 'cos'].map(axis)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(axis(`${gqa}.kT`)).toBe(2);
   });
 });

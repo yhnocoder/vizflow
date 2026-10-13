@@ -64,6 +64,9 @@ tex:
   v: '\mathbf{v}'
   qn: '\bar{\mathbf{q}}'
   kn: '\bar{\mathbf{k}}'
+  qt: '\bar{\mathbf{q}}'
+  kt: '\bar{\mathbf{k}}'
+  vt: '\mathbf{v}'
   qr: "\\mathbf{q}'"
   kr: "\\mathbf{k}'"
   o: '\mathbf{o}'
@@ -117,7 +120,7 @@ fold:
 steps:
   - id: q_proj
     brace: { title: q_proj, subtitle: nn.Linear }
-    show: [q_proj.weight.T, q_linear, q]
+    show: [q_proj.weight.T, q_linear]
     label: '$\viz{q}$'
     title: q_proj
     text: |
@@ -128,10 +131,10 @@ steps:
       title: 传到 q_proj 权重和 $\viz{x}$
       text: |
         权重的梯度是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。
-        $$\frac{\partial\ell}{\partial W_q^{\top}}=\viz{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}}$$
+        $$\frac{\partial\ell}{\partial W_q^{\top}}={\viz{x}}^{\top}\frac{\partial\ell}{\partial\mathbf{q}}$$
   - id: k_proj
     brace: { title: k_proj, subtitle: nn.Linear }
-    show: [k_proj.weight.T, k_linear, k]
+    show: [k_proj.weight.T, k_linear]
     label: '$\viz{k}$'
     title: k_proj
     text: |
@@ -142,7 +145,7 @@ steps:
       title: 传到 k_proj 权重和 $\viz{x}$
   - id: v_proj
     brace: { title: v_proj, subtitle: nn.Linear }
-    show: [v_proj.weight.T, v_linear, v]
+    show: [v_proj.weight.T, v_linear]
     label: '$\viz{v}$'
     title: v_proj
     text: |
@@ -272,6 +275,7 @@ steps:
             相加的两个输入都拿到同样的梯度。
             $$\frac{\partial\ell}{\partial(\bar{\mathbf{q}}\odot\cos)}=\frac{\partial\ell}{\partial(\mathrm{rh}\odot\sin)}=\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
   - id: eager_attention_forward
+    inline: true
     brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
     steps:
       krep:

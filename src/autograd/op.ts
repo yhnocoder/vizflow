@@ -67,6 +67,7 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
   dtype?: Dtype;
+  sameDtype?: boolean;
   int64?: boolean;
   explain?: OpExplain;
   cost?: OpCost;

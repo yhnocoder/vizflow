@@ -177,6 +177,8 @@ export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * 
 export const negOp = unary('neg', (x) => -x, () => -1, pointwise(1, 1, [[]]));
 export const expOp = unary('exp', Math.exp, (_x, y) => y, nonlinear('out'));
 export const logOp = unary('log', Math.log, (x) => 1 / x, nonlinear(0));
+export const cosOp = unary('cos', Math.cos, (x) => -Math.sin(x), nonlinear(0));
+export const sinOp = unary('sin', Math.sin, (x) => Math.cos(x), nonlinear(0));
 
 const COMPARISON_COST: OpCost = pointwise(1, 0, [[], []]);
 

@@ -7,7 +7,9 @@ import {
   clampOp,
   divOp,
   erfOp,
+  cosOp,
   expOp,
+  sinOp,
   geluOp,
   identityOp,
   logOp,
@@ -133,6 +135,8 @@ export interface BuiltinOps {
   div(input: Node, other: Node | number, options?: OpOptions): Node;
   neg(input: Node, options?: OpOptions): Node;
   exp(input: Node, options?: OpOptions): Node;
+  cos(input: Node, options?: OpOptions): Node;
+  sin(input: Node, options?: OpOptions): Node;
   log(input: Node, options?: OpOptions): Node;
   pow(input: Node, exponent: number, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
@@ -219,7 +223,9 @@ export const builtinOps: readonly AnyOpDef[] = [
   mulOp,
   divOp,
   negOp,
+  cosOp,
   expOp,
+  sinOp,
   logOp,
   powOp,
   rsqrtOp,

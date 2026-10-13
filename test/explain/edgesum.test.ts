@@ -34,6 +34,8 @@ const cases: Case[] = [
   { op: 'div', build: (g, r) => binary(g, r, 'div', [3, 5], [3, 1], true) },
   { op: 'neg', build: (g, r) => unary(g, r, 'neg', [2, 3]) },
   { op: 'exp', build: (g, r) => unary(g, r, 'exp', [2, 3]) },
+  { op: 'cos', build: (g, r) => unary(g, r, 'cos', [2, 3]) },
+  { op: 'sin', build: (g, r) => unary(g, r, 'sin', [2, 3]) },
   { op: 'log', build: (g, r) => unary(g, r, 'log', [2, 3], true) },
   {
     op: 'transpose',
