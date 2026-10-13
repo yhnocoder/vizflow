@@ -5,29 +5,26 @@ import:
   SiLU: vizflow/nn/silu
   Qwen3Attention: ./attention.yaml
 
-config:
-  T: dim
-  d_model: dim
+args:
   d_head: dim
   d_ff: dim
   num_heads: dim
   num_kv_heads: dim
-  dtype: dtype
   theta: { type: float, default: 1e6 }
 inputs:
-  x: { type: tensor, shape: [$T, $d_model], dtype: $dtype }
+  x: { type: tensor, shape: [T, d_model], dtype: dtype }
 outputs:
-  x_out: { type: tensor, shape: [$T, $d_model], dtype: $dtype }
+  x_out: { type: tensor, shape: [T, d_model], dtype: dtype }
 
 init:
   input_layernorm: RMSNorm
   self_attn:
     use: Qwen3Attention
-    config: { T: $T, d_model: $d_model, d_head: $d_head, num_heads: $num_heads, num_kv_heads: $num_kv_heads, dtype: $dtype, theta: $theta }
+    args: [d_head, num_heads, num_kv_heads, theta]
   post_attention_layernorm: RMSNorm
   mlp:
     use: GLU
-    config: { d_ff: $d_ff, act: SiLU }
+    args: [d_ff, { act: SiLU }]
 
 forward:
   - n1: input_layernorm(x)
@@ -74,7 +71,6 @@ fold:
 
 steps:
   - id: input_layernorm
-    show: input_layernorm
     subtitle: Qwen3RMSNorm
     steps:
       square:
@@ -92,7 +88,6 @@ steps:
           一步算出 $\viz{input_layernorm.weight}$ 的梯度，以及沿这一路交给 $\viz{x}$ 的梯度。
           $$\frac{\partial\ell}{\partial\viz{input_layernorm.weight}}={{ input_layernorm.weight.grad | matrix:3 }}$$
   - id: self_attn
-    show: self_attn
   - id: res1
     show: a
     notes:
@@ -112,7 +107,6 @@ steps:
         相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\viz{att}$，进入 attention；一份沿残差直接交给 $\viz{x}$。
         $$\frac{\partial\ell}{\partial\viz{att}}=\frac{\partial\ell}{\partial\viz{a}}={{ a.grad | matrix:3 }}$$
   - id: post_attention_layernorm
-    show: post_attention_layernorm
     subtitle: Qwen3RMSNorm
     steps:
       square:
@@ -122,7 +116,6 @@ steps:
       scale:
         append: $\viz{n}$ 是 MLP 的输入。
   - id: mlp
-    show: mlp
     subtitle: Qwen3MLP
     steps:
       gate_proj:

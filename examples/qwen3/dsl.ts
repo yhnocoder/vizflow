@@ -2,15 +2,16 @@ export type Expression = string;
 export type Reference = string;
 export type TemplateText = string;
 export type Latex = string;
-export type ConfigReference = `$${string}`;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
 export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
 export type Scalar = string | number | boolean;
 export type Value = Scalar | Value[] | ExpressionValue;
-export type Dimension = number | ConfigReference | ExpressionValue;
-export type ConfigType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
-export type ConfigDeclaration = ConfigType | ConfigField;
+export type Dimension = number | Expression;
+export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
+export type ArgDeclaration = ArgType | ArgField;
+export type ArgValue = Expression | number | boolean;
+export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>)[];
 export type InputDeclaration = TensorField | ListField;
 export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
 export type Show = Reference | Reference[] | ShowAll | ShowInputs | ShowProducer;
@@ -21,20 +22,20 @@ export declare class ExpressionValue {
   expr: Expression;
 }
 
-export declare class ConfigField {
-  type: ConfigType;
+export declare class ArgField {
+  type: ArgType;
   default?: Value;
 }
 
 export declare class TensorField {
   type: 'tensor';
   shape: Dimension[];
-  dtype: TensorDtype | ConfigReference;
+  dtype: TensorDtype | Expression;
 }
 
 export declare class ListField {
   type: 'list';
-  dtype: 'str' | TensorDtype | ConfigReference;
+  dtype: 'str' | TensorDtype | Expression;
 }
 
 export declare class Page {
@@ -52,11 +53,15 @@ export declare class Page {
 }
 
 export declare class PageConfig {
-  dims: Record<string, number>;
-  dtype?: TensorDtype;
-  real?: Record<string, Record<string, number>>[];
+  [arg: string]: Value | Tokenizer | Record<string, RealConfig> | undefined;
   seed?: number;
   tokenizer?: Tokenizer;
+  real?: Record<string, RealConfig>;
+}
+
+export declare class RealConfig {
+  [dim: string]: string | number;
+  name: string;
 }
 
 export declare class Tokenizer {
@@ -71,7 +76,7 @@ export declare class Camera {
 
 export declare class Module {
   import?: Record<string, string>;
-  config?: Record<string, ConfigDeclaration>;
+  args?: Record<string, ArgDeclaration>;
   inputs: Record<string, InputDeclaration>;
   outputs: Record<string, InputDeclaration>;
   init?: Initializers;
@@ -80,6 +85,7 @@ export declare class Module {
   formula?: Latex;
   fold?: Fold;
   steps: Step[];
+  unshown?: Reference[];
 }
 
 export declare class ModuleFile extends Module {
@@ -97,19 +103,19 @@ export declare class Weight extends TensorField {
 }
 
 export declare class Buffer extends TensorField {
-  value: Value;
+  value: Expression;
 }
 
 export declare class ModuleInstance {
   use: string;
-  config?: Record<string, Value>;
+  args?: Args;
   count?: never;
 }
 
 export declare class ModuleListInstance {
   use: ModuleList;
   count: Dimension;
-  config?: Record<string, Value>;
+  args?: Args;
 }
 
 export declare class Assignment {
@@ -255,6 +261,6 @@ export declare class RopeDisplay {
   rows: [number, number];
   head: number;
   theta: number;
-  d_head: Reference | number;
+  d_head: Expression | number;
   positions: number;
 }

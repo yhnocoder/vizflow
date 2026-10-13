@@ -4,42 +4,38 @@ import:
   RoPE: vizflow/nn/rope
   GQA: vizflow/nn/gqa
 
-config:
-  T: dim
-  d_model: dim
+args:
   d_head: dim
   num_heads: dim
   num_kv_heads: dim
-  dtype: dtype
   theta: { type: float, default: 1e6 }
 inputs:
-  x: { type: tensor, shape: [$T, $d_model], dtype: $dtype }
+  x: { type: tensor, shape: [T, d_model], dtype: dtype }
 outputs:
-  att: { type: tensor, shape: [$T, $d_model], dtype: $dtype }
+  att: { type: tensor, shape: [T, d_model], dtype: dtype }
 
 init:
   q_proj:
     use: Linear
-    config: { in: $d_model, out: { expr: num_heads * d_head }, bias: false }
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: false }
   k_proj:
     use: Linear
-    config: { in: $d_model, out: { expr: num_kv_heads * d_head }, bias: false }
+    args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
   v_proj:
     use: Linear
-    config: { in: $d_model, out: { expr: num_kv_heads * d_head }, bias: false }
+    args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
   q_norm: RMSNorm
   k_norm: RMSNorm
   apply_rotary_pos_emb:
     use: RoPE
-    config: { theta: $theta }
+    args: [theta]
   eager_attention_forward: GQA
   o_proj:
     use: Linear
-    config: { in: { expr: num_heads * d_head }, out: $d_model, bias: false }
-  buffers:
-    M: { type: tensor, shape: [$T, $T], dtype: $dtype, value: { expr: causal_mask(T) } }
+    args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
 
 forward:
+  - M: causal_mask(T)
   - q_linear: q_proj(x)
   - q: view(q_linear, T, num_heads, d_head)
   - k_linear: k_proj(x)
@@ -65,10 +61,10 @@ tex:
   o: '\mathbf{o}'
   att: '\mathbf{att}'
   M: 'M'
-  q_proj.W: 'W_q'
-  k_proj.W: 'W_k'
-  v_proj.W: 'W_v'
-  o_proj.W: 'W_o'
+  q_proj.weight: 'W_q'
+  k_proj.weight: 'W_k'
+  v_proj.weight: 'W_v'
+  o_proj.weight: 'W_o'
   q_norm.weight: '\boldsymbol{\gamma}_q'
   k_norm.weight: '\boldsymbol{\gamma}_k'
   q_norm.ms: '\mathrm{ms}^{q}'
@@ -81,21 +77,21 @@ formula: |-
   \step{apply_rotary_pos_emb.*}{\viz{qr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
   \step{q_norm.*}{\mathrm{norm}(}
-  \step{q_proj}{\viz{x}{\viz{q_proj.W}}^{\top}}
+  \step{q_proj}{\viz{x}{\viz{q_proj.weight}}^{\top}}
   \step{q_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{apply_rotary_pos_emb.*}{\viz{kr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
   \step{k_norm.*}{\mathrm{norm}(}
-  \step{k_proj}{\viz{x}{\viz{k_proj.W}}^{\top}}
+  \step{k_proj}{\viz{x}{\viz{k_proj.weight}}^{\top}}
   \step{k_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{v_proj}{\viz{v}}&
-  \step{v_proj}{=\viz{x}{\viz{v_proj.W}}^{\top}}\\
+  \step{v_proj}{=\viz{x}{\viz{v_proj.weight}}^{\top}}\\
   \step{o_proj}{\viz{att}}&
   \step{o_proj}{=}
   \step{eager_attention_forward.*}{\operatorname{Attn}(\viz{qr},\viz{kr},\viz{v})}
-  \step{o_proj}{ {\viz{o_proj.W}}^{\top}}
+  \step{o_proj}{ {\viz{o_proj.weight}}^{\top}}
   \end{aligned}
 fold:
   label: '$\viz{att}=\mathrm{self\_attn}(\viz{x})$'
@@ -113,7 +109,7 @@ fold:
 steps:
   - id: q_proj
     brace: { title: q_proj, subtitle: nn.Linear }
-    show: [q_proj.W.T, q_linear, q]
+    show: [q_proj.weight.T, q_linear, q]
     label: '$\viz{q}$'
     title: q_proj
     text: |
@@ -127,7 +123,7 @@ steps:
         $$\frac{\partial\ell}{\partial W_q^{\top}}=\viz{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}}$$
   - id: k_proj
     brace: { title: k_proj, subtitle: nn.Linear }
-    show: [k_proj.W.T, k_linear, k]
+    show: [k_proj.weight.T, k_linear, k]
     label: '$\viz{k}$'
     title: k_proj
     text: |
@@ -138,7 +134,7 @@ steps:
       title: 传到 k_proj 权重和 $\viz{x}$
   - id: v_proj
     brace: { title: v_proj, subtitle: nn.Linear }
-    show: [v_proj.W.T, v_linear, v]
+    show: [v_proj.weight.T, v_linear, v]
     label: '$\viz{v}$'
     title: v_proj
     text: |
@@ -217,7 +213,6 @@ steps:
       k_norm:
         beside: q_norm
   - id: apply_rotary_pos_emb
-    show: apply_rotary_pos_emb
     fold:
       text: |
         这几步合成一个旋转：每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵，位置 1 是单位阵。
@@ -273,7 +268,6 @@ steps:
             相加的两个输入都拿到同样的梯度。
             $$\frac{\partial\ell}{\partial(\bar{\mathbf{q}}\odot\cos)}=\frac{\partial\ell}{\partial(\mathrm{rh}\odot\sin)}=\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
   - id: eager_attention_forward
-    show: eager_attention_forward
     brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
     steps:
       krep:
@@ -387,7 +381,7 @@ steps:
           text: 拼接的反向是把梯度按列切回去。
   - id: o_proj
     brace: { title: o_proj, subtitle: nn.Linear }
-    show: [o_proj.W.T, att]
+    show: [o_proj.weight.T, att]
     label: o_proj
     title: o_proj
     text: |
