@@ -193,7 +193,7 @@ import '@yhnocoder/vizflow/element';
 </script>
 ```
 
-元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，标题和导语由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3-dsl.yaml`，页面 `examples/qwen3-dsl.html`。
+元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，标题和导语由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3/qwen3-dsl.yaml`，页面 `examples/qwen3/qwen3-dsl.html`。
 
 一个最小的页面文件：
 

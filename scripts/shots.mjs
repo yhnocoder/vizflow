@@ -8,7 +8,7 @@ import { chromium } from '@playwright/test';
 
 const usage = `usage: npm run shots -- <page> [options]
 
-  <page>             page path under the repo root, e.g. examples/qwen3-dsl.html
+  <page>             page path under the repo root, e.g. examples/qwen3/qwen3-dsl.html
   --out <dir>        output directory (default: a new temporary directory)
   --steps <list>     comma-separated steps: an index, or back / back+N counted
                      from the first backward step (default: 0)

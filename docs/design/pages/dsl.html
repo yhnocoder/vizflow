@@ -19,7 +19,7 @@
 <p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
 <h1>vizflow 页面描述文件 <span class="tag">第一版</span></h1>
 <p class="lead">由标准模块组成的页面（例如一层 Transformer）可以不写 JavaScript，只写一份 YAML 页面描述文件。<code>dsl</code> 入口把它编译成计算图、步骤、面板、讲解段落、模块记录和一棵布局树，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 再把这些交给已有的挂载流程。页面描述文件只是 JavaScript 接口之上的一层：编译结果就是普通的 <code>Graph</code>、<code>StepsSpec</code> 与 <code>PanelItem[]</code>，遇到描述文件写不出的需求时，页面改用 JavaScript 接口。JavaScript 调用方也可以直接把同样结构的对象传给 <code>compilePage</code>，YAML 只是这份结构的一种写法。</p>
-<p class="hint">完整示例：<code>examples/qwen3-dsl.yaml</code> 与它引用的 <code>examples/qwen3/attention.yaml</code>。它和 JavaScript 写的 <code>examples/qwen3-structure.html</code> 是同一页，测试比较两页的损失和每个权重的梯度。</p>
+<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code> 与它引用的 <code>examples/qwen3/attention.yaml</code>。它和 JavaScript 写的 <code>examples/qwen3-structure.html</code> 是同一页，测试比较两页的损失和每个权重的梯度。</p>
 
 <h2>文件里写什么</h2>
 <p>文件分两种。页面文件描述一整页，模块文件描述一个可以复用的模块，例如 RMSNorm。页面本身是根模块，body、steps、backward 的规则与模块相同。</p>

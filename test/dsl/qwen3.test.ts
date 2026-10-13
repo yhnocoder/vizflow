@@ -256,7 +256,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
   let ref: Reference;
 
   beforeAll(async () => {
-    page = await loadExample('qwen3-dsl.yaml');
+    page = await loadExample('qwen3/qwen3-dsl.yaml');
     steps = createSteps(page.graph, page.steps);
     ref = referenceModel() as Reference;
   });
@@ -388,7 +388,7 @@ describe('qwen3-dsl.yaml against the reference page', () => {
   });
 
   it('reads and replaces the token sequence', async () => {
-    const fresh = await loadExample('qwen3-dsl.yaml');
+    const fresh = await loadExample('qwen3/qwen3-dsl.yaml');
     const seq = fresh.sequence!;
     expect(seq.tokens).toEqual(['on', 'mat', 'the', 'sat', 'cat']);
     expect(seq.length).toBe(4);

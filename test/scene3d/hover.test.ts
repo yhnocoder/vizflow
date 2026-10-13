@@ -21,7 +21,7 @@ describe('tokenAxes', () => {
   });
 
   it('marks the Qwen3 activations, keeps weights and tables out', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const axes = tokenAxes(page.graph.nodes);
     const axis = (name: string) => axes.get(page.nodes.get(name)!);
     const attn = 'layer.self_attn';

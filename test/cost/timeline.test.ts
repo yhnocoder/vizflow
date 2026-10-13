@@ -135,7 +135,7 @@ describe('costTimeline on the MoE pages', () => {
 
 describe('costTimeline on the Qwen3 page', () => {
   it('counts every parameter of Qwen3-8B once the placeholder layers are repeated', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
     const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
     const QWEN3_8B_PARAMS = 8_190_735_360;
@@ -145,7 +145,7 @@ describe('costTimeline on the Qwen3 page', () => {
   });
 
   it('ends backward with one gradient per parameter and nothing else alive', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
     const t = costTimeline(page.graph, steps.list, { real: true });
     const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;

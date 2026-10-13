@@ -11,7 +11,7 @@ test('qwen3 YAML page compiles in the browser and walks every step without error
     if (m.type() === 'error' || m.text().startsWith('vizflow dsl:')) errors.push(m.text());
   });
   page.on('pageerror', (e) => errors.push(e.message));
-  await page.goto('/examples/qwen3-dsl.html');
+  await page.goto('/examples/qwen3/qwen3-dsl.html');
   await expect(page.locator('body')).toHaveAttribute('data-ready', 'true', { timeout: 60_000 });
   await expect(page.locator('vizflow-page > .vf-header .vf-title')).toHaveText('Qwen3 一层：从 token 到损失');
   await expect(page.locator('vizflow-page .vf-stage .vf-scene canvas')).toHaveCount(1);

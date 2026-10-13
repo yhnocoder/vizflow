@@ -8,12 +8,12 @@ import { type CompiledPage, loadPage } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { examplesUrl, readFileUrl } from './load';
 
-const VARIANT = new URL('qwen3-variant.yaml', examplesUrl).href;
+const VARIANT = new URL('qwen3/qwen3-variant.yaml', examplesUrl).href;
 const EPSILON = 1e-6;
 const SAMPLES = 8;
 
 async function loadVariant(): Promise<CompiledPage> {
-  const source = await readFile(new URL('qwen3-dsl.yaml', examplesUrl), 'utf8');
+  const source = await readFile(new URL('qwen3/qwen3-dsl.yaml', examplesUrl), 'utf8');
   const text = source
     .replace(/^dims: .*$/m, 'dims: { T: 3, d: 6, f: 10, V: 7, H: 4, Hkv: 2, dh: 8 }')
     .replace(/^vocab: .*$/m, 'vocab: [on, mat, the, sat, cat, dog, ran]')

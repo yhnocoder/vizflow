@@ -4,7 +4,7 @@ import type { StepModule } from '../steps';
 import { formatNumber, formatShape, offsetOf } from '../tensor';
 import { WAVE_INVERSE, checkFigure, figureTag } from '../ui/figure-spec';
 import { renderFigures } from '../ui/figures';
-import { BOX_FIXED_TEXT, BOX_FOLDED_TEXT, type SceneBox } from './boxes';
+import { BOX_FOLDED_TEXT, type SceneBox } from './boxes';
 import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
@@ -153,7 +153,7 @@ export class ScenePopups {
     const fragment = document.createDocumentFragment();
     const title = document.createElement('h4');
     title.className = 'vf-pop-title';
-    renderText(`${module.title}（${module.fixed ? BOX_FIXED_TEXT : BOX_FOLDED_TEXT}）`, title);
+    renderText(module.fixed ? module.title : `${module.title}（${BOX_FOLDED_TEXT}）`, title);
     fragment.appendChild(title);
     if (io !== undefined) {
       const J = moduleJacobian(c.g, module, io.input, io.output);

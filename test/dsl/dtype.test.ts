@@ -5,7 +5,7 @@ import { loadExample } from './load';
 
 describe('dtype in page files', () => {
   it('follows the HF Qwen3 dtypes in the Qwen3 example', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const dtype = (name: string) => page.nodes.get(name)!.dtype;
     expect(page.graph.dtype).toBe('bf16');
     expect(['ids', 'y', 'E', 'x0'].map(dtype)).toEqual(['int64', 'int64', 'bf16', 'bf16']);
