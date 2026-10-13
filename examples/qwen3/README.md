@@ -34,17 +34,41 @@ outputs:
 
 ## 计算与引用
 
-一个位置的内容按位置分三类，同一类位置写法相同：
+字符串按所在的位置分三类：表达式、模板和 LaTeX。`$` 只在模板里出现，表示公式。
 
-| 位置 | 写法 | 例子 |
-|---|---|---|
-| 表达式：`args` 的取值、`count`、`shape`、`dtype`、buffer 的 `value`、`forward`、`show`、`notes.at`、面板和 section 里的张量引用 | 直接写表达式，名字就是引用 | `num_heads * d_head`、`causal_mask(T)`、`layers[0].self_attn.qn` |
-| 模板：`label`、`title`、`subtitle`、`text`、`append`、`brace`、`note`、`hint` | 普通文字；`$...$` 是 LaTeX 公式，`{{ ... }}` 插入表达式的值 | `第 {{i + 1}} 层`、`'$\viz{e}$'` |
-| LaTeX：`tex` 的值、`formula` | 整个值就是 LaTeX，不加 `$` | `'\mathbf{h}_{\mathrm{norm}}'` |
+```yaml
+# 表达式：args 的取值、count、shape、dtype、forward、show、notes.at，以及面板和 section 里的张量引用。
+# 直接写表达式，名字就是引用，不加 $。
+init:
+  q_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: false }
+inputs:
+  x: { type: tensor, shape: [T, d_model], dtype: dtype }
+forward:
+  - M: causal_mask(T)
+  - zf: z.float()
+steps:
+  - id: float
+    show: zf
 
-`$` 只在模板里出现，表示公式。表达式里的字符串字面量写引号，dtype 名（`bf16`、`fp32`）和导入的模块名（`SiLU`）是表达式里可用的名字。
+# 模板：label、title、subtitle、text、append、brace、note、hint。
+# 普通文字；$...$ 是 LaTeX 公式，{{ ... }} 插入表达式的值。
+    label: '$\viz{zf}$'
+    title: 转成 float32
+    text: |
+      q 有 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$。
 
-页面的 `config`、`inputs`、`values` 是数据，按 YAML 字面值读取；需要计算时写 `{ expr: ... }`。含 `[`、`:` 等字符的表达式在 YAML 里加引号。
+# LaTeX：tex 的值和 formula。整个值就是 LaTeX，不加 $。
+tex:
+  h_norm: '\mathbf{h}_{\mathrm{norm}}'
+formula: |-
+  \step{res1}{\viz{a}=\viz{x}+\viz{att}}
+```
+
+表达式里的字符串字面量写引号，dtype 名（`bf16`、`fp32`）和导入的模块名（`SiLU`）是表达式里可用的名字。
+
+页面的 `config` 和 `inputs` 是数据，按 YAML 字面值读取；需要计算时写 `{ expr: ... }`。含 `[`、`:` 等字符的表达式在 YAML 里加引号。
 
 ```yaml
 inputs:
@@ -80,18 +104,9 @@ layers:
 
 内置的 `Linear` 和 `Embedding` 使用 PyTorch 的参数名：`Linear` 的 `args` 是 `in_features`、`out_features`、`bias`，`Embedding` 是 `num_embeddings`、`embedding_dim`；两者的参数都叫 `weight`，形状与 PyTorch 相同。权重的初始化方式写在模块自己的 `weights` 声明里，使用处不写。
 
-## 参数取值
+## 参数
 
-参数默认按 `config.seed` 随机初始化。`values` 是可选的，给指定参数写固定的数值，用于两种情况：讲解需要特定的数值才能看清某个现象，或者需要和参考页、真实 checkpoint 的数值对齐。
-
-`values` 的键是参数沿 `init` 树的完整路径，和 PyTorch `state_dict` 的键一致。层列表用 `layers[0]` 指定一层，用 `layers[*]` 给所有层写同一组初始值；各层仍是独立参数，梯度各自计算。
-
-```yaml
-values:
-  embedding.weight: [...]
-  layers[*].self_attn.q_proj.weight: [...]
-  lm_head.weight: [...]
-```
+参数按 `config.seed` 随机初始化。参数的路径沿 `init` 树，和 PyTorch `state_dict` 的键一致，例如 `layers[0].self_attn.q_proj.weight`、`lm_head.weight`。
 
 ## 讲解
 

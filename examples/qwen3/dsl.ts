@@ -49,7 +49,6 @@ export declare class Page {
   modules: Record<string, Module>;
   panels?: Panel[];
   sections?: Section[];
-  values?: Record<Reference, Value>;
 }
 
 export declare class PageConfig {
