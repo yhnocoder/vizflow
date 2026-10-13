@@ -1,4 +1,4 @@
-import { DTYPE_BYTES, type Graph, type Node, type OpCost, opDef } from '../autograd';
+import { DTYPE_BYTES, type Graph, type Node, type OpCost, opDef, realSizeOf } from '../autograd';
 import type { PageModule, StepInfo } from '../steps';
 
 export type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad' | 'grad';
@@ -143,8 +143,8 @@ class CostModel {
 
   scale(n: Node, repeat?: number): Scale {
     const scale: Scale = { batch: this.batched[n.id] ? this.batch : 1 };
-    const real = product(n.copies.real.map((d) => (typeof d === 'number' ? d : this.sizes[d])));
-    if (this.real && real !== n.copies.drawn) scale.copies = { drawn: n.copies.drawn, real };
+    const real = this.real ? product(n.copies.real.map((d) => realSizeOf(d, this.sizes, this.shapes) as number)) : n.copies.drawn;
+    if (real !== n.copies.drawn) scale.copies = { drawn: n.copies.drawn, real };
     if (repeat !== undefined) scale.repeat = repeat;
     return scale;
   }

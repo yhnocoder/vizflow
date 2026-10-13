@@ -1,6 +1,6 @@
 import './ops';
 
-export { graph, type Graph, type GraphOptions, type OpOptions, type LabelOptions, type SplitOptions } from './graph';
+export { graph, realSizeOf, type Graph, type GraphOptions, type OpOptions, type LabelOptions, type SplitOptions, type Size, type DerivedSize, type RealSize } from './graph';
 export { DTYPES, DTYPE_BYTES, DEFAULT_DTYPE, LABEL_DTYPE, isIntegerDtype, type Dtype } from './dtype';
 export { Node, type NodeKind, type NodeOptions, type NodeCopies, type CardText } from './node';
 export type { OpDef, OpCost, OpFlops, Saved, OpExplain, OpCtx, Pattern, ForwardTexArgs, LocalTexArgs } from './op';

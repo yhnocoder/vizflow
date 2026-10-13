@@ -1,7 +1,7 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
-import { broadcastIndex, formatNumber, normDim } from '../../tensor';
+import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, powOperands, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
+import { type Tensor, broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
   const input = ctx.inputs[arg];
@@ -49,6 +49,11 @@ export const subExplain = binary(
   (a, b) => `${a}-${b}`,
   (_a, _b, arg) => (arg === 0 ? 1 : -1),
   (_a, _b, arg) => (arg === 0 ? '1' : '-1'),
+);
+export const rsubExplain = binary(
+  (a, b) => `${b}-${a}`,
+  (_a, _b, arg) => (arg === 0 ? -1 : 1),
+  (_a, _b, arg) => (arg === 0 ? '-1' : '1'),
 );
 export const mulExplain = binary(
   (a, b) => `${a}\\cdot ${b}`,
@@ -145,16 +150,40 @@ export const clampExplain: OpExplain = {
   },
 };
 
-const exponentOf =(attrs: object) => (attrs as { exponent: number }).exponent;
+function powRole(attrs: PowAttrs, arg: number): 'base' | 'exponent' {
+  return attrs.input === undefined && arg === 0 ? 'base' : 'exponent';
+}
+
+function powAt(ctx: OpCtx, out: number[]): { base: number; exponent: number } {
+  const { base, exponent } = powOperands(ctx.inputs, ctx.attrs as PowAttrs);
+  const at = (value: Tensor | number) => (typeof value === 'number' ? value : value.get(broadcastIndex(out, value.shape)));
+  return { base: at(base), exponent: at(exponent) };
+}
+
+function powTex(attrs: PowAttrs, ins: readonly string[]): { base: string; exponent: string } {
+  const { base, exponent } = powOperands(ins, attrs);
+  return { base: typeof base === 'number' ? (base < 0 ? `\\left(${base}\\right)` : `${base}`) : base, exponent: `${exponent}` };
+}
 
 export const powExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, _out, _arg, input) => exponentOf(ctx.attrs) * ctx.inputs[0].get(input) ** (exponentOf(ctx.attrs) - 1),
+  local: (ctx, out, arg) => {
+    const { base, exponent } = powAt(ctx, out);
+    return powRole(ctx.attrs as PowAttrs, arg) === 'base' ? exponent * base ** (exponent - 1) : base ** exponent * Math.log(base);
+  },
   tex: {
-    forward: (s) => (exponentOf(s.attrs) === 2 ? `${s.in[0]}\\odot ${s.in[0]}` : `{${s.in[0]}}^{${exponentOf(s.attrs)}}`),
+    forward: (s) => {
+      const attrs = s.attrs as PowAttrs;
+      const { base, exponent } = powTex(attrs, s.in);
+      return attrs.exponent === 2 ? `${base}\\odot ${base}` : `{${base}}^{${exponent}}`;
+    },
     local: (s) => {
-      const p = exponentOf(s.attrs);
-      return p - 1 === 1 ? `${p}${s.in}` : `${p}{${s.in}}^{${p - 1}}`;
+      const attrs = s.attrs as PowAttrs;
+      const { base, exponent } = powTex(attrs, s.ins);
+      if (powRole(attrs, s.arg) === 'exponent') return `{${base}}^{${exponent}}\\ln ${base}`;
+      const p = attrs.exponent;
+      if (p === undefined) return `${exponent}{${base}}^{${exponent}-1}`;
+      return p - 1 === 1 ? `${p}${base}` : `${p}{${base}}^{${p - 1}}`;
     },
   },
 };

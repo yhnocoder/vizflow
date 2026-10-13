@@ -168,6 +168,7 @@ const nonlinear = (saved: 0 | 'out') => pointwise(NONLINEAR_FORWARD, NONLINEAR_B
 
 export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([false, false]));
 export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
+export const rsubOp = binary('rsub', (x, y) => y - x, () => [-1, 1], additive([true, false]));
 export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]])), (x, y) => x * y);
 export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)], pointwise(1, 1, [[], [0, 1]])), floorModExact);
 export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
@@ -278,13 +279,46 @@ export const floorDivideOp = withInt64(
   { ...binary('floor_divide', (x, y) => Math.floor(x / y), () => [0, 0], COMPARISON_COST), differentiable: [false, false], backward: () => [null, null] },
   floorDivExact,
 );
-export const powOp = unary<{ exponent: number }>(
-  'pow',
-  (x, { exponent }) => x ** exponent,
-  (x, _y, { exponent }) => exponent * x ** (exponent - 1),
-  nonlinear(0),
-  ['input', 'exponent'],
-);
+export interface PowAttrs {
+  input?: number;
+  exponent?: number;
+}
+
+export function powOperands<T>(inputs: readonly T[], attrs: PowAttrs): { base: T | number; exponent: T | number } {
+  let k = 0;
+  const base = attrs.input ?? inputs[k++];
+  const exponent = attrs.exponent ?? inputs[k++];
+  return { base, exponent };
+}
+
+const asTensor = (value: Tensor | number) => (typeof value === 'number' ? new Tensor([], [value]) : value);
+
+export const powOp: OpDef<PowAttrs> = {
+  name: 'pow',
+  args: ['input', 'exponent'],
+  tensors: ['input', 'exponent'],
+  scalars: ['input', 'exponent'],
+  cost: pointwise(NONLINEAR_FORWARD, NONLINEAR_BACKWARD, [[0, 1], [0, 1]]),
+  shape: (shapes, attrs) => {
+    const { base, exponent } = powOperands(shapes, attrs);
+    if (typeof base === 'number' && typeof exponent === 'number') throw new Error('pow: needs a tensor as the base or the exponent');
+    return typeof base === 'number' ? [...(exponent as number[])] : typeof exponent === 'number' ? [...base] : broadcastShapes(base, exponent);
+  },
+  forward: (inputs, attrs) => {
+    const { base, exponent } = powOperands(inputs, attrs);
+    return zipWith(asTensor(base), asTensor(exponent), (x, y) => x ** y);
+  },
+  backward: (gradOut, inputs, _out, attrs) => {
+    const { base, exponent } = powOperands(inputs, attrs);
+    const b = asTensor(base);
+    const e = asTensor(exponent);
+    const grads: Tensor[] = [];
+    const scaled = (local: Tensor, shape: readonly number[]) => unbroadcast(zipWith(local, gradOut, (l, g) => l * g), shape);
+    if (typeof base !== 'number') grads.push(scaled(zipWith(b, e, (x, y) => y * x ** (y - 1)), base.shape));
+    if (typeof exponent !== 'number') grads.push(scaled(zipWith(b, e, (x, y) => x ** y * Math.log(x)), exponent.shape));
+    return grads;
+  },
+};
 export const rsqrtOp: OpDef<{ eps: number }> = {
   ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3, nonlinear('out')),
   defaults: { eps: 0 },

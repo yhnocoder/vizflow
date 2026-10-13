@@ -88,6 +88,25 @@ const cases: Case[] = [
   { op: 'sub', build: (g, r) => scalar(g, r, 'sub', -1.5) },
   { op: 'mul', build: (g, r) => scalar(g, r, 'mul', -0.7) },
   { op: 'div', build: (g, r) => scalar(g, r, 'div', 4) },
+  { op: 'rsub', build: (g, r) => binary(g, r, 'rsub', [2, 3], [3]) },
+  { op: 'rsub', build: (g, r) => scalar(g, r, 'rsub', 1) },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.pow(10, x), inputs: [x] };
+    },
+  },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3], true));
+      const y = g.input('y', [3], randomValues(r, [3]));
+      return { out: g.pow(x, y), inputs: [x, y] };
+    },
+  },
+  { op: 'arange', build: (g) => ({ out: g.arange(1, 7, 2), inputs: [] }) },
+  { op: 'causal_mask', build: (g) => ({ out: g.causal_mask(3, 'fp32'), inputs: [] }) },
   {
     op: 'pow',
     build: (g, r) => {

@@ -399,6 +399,7 @@ export const causalConv1dOp: OpDef<ConvAttrs> = {
   name: 'causal_conv1d',
   args: ['input', 'weight'],
   tensors: ['input', 'weight'],
+  sameDtype: ['input', 'weight'],
   sizes: ['dilation'],
   defaults: { dilation: 1 },
   shape: ([input, weight], attrs) => {
@@ -719,6 +720,7 @@ export const indexAddOp: OpDef<IndexAddAttrs> = {
   name: 'index_add',
   args: ['input', 'dim', 'index', 'source'],
   tensors: ['input', 'index', 'source'],
+  sameDtype: ['input', 'source'],
   differentiable: [true, false, true],
   shape: ([input, index, source], attrs) => {
     indexAddLayout(input, index, source, attrs);
@@ -989,6 +991,7 @@ export const scatterOp: OpDef<ScatterAttrs> = {
   name: 'scatter',
   args: ['input', 'dim', 'index', 'src'],
   tensors: ['input', 'index', 'src'],
+  sameDtype: ['input', 'src'],
   scalars: ['src'],
   differentiable: [true, false, true],
   shape: ([input, index, src], attrs) => {
@@ -1033,6 +1036,7 @@ export const indexPutOp: OpDef<Record<string, never>> = {
   name: 'index_put',
   args: ['input', 'mask', 'values'],
   tensors: ['input', 'mask', 'values'],
+  sameDtype: ['input', 'values'],
   differentiable: [true, false, true],
   shape: ([input, mask, values]) => {
     indexPutLayout(input, mask, values);

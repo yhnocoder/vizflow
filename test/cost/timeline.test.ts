@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { builtinOps, graph, opDef } from '../../src/core';
+import { builtinOps, graph, opDef, realSizeOf } from '../../src/core';
 import { FLOP_RULES, type MemoryKind, type StepCost, costTimeline, createSteps } from '../../src/steps';
 import { loadExample } from '../dsl/load';
 
@@ -118,7 +118,8 @@ describe('costTimeline on the MoE pages', () => {
     const node = page.graph.node('linear_layer.linear_attn.chunk_gated_delta_rule.S[1][1]')!;
     const realCount = (dims: Record<string, number>) => {
       const sizes = page.graph.realSizes(dims);
-      return node.copies.real.map((d) => (typeof d === 'number' ? d : sizes[d])).reduce((p, v) => p * v, 1);
+      const shapes = page.graph.realShapes(dims);
+      return node.copies.real.map((d) => realSizeOf(d, sizes, shapes) as number).reduce((p, v) => p * v, 1);
     };
     const heads = page.graph.realSizes().Hv;
     expect(realCount({})).toBe(heads * 64);

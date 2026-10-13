@@ -1,8 +1,6 @@
-import type { Dtype, Node } from '../../autograd';
+import type { Dtype, Node, RealSize } from '../../autograd';
 import type { ModuleDef } from '../load';
 import type { Where } from '../source';
-
-export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
 
 export interface Num {
   toy: number;

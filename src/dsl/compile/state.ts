@@ -1,7 +1,8 @@
-import { type Graph, type Node, graph } from '../../autograd';
+import { type Graph, type Node, type Size, graph } from '../../autograd';
 import type { Nested } from '../../tensor';
 import { type Where, fail } from '../source';
 import type { Env, Num, RealSizeValues } from './types';
+import { realOf } from './util';
 
 const INIT_DIGITS = 2;
 
@@ -29,15 +30,10 @@ export class CompilerState {
   readonly nodes = new Map<string, Node>();
   private random: () => number = rng(0);
   private realPage = false;
-  private readonly namedDims = new Map<string, string>();
-  private readonly derivedDims = new Set<string>();
 
   setupGraph(setup: GraphSetup, where: Where): void {
     const dims: Record<string, number> = {};
-    for (const [name, value] of setup.dims) {
-      dims[name] = value.toy;
-      this.namedDims.set(`${value.toy}:${value.real}`, name);
-    }
+    for (const [name, value] of setup.dims) dims[name] = value.toy;
     this.realPage = setup.real !== undefined;
     try {
       this.g = graph({ dims, ...(setup.real === undefined ? {} : { real: setup.real }), dtype: setup.dtype });
@@ -47,25 +43,11 @@ export class CompilerState {
     this.random = rng(setup.seed);
   }
 
-  dimSpec(value: Num): number | string {
+  dimSpec(value: Num): Size {
     if (!this.realPage) return value.toy;
     if (value.dim !== undefined) return value.dim;
-    if (value.toy === value.real && value.derive === undefined) return value.toy;
-    const key = `${value.toy}:${value.real}`;
-    const name = this.namedDims.get(key);
-    if (name !== undefined && (value.derive === undefined || this.derivedDims.has(name))) return name;
-    const derived = value.derive === undefined ? key : this.derivedName(key);
-    this.g.addDim(derived, value.toy, value.real, value.derive);
-    if (value.derive !== undefined) this.derivedDims.add(derived);
-    if (name === undefined) this.namedDims.set(key, derived);
-    return derived;
-  }
-
-  private derivedName(key: string): string {
-    if (this.g.dims[key] === undefined) return key;
-    let n = 2;
-    while (this.g.dims[`${key}#${n}`] !== undefined) n++;
-    return `${key}#${n}`;
+    if (value.derive === undefined && value.toy === value.real) return value.toy;
+    return { toy: value.toy, real: value.real, derive: realOf(value) };
   }
 
   initValues(kind: string, shape: number[]): Nested {

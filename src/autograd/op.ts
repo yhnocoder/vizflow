@@ -66,11 +66,21 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   forward(inputs: Tensor[], attrs: A): Tensor;
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
-  dtype?: Dtype;
-  sameDtype?: boolean;
+  dtype?: Dtype | ((attrs: A) => Dtype);
+  sameDtype?: string[];
   int64?: boolean;
   explain?: OpExplain;
   cost?: OpCost;
 }
 
 export type AnyOpDef = OpDef<any>;
+
+export type ComposeApply<T> = (op: string, args: unknown[], last: boolean) => T;
+
+export interface CompositeDef {
+  name: string;
+  args: string[];
+  tensors: string[];
+  optional: string[];
+  compose<T>(apply: ComposeApply<T>, inputs: (T | null)[]): T;
+}

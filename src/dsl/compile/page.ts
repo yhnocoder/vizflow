@@ -205,7 +205,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     const at = child(configWhere, config, name);
     let value: Value;
     if (typeof raw === 'number') {
-      value = { toy: raw, real: realOf(name, raw) };
+      value = type === 'dim' || type === 'int' ? { toy: raw, real: realOf(name, raw), dim: name } : { toy: raw, real: realOf(name, raw) };
       if (type === 'dim' || type === 'int') dims.set(name, value);
     } else if (typeof raw === 'string' && type === 'dtype') {
       if (!(DTYPES as readonly string[]).includes(raw)) fail(at, `unknown dtype '${raw}'`);

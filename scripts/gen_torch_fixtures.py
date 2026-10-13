@@ -853,6 +853,17 @@ def trigonometric_cases():
     return unary_cases("cos", torch.cos) + unary_cases("sin", torch.sin)
 
 
+def creation_and_reverse_cases():
+    cases = binary_cases("rsub", torch.rsub) + scalar_operand_cases("rsub", torch.rsub)
+    cases.append(op_case("pow", "scalar base 10.0 with exponent (2, 3)", lambda x: torch.pow(10.0, x), [("input", randn(2, 3))], [10.0, tensor_arg(0)]))
+    cases.append(op_case("pow", "base (2, 3) with exponent (3,)", torch.pow, [("input", positive(2, 3)), ("input", randn(3))], [tensor_arg(0), tensor_arg(1)]))
+    for args in [(5,), (2, 7), (1, 8, 3), (0.5, 2.5, 0.5), (6, 0, -2)]:
+        cases.append(op_case("arange", f"arange{args}", lambda args=args: torch.arange(*args), [], list(args)))
+    for size, dtype, name in [(4, torch.float32, "fp32"), (3, torch.bfloat16, "bf16")]:
+        cases.append(op_case("causal_mask", f"size {size} {name}", lambda size=size, dtype=dtype: torch.full((size, size), torch.finfo(dtype).min, dtype=dtype).triu(1), [], [size, name]))
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -868,7 +879,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
     write("pages.json", pages + stable_pages)
 
 

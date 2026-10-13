@@ -23,6 +23,7 @@ import {
   softplusExplain,
   sqrtExplain,
   subExplain,
+  rsubExplain,
   transposeExplain,
   whereExplain,
   greaterExplain,
@@ -70,6 +71,7 @@ import {
   sortExplain,
   indexPutExplain,
 } from './index_ops';
+import { arangeExplain, causalMaskExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
 import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -78,6 +80,9 @@ import { logSoftmaxExplain, softmaxExplain } from './softmax';
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   add: addExplain,
   sub: subExplain,
+  rsub: rsubExplain,
+  arange: arangeExplain,
+  causal_mask: causalMaskExplain,
   mul: mulExplain,
   div: divExplain,
   neg: negExplain,

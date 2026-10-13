@@ -1,7 +1,8 @@
 import type { OpOptions } from '../graph';
 import type { Node } from '../node';
-import type { AnyOpDef } from '../op';
-import { defineOp } from '../registry';
+import type { Dtype } from '../dtype';
+import type { AnyOpDef, CompositeDef } from '../op';
+import { defineComposite, defineOp } from '../registry';
 import {
   addOp,
   clampOp,
@@ -25,6 +26,7 @@ import {
   softplusOp,
   sqrtOp,
   subOp,
+  rsubOp,
   transposeOp,
   whereOp,
   greaterOp,
@@ -73,7 +75,8 @@ import {
   indexPutOp,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
-import { groupedLinearOp, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
+import { groupedLinearOp, linearComposite, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
+import { arangeOp, causalMaskOp } from './creation';
 import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -138,7 +141,12 @@ export interface BuiltinOps {
   cos(input: Node, options?: OpOptions): Node;
   sin(input: Node, options?: OpOptions): Node;
   log(input: Node, options?: OpOptions): Node;
-  pow(input: Node, exponent: number, options?: OpOptions): Node;
+  rsub(input: Node, other: Node | number, options?: OpOptions): Node;
+  pow(input: Node | number, exponent: Node | number, options?: OpOptions): Node;
+  arange(end: number | string, options?: OpOptions): Node;
+  arange(start: number, end: number | string, step?: number, options?: OpOptions): Node;
+  causal_mask(size: number | string, dtype: Dtype, options?: OpOptions): Node;
+  linear(input: Node, weight: Node, bias?: Node | null, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
   reciprocal(input: Node, options?: OpOptions): Node;
@@ -220,6 +228,7 @@ export interface BuiltinOps {
 export const builtinOps: readonly AnyOpDef[] = [
   addOp,
   subOp,
+  rsubOp,
   mulOp,
   divOp,
   negOp,
@@ -296,6 +305,11 @@ export const builtinOps: readonly AnyOpDef[] = [
   reshapeOp,
   repeatKvOp,
   contiguousOp,
+  arangeOp,
+  causalMaskOp,
 ];
 
+export const builtinComposites: readonly CompositeDef[] = [linearComposite];
+
 for (const def of builtinOps) defineOp(def);
+for (const def of builtinComposites) defineComposite(def);

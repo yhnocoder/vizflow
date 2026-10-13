@@ -1,5 +1,6 @@
 import { type Where, child, fail } from '../source';
-import type { Num, RealSize } from './types';
+import type { RealSize } from '../../autograd';
+import type { Num } from './types';
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -14,12 +15,14 @@ export function num(n: number): Num {
 }
 
 export function realOf(n: Num): RealSize {
-  return n.derive ?? (() => n.real);
+  if (n.derive !== undefined) return n.derive;
+  const dim = n.dim;
+  return dim === undefined ? () => n.real : (sizes) => sizes[dim];
 }
 
 export function combine(nums: Num[], fn: (...values: number[]) => number): Num {
   const out: Num = { toy: fn(...nums.map((n) => n.toy)), real: fn(...nums.map((n) => n.real)) };
-  if (nums.some((n) => n.derive !== undefined)) {
+  if (nums.some((n) => n.derive !== undefined || n.dim !== undefined)) {
     const parts = nums.map(realOf);
     out.derive = (sizes, shapes) => fn(...parts.map((part) => part(sizes, shapes)));
   }
