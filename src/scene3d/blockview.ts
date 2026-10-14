@@ -7,7 +7,7 @@ import type { LinearRgb } from '../theme';
 import type { BarMesh } from './blocks';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import type { SceneController } from './controller';
-import type { Label } from './labels';
+import { IDLE_FLAG, type Label } from './labels';
 import type { Vec3 } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 import { barHeight } from './scales';
@@ -165,7 +165,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   title.setData('node', node.name);
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
-  title.setFlag('vf-idle', c.options.steps !== undefined && !active);
+  title.setFlag(IDLE_FLAG, c.options.steps !== undefined && !active);
   texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
   if (renderable.bars !== undefined) {
     title.pos = [block.title.x, block.title.y, block.title.z];

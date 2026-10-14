@@ -132,6 +132,8 @@ interface Segment {
   folded: boolean;
 }
 
+type Sibling = { kind: 'group'; name: string; position: number; on: boolean } | { kind: 'step'; info: StepInfo; position: number; on: boolean };
+
 type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number; run: number[] };
 
 export const SEGMENT_PREVIEW_STEPS = 5;
@@ -190,13 +192,18 @@ function Timeline(props: {
       return out;
     };
     const positionsInside = (depth: number) => list.flatMap((info, position) => (inside(depth)(info) ? [position] : []));
-    const items = itemsAt(chain.length, chain.length === 0 ? active.positions : positionsInside(chain.length));
-    const siblings =
-      chain.length < 2
+    const nested = chain.length > 0 && list.some((info) => inside(chain.length)(info) && info.groups.length > chain.length);
+    const level = chain.length === 0 ? undefined : nested ? chain.length : chain.length - 1;
+    const pool = (depth: number) => (depth === 0 ? active.positions : positionsInside(depth));
+    const siblings: Sibling[] =
+      level === undefined
         ? []
-        : itemsAt(chain.length - 1, positionsInside(chain.length - 1)).flatMap((item) => (item.kind === 'group' ? [{ name: item.name, position: item.position, on: item.run.includes(current) }] : []));
-    const crumbs = siblings.length > 1 ? path.slice(0, -1) : path;
-    return { dir, segments, all, active, directions, crumbs, siblings: siblings.length > 1 ? siblings : [], items, position: all.indexOf(current) + 1 };
+        : itemsAt(level, pool(level)).map((item) =>
+            item.kind === 'group' ? { kind: 'group', name: item.name, position: item.position, on: item.run.includes(current) } : { kind: 'step', info: item.info, position: item.position, on: item.position === current },
+          );
+    const crumbs = level === undefined ? [] : path.slice(0, level);
+    const own = (level === undefined ? itemsAt(0, active.positions) : nested ? [] : itemsAt(chain.length, positionsInside(chain.length))).flatMap((item) => (item.kind === 'step' ? [item] : []));
+    return { dir, segments, all, active, directions, crumbs, siblings, own, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
   const [peek, setPeek] = createSignal<{ segment: Segment; center: number } | undefined>();
@@ -270,37 +277,30 @@ function Timeline(props: {
             </>
           )}
         </For>
-        <Show when={view().siblings.length > 0}>
+        <Show when={view().crumbs.length > 0 && view().siblings.length > 0}>
           <span class="vf-tl-crumbsep">›</span>
-          <For each={view().siblings}>
-            {(sibling) => (
+        </Show>
+        <For each={view().siblings}>
+          {(sibling) =>
+            sibling.kind === 'group' ? (
               <button type="button" class="vf-tl-crumb vf-tl-sib" aria-current={sibling.on ? 'location' : undefined} onClick={() => steps.go(sibling.position)}>
                 <Rich text={sibling.name} />
               </button>
-            )}
-          </For>
-        </Show>
-      </div>
-      <div class="vf-tl-sub">
-        <For each={view().items}>
-          {(item) =>
-            item.kind === 'step' ? (
-              <button
-                type="button"
-                class="vf-st"
-                aria-current={props.current() === item.position ? 'step' : undefined}
-                onClick={() => steps.go(item.position)}
-                ref={props.label(item.info)}
-              >
-                {props.plainLabel(item.info)}
-              </button>
             ) : (
-              <button type="button" class="vf-st vf-st-group" onClick={() => steps.go(item.position)}>
-                <Rich text={item.name} />
-                <span class="vf-st-more">›</span>
+              <button type="button" class="vf-tl-crumb vf-tl-sib" aria-current={sibling.on ? 'location' : undefined} onClick={() => steps.go(sibling.position)} ref={props.label(sibling.info)}>
+                {props.plainLabel(sibling.info)}
               </button>
             )
           }
+        </For>
+      </div>
+      <div class="vf-tl-sub">
+        <For each={view().own}>
+          {(item) => (
+            <button type="button" class="vf-st" aria-current={props.current() === item.position ? 'step' : undefined} onClick={() => steps.go(item.position)} ref={props.label(item.info)}>
+              {props.plainLabel(item.info)}
+            </button>
+          )}
         </For>
       </div>
     </div>

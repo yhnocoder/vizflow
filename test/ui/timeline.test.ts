@@ -77,15 +77,16 @@ describe('mountSteps timeline', () => {
     expect(bars[2].classList.contains('vf-on')).toBe(true);
     expect(bars[2].style.getPropertyValue('--vf-fr')).toBe('67%');
     expect(bars[1].classList.contains('vf-done')).toBe(true);
-    expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn', 'q_norm $\\cdot$ k_norm']);
+    const crumbs = () => [...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}${n.getAttribute('aria-current') === 'location' ? '*' : ''}`);
+    expect(crumbs()).toEqual(['self_attn', 'a', 'q_norm $\\cdot$ k_norm*']);
     expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:b', 'vf-st:c']);
     expect(el.querySelector('.vf-tl-sub [aria-current="step"]')!.textContent).toBe('b');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
     steps.go(2);
-    expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn']);
-    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-group:q_norm $\\cdot$ k_norm›']);
-    el.querySelectorAll<HTMLButtonElement>('.vf-st-group')[0].click();
+    expect(crumbs()).toEqual(['self_attn', 'a*', 'q_norm $\\cdot$ k_norm']);
+    expect(el.querySelector('.vf-tl-sub')!.children.length).toBe(0);
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[1].click();
     expect(steps.current).toBe(3);
     el.querySelectorAll<HTMLButtonElement>('.vf-tl-crumb')[0].click();
     expect(steps.current).toBe(2);
@@ -162,7 +163,7 @@ describe('mountSteps timeline', () => {
     expect(steps.current).toBe(forward);
   });
 
-  it('lists the sibling modules in the last level of the path', () => {
+  it('lists the sibling modules and steps in the last level of the path', () => {
     const steps = timelineSteps();
     const groups: string[][] = [[], [], ['layer', 'norm'], ['layer', 'norm'], ['layer'], ['layer', 'attn']];
     steps.list.forEach((info: StepInfo, i) => Object.assign(info, { groups: info.dir === 'forward' ? (groups[i] ?? []) : [] }));
@@ -177,9 +178,9 @@ describe('mountSteps timeline', () => {
     document.body.append(el);
     mounted.push(mountSteps(el, steps));
     steps.go(3);
-    expect([...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}:${n.getAttribute('aria-current') ?? ''}`)).toEqual(['layer:', 'norm:location', 'attn:']);
+    expect([...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}:${n.getAttribute('aria-current') ?? ''}`)).toEqual(['layer:', 'norm:location', 'c:', 'attn:']);
     expect([...el.querySelectorAll('.vf-tl-sub > *')].map(text)).toEqual(['a', 'b']);
-    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[1].click();
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[2].click();
     expect(steps.current).toBe(5);
   });
 
