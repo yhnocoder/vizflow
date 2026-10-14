@@ -1,7 +1,6 @@
 import { renderText } from '../formula';
 import type { SceneController } from './controller';
 
-export const KEY_FRAME_TEXT = '墨线框 = 被取用的行或标签';
 export const JUMP_PLACEHOLDER = '跳到模块…';
 export const VIEW_MENU = '视图';
 
@@ -16,7 +15,7 @@ function chip(text: string): HTMLButtonElement {
 export function buildChrome(root: HTMLDivElement, hint: string | undefined): void {
   const key = document.createElement('div');
   key.className = 'vf-key';
-  key.innerHTML = `<span><i class="vf-sw" style="background:var(--pos)"></i>正</span><span><i class="vf-sw" style="background:var(--neg)"></i>负</span><span>${KEY_FRAME_TEXT}</span>`;
+  key.innerHTML = `<span><i class="vf-sw" style="background:var(--pos)"></i>正</span><span><i class="vf-sw" style="background:var(--neg)"></i>负</span>`;
   root.appendChild(key);
   if (hint !== undefined) {
     const el = document.createElement('div');
