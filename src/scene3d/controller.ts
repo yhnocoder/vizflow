@@ -4,6 +4,7 @@ import type { Graph, Node } from '../autograd';
 import { type Explainer, explain } from '../explain';
 import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
+import { SceneBatches } from './batches';
 import { PlateMesh } from './blocks';
 import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
 import { FOLLOW_RATE, CameraRig } from './camera';
@@ -46,6 +47,7 @@ export class SceneController implements EditHost {
   readonly reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
   readonly rig: CameraRig;
   readonly popups: ScenePopups;
+  readonly batches: SceneBatches;
   readonly edgeLines: EdgeLines;
   readonly moduleBraces: ModuleBraces;
   readonly boxes: FoldBoxes;
@@ -112,6 +114,7 @@ export class SceneController implements EditHost {
     sun.position.set(...LIGHT_POSITION);
     this.scene.add(sun);
     this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    this.batches = new SceneBatches(this.scene, this.theme);
     this.edgeLines = new EdgeLines(this);
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
@@ -171,11 +174,7 @@ export class SceneController implements EditHost {
   relayout(reframe: boolean): void {
     this.resolve(true);
     for (const renderable of this.renderables) {
-      if (renderable.plate === undefined) continue;
-      this.scene.remove(renderable.plate.group);
-      renderable.plate.dispose();
-      renderable.plate = new PlateMesh(renderable.block, this.theme);
-      this.scene.add(renderable.plate.group);
+      if (renderable.plate !== undefined) renderable.plate = new PlateMesh(renderable.block);
     }
     this.refresh();
     if (reframe) this.resetView();
@@ -236,12 +235,7 @@ export class SceneController implements EditHost {
         const before = renderable.block.plate;
         const moved = before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.d !== block.plate?.d;
         renderable.block = block;
-        if (moved && renderable.plate !== undefined) {
-          this.scene.remove(renderable.plate.group);
-          renderable.plate.dispose();
-          renderable.plate = new PlateMesh(block, this.theme);
-          this.scene.add(renderable.plate.group);
-        }
+        if (moved && renderable.plate !== undefined) renderable.plate = new PlateMesh(block);
       }
     }
   }
@@ -251,7 +245,6 @@ export class SceneController implements EditHost {
     for (const renderable of this.renderables) {
       const group = renderable.bars?.group ?? renderable.nodes?.group;
       if (group !== undefined) this.scene.add(group);
-      if (renderable.plate !== undefined) this.scene.add(renderable.plate.group);
     }
   }
 
@@ -324,16 +317,20 @@ export class SceneController implements EditHost {
     const k = this.reduceMotion.matches ? 1 : 1 - Math.exp(-dt * FOLLOW_RATE);
     const following = this.rig.applyGoal(k);
     const running = this.renderables.some((r) => r.transition.active) || this.rig.goal !== undefined;
+    let rebuilt = false;
     if (this.geometryDirty || stepped) {
       this.updateGeometry();
       this.geometryDirty = false;
       this.labelsDirty = true;
+      rebuilt = true;
     }
     const moved = this.controls.update();
     if ((moved || stepped || following || this.labelsDirty) && markSeeThrough(this)) {
       for (const renderable of this.renderables) refreshBlock(this, renderable, now, this.rig.zoomNow());
       this.labelsDirty = true;
+      rebuilt = true;
     }
+    if (rebuilt) this.batches.update(this.renderables);
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
@@ -401,9 +398,8 @@ export class SceneController implements EditHost {
     this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
     for (const renderable of this.renderables) {
       renderable.bars?.setTheme(this.theme);
-      renderable.nodes?.setTheme(this.theme);
-      renderable.plate?.setTheme(this.theme);
     }
+    this.batches.setTheme(this.theme);
     this.edgeLines.setTheme(this.theme);
     this.moduleBraces.setTheme(this.theme);
     this.refresh();
@@ -428,8 +424,8 @@ export class SceneController implements EditHost {
     for (const renderable of this.renderables) {
       renderable.bars?.dispose();
       renderable.nodes?.dispose();
-      renderable.plate?.dispose();
     }
+    this.batches.dispose();
     this.edgeLines.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();
