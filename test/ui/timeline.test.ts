@@ -78,7 +78,7 @@ describe('mountSteps timeline', () => {
     expect(bars[2].style.getPropertyValue('--vf-fr')).toBe('67%');
     expect(bars[1].classList.contains('vf-done')).toBe(true);
     expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn', 'q_norm $\\cdot$ k_norm']);
-    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:b', 'vf-st:c']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-in:b', 'vf-st vf-st-in:c']);
     expect(el.querySelector('.vf-tl-sub [aria-current="step"]')!.textContent).toBe('b');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 

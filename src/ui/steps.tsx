@@ -132,7 +132,7 @@ interface Segment {
   folded: boolean;
 }
 
-type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number };
+type Item = { kind: 'step'; info: StepInfo; position: number; inner?: boolean } | { kind: 'group'; id: string; name: string; position: number; run: number[]; inner?: boolean };
 
 export const SEGMENT_PREVIEW_STEPS = 5;
 export const PEEK_ARROW_INSET = 18;
@@ -174,19 +174,26 @@ function Timeline(props: {
     const chain = list[current].groups;
     const firstIn = (depth: number) => list.findIndex((info) => info.dir === dir && info.groups.length > depth && info.groups[depth] === chain[depth]);
     const path = chain.map((id, depth) => ({ name: titles.get(id) ?? id, position: firstIn(depth) }));
-    const within = (info: StepInfo) => info.dir === dir && chain.every((id, depth) => info.groups[depth] === id);
-    const pool = chain.length === 0 ? active.positions : list.flatMap((info, position) => (within(info) ? [position] : []));
-    const items: Item[] = [];
-    for (const position of pool) {
-      const info = list[position];
-      const child = info.groups[chain.length];
-      if (child === undefined) items.push({ kind: 'step', info, position });
-      else {
-        const last = items[items.length - 1];
-        if (last?.kind === 'group' && last.id === child) continue;
-        items.push({ kind: 'group', id: child, name: titles.get(child) ?? child, position });
+    const inside = (depth: number) => (info: StepInfo) => info.dir === dir && chain.slice(0, depth).every((id, at) => info.groups[at] === id);
+    const itemsAt = (depth: number, pool: number[]): Item[] => {
+      const out: Item[] = [];
+      for (const position of pool) {
+        const info = list[position];
+        const child = info.groups[depth];
+        if (child === undefined) out.push({ kind: 'step', info, position });
+        else {
+          const last = out[out.length - 1];
+          if (last?.kind === 'group' && last.id === child) last.run.push(position);
+          else out.push({ kind: 'group', id: child, name: titles.get(child) ?? child, position, run: [position] });
+        }
       }
-    }
+      return out;
+    };
+    const positionsInside = (depth: number) => list.flatMap((info, position) => (inside(depth)(info) ? [position] : []));
+    const items =
+      chain.length < 2
+        ? itemsAt(chain.length, chain.length === 0 ? active.positions : positionsInside(chain.length))
+        : itemsAt(chain.length - 1, positionsInside(chain.length - 1)).flatMap((item) => (item.kind === 'group' && item.run.includes(current) ? itemsAt(chain.length, item.run).map((own) => ({ ...own, inner: true })) : [item]));
     return { dir, segments, all, active, directions, path, items, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
@@ -269,6 +276,7 @@ function Timeline(props: {
               <button
                 type="button"
                 class="vf-st"
+                classList={{ 'vf-st-in': item.inner === true }}
                 aria-current={props.current() === item.position ? 'step' : undefined}
                 onClick={() => steps.go(item.position)}
                 ref={props.label(item.info)}
@@ -276,7 +284,7 @@ function Timeline(props: {
                 {props.plainLabel(item.info)}
               </button>
             ) : (
-              <button type="button" class="vf-st vf-st-group" onClick={() => steps.go(item.position)}>
+              <button type="button" class="vf-st vf-st-group" classList={{ 'vf-st-in': item.inner === true }} onClick={() => steps.go(item.position)}>
                 <Rich text={item.name} />
                 <span class="vf-st-more">›</span>
               </button>
