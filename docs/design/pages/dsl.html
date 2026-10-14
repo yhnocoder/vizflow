@@ -19,7 +19,7 @@
 <p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
 <h1>vizflow 页面描述文件 <span class="tag">第四版</span></h1>
 <p class="lead">由标准模块组成的页面可以只写 YAML 页面描述文件。一个模块对应 PyTorch 里的一个类：<code>init</code> 对应 <code>__init__</code>，<code>forward</code> 对应 <code>forward</code>，参数路径与 <code>state_dict</code> 的键相同。<code>dsl</code> 入口把文件编译成计算图、步骤、布局、面板和讲解段落，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 把它们交给挂载流程。</p>
-<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code> 与它引用的 <code>decoder.yaml</code>、<code>attention.yaml</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。其他模型页面还使用旧写法，迁移之前不能编译。</p>
+<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code>，它导入的模型定义在 <code>src/models/qwen3/</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。其他模型页面还使用旧写法，迁移之前不能编译。</p>
 
 <h2>各部分决定图上的什么</h2>
 <ul>
@@ -320,11 +320,11 @@ data:
   tokens: [the, cat, sat, on]
   ids: { expr: 'tokens_to_ids(tokens[:-1])' }</code></pre>
 <ul>
-  <li><code>model</code> 是根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。<code>import</code> 里 <code>vizflow/nn/名字</code> 是包内模块，<code>./x.yaml</code> 相对于当前文件。</li>
+  <li><code>model</code> 是根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。<code>import</code> 里 <code>vizflow/nn/名字</code> 是和模型无关的包内模块，<code>vizflow/models/模型/名字</code> 是一个模型的包内定义，<code>./x.yaml</code> 相对于当前文件；包内文件之间也用 <code>./x.yaml</code>、<code>../模型/x.yaml</code> 相对引用。</li>
   <li><code>config</code> 的名字按同名传给根模块的 <code>args</code>；<code>seed</code>、<code>tokenizer</code>、<code>real</code> 只属于页面。<code>config.dtype</code> 是参数的 dtype，相当于 <code>model.to(torch.bfloat16)</code>，默认 <code>fp32</code>。</li>
   <li><code>data</code> 是根模块的输入，需要计算时写 <code>{ expr: ... }</code>。token 列表与 <code>tokens_to_ids</code> 的结果编译成带词表的标签节点，序列面板替换 token 后按原表达式重新计算。</li>
   <li><code>real</code> 的第一个规格用于卡片上的真实形状和显存与计算量面板，不改变示例计算。根模块的模板可以读 <code>{{ real['qwen3-8b'].d_model }}</code>。</li>
-  <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。</li>
+  <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。包内模块用到的宏在 <code>src/models/preamble.sty</code>，每个页面先载入它，页面的 <code>preamble</code> 再追加或覆盖。</li>
 </ul>
 
 <h2>Module</h2>

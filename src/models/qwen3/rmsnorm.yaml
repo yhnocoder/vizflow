@@ -1,4 +1,4 @@
-module: RMSNorm
+module: Qwen3RMSNorm
 args:
   hidden_size: dim
   eps: { type: float, default: 1e-6 }

@@ -1,9 +1,9 @@
 import { type Where, child, fail, parseYaml } from './source';
 
-const bundled: Record<string, string> = import.meta.glob('../nn/*.yaml', { query: '?raw', import: 'default', eager: true });
+const bundled: Record<string, string> = import.meta.glob(['../nn/*.yaml', '../models/*/*.yaml'], { query: '?raw', import: 'default', eager: true });
 
-export const PACKAGE_PREFIX = 'vizflow/nn/';
-const BUILTINS: Readonly<Record<string, string>> = { Linear: `${PACKAGE_PREFIX}linear`, Embedding: `${PACKAGE_PREFIX}embedding` };
+export const PACKAGE_PREFIX = 'vizflow/';
+const BUILTINS: Readonly<Record<string, string>> = { Linear: `${PACKAGE_PREFIX}nn/linear`, Embedding: `${PACKAGE_PREFIX}nn/embedding` };
 
 export interface ModuleDef {
   name: string;
@@ -19,7 +19,17 @@ export interface LoadOptions {
 }
 
 function bundledSource(name: string): string | undefined {
-  return bundled[`../nn/${name}.yaml`];
+  return bundled[`../${name}.yaml`];
+}
+
+function packageRelative(ref: string, from: string): string | undefined {
+  if (!ref.startsWith('./') && !ref.startsWith('../')) return undefined;
+  const parts = from.slice(PACKAGE_PREFIX.length).split('/').slice(0, -1);
+  for (const part of ref.replace(/\.yaml$/, '').split('/')) {
+    if (part === '..') parts.pop();
+    else if (part !== '.') parts.push(part);
+  }
+  return `${PACKAGE_PREFIX}${parts.join('/')}`;
 }
 
 export async function defaultRead(url: string): Promise<string> {
@@ -45,9 +55,13 @@ export class Loader {
       if (bundledSource(ref.slice(PACKAGE_PREFIX.length)) === undefined) fail(where, `module '${ref}' is not part of the package`);
       return ref;
     }
-    if (from === undefined || from.startsWith(PACKAGE_PREFIX)) {
-      if (from === undefined && !/^[a-z]+:/.test(ref)) fail(where, `cannot resolve '${ref}': the page has no base URL; pass options.base`);
-      if (from !== undefined) fail(where, `cannot resolve '${ref}' from package module '${from}'`);
+    if (from !== undefined && from.startsWith(PACKAGE_PREFIX)) {
+      const inside = packageRelative(ref, from);
+      if (inside === undefined || bundledSource(inside.slice(PACKAGE_PREFIX.length)) === undefined) fail(where, `cannot resolve '${ref}' from package module '${from}'`);
+      return inside;
+    }
+    if (from === undefined) {
+      if (!/^[a-z]+:/.test(ref)) fail(where, `cannot resolve '${ref}': the page has no base URL; pass options.base`);
       return ref;
     }
     return new URL(ref, from).href;

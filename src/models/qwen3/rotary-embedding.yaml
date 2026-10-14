@@ -1,4 +1,4 @@
-module: RotaryEmbedding
+module: Qwen3RotaryEmbedding
 args:
   d_head: dim
   rope_theta: float

@@ -27,7 +27,7 @@ describe('tokenAxes', () => {
     const gqa = 'model.layers[0].self_attn.eager_attention_forward';
     const qWeight = page.nodes.get('model.layers[0].self_attn.q_proj.weight')!;
     const qWeightT = page.graph.nodes.find((n) => n.inputs[0] === qWeight)!;
-    expect(['ids', 'model.e', 'model.layers[0].n1', 'model.layers[0].self_attn.q', 'model.layers[0].att', 'z', 'logp'].map(axis)).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(['ids', 'model.e', 'model.layers[0].n', 'model.layers[0].self_attn.q', 'model.layers[0].att', 'z', 'logp'].map(axis)).toEqual([0, 0, 0, 0, 0, 0, 0]);
     expect([`${gqa}.S`, `${gqa}.P`, `${gqa}.attn_output`].map(axis)).toEqual([1, 1, 1]);
     expect([...['model.embed_tokens.weight', 'model.layers[0].input_layernorm.weight', 'model.cos'].map(axis), axes.get(qWeightT)]).toEqual([undefined, undefined, undefined, undefined]);
     expect(axis(`${gqa}.kT`)).toBe(2);

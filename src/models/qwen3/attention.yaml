@@ -1,8 +1,8 @@
 module: Qwen3Attention
 import:
-  RMSNorm: vizflow/nn/rmsnorm
-  RoPE: vizflow/nn/rope
-  GQA: vizflow/nn/gqa
+  Qwen3RMSNorm: ./rmsnorm.yaml
+  apply_rotary_pos_emb: ./apply-rotary-pos-emb.yaml
+  eager_attention_forward: ./eager-attention-forward.yaml
 
 args:
   d_model: dim
@@ -28,13 +28,13 @@ init:
     use: Linear
     args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
   q_norm:
-    use: RMSNorm
+    use: Qwen3RMSNorm
     args: { hidden_size: d_head }
   k_norm:
-    use: RMSNorm
+    use: Qwen3RMSNorm
     args: { hidden_size: d_head }
-  apply_rotary_pos_emb: RoPE
-  eager_attention_forward: GQA
+  apply_rotary_pos_emb: apply_rotary_pos_emb
+  eager_attention_forward: eager_attention_forward
   o_proj:
     use: Linear
     args: { in_features: num_heads * d_head, out_features: d_model, bias: false }

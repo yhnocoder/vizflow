@@ -193,14 +193,14 @@ import '@yhnocoder/vizflow/element';
 </script>
 ```
 
-元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，页面标题由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3/qwen3-dsl.yaml`，页面 `examples/qwen3/qwen3-dsl.html`。
+元素读取 `src`（相对于页面地址），编译出计算图、步骤、面板和 3D 布局并挂载，页面标题由元素画在场景上方。编译完成后元素派发 `load` 事件，`page.compiled` 是编译结果，`page.compiled.nodes` 按路径查节点。文件有错时，元素里显示 `文件:行:列 路径: 说明` 形式的错误，控制台也有同样的错误。完整的例子是 `examples/qwen3/qwen3-dsl.yaml`，页面 `examples/qwen3/qwen3-dsl.html`。这个页面只写配置、输入和面板，模型 `Qwen3ForCausalLM` 从包内的 `vizflow/models/qwen3/for-causal-lm` 导入。
 
 一个最小的页面文件：
 
 ```yaml
 title: RMSNorm 一步
 import:
-  RMSNorm: vizflow/nn/rmsnorm
+  Qwen3RMSNorm: vizflow/models/qwen3/rmsnorm
 model: M
 config: { d: 4, dtype: fp32 }
 data:
@@ -213,7 +213,7 @@ modules:
     outputs:
       loss: { type: tensor, shape: [], dtype: dtype }
     init:
-      norm: { use: RMSNorm, args: { hidden_size: d } }
+      norm: { use: Qwen3RMSNorm, args: { hidden_size: d } }
     forward:
       - h: norm(x)
       - loss: (h ** 2).mean()
@@ -235,7 +235,7 @@ panels:
 - tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
 - 3D 布局由库按模块结构自动排布，页面不写布局。公式卡片固定在画布右上角、工具按钮下方；翻页用画布下方的步骤条。
 
-目前只有 Qwen3 用到的内置模块按这套写法实现：`Linear`、`Embedding`（内置，不需要导入），以及 `vizflow/nn/` 下的 `rmsnorm`、`glu`、`silu`、`sigmoid`、`log-softmax`、`nll-loss`、`rope`、`gqa`、`rotary-embedding`。其余包内模块和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
+包内模块分两处。`vizflow/nn/` 放和模型无关的模块，目前按这套写法实现的有 `Linear`、`Embedding`（内置，不需要导入）、`silu`、`sigmoid`、`log-softmax`、`nll-loss`。`vizflow/models/<模型>/` 放一个模型的完整定义，与 HF 的 `models/<模型>/modeling_<模型>.py` 对应，每个类或函数一个文件，例如 `vizflow/models/qwen3/rmsnorm` 是 `Qwen3RMSNorm`。每个模型有自己的一份，实现与另一个模型相同时可以直接导入那个模型的文件。包内文件之间用 `./x.yaml`、`../qwen3/x.yaml` 相对引用。包内模块讲解里用到的 LaTeX 宏在 `src/models/preamble.sty`，每个页面都会载入，页面的 `preamble` 在它之上追加。`vizflow/nn/` 下其余的文件和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
 
 只需要编译结果、不需要元素时，用 `dsl` 入口：
 

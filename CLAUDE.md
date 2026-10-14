@@ -80,7 +80,8 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - `src/theme/`：颜色与字体。入口 `src/theme/index.ts`。
 - `src/scene3d/`：3D 场景，布局、相机、柱子、连线、模块标注、悬停与编辑各在单独的文件。入口 `src/scene3d/index.ts`。
 - `src/dsl/`：YAML 页面描述的加载与编译；编译器各部分在 `src/dsl/compile/`。入口 `src/dsl/index.ts`。
-- `src/nn/`：内置的 YAML 模块。
+- `src/nn/`：和模型无关的内置 YAML 模块。
+- `src/models/`：每个模型一个目录，放这个模型的 YAML 定义，与 HF 的 `models/<模型>/` 对应，也放包内模块讲解共用的 LaTeX 宏。
 - `src/element/`：自定义元素 `<vizflow-page>`。入口 `src/element/index.ts`。
 - `examples/`：示例页面与它们的 YAML。
 - `test/`：单元测试按 `src/` 的目录划分；`test/e2e/` 是 Playwright 测试。

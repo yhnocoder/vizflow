@@ -1,4 +1,4 @@
-module: GQA
+module: eager_attention_forward
 inputs:
   q: { type: tensor, shape: [num_heads, T, d_head], dtype: dtype }
   k: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }

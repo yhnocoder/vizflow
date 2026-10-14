@@ -1,6 +1,7 @@
 import { type CompiledPage, PAGE_KEYS, PageCompiler, compilePage } from './compile/page';
 import type { SectionSources } from './compile/sections';
 import { parsePreamble } from './compile/texts';
+import packagePreamble from '../models/preamble.sty?raw';
 import { checkKeys, isRecord, record } from './compile/util';
 import { type LoadOptions, Loader } from './load';
 import { sectionRows } from './section-md';
@@ -29,11 +30,12 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
   const root = namespace.get(spec.model);
   if (root === undefined) fail(child(where, spec, 'model'), `module '${spec.model}' is neither defined in modules nor imported`);
   const compiler = new PageCompiler(spec, where);
+  compiler.macros = parsePreamble(packagePreamble, 'vizflow/models/preamble.sty');
   if (spec.preamble !== undefined) {
     const at = child(where, spec, 'preamble');
     if (typeof spec.preamble !== 'string') fail(at, 'preamble must be a path to a file of \\newcommand definitions');
     const url = loader.resolve(spec.preamble, pageFile, at);
-    compiler.macros = parsePreamble(await loader.text(url), url);
+    for (const [name, macro] of parsePreamble(await loader.text(url), url)) compiler.macros.set(name, macro);
   }
   const sectionSources: SectionSources = new Map();
   if (Array.isArray(spec.sections)) {
