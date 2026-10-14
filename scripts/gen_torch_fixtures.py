@@ -535,6 +535,7 @@ def transformer_op_fixtures():
     cases += pointwise_cases("relu", F.relu, randn)
     cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
+    cases += pointwise_cases("alias", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
     cases += head_cases()
     cases += linear_attention_cases()

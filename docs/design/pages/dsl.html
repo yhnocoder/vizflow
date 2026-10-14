@@ -383,6 +383,7 @@ data:
 
 <h2>Layout</h2>
 <p class="hint">规则 1：布局默认每行 <code>forward</code> 一层，按 <code>forward</code> 的顺序从前往后排。同一层里的左右顺序按数据来源自动排。调用子模块的一行展开成子模块 <code>forward</code> 的各层。</p>
+<p>只把一个已有张量赋给新名字的一行（例如 <code>x1: x</code>，对应 HF 的 <code>residual = hidden_states</code>）也画成一层，数值与原张量相同，梯度原样传回，不占额外显存。没有步骤 show 它、它又是某个模块调用的输入时，它随这个调用的第一步出现，不单独成为一步，也不在这个调用的括号里。</p>
 <pre><code class="language-yaml">layout:
   place:
     M: { with: position_ids }       # 和 position_ids 同一层，左右自动排

@@ -96,6 +96,7 @@ export class StepCompiler {
   readonly shownCalls = new Set<Call>();
   readonly callSteps = new Map<Call, CallSteps>();
   readonly allSteps = new Set<ForwardStep>();
+  private readonly carried = new Map<Call, Node[]>();
   private readonly marks = new Map<Rec, string>();
 
   constructor(private readonly c: PageCompiler) {}
@@ -262,6 +263,31 @@ export class StepCompiler {
     return { kind: 'nodes', nodes: unique(nodes), all };
   }
 
+  showCallInputs(trees: Tree[]): void {
+    const shows = (t: Tree): Node[] => {
+      const own = t.kind === 'leaf' ? [t.rec] : t.intro === undefined ? [] : [t.intro];
+      const nodes = own.flatMap((r) => r.step.show);
+      return t.kind === 'leaf' ? nodes : [...nodes, ...t.children.flatMap(shows)];
+    };
+    const shown = new Set(trees.flatMap(shows));
+    const first = (t: Tree): Rec | undefined => (t.kind === 'leaf' ? t.rec : (t.intro ?? (t.children.length > 0 ? first(t.children[0]) : undefined)));
+    const visit = (t: Tree) => {
+      const call = t.call;
+      const rec = first(t);
+      if (call !== undefined && rec !== undefined) {
+        const named = new Set([...(call.parent?.values.values() ?? [])]);
+        const added = [...call.inputs.values()].filter((n) => named.has(n) && !shown.has(n) && n.kind === 'op' && !isLayoutOp(n));
+        if (added.length > 0) {
+          rec.step.show = unique([...added, ...rec.step.show]);
+          this.carried.set(call, added);
+          added.forEach((n) => shown.add(n));
+        }
+      }
+      if (t.kind === 'group') t.children.forEach(visit);
+    };
+    trees.forEach(visit);
+  }
+
   private callOf(value: Value, env: Env, text: string): Call {
     if (value instanceof Instance) return this.c.onlyCall(value, env, 0);
     if (value instanceof Result) return value.call;
@@ -421,6 +447,7 @@ export class StepCompiler {
     const groups: StepGroup[] = [];
     const braces: StepBrace[] = [];
     const shows = (list: Tree[]) => unique(leaves(list).flatMap((rec) => rec.step.show));
+    const framed = (nodes: Node[], call: Call | undefined) => nodes.filter((n) => !(call === undefined ? [] : (this.carried.get(call) ?? [])).includes(n));
     const walk = (list: Tree[], path: string[], key: string, depth: number) => {
       for (const tree of list) {
         const id = key === '' ? tree.id : `${key}.${tree.id}`;
@@ -428,7 +455,7 @@ export class StepCompiler {
           tree.rec.step.groups = path;
           forward.push(tree.rec.step);
           if (tree.brace || tree.call !== undefined) {
-            const brace: StepBrace = { id, title: tree.braceTitle ?? tree.rec.step.title, nodes: tree.rec.step.show, depth };
+            const brace: StepBrace = { id, title: tree.braceTitle ?? tree.rec.step.title, nodes: framed(tree.rec.step.show, tree.call), depth };
             if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
             braces.push(brace);
           }
@@ -444,7 +471,7 @@ export class StepCompiler {
         }
         const title = tree.title ?? tree.id;
         groups.push({ id, title });
-        const brace: StepBrace = { id, title, nodes: shows([tree]), depth };
+        const brace: StepBrace = { id, title, nodes: framed(shows([tree]), tree.call), depth };
         if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;
         braces.push(brace);

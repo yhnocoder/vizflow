@@ -258,6 +258,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
 
   const sc = new StepCompiler(c);
   const trees = sc.compileCall(call);
+  sc.showCallInputs(trees);
   const { forward, groups, braces } = sc.flatten(trees);
   placeLeaves(c, forward);
   const others = forward.filter((s) => !sc.allSteps.has(s));

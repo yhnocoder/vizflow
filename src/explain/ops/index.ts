@@ -101,6 +101,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   relu: reluExplain,
   gelu: geluExplain,
   identity: identityExplain,
+  alias: identityExplain,
   rotate_half: rotateHalfExplain,
   clamp: clampExplain,
   transpose: transposeExplain,

@@ -153,8 +153,11 @@ export abstract class Expressions extends CompilerState {
         return ast.v;
       case 'none':
         return null;
-      case 'name':
-        return this.lookup(ast.name, env, ast.pos);
+      case 'name': {
+        const value = this.lookup(ast.name, env, ast.pos);
+        if (top && mode.k === 'graph' && value instanceof Node) return this.apply('alias', [value], new Map(), env, mode, top, ast.pos);
+        return value;
+      }
       case 'member':
         return this.member(ast, env, mode);
       case 'index':

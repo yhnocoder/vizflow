@@ -34,14 +34,16 @@ init:
     args: [d_model, d_ff, { act: SiLU }]
 
 forward:
-  - n1: input_layernorm(x)
+  - x1: x
+  - n1: input_layernorm(x1)
   - att: self_attn(n1, mask=mask, cos=cos, sin=sin)
-  - a: x + att
+  - a: x1 + att
   - n: post_attention_layernorm(a)
   - down: mlp(n)
   - x_out: a + down
 
 tex:
+  x1: '\mathbf{x}_1'
   n1: '\mathbf{n}_1'
   att: '\mathbf{att}'
   a: '\mathbf{a}'
@@ -53,7 +55,7 @@ tex:
 formula: |-
   \begin{aligned}
   \step{res1}{\viz{a}}&
-  \step{res1}{=\viz{x}+}
+  \step{res1}{=\viz{x1}+}
   \step{self_attn.*}{\mathrm{attn}\big(}
   \step{input_layernorm.*}{\mathrm{norm}(\viz{x})}
   \step{self_attn.*}{\big)}\\
@@ -103,11 +105,11 @@ steps:
   - id: res1
     show: a
     brace: true
-    subtitle: '$\viz{x}+\viz{att}$'
+    subtitle: '$\viz{x1}+\viz{att}$'
     notes:
       - at: a
-        text: '残差：$\viz{x}$ 绕过 attention 直接加到这里'
-    label: '$\viz{a}=\viz{x}+\viz{att}$'
+        text: '残差：$\viz{x1}$ 绕过 attention 直接加到这里'
+    label: '$\viz{a}=\viz{x1}+\viz{att}$'
     title: 残差相加
     text: |
       <code>hidden_states = residual + hidden_states</code>。attention 的输出作为增量加到输入上，这就是残差连接。

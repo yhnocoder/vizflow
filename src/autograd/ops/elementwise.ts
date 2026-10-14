@@ -355,6 +355,7 @@ export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 
 export const erfOp: OpDef = { ...unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x), nonlinear(0)), floating: true };
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
 export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
+export const aliasOp = unary('alias', (x) => x, () => 1, VIEW_COST);
 export const absOp = unary('abs', Math.abs, (x) => Math.sign(x), pointwise(1, 1, [[0]]));
 export const signOp = unary('sign', Math.sign, () => 0, pointwise(1, 0, [[]]));
 export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), pointwise(1, 1, [[0]]), ['input', 'min']);

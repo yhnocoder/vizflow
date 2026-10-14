@@ -13,6 +13,7 @@ import {
   sinOp,
   geluOp,
   identityOp,
+  aliasOp,
   logOp,
   mulOp,
   negOp,
@@ -157,6 +158,7 @@ export interface BuiltinOps {
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
+  alias(input: Node, options?: OpOptions): Node;
   rotate_half(input: Node, options?: OpOptions): Node;
   clamp(input: Node, options?: ClampOptions): Node;
   clamp(input: Node, min: number | null, max?: number | null, options?: ClampOptions): Node;
@@ -247,6 +249,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   reluOp,
   geluOp,
   identityOp,
+  aliasOp,
   rotateHalfOp,
   clampOp,
   transposeOp,
