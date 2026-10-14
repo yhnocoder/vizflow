@@ -68,8 +68,28 @@ export interface StepModule extends PageModule {
   backward: BackwardOverride;
 }
 
+export interface FunctionStep {
+  id: string;
+  title: string;
+  label?: string;
+  text?: string;
+  show: Node[];
+  receive: Node[];
+  groups?: string[];
+  notes?: StepNote[];
+  formula?: { title: string; tex: string };
+  marks?: string[];
+}
+
+export interface FunctionBackward {
+  module: string;
+  after: ForwardStep;
+  steps: FunctionStep[];
+}
+
 export interface StepsSpec {
   forward: ForwardStep[];
+  functions?: FunctionBackward[];
   groups?: StepGroup[];
   braces?: StepBrace[];
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
@@ -89,6 +109,7 @@ export interface StepInfo {
   groups: string[];
   module?: string;
   forwardId?: string;
+  computes?: Node[];
   notes?: StepNote[];
   marks?: string[];
   formula?: { title: string; tex: string };
@@ -247,6 +268,7 @@ class StepsImpl implements Steps {
   private readonly foldState = new Map<string, boolean>();
   private readonly units: Unit[] = [];
   private readonly reverse: boolean;
+  private readonly forwardVisible: ReadonlySet<Node>;
 
   constructor(
     readonly graph: Graph,
@@ -259,11 +281,12 @@ class StepsImpl implements Steps {
       this.byModule.set(module.id, module);
       this.foldState.set(module.id, module.folded);
     }
-    this.visible = Object.freeze(byId(spec.forward.flatMap((step) => toList(step.show))));
+    this.visible = Object.freeze(byId([...spec.forward.flatMap((step) => toList(step.show)), ...(spec.functions ?? []).flatMap((f) => f.steps.flatMap((step) => step.show))]));
+    this.forwardVisible = new Set(spec.forward.flatMap((step) => toList(step.show)));
     if (this.reverse) {
       spec.forward.forEach((step, index) => {
         const show = toList(step.show);
-        const kind: StepKind = show.length > 0 && this.visible.every((n) => show.includes(n)) ? 'overview' : show.length > 0 && show.every(isLeafLike) ? 'inputs' : 'op';
+        const kind: StepKind = show.length > 0 && [...this.forwardVisible].every((n) => show.includes(n)) ? 'overview' : show.length > 0 && show.every(isLeafLike) ? 'inputs' : 'op';
         const computed = show.filter((n) => !isLeafLike(n));
         const prod = kind === 'op' && computed.length > 0 ? computed : show;
         const use = kind === 'op' ? usesOf(prod).filter((n) => !prod.includes(n)) : [];
@@ -335,6 +358,7 @@ class StepsImpl implements Steps {
     const explainer = explain(g);
     const loss = g.findLoss();
     const all = new Set(this.visible);
+    const forwardAll = new Set(this.forwardVisible);
     const entries: Entry[] = [];
     const revealed = new Set<Node>();
     const groups: { unit?: Unit; module?: StepModule }[] = [];
@@ -386,14 +410,14 @@ class StepsImpl implements Steps {
         title: step.title,
         label: step.label ?? step.title,
         text: step.text ?? '',
-        nodes: unit.kind === 'overview' ? [...this.visible] : unit.prod,
+        nodes: unit.kind === 'overview' ? [...this.forwardVisible] : unit.prod,
         groups: step.groups ?? [],
       };
       if (step.module !== undefined) info.module = step.module;
       withNotes(withMarks(info, step), step.notes);
       forwardIds.set(group, info.id);
       if (unit.kind === 'overview') {
-        entries.push(this.entry(info, all, all));
+        entries.push(this.entry(info, forwardAll, forwardAll));
         continue;
       }
       unit.prod.forEach((n) => revealed.add(n));
@@ -402,11 +426,12 @@ class StepsImpl implements Steps {
     }
     const received = new Set<Node>();
     let position = 0;
-    const pushBackward = (info: Omit<StepInfo, 'index' | 'dir'>, recv: Node[]) => {
+    const pushBackward = (info: Omit<StepInfo, 'index' | 'dir'>, recv: Node[], lit: Node[] = recv) => {
       const nodes = position === 0 && loss !== undefined && !recv.includes(loss) ? [loss, ...recv] : recv;
       position++;
       nodes.forEach((n) => received.add(n));
-      entries.push(this.entry({ ...info, nodes, dir: 'backward', index: position }, new Set(received), new Set(nodes)));
+      lit.filter((n) => n.phase === 'backward' && all.has(n)).forEach((n) => received.add(n));
+      entries.push(this.entry({ ...info, nodes, dir: 'backward', index: position }, new Set(received), new Set([...nodes, ...lit])));
     };
     const hasGrad = (n: Node) => n.grad !== null && all.has(n);
     for (const group of [...groups].reverse()) {
@@ -431,6 +456,26 @@ class StepsImpl implements Steps {
         continue;
       }
       const unit = group.unit as Unit;
+      for (const fn of this.spec.functions ?? []) {
+        if (fn.after !== unit.step) continue;
+        fn.steps.forEach((step, k) => {
+          const info: Omit<StepInfo, 'index' | 'dir'> = {
+            id: `x:${fn.module}:${k}`,
+            kind: 'op',
+            title: step.title,
+            label: step.label ?? step.title,
+            text: step.text ?? '',
+            nodes: [],
+            groups: step.groups ?? unit.step.groups ?? [],
+            module: fn.module,
+            computes: step.show,
+          };
+          if (step.formula !== undefined) info.formula = step.formula;
+          if (step.marks !== undefined) info.marks = step.marks;
+          if (step.notes !== undefined && step.notes.length > 0) info.notes = step.notes;
+          pushBackward(info, unique([...step.show, ...step.receive]), unique([...step.show, ...step.show.flatMap((n) => n.inputs), ...step.receive]));
+        });
+      }
       if (unit.kind !== 'op') continue;
       const recv = unit.use.filter(hasGrad);
       if ((recv.length === 0 || !unit.prod.some(hasGrad)) && position > 0) continue;

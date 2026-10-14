@@ -64,7 +64,14 @@ export type PanelItem =
   | { attention: Node[]; ids: Node; extra_keys?: string[]; title?: string; note?: string }
   | SequenceOptions
   | { code: string; title?: string; note?: string }
-  | { note: string; title?: string };
+  | { note: string; title?: string }
+  | { implementations: ImplementationChoice[]; title?: string; note?: string };
+
+export interface ImplementationChoice {
+  name: string;
+  value: string | boolean;
+  options: (string | boolean)[];
+}
 
 const SLIDER_MIN = -2.5;
 const SLIDER_MAX = 2.5;
@@ -86,6 +93,7 @@ interface Context {
   sequence: PageSequence | undefined;
   steps: Steps | undefined;
   stepsVersion: Accessor<number>;
+  configure: PanelsOptions['configure'];
 }
 
 const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGITS[Number(d)]);
@@ -651,6 +659,35 @@ function CodePanel(props: { ctx: Context; item: Extract<PanelItem, { code: strin
   );
 }
 
+const choiceLabel = (option: string | boolean) => (typeof option === 'boolean' ? (option ? 'True' : 'False') : option);
+
+function ImplementationsPanel(props: { ctx: Context; item: Extract<PanelItem, { implementations: unknown }> }) {
+  const configure = props.ctx.configure;
+  return (
+    <Card title={props.item.title}>
+      <div class="vf-impl">
+        <For each={props.item.implementations}>
+          {(choice) => (
+            <div class="vf-impl-row">
+              <code>{choice.name}</code>
+              <div class="vf-seg" role="group" aria-label={choice.name}>
+                <For each={choice.options}>
+                  {(option) => (
+                    <button type="button" aria-pressed={option === choice.value ? 'true' : 'false'} disabled={configure === undefined} onClick={() => option !== choice.value && configure?.({ [choice.name]: option })}>
+                      {choiceLabel(option)}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          )}
+        </For>
+      </div>
+      <Show when={props.item.note}>{(note) => <TemplateText ctx={props.ctx} class="vf-note" text={note()} />}</Show>
+    </Card>
+  );
+}
+
 function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
@@ -663,6 +700,7 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   if ('tokens' in item) return <TokensPanel ctx={props.ctx} item={item} />;
   if ('matrix' in item || 'matrices' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
   if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
+  if ('implementations' in item) return <ImplementationsPanel ctx={props.ctx} item={item} />;
   return (
     <Card title={item.title}>
       <TemplateText ctx={props.ctx} class="vf-note" text={item.note} />
@@ -673,6 +711,7 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
 export interface PanelsOptions {
   steps?: Steps;
   sequence?: PageSequence;
+  configure?: (config: Record<string, string | boolean>) => void;
 }
 
 function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOptions }) {
@@ -718,6 +757,7 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOption
     sequence,
     steps,
     stepsVersion,
+    configure: props.options.configure,
   };
   return (
     <div class="vf-panels">

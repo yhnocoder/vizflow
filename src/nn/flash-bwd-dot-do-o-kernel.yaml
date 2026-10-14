@@ -1,0 +1,13 @@
+module: flash_bwd_dot_do_o_kernel
+kernel: true
+inputs:
+  dout: [T, num_heads, d_head]
+  out: [T, num_heads, d_head]
+outputs:
+  dsoftmax_sum: { type: tensor, shape: [num_heads, T], dtype: fp32 }
+  dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+
+forward:
+  - do_o: dout.float() * out.float()
+  - dsoftmax_sum: do_o.sum(-1).transpose(0, 1)
+  - dq_accum: zeros(T, num_heads, d_head, dtype=fp32)

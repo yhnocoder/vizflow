@@ -30,6 +30,7 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
   const root = namespace.get(spec.model);
   if (root === undefined) fail(child(where, spec, 'model'), `module '${spec.model}' is neither defined in modules nor imported`);
   const compiler = new PageCompiler(spec, where);
+  if (options.config !== undefined) compiler.overrides = options.config;
   compiler.macros = parsePreamble(packagePreamble, 'vizflow/models/preamble.sty');
   if (spec.preamble !== undefined) {
     const at = child(where, spec, 'preamble');

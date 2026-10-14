@@ -1,17 +1,19 @@
-import { DTYPES, Node, ProgramBuilder } from '../../autograd';
+import { DTYPES, Node, type NodeCopies, ProgramBuilder, type RealSize, type Size, isIntegerDtype } from '../../autograd';
 import { type Nested, Tensor } from '../../tensor';
 import type { Ast, IndexItem } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
-import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Mode, type Num, Result, type Value } from './types';
+import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, type Iterations, ListCall, type Make, type Member, type Mode, type Num, Result, type Value } from './types';
 import { templateExpressions, vizReferences } from './template';
-import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, record } from './util';
+import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, rangeCount, rangeValues, realOf, record } from './util';
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'str', 'list', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
-const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
+const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown', 'kernel', 'save', 'backward', 'backward_steps']);
+const BRANCH_ITEM_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
+const LOOP_KEY = '\u0000loop:';
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
 const BRANCH_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
@@ -20,14 +22,41 @@ const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const WRITE = /^([A-Za-z_][A-Za-z0-9_]*)\[(.+)\]$/;
 const LOOP_HEAD = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\((.+)\)\s*$/;
-const RANGE_ARGS = /^([^,]+),([^,]+)$/;
 
 type ForwardItem =
   | { kind: 'assign'; name: string; target: string | undefined; text: unknown; where: Where }
-  | { kind: 'loop'; variable: string; start: string; stop: string; body: ForwardItem[]; where: Where };
+  | { kind: 'loop'; variable: string; start: string; stop: string; step: string; body: ForwardItem[]; where: Where }
+  | { kind: 'branch'; test: unknown; then: ForwardItem[]; other: ForwardItem[]; where: Where };
 
-function flatAssignments(items: ForwardItem[]): { name: string; text: unknown; where: Where }[] {
-  return items.flatMap((item) => (item.kind === 'loop' ? flatAssignments(item.body) : [item]));
+interface Nest {
+  base: NodeCopies;
+  drawn: number;
+  real: Size;
+}
+
+function flatAssignments(items: ForwardItem[]): { name: string; text: unknown; where: Where; target?: string }[] {
+  return items.flatMap((item) => (item.kind === 'loop' ? flatAssignments(item.body) : item.kind === 'branch' ? [...flatAssignments(item.then), ...flatAssignments(item.other)] : [item]));
+}
+
+function topLevelArgs(text: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let from = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if ('([{'.includes(ch)) depth++;
+    else if (')]}'.includes(ch)) depth--;
+    else if (ch === ',' && depth === 0) {
+      args.push(text.slice(from, i).trim());
+      from = i + 1;
+    }
+  }
+  args.push(text.slice(from).trim());
+  return args;
+}
+
+function innerLoops(items: ForwardItem[]): Extract<ForwardItem, { kind: 'loop' }>[] {
+  return items.flatMap((item) => (item.kind === 'loop' ? [item] : item.kind === 'branch' ? innerLoops([...item.then, ...item.other]) : []));
 }
 
 type Reader = (text: string, where: Where) => void;
@@ -89,6 +118,13 @@ export abstract class Modules extends Expressions {
   readonly anon = new Map<Node, Node[]>();
   readonly instances: Instance[] = [];
   private readonly structuralNames = new Map<ModuleDef, Map<string, number>>();
+  private readonly nests = new Map<ForwardItem, Nest>();
+  readonly backwardCalls = new Map<Call, Call>();
+
+  inBackward(call: Call): boolean {
+    for (let at: Call | undefined = call; at !== undefined; at = at.parent) if (at.parent !== undefined && this.backwardCalls.get(at.parent) === at) return true;
+    return false;
+  }
 
   instanceEnv(instance: Instance, where: Where = instance.def.where): Env {
     return { instance, call: undefined, locals: new Map(), where };
@@ -118,13 +154,15 @@ export abstract class Modules extends Expressions {
     const env = this.instanceEnv(instance, argsWhere);
     for (const [key, spec] of Object.entries(declared)) {
       const at = child(argsWhere, declared, key);
-      const { type, fallback } = argSpec(spec, at);
+      const { type, fallback, options } = argSpec(spec, at);
       const provided = given.get(key);
       let value: Value;
       if (provided !== undefined) value = provided.value;
       else if (fallback !== undefined) value = this.expression(fallback, { ...env, where: child(at, spec as object, 'default') });
       else return fail(where, `module ${def.name} needs arg '${key}'`);
-      instance.args.set(key, checkArg(type, key, value, provided?.where ?? at));
+      const checked = checkArg(type, key, value, provided?.where ?? at);
+      if (options !== undefined && !options.includes(checked as string)) fail(provided?.where ?? at, `arg '${key}' of ${def.name} is '${String(checked)}', which is not one of ${options.join(', ')}`);
+      instance.args.set(key, checked);
     }
     this.initMembers(instance);
     return instance;
@@ -350,7 +388,7 @@ export abstract class Modules extends Expressions {
     const outputs = Object.keys(this.fieldOf(instance.def, 'outputs'));
     let aliases = new Map<string, Alias>();
     if (top && outputs.length === 1) aliases.set(outputs[0], { path: make.path, tex: make.tex });
-    if (top && outputs.length > 1) aliases = new Map(env.call?.resultAliases.get(make.name) ?? []);
+    if (top && outputs.length > 1) aliases = new Map([...(env.call?.resultAliases.get(make.name) ?? [])].map(([output, alias]) => [output, { ...alias, path: `${alias.path}${make.suffix ?? ''}` }]));
     const index = instance.calls.length + 1;
     const prefix = index === 1 ? instance.path : `${instance.path}#${index}`;
     const call = new Call(instance, prefix, env.call, aliases);
@@ -363,7 +401,77 @@ export abstract class Modules extends Expressions {
     call.created = this.g.nodes.slice(before);
     const result = this.checkOutputs(call);
     for (const node of call.outputs.values()) if (!this.producers.has(node)) this.producers.set(node, call);
+    this.markKernel(call, call.created);
+    if (instance.def.decl.backward !== undefined) this.runBackward(call);
     return result;
+  }
+
+  private markKernel(call: Call, created: readonly Node[]): void {
+    const def = call.instance.def;
+    const kernel = def.decl.kernel;
+    if (kernel === undefined) return;
+    if (typeof kernel !== 'boolean') fail(child(def.where, def.decl, 'kernel'), 'kernel must be true or false');
+    if (!kernel) return;
+    const outputs = new Set(call.outputs.values());
+    this.g.markOnChip(created.filter((n) => !outputs.has(n)));
+  }
+
+  private runBackward(call: Call): void {
+    const def = call.instance.def;
+    const where = child(def.where, def.decl, 'backward');
+    const saveWhere = child(def.where, def.decl, 'save');
+    const save = def.decl.save ?? [];
+    if (!Array.isArray(save) || !save.every((name) => typeof name === 'string' && NAME.test(name))) fail(saveWhere, 'save lists forward names, like ctx.save_for_backward(q, k, v)');
+    const backward = new Call(call.instance, join(call.prefix, 'backward'), call, new Map());
+    this.backwardCalls.set(call, backward);
+    for (const [name, value] of call.bound) backward.bound.set(name, value);
+    const start = this.g.nodes.length;
+    const gradOutputs: { leaf: Node; output: Node }[] = [];
+    this.g.backwardPhase(() => {
+      for (const [name, output] of call.outputs) {
+        const gradName = `grad_${name}`;
+        const own = this.fieldOf(def, 'tex')[gradName];
+        const tex = typeof own === 'string' ? this.marked(this.expandTex(own, this.callEnv(call)), call.instance.marks, own) : `\\mathrm{d}${output.tex}`;
+        const leaf = this.g.grad_of(output, { name: join(backward.prefix, gradName), tex, elem: elemOf(tex) });
+        gradOutputs.push({ leaf, output });
+        backward.values.set(gradName, leaf);
+        this.nodes.set(leaf.name, leaf);
+      }
+      (save as string[]).forEach((name, i) => {
+        const at = child(saveWhere, save, i);
+        const value = call.values.get(name);
+        if (!(value instanceof Node)) fail(at, value === undefined ? `'${name}' is not defined in the forward of ${def.name}` : `'${name}' is ${describe(value)}; save takes tensors`);
+        if (backward.values.has(name)) fail(at, `'${name}' is saved twice`);
+        const node = this.g.saved(value, { name: join(backward.prefix, name), tex: value.tex, elem: value.elem });
+        backward.values.set(name, node);
+        this.nodes.set(node.name, node);
+      });
+      backward.lines.push({ nodes: this.g.nodes.slice(start), calls: [] });
+      const items = this.forwardItems(def.decl.backward, where);
+      this.scanAliases(backward, flatAssignments(items));
+      this.runItems(backward, items, []);
+      backward.finished = true;
+    });
+    const gradInputs: { input: Node; grad: Node }[] = [];
+    for (const [name, input] of call.inputs) {
+      const gradName = `grad_${name}`;
+      const grad = backward.values.get(gradName);
+      if (grad === undefined) {
+        if (isIntegerDtype(input.dtype)) continue;
+        fail(where, `the backward of ${def.name} must set ${gradName}, the gradient of input '${name}', or set it to None`);
+      }
+      if (grad === null) continue;
+      if (!(grad instanceof Node)) fail(where, `${gradName} must be a tensor or None, got ${describe(grad)}`);
+      gradInputs.push({ input, grad });
+    }
+    const nodes = this.g.nodes.slice(start);
+    backward.created = nodes;
+    call.lines.push({ nodes: [], calls: [backward] });
+    try {
+      this.g.defineFunction({ inputs: [...call.inputs.values()], outputs: [...call.outputs.values()], inside: call.created, gradOutputs, gradInputs, backward: nodes });
+    } catch (error) {
+      fail(where, (error as Error).message);
+    }
   }
 
   bindInputs(call: Call, args: Value[], kwargs: Map<string, Value>, env: Env, at: number): void {
@@ -488,13 +596,22 @@ export abstract class Modules extends Expressions {
         member(entry, at);
       }
     });
-    walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
+    const loopOrExpression = (text: string, where: Where) => {
+      const head = LOOP_HEAD.exec(text);
+      if (head === null) expression(text, where);
+      else for (const bound of topLevelArgs(head[2])) expression(bound, where);
+    };
+    for (const key of ['forward', 'backward']) walk(decl[key], section(key), loopOrExpression);
+    walk(decl.save, section('save'), expression);
     walk(decl.unshown, section('unshown'), expression);
     walk(decl.layout, section('layout'), expression);
     walk(decl.tex, section('tex'), latex);
     walk(decl.formula, section('formula'), latex);
     options(decl.fold, section('fold'));
-    if (Array.isArray(decl.steps)) decl.steps.forEach((step, i) => options(step, child(section('steps'), decl.steps as unknown[], i)));
+    for (const key of ['steps', 'backward_steps']) {
+      const list = decl[key];
+      if (Array.isArray(list)) list.forEach((step, i) => options(step, child(section(key), list, i)));
+    }
     return counts;
   }
 
@@ -514,6 +631,44 @@ export abstract class Modules extends Expressions {
     call.finished = true;
   }
 
+  private loopStep(item: Extract<ForwardItem, { kind: 'loop' }>, env: Env): Num {
+    const step = this.number(item.step, env);
+    if (!Number.isInteger(step.toy) || step.toy === 0 || Math.sign(step.real) !== Math.sign(step.toy)) fail(item.where, `the step of range(${item.start}, ${item.stop}, ${item.step}) must be a nonzero integer, got ${step.toy}`);
+    return step;
+  }
+
+  private nest(call: Call, outer: Extract<ForwardItem, { kind: 'loop' }>, inner: Extract<ForwardItem, { kind: 'loop' }>, start: Num, stop: Num, step: Num, base: NodeCopies, env: Env): void {
+    const names = new Map<string, number>();
+    for (const bound of [inner.start, inner.stop]) countNames(this.parse(bound, env), names);
+    if (!names.has(outer.variable)) return;
+    const key = `${LOOP_KEY}${outer.variable}`;
+    const saved = call.values.get(outer.variable);
+    const spanAt = (value: Num): Num => {
+      call.values.set(outer.variable, value);
+      const from = this.number(inner.start, this.callEnv(call, inner.where));
+      const to = this.number(inner.stop, this.callEnv(call, inner.where));
+      return combine([from, to, innerStep], rangeCount);
+    };
+    const innerStep = this.loopStep(inner, env);
+    let drawn = 0;
+    for (const k of rangeValues(start.toy, stop.toy, step.toy)) drawn += spanAt(num(k)).toy;
+    const symbolic = spanAt({ toy: 0, real: 0, derive: (sizes) => sizes[key] });
+    if (saved === undefined) call.values.delete(outer.variable);
+    else call.values.set(outer.variable, saved);
+    if (drawn === 0) return;
+    const span = realOf(symbolic);
+    const first = realOf(start);
+    const last = realOf(stop);
+    const every = realOf(step);
+    const derive: RealSize = (sizes, shapes) => {
+      let total = 0;
+      for (const k of rangeValues(first(sizes, shapes), last(sizes, shapes), every(sizes, shapes))) total += span({ ...sizes, [key]: k }, shapes);
+      return total;
+    };
+    const real: Size = this.g.real === undefined ? drawn : { toy: drawn, real: derive(this.g.realSizes(), this.g.realShapes()), derive };
+    this.nests.set(inner, { base, drawn, real });
+  }
+
   private forwardItems(forward: unknown, where: Where): ForwardItem[] {
     if (!Array.isArray(forward)) fail(where, 'forward must be a list of { name: expression }');
     return forward.map((item, i) => {
@@ -522,11 +677,17 @@ export abstract class Modules extends Expressions {
         checkKeys(item, new Set(['for', 'do']), at);
         const match = typeof item.for === 'string' ? LOOP_HEAD.exec(item.for) : null;
         if (match === null) fail(child(at, item, 'for'), "for must look like 'i in range(n)'");
-        const bounds = RANGE_ARGS.exec(match[2]);
-        const [start, stop] = bounds === null ? ['0', match[2]] : [bounds[1], bounds[2]];
-        return { kind: 'loop', variable: match[1], start, stop, body: this.forwardItems(item.do, child(at, item, 'do')), where: child(at, item, 'for') };
+        const bounds = topLevelArgs(match[2]);
+        if (bounds.length > 3) fail(child(at, item, 'for'), `range takes at most three arguments, got ${bounds.length}`);
+        const [start, stop, step] = bounds.length === 1 ? ['0', bounds[0], '1'] : [bounds[0], bounds[1], bounds[2] ?? '1'];
+        return { kind: 'loop', variable: match[1], start, stop, step, body: this.forwardItems(item.do, child(at, item, 'do')), where: child(at, item, 'for') };
       }
-      if (!isRecord(item) || Object.keys(item).length !== 1) fail(at, 'a forward item must have exactly one name, or be a loop { for: i in range(n), do: [...] }');
+      if (isRecord(item) && 'if' in item) {
+        checkKeys(item, BRANCH_ITEM_KEYS, at);
+        if (item.then === undefined) fail(at, "an if block needs 'then'");
+        return { kind: 'branch', test: item.if, then: this.forwardItems(item.then, child(at, item, 'then')), other: item.else === undefined ? [] : this.forwardItems(item.else, child(at, item, 'else')), where: child(at, item, 'if') };
+      }
+      if (!isRecord(item) || Object.keys(item).length !== 1) fail(at, 'a forward item must have exactly one name, be a loop { for: i in range(n), do: [...] }, or be a block { if: condition, then: [...], else: [...] }');
       const key = Object.keys(item)[0];
       const written = WRITE.exec(key);
       if (!NAME.test(key) && written === null) fail(at, `'${key}' is not a valid name`);
@@ -534,26 +695,63 @@ export abstract class Modules extends Expressions {
     });
   }
 
+  private iterationsOf(call: Call, name: string, loops: { variable: string }[], before: Value | undefined): Iterations {
+    const iterations = call.iterations.get(name) ?? { variables: [], values: new Map<string, Value>(), before };
+    if (loops.length > iterations.variables.length) iterations.variables = loops.map((loop) => loop.variable);
+    call.iterations.set(name, iterations);
+    return iterations;
+  }
+
+  private skipBranch(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
+    for (const item of items) {
+      if (item.kind === 'loop' || (item.kind === 'assign' && item.target !== undefined)) continue;
+      if (item.kind === 'branch') {
+        this.skipBranch(call, [...item.then, ...item.other], loops);
+        continue;
+      }
+      if (loops.length === 0) {
+        if (!call.values.has(item.name)) call.values.set(item.name, null);
+        continue;
+      }
+      const iterations = this.iterationsOf(call, item.name, loops, call.values.get(item.name));
+      const key = loops.map((loop) => loop.index).join(',');
+      if (!iterations.values.has(key)) iterations.values.set(key, null);
+    }
+  }
+
   private runItems(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
     const def = call.instance.def;
     for (const item of items) {
       const env = this.callEnv(call, item.where);
+      if (item.kind === 'branch') {
+        const test = this.expression(item.test, env);
+        if (typeof test !== 'boolean') fail(item.where, `if must be True or False, got ${describe(test)}`);
+        this.runItems(call, test ? item.then : item.other, loops);
+        this.skipBranch(call, test ? item.other : item.then, loops);
+        continue;
+      }
       if (item.kind === 'loop') {
         if (call.instance.members.has(item.variable) || call.instance.args.has(item.variable) || call.bound.has(item.variable)) fail(item.where, `name '${item.variable}' is already defined in ${def.name}`);
         const start = this.number(item.start, env);
         const stop = this.number(item.stop, env);
+        const step = this.loopStep(item, env);
         if (!Number.isInteger(start.toy) || !Number.isInteger(stop.toy)) fail(item.where, `range(${item.start}, ${item.stop}) needs integers, got ${start.toy} and ${stop.toy}`);
-        const span = combine([start, stop], (a, b) => Math.max(0, b - a));
+        const span = combine([start, stop, step], rangeCount);
         const count = span.toy;
         if (count === 0) continue;
+        const first: Num = start.derive === undefined ? { toy: start.toy, real: start.real } : { toy: start.toy, real: start.real, derive: start.derive };
         const run = () => {
-          for (let k = start.toy; k < stop.toy; k++) {
-            call.values.set(item.variable, num(k));
+          for (const k of rangeValues(start.toy, stop.toy, step.toy)) {
+            call.values.set(item.variable, { ...first, toy: k });
             this.runItems(call, item.body, [...loops, { variable: item.variable, index: k }]);
           }
         };
+        const base = this.g.copiesNow();
+        for (const inner of innerLoops(item.body)) this.nest(call, item, inner, start, stop, step, base, env);
+        const nest = this.nests.get(item);
         const real = this.dimSpec(span);
-        if (real === count) run();
+        if (nest !== undefined) this.g.realCopies(nest.drawn, nest.real, run, nest.base);
+        else if (real === count) run();
         else this.g.realCopies(count, real, run);
         continue;
       }
@@ -566,7 +764,7 @@ export abstract class Modules extends Expressions {
       const suffix = loops.map((loop) => `[${loop.index}]`).join('');
       const alias = this.resultAlias(call, name, env);
       const tex = loops.reduce((acc, loop) => addMark(acc, `_{${loop.index}}`), alias.tex);
-      const make: Make = { name, path: `${alias.path}${suffix}`, tex, anon: [] };
+      const make: Make = { name, path: `${alias.path}${suffix}`, suffix, tex, anon: [] };
       const before = this.g.nodes.length;
       const calls = call.children.length;
       const value = item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, name, env, make);
@@ -577,17 +775,17 @@ export abstract class Modules extends Expressions {
         call.values.set(name, null);
         continue;
       }
-      if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor, a module result or None, got ${describe(value)}`);
+      const numeric = (isNum(value) || typeof value === 'boolean') && item.target === undefined;
+      if (numeric && this.g.nodes.length !== before) fail(where, `'${name}' is ${describe(value)}, but computing it created tensors`);
+      if (!numeric && !(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor, a number, a bool, a module result or None, got ${describe(value)}`);
       const previous = call.values.get(name);
       call.values.set(name, value);
+      if (inLoop) {
+        this.iterationsOf(call, name, loops, previous).values.set(loops.map((loop) => loop.index).join(','), value);
+      }
+      if (numeric) continue;
       if (!call.results.includes(name)) call.results.push(name);
       call.resultValues.push({ name, value, where });
-      if (inLoop) {
-        const loop = loops[loops.length - 1];
-        const iterations = call.iterations.get(name) ?? { variable: loop.variable, values: [], before: previous };
-        iterations.values[loop.index] = value;
-        call.iterations.set(name, iterations);
-      }
       if (value instanceof Node) {
         if (make.anon.length > 0) {
           call.anon.set(value, make.anon);
@@ -610,8 +808,12 @@ export abstract class Modules extends Expressions {
     const picks = index.items
       .map((item, d) => ({ item, dim: ellipsis >= 0 && d > ellipsis ? d - index.items.length : d }))
       .filter(({ item }) => item.k !== 'ellipsis' && !full(item));
-    if (picks.length === 0) this.fail(env, `'${name}[${target}]' writes the whole tensor; give the result a new name instead`);
     const mode: Mode = { k: 'graph', make };
+    if (picks.length === 0) {
+      if (index.items.length !== 1 || ellipsis !== 0) this.fail(env, `'${name}[${target}]' writes the whole tensor; write '${name}[...]' to update it in place, or give the result a new name`);
+      const whole = this.evaluate({ k: 'name', name, pos }, env, mode, false);
+      return this.apply('slice_scatter', [whole, this.evaluate(this.parse(text, env), env, mode, false), num(0), null, null], new Map(), env, mode, true, pos);
+    }
     const scalar = (ast: Ast | undefined): Value => (ast === undefined ? null : this.evaluate(ast, env, mode, false));
     const part = (base: Value, item: IndexItem, dim: number): Value => {
       const items: IndexItem[] = dim >= 0 ? [...Array.from({ length: dim }, (): IndexItem => ({ k: 'slice' })), item] : [{ k: 'ellipsis' }, item, ...Array.from({ length: -dim - 1 }, (): IndexItem => ({ k: 'slice' }))];
@@ -635,10 +837,10 @@ export abstract class Modules extends Expressions {
     return into(() => this.evaluate({ k: 'name', name, pos }, env, mode, false), picks, true);
   }
 
-  private scanAliases(call: Call, items: { name: string; text: unknown; where: Where }[]): void {
+  private scanAliases(call: Call, items: { name: string; text: unknown; where: Where; target?: string }[]): void {
     const results = new Set<string>();
-    for (const { name, text, where } of items) {
-      if (typeof text !== 'string') continue;
+    for (const { name, text, where, target } of items) {
+      if (typeof text !== 'string' || target !== undefined) continue;
       const ast = this.parse(text, this.callEnv(call, where));
       if (ast.k === 'call' && ast.fn.k === 'name') {
         const callee = call.instance.members.get(ast.fn.name);
@@ -658,14 +860,20 @@ export abstract class Modules extends Expressions {
     const declared = this.fieldOf(def, 'outputs');
     const names = Object.keys(declared);
     if (names.length === 0) fail(outputsWhere, `module ${def.name} needs at least one output`);
+    const none = new Set<string>();
     for (const name of names) {
       const at = child(outputsWhere, declared, name);
       const value = call.values.get(name);
+      if (value === null && isRecord(declared[name]) && (declared[name] as Record<string, unknown>).optional === true) {
+        none.add(name);
+        continue;
+      }
       if (!(value instanceof Node)) fail(at, value === undefined ? `output '${name}' of ${def.name} is not computed in forward` : `output '${name}' of ${def.name} must be a tensor, got ${describe(value)}`);
       this.bindField(call, name, value, declared[name], { ...this.callEnv(call), where: at }, (message) => fail(at, `output '${name}' of ${def.name}: ${message}`), false);
       call.outputs.set(name, value);
     }
-    return names.length === 1 ? (call.outputs.get(names[0]) as Node) : new Result(call, call.outputs);
+    if (names.length === 1) return call.outputs.get(names[0]) ?? null;
+    return new Result(call, call.outputs, none);
   }
 
   callList(list: InstanceList, args: Value[], kwargs: Map<string, Value>, env: Env, make: Make, top: boolean, at: number): Value {
@@ -687,14 +895,19 @@ export abstract class Modules extends Expressions {
   }
 }
 
-function argSpec(spec: unknown, at: Where): { type: string; fallback: unknown } {
+export function argSpec(spec: unknown, at: Where): { type: string; fallback: unknown; options?: string[] } {
   if (typeof spec === 'string') {
     if (!ARG_TYPES.has(spec)) fail(at, `arg type must be one of ${[...ARG_TYPES].join(', ')}`);
     return { type: spec, fallback: undefined };
   }
   const field = record(spec, at, 'an arg');
-  checkKeys(field, new Set(['type', 'default']), at);
+  checkKeys(field, new Set(['type', 'default', 'options']), at);
   if (typeof field.type !== 'string' || !ARG_TYPES.has(field.type)) fail(child(at, field, 'type'), `arg type must be one of ${[...ARG_TYPES].join(', ')}`);
+  if (field.options !== undefined) {
+    const options = field.options;
+    if (field.type !== 'str' || !Array.isArray(options) || options.length < 2 || !options.every((o) => typeof o === 'string')) fail(child(at, field, 'options'), 'options lists the strings a str arg can take, at least two');
+    return { type: field.type, fallback: field.default, options: options as string[] };
+  }
   return { type: field.type, fallback: field.default };
 }
 

@@ -3,7 +3,7 @@ import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
 import { isLayoutOp } from '../../scene3d/layout';
-import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
+import type { ForwardStep, FunctionBackward, PageModule, StepsSpec } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import type { ModuleDef } from '../load';
@@ -55,6 +55,7 @@ export class PageCompiler extends Texts {
   readonly rootInputs = new Set<Node>();
   readonly data = new Map<string, DataEntry>();
   readonly config = new Map<string, DataValue>();
+  overrides: Readonly<Record<string, string | number | boolean>> = {};
   vocab: string[] | undefined;
   rootCall!: Call;
 
@@ -167,6 +168,10 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
       configValues.set(key, plainOf(c.dataValue(exprText(value.expr, exprWhere), root, exprWhere), exprWhere));
     } else configValues.set(key, literal(value, at));
   }
+  for (const [key, value] of Object.entries(c.overrides)) {
+    if (!configValues.has(key)) fail(configWhere, `config has no '${key}' to override`);
+    configValues.set(key, value);
+  }
   const realOf = (name: string, toy: number): number => {
     const value = real?.[name];
     return typeof value === 'number' ? value : toy;
@@ -269,10 +274,13 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   const drawn = [...new Set(others.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])))];
   for (const step of sc.allSteps) step.show = [...new Set([...drawn, ...(Array.isArray(step.show) ? step.show : [step.show])])];
   sc.markFormulas(trees);
-  checkShown(c, sc, forward);
-  const visible = new Set(forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])));
+  const functions = sc.functionBackward(forward, groups);
+  checkShown(c, sc, forward, functions);
+  checkBackwardShown(c, sc, functions);
+  const visible = new Set([...forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])), ...functions.flatMap((f) => f.steps.flatMap((s) => s.show))]);
   const modules = sc.modules(visible);
   const steps: StepsSpec = { forward, groups, braces, backward: 'reverse', modules };
+  if (functions.length > 0) steps.functions = functions;
   const env = c.rootEnv();
   const compiled: CompiledPage = {
     graph: c.g,
@@ -376,8 +384,21 @@ function drawnOn(node: Node, shown: (n: Node) => boolean): boolean {
   return isLayoutOp(node) && drawnOn(node.inputs[0], shown);
 }
 
-function checkShown(c: PageCompiler, sc: StepCompiler, forward: ForwardStep[]): void {
-  const shown = new Set(forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])));
+function checkBackwardShown(c: PageCompiler, sc: StepCompiler, functions: FunctionBackward[]): void {
+  const shown = new Set(functions.flatMap((f) => f.steps.flatMap((s) => s.show)));
+  for (const call of sc.functionTrees.keys()) {
+    const backward = c.backwardCalls.get(call) as Call;
+    const def = call.instance.def;
+    for (const { name, value, where } of backward.resultValues) {
+      if (value instanceof Node && drawnOn(value, (n) => shown.has(n))) continue;
+      if (value instanceof Result && sc.shownCalls.has(value.call)) continue;
+      fail(where, `'${name}' of the backward of ${def.name} is not shown by any of its backward_steps`);
+    }
+  }
+}
+
+function checkShown(c: PageCompiler, sc: StepCompiler, forward: ForwardStep[], functions: FunctionBackward[]): void {
+  const shown = new Set([...forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])), ...functions.flatMap((f) => f.steps.flatMap((s) => s.show))]);
   const inputsOfShown = new Set([...sc.shownCalls].flatMap((call) => [...call.inputs.values()]));
   for (const call of sc.shownCalls) {
     const def = call.instance.def;

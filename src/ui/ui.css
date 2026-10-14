@@ -1570,3 +1570,24 @@ table.vf-costrule {
   margin: 8px 0 0;
   color: var(--pos);
 }
+
+.vf-impl {
+  display: grid;
+  gap: 8px;
+}
+
+.vf-impl-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.vf-impl-row code {
+  font-size: 12px;
+}
+
+.vf-impl .vf-seg button:disabled {
+  cursor: default;
+}

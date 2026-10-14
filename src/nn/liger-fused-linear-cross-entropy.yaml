@@ -1,0 +1,112 @@
+module: LigerFusedLinearCrossEntropyFunction
+import:
+  liger_cross_entropy_kernel: ./liger-cross-entropy-kernel.yaml
+args:
+  ignore_index: { type: int, default: -100 }
+inputs:
+  _input: [BT, H]
+  weight: [V, H]
+  target: { type: tensor, shape: [BT], dtype: int64 }
+outputs:
+  loss: { type: tensor, shape: [], dtype: fp32 }
+
+init:
+  ce_kernel: liger_cross_entropy_kernel
+
+forward:
+  - inc_factor: triton.cdiv(V, H)
+  - chunk_size: min(triton.next_power_of_2(triton.cdiv(BT, inc_factor)), BT)
+  - num_chunks: triton.cdiv(BT, chunk_size)
+  - grad_input: zeros_like(_input)
+  - grad_weight: zeros_like(weight)
+  - loss_1d: zeros(BT, dtype=fp32)
+  - target_mask: (target == ignore_index).logical_not()
+  - total_n_non_ignore: target_mask.sum()
+  - for: chunk_id in range(num_chunks)
+    do:
+      - start_idx: chunk_id * chunk_size
+      - end_idx: min((chunk_id + 1) * chunk_size, BT)
+      - _input_chunk: _input[start_idx:end_idx]
+      - logits_chunk: _input_chunk @ weight.transpose(0, 1)
+      - target_chunk: target[start_idx:end_idx]
+      - ce: ce_kernel(logits_chunk, target_chunk, total_n_non_ignore)
+      - 'loss_1d[start_idx:end_idx]': ce.loss
+      - grad_logits_chunk: ce.X_grad
+      - 'grad_input[start_idx:end_idx]': grad_logits_chunk @ weight
+      - 'grad_weight[...]': grad_weight + grad_logits_chunk.transpose(0, 1) @ _input_chunk
+  - loss: loss_1d.sum()
+
+save: [grad_input, grad_weight]
+backward:
+  - grad__input: grad_input
+
+tex:
+  _input: '\mathbf{h}'
+  weight: 'W'
+  target: 'y'
+  grad_input: '\frac{\partial\ell}{\partial\mathbf{h}}'
+  grad_weight: '\frac{\partial\ell}{\partial W}'
+  loss_1d: '\boldsymbol{\ell}'
+  target_mask: '[y\ne -100]'
+  total_n_non_ignore: 'N'
+  _input_chunk: '\mathbf{h}^{\mathrm{chunk}}'
+  logits_chunk: '\mathbf{z}^{\mathrm{chunk}}'
+  target_chunk: 'y^{\mathrm{chunk}}'
+  grad_logits_chunk: '\frac{\partial\ell}{\partial\mathbf{z}^{\mathrm{chunk}}}'
+  loss: '\ell'
+  grad__input: '\frac{\partial\ell}{\partial\mathbf{h}}'
+
+fold:
+  label: '$\viz{loss}$'
+  title: LigerFusedLinearCrossEntropyFunction
+  text: |
+    $$\viz{loss}=\frac1N\sum_t\Big(\log\sum_v e^{\mathbf{h}_t\cdot W_v}-\mathbf{h}_t\cdot W_{y_t}\Big)={{ loss | matrix:4 }}$$
+
+steps:
+  - id: setup
+    show: [grad_input, grad_weight, loss_1d, target_mask, total_n_non_ignore]
+    label: '$N$'
+    title: 分块与缓冲区
+    text: |
+      <code>fused_linear_cross_entropy_forward</code> 不先算出完整的 $T\times V$ logits，而是把 $T$ 个位置切成块，每块算出 logits、立刻求损失和梯度，再丢掉。块的大小让一块的 logits 不超过 $\mathbf{h}$ 的大小：<code>inc_factor</code> $=\lceil V/H\rceil={{ inc_factor }}$，<code>chunk_size</code> 是 $\lceil BT/\mathrm{inc\_factor}\rceil$ 向上取到 2 的幂、不超过 $BT$，这里是 {{ chunk_size }}，共 {{ num_chunks }} 块。
+
+      $\frac{\partial\ell}{\partial \mathbf{h}}$、$\frac{\partial\ell}{\partial W}$ 和每行的损失先分配好。$N$ 是标签不等于 <code>ignore_index</code> 的位置数，作为 mean 的分母。
+  - id: chunk
+    loop: chunk_id in range(num_chunks)
+    defaults:
+      title: '第 {{ chunk_id }} 块'
+      subtitle: '第 {{ start_idx }} 到 {{ end_idx - 1 }} 个位置'
+      steps:
+        - id: logits
+          show: [_input_chunk, logits_chunk, target_chunk]
+          label: '$\viz{logits_chunk}$'
+          title: '第 {{ chunk_id }} 块的 logits'
+          text: |
+            <code>logits_chunk = _input_chunk @ weight.t()</code>，只有这一块的 {{ end_idx - start_idx }} 行。{{ real['qwen3-8b'].name if False else '' }}
+            $$\viz{logits_chunk}={{ logits_chunk | matrix:2 }}$$
+        - id: ce
+          show: ce
+          subtitle: liger_cross_entropy_kernel
+        - id: grads
+          show: [loss_1d, grad_input, grad_weight]
+          label: '$\viz{grad_input},\ \viz{grad_weight}$'
+          title: '第 {{ chunk_id }} 块：传回 $\mathbf{h}$ 和 $W$'
+          text: |
+            kernel 已经把 logits 改写成 $\frac{\partial\ell}{\partial \mathbf{z}}$，在前向里直接乘回去：$\frac{\partial\ell}{\partial \mathbf{h}^{\mathrm{chunk}}}=\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}}W$ 写进 <code>grad_input</code> 的这几行，$\frac{\partial\ell}{\partial W}\mathrel{+}=(\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}})^{\top}\mathbf{h}^{\mathrm{chunk}}$ 用 <code>torch.addmm</code> 累加，图里画成乘法加加法。这一块的 logits 和它的梯度到这里就不再需要了。
+            $$\viz{grad_input}={{ grad_input | matrix:3 }}$$
+  - id: loss
+    show: loss
+    label: '$\viz{loss}$'
+    title: 损失
+    text: |
+      <code>loss = torch.sum(loss_1d)</code>，每行已经除过 $N$，求和就是平均损失。
+      $$\viz{loss}={{ loss | matrix:4 }}$$
+
+backward_steps:
+  - id: grads
+    show: grad__input
+    label: '$\frac{\partial\ell}{\partial\mathbf{h}},\ \frac{\partial\ell}{\partial W}$'
+    title: 交出前向算好的梯度
+    text: |
+      <code>LigerFusedLinearCrossEntropyFunction.backward</code> 收到 $\frac{\partial\ell}{\partial \ell}$。损失就是最终的标量时它等于 1，<code>torch.equal(grad_output, 1)</code> 成立，于是直接返回前向存下的 <code>grad_input</code> 和 <code>grad_weight</code>，不做任何计算；否则用 <code>element_mul_kernel</code> 乘上 $\frac{\partial\ell}{\partial \ell}$。反向因此只是把两个梯度交给 $\mathbf{h}$ 和 $W$。
+      $$\frac{\partial\ell}{\partial\mathbf{h}}={{ grad__input | matrix:3 }}$$

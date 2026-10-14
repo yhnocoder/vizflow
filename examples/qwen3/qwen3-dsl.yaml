@@ -15,11 +15,17 @@ config:
   num_layers: 2
   rope_theta: 10
   dtype: bf16
+  attn_implementation: eager
+  fused_linear_cross_entropy: false
+  flash_block_m: 2
+  flash_block_n: 2
+  flash_bwd_block_m: 2
+  flash_bwd_block_n: 2
   seed: 20261010
   tokenizer:
     vocab: [on, mat, the, sat, cat]
   real:
-    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
+    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000, flash_block_m: 128, flash_block_n: 64, flash_bwd_block_m: 64, flash_bwd_block_n: 128 }
 
 data:
   tokens: [the, cat, sat, on]
@@ -27,6 +33,10 @@ data:
   y: { expr: 'tokens_to_ids(tokens[1:])' }
 
 panels:
+  - implementations: [attn_implementation, fused_linear_cross_entropy]
+    title: 实现
+    note: |
+      切换 HF 的 <code>attn_implementation</code> 和 Liger 的 <code>fused_linear_cross_entropy</code>，计算图、步骤、显存与计算量都按所选实现重新生成。四种组合算出的损失和梯度在数学上相同。
   - loss: { parts: lt, hint: 走几步看损失下降 }
   - cost
   - sequence: true
@@ -51,7 +61,7 @@ panels:
       lt = F.nll_loss(logp, y, reduction='none')
       loss = lt.mean()
     note: |
-      这里的 ids 和 y 已经按相邻位置对齐，形状都是 (T,)，没有额外的 batch 维。layers 中的各层依次执行，使用各自的参数。
+      这段代码对应 eager 注意力和不融合的损失，切换实现后计算图与它不同。这里的 ids 和 y 已经按相邻位置对齐，形状都是 (T,)，没有额外的 batch 维。layers 中的各层依次执行，使用各自的参数。
       示例使用 {{ num_layers }} 层，隐藏维度 {{ d_model }}，query head 数 {{ num_heads }}，kv head 数 {{ num_kv_heads }}，每个 head 的维度 {{ d_head }}，MLP 中间维度 {{ d_ff }}，词表大小 {{ V }}，输入长度 {{ T }}。
 
 sections:

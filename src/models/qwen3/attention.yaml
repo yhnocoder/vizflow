@@ -3,15 +3,21 @@ import:
   Qwen3RMSNorm: ./rmsnorm.yaml
   apply_rotary_pos_emb: ./apply-rotary-pos-emb.yaml
   eager_attention_forward: ./eager-attention-forward.yaml
+  flash_attention_forward: vizflow/nn/flash-attention-forward
 
 args:
   d_model: dim
   d_head: dim
   num_heads: dim
   num_kv_heads: dim
+  attn_implementation: { type: str, options: [eager, flash_attention_2], default: eager }
+  flash_block_m: { type: dim, default: 128 }
+  flash_block_n: { type: dim, default: 64 }
+  flash_bwd_block_m: { type: dim, default: 64 }
+  flash_bwd_block_n: { type: dim, default: 128 }
 inputs:
   x: [T, d_model]
-  mask: [T, T]
+  mask: { type: tensor, shape: [T, T], dtype: dtype, optional: true }
   cos: [T, d_head]
   sin: [T, d_head]
 outputs:
@@ -34,7 +40,13 @@ init:
     use: Qwen3RMSNorm
     args: { hidden_size: d_head }
   apply_rotary_pos_emb: apply_rotary_pos_emb
-  eager_attention_forward: eager_attention_forward
+  eager_attention_forward:
+    use: eager_attention_forward
+    present: attn_implementation == 'eager'
+  flash_attention_forward:
+    use: flash_attention_forward
+    present: attn_implementation == 'flash_attention_2'
+    args: { scaling: d_head ** -0.5, block_m: flash_block_m, block_n: flash_block_n, bwd_block_m: flash_bwd_block_m, bwd_block_n: flash_bwd_block_n }
   o_proj:
     use: Linear
     args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
@@ -54,7 +66,7 @@ forward:
   - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
   - qr: rotated.q_embed
   - kr: rotated.k_embed
-  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask)
+  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask) if attn_implementation == 'eager' else flash_attention_forward(q=qr, k=kr, v=vt)
   - o: attn_output.reshape(T, num_heads * d_head)
   - att: o_proj(o)
 
@@ -263,6 +275,13 @@ steps:
         append: |
           位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3 的 <code>attention_dropout</code> 是 0，所以训练时省去 dropout 也不改变结果。
           $$P^{({{ num_heads - 1 }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
+  - id: flash_attention_forward
+    title: FlashAttention-2
+    subtitle: '<code>attn_implementation="flash_attention_2"</code>'
+    text: |
+      HF 按 <code>config._attn_implementation</code> 从 <code>ALL_ATTENTION_FUNCTIONS</code> 里取注意力函数，选 <code>flash_attention_2</code> 时调用 <code>flash_attention_forward</code>，最后进入 flash-attn 库的 <code>flash_attn_func</code>。它算出的 $\mathbf{o}$ 与 eager 实现的数学结果相同，区别在于计算的组织：eager 实现把每个 head 的 $T\times T$ 分数、概率矩阵写进显存，反向还要读回；FlashAttention 把 q、k、v 切成块放进片上的 shared memory 和寄存器，用 online softmax 边读边算，只把输出和每行一个数 $L$ 写回显存，反向用 $L$ 重新算出概率。显存从 $O(T^2)$ 降到 $O(T)$，读写显存的次数也少得多。
+
+      这一页的 $T={{ T }}$，块大小取 {{ flash_block_m }}，所以只有几个块。{{ real['qwen3-8b'].name if False else '' }}
   - id: reshape
     show: o
     label: '$\viz{o}$'

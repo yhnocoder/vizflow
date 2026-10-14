@@ -171,7 +171,7 @@ export interface LayoutContext {
   plan?: LevelPlan;
 }
 
-const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'squeeze', 'contiguous', 'identity']);
+const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'squeeze', 'contiguous', 'identity', 'grad_of']);
 
 export function isLayoutOp(n: Node): boolean {
   return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);

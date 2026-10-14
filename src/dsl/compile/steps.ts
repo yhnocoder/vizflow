@@ -1,6 +1,6 @@
 import { Node } from '../../autograd';
 import { isLayoutOp } from '../../scene3d/layout';
-import { type BackwardOverride, type ForwardStep, type StepBrace, type StepGroup, type StepModule, isLeafLike } from '../../steps';
+import { type BackwardOverride, type ForwardStep, type FunctionBackward, type StepBrace, type StepGroup, type StepModule, isLeafLike } from '../../steps';
 import type { Ast } from '../expr';
 import { type Where, child, fail, merged } from '../source';
 import { markSteps } from '../tex';
@@ -8,7 +8,7 @@ import { describe } from './expressions';
 import { notesOf } from './notes';
 import type { PageCompiler } from './page';
 import { type Call, type Env, Instance, InstanceList, Result, type Value } from './types';
-import { checkKeys, isNum, num, record } from './util';
+import { checkKeys, isNum, num, rangeValues, record } from './util';
 
 const EXPLANATION_KEYS = ['label', 'title', 'text', 'append'];
 const OPTION_KEYS: ReadonlySet<string> = new Set([...EXPLANATION_KEYS, 'show', 'subtitle', 'expand', 'flat', 'brace', 'formula', 'notes', 'fold', 'backward', 'edit']);
@@ -101,12 +101,20 @@ export class StepCompiler {
   private readonly carried = new Map<Call, Node[]>();
   private readonly marks = new Map<Rec, string>();
   private readonly absent = new WeakMap<Tree[], Set<string>>();
+  readonly functionTrees = new Map<Call, Tree[]>();
+  private readonly callGroups = new Map<Call, string[]>();
 
   constructor(private readonly c: PageCompiler) {}
 
   compileCall(call: Call): Tree[] {
     this.shownCalls.add(call);
     const def = call.instance.def;
+    const backward = this.c.backwardCalls.get(call);
+    if (backward !== undefined) {
+      const at = child(def.where, def.decl, 'backward_steps');
+      if (def.decl.backward_steps === undefined) fail(child(def.where, def.decl, 'backward'), `${def.name} has a backward, so it needs backward_steps that show what the backward computes`);
+      this.functionTrees.set(call, this.list(def.decl.backward_steps, this.c.callEnv(backward, at)));
+    }
     const where = child(def.where, def.decl, 'steps');
     const steps = def.decl.steps;
     if (steps === undefined) return [];
@@ -174,9 +182,9 @@ export class StepCompiler {
     if (range !== null) {
       const bounds = this.c.reference(`[${range[2]}]`, env);
       const ints = Array.isArray(bounds) ? bounds.map((b) => (isNum(b) && Number.isInteger(b.toy) ? b.toy : undefined)) : [];
-      if (ints.length < 1 || ints.length > 2 || ints.some((b) => b === undefined)) this.c.fail(env, `range(${range[2]}) needs one or two integers`);
-      const [start, stop] = ints.length === 1 ? [0, ints[0] as number] : (ints as number[]);
-      return { variable: range[1], index: undefined, items: Array.from({ length: Math.max(0, stop - start) }, (_, k) => num(start + k)) };
+      if (ints.length < 1 || ints.length > 3 || ints.some((b) => b === undefined) || ints[2] === 0) this.c.fail(env, `range(${range[2]}) needs one to three integers and a nonzero step`);
+      const [start, stop, step] = ints.length === 1 ? [0, ints[0] as number, 1] : [ints[0] as number, ints[1] as number, ints[2] ?? 1];
+      return { variable: range[1], index: undefined, items: rangeValues(start, stop, step).map(num) };
     }
     const match = LOOP.exec(text);
     if (match === null) fail(env.where, "loop must look like 'layer = layers[i]' or 'i in range(n)'");
@@ -187,9 +195,12 @@ export class StepCompiler {
   }
 
   private isNone(show: unknown, env: Env): boolean {
+    if (Array.isArray(show)) return show.length > 0 && show.every((item, k) => this.isNone(item, { ...env, where: child(env.where, show, k) }));
     if (typeof show !== 'string') return false;
     const ast = this.c.parse(show, env);
-    return (ast.k === 'name' || ast.k === 'member') && this.c.evaluate(ast, env, { k: 'ref' }, false) === null;
+    if (ast.k !== 'name' && ast.k !== 'member') return false;
+    const value = this.c.evaluate(ast, env, { k: 'ref' }, false);
+    return value === null || (value instanceof Instance && value.calls.length === 0);
   }
 
   private field(env: Env, options: Options, key: string): Env {
@@ -280,6 +291,7 @@ export class StepCompiler {
           continue;
         }
         const value = this.c.evaluate(term, itemEnv, { k: 'ref' }, false);
+        if (value === null && Array.isArray(show)) continue;
         if (value instanceof Node) {
           nodes.push(value);
           continue;
@@ -510,6 +522,7 @@ export class StepCompiler {
         }
         const title = tree.title ?? tree.id;
         groups.push({ id, title });
+        if (tree.call !== undefined) this.callGroups.set(tree.call, [...path, id]);
         const brace: StepBrace = { id, title, nodes: framed(shows([tree]), tree.call), depth };
         if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;
@@ -535,7 +548,7 @@ export class StepCompiler {
       return undefined;
     };
     for (const call of this.c.calls) {
-      if (call.parent === undefined || call.instance.def.decl.steps === undefined) continue;
+      if (call.parent === undefined || call.instance.def.decl.steps === undefined || this.c.inBackward(call)) continue;
       const shown = this.callSteps.get(call);
       const nodes = call.created.filter((n) => !isLeafLike(n) && visible.has(n));
       if (nodes.length === 0) continue;
@@ -558,6 +571,48 @@ export class StepCompiler {
       });
     }
     return modules;
+  }
+
+  functionBackward(forward: ForwardStep[], groups: StepGroup[]): FunctionBackward[] {
+    return [...this.functionTrees].map(([call, trees]) => {
+      const inside = (module: string | undefined) => module !== undefined && (module === call.prefix || module.startsWith(`${call.prefix}.`) || module.startsWith(`${call.prefix}#`));
+      const outputs = [...call.outputs.values()];
+      const after = [...forward].reverse().find((step) => inside(step.module) || (Array.isArray(step.show) ? step.show : [step.show]).some((n) => outputs.includes(n)));
+      const def = call.instance.def;
+      if (after === undefined) fail(child(def.where, def.decl, 'backward_steps'), `no forward step shows the call '${call.prefix}', so its backward steps have no place`);
+      const spec = this.c.g.functionOf(outputs[0]);
+      const base = this.callGroups.get(call) ?? after.groups ?? [];
+      const placed: { rec: Rec; path: string[] }[] = [];
+      const walk = (list: Tree[], path: string[], key: string) => {
+        for (const tree of list) {
+          const id = `${key}.${tree.id}`;
+          if (tree.kind === 'leaf') {
+            placed.push({ rec: tree.rec, path });
+            continue;
+          }
+          const inner = tree.flat ? path : [...path, id];
+          if (!tree.flat) groups.push({ id, title: tree.title ?? tree.id });
+          if (tree.intro !== undefined) placed.push({ rec: tree.intro, path: inner });
+          walk(tree.children, inner, id);
+        }
+      };
+      walk(trees, base, `${base.at(-1) ?? call.prefix}.backward`);
+      const steps = placed.map(({ rec, path }, k) => {
+        const step = rec.step;
+        const out: FunctionBackward['steps'][number] = {
+          id: String(k),
+          title: step.title,
+          show: step.show,
+          receive: (spec?.gradInputs ?? []).filter((g) => step.show.includes(g.grad)).map((g) => g.input),
+          groups: path,
+        };
+        if (step.label !== undefined) out.label = step.label;
+        if (step.text !== undefined) out.text = step.text;
+        if (step.notes !== undefined) out.notes = step.notes;
+        return out;
+      });
+      return { module: call.prefix, after, steps };
+    });
   }
 
   markFormulas(trees: Tree[]): void {

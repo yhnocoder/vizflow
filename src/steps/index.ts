@@ -7,6 +7,8 @@ export {
   type StepInfo,
   type StepState,
   type ForwardStep,
+  type FunctionBackward,
+  type FunctionStep,
   type BackwardOverride,
   type BackwardSpec,
   type PageModule,

@@ -18,6 +18,7 @@ export function layoutOf(c: PageCompiler, root: Call): LevelSpec {
 }
 
 function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
+  if (c.inBackward(call)) return call.lines.flatMap((line) => [...line.calls.flatMap((inner) => levelsOf(c, inner, spec)), ...(line.nodes.length > 0 ? [[...line.nodes]] : [])]);
   const def = call.instance.def;
   const where = child(def.where, def.decl, 'layout');
   const layout = record(def.decl.layout, where, 'layout');

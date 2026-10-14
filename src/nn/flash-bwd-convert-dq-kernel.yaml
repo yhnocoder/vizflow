@@ -1,0 +1,17 @@
+module: flash_bwd_convert_dq_kernel
+kernel: true
+args:
+  softmax_scale: float
+inputs:
+  dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+  dq: [T, num_heads, d_head]
+outputs:
+  dq_out: [T, num_heads, d_head]
+
+forward:
+  - dq_scaled: dq_accum * softmax_scale
+  - dq_out: dq_scaled.to(dq.dtype)
+
+tex:
+  dq_scaled: '\mathrm{d}Q'
+  dq_out: '\mathrm{d}Q'

@@ -7,7 +7,7 @@ export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64
 export type Scalar = string | number | boolean;
 export type Value = Scalar | Value[] | ExpressionValue;
 export type Dimension = number | Expression;
-export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
+export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'str' | 'dtype' | 'module';
 export type ArgDeclaration = ArgType | ArgField;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
@@ -16,7 +16,7 @@ export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>
 export type Declaration = Dimension[] | TensorField | ListField;
 export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
 export type Step = NamedStep | LoopStep;
-export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel;
+export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel | ImplementationsPanel;
 
 export interface ExpressionValue {
   expr: Expression;
@@ -25,6 +25,7 @@ export interface ExpressionValue {
 export interface ArgField {
   type: ArgType;
   default?: Value;
+  options?: Scalar[];
 }
 
 export interface TensorField {
@@ -86,6 +87,10 @@ export interface Module {
   layout?: Layout;
   steps?: Step[];
   unshown?: Reference[];
+  kernel?: boolean;
+  save?: Reference[];
+  backward?: Assignment[];
+  backward_steps?: Step[];
 }
 
 export interface ModuleFile extends Module {
@@ -242,6 +247,10 @@ export interface Highlight {
 
 export interface CodePanel extends PanelText {
   code: string;
+}
+
+export interface ImplementationsPanel extends PanelText {
+  implementations: Reference[];
 }
 
 export interface Section {

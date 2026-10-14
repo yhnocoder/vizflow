@@ -110,6 +110,31 @@ function fillOp(name: 'zeros' | 'ones', value: number): OpDef<FillAttrs> {
   };
 }
 
+export interface FullAttrs {
+  size: number[];
+  fill_value: number;
+  dtype: Dtype | null;
+}
+
+export const fullOp: OpDef<FullAttrs> = {
+  name: 'full',
+  args: ['size', 'fill_value', 'dtype'],
+  tensors: [],
+  sizes: ['size'],
+  defaults: { dtype: null },
+  differentiable: [],
+  dtype: fillDtype('full'),
+  int64: true,
+  cost: CREATION_COST,
+  shape: (_inputs, attrs) => checkSize('full', attrs.size),
+  forward: (_inputs, attrs) => {
+    const out = new Tensor(checkSize('full', attrs.size));
+    out.data.fill(attrs.fill_value);
+    return asDtype(out, fillDtype('full')(attrs));
+  },
+  backward: () => [],
+};
+
 export const zerosOp = fillOp('zeros', 0);
 export const onesOp = fillOp('ones', 1);
 

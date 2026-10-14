@@ -76,14 +76,15 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   const overview = c.state.dir === 'forward' && c.state.kind === 'overview';
   const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
   const push = (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => {
+    const dir = entry.toNode.phase === 'backward' ? 'forward' : c.state.dir;
     const style = edgeStyle({
-      dir: c.state.dir,
+      dir,
       overview,
       contract: entry.contract,
       zeroGrad,
       focused: rows.every((row) => row === undefined || row === c.state.focus),
       far: from.far && to.far,
-      current: c.stepNodes.has(backward ? entry.fromNode : entry.toNode),
+      current: c.stepNodes.has(dir === 'backward' ? entry.fromNode : entry.toNode),
       revealedFrom: c.state.revealed(entry.fromNode),
       revealedTo: c.state.revealed(entry.toNode),
     });

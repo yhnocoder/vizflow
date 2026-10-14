@@ -39,6 +39,7 @@ export const sumOp: OpDef<ReduceAttrs> = {
   name: 'sum',
   args: ['input', 'dim'],
   tensors: ['input'],
+  integral: 'int64',
   defaults: { dim: null, keepdim: false },
   shape: ([a], attrs) => reducedShapeOf(a, attrs),
   forward: ([a], attrs) => {

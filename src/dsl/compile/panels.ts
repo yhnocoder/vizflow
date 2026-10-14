@@ -3,6 +3,7 @@ import type { PanelItem } from '../../ui';
 import { type Where, child, fail } from '../source';
 import type { PageCompiler } from './page';
 import type { Env } from './types';
+import { argSpec } from './instance';
 import { checkKeys, isRecord, record } from './util';
 
 const TEXT_KEYS = ['title', 'note'];
@@ -30,7 +31,7 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       const lossWhere = child(at, panel, 'loss');
       checkKeys(loss, new Set(['parts', 'hint']), lossWhere);
       const out: { parts?: Node; hint?: string } = {};
-      if (loss.parts !== undefined) out.parts = node('parts', loss, lossWhere);
+      if (loss.parts !== undefined && c.reference(loss.parts, { ...env, where: child(lossWhere, loss, 'parts') }) !== null) out.parts = node('parts', loss, lossWhere);
       if (loss.hint !== undefined) out.hint = c.text(loss.hint, { ...env, where: child(lossWhere, loss, 'hint') });
       return { loss: out };
     }
@@ -98,6 +99,27 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       if (panel.rows !== undefined) out.rows = node('rows').name;
       return out;
     }
-    return fail(at, 'a panel needs one of loss, sequence, code, attention or matrices, or is cost');
+    if (panel.implementations !== undefined) {
+      checkKeys(panel, new Set(['implementations', ...TEXT_KEYS]), at);
+      const listWhere = field('implementations').where;
+      const list = panel.implementations;
+      if (!Array.isArray(list) || list.length === 0) fail(listWhere, 'implementations lists the config args a reader can switch');
+      const root = c.rootCall.instance.def;
+      const declared = record(root.decl.args, child(root.where, root.decl, 'args'), 'args');
+      return {
+        implementations: list.map((name, k) => {
+          const itemAt = child(listWhere, list, k);
+          if (typeof name !== 'string' || !(name in declared)) fail(itemAt, `'${String(name)}' is not an arg of ${root.name}`);
+          const { type, options } = argSpec(declared[name], child(child(root.where, root.decl, 'args'), declared, name));
+          const value = c.config.get(name);
+          if (value === undefined) fail(itemAt, `config does not set '${name}'`);
+          if (options !== undefined) return { name, value: value as string, options };
+          if (type === 'bool') return { name, value: value as boolean, options: [false, true] };
+          return fail(itemAt, `'${name}' needs options or type bool to be switched`);
+        }),
+        ...texts(TEXT_KEYS),
+      };
+    }
+    return fail(at, 'a panel needs one of loss, sequence, code, attention, matrices or implementations, or is cost');
   });
 }

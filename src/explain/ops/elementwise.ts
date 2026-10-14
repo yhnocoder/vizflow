@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, powOperands, sigmoid, trilKeeps, triuKeeps } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, maximumLocal, normalCdf, normalPdf, powOperands, sigmoid, trilKeeps, triuKeeps } from '../../autograd/ops/elementwise';
 import { type Tensor, broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -274,6 +274,11 @@ export const copysignExplain = binary(
   (a, b) => `\\operatorname{copysign}(${a},${b})`,
   (a, b, arg) => (arg === 0 ? copysignLocal(a, b) : 0),
   (a, b, arg) => (arg === 0 ? `\\operatorname{sign}(${a})\\operatorname{sign}(${b})` : '0'),
+);
+export const maximumExplain = binary(
+  (a, b) => `\\max(${a},${b})`,
+  (a, b, arg) => maximumLocal(a, b)[arg],
+  (a, b, arg) => (arg === 0 ? `\\mathbf{1}[${a}>${b}]` : `\\mathbf{1}[${b}>${a}]`),
 );
 export const absExplain = unary((a) => `\\lvert ${a}\\rvert`, (x) => Math.sign(x), (x) => `\\operatorname{sign}(${x})`);
 export const signExplain = unary((a) => `\\operatorname{sign}(${a})`, () => 0, () => '0');

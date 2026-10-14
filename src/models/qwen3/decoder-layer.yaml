@@ -11,9 +11,14 @@ args:
   d_ff: dim
   num_heads: dim
   num_kv_heads: dim
+  attn_implementation: { type: str, options: [eager, flash_attention_2], default: eager }
+  flash_block_m: { type: dim, default: 128 }
+  flash_block_n: { type: dim, default: 64 }
+  flash_bwd_block_m: { type: dim, default: 64 }
+  flash_bwd_block_n: { type: dim, default: 128 }
 inputs:
   x: [T, d_model]
-  mask: [T, T]
+  mask: { type: tensor, shape: [T, T], dtype: dtype, optional: true }
   cos: [T, d_head]
   sin: [T, d_head]
 outputs:
@@ -25,7 +30,7 @@ init:
     args: { hidden_size: d_model }
   self_attn:
     use: Qwen3Attention
-    args: [d_model, d_head, num_heads, num_kv_heads]
+    args: [d_model, d_head, num_heads, num_kv_heads, attn_implementation, flash_block_m, flash_block_n, flash_bwd_block_m, flash_bwd_block_n]
   post_attention_layernorm:
     use: Qwen3RMSNorm
     args: { hidden_size: d_model }

@@ -7,7 +7,10 @@ import { CompilerState } from './state';
 import { type DtypeValue, Eager, type Env, Instance, InstanceList, type Make, type Mode, type ModuleRef, type Num, PageFunction, type RealSizeEntry, type RealSizes, Result, type TensorView, type Value, type ViewIndex } from './types';
 import { combine, isNum, isRecord, num } from './util';
 
-const MATH_FUNCTIONS: Record<string, (...values: number[]) => number> = { log: Math.log, exp: Math.exp, sqrt: Math.sqrt, floor: Math.floor, ceil: Math.ceil };
+const SCALAR_MODULES: Record<string, Record<string, (...values: number[]) => number>> = {
+  math: { log: Math.log, log2: Math.log2, exp: Math.exp, sqrt: Math.sqrt, floor: Math.floor, ceil: Math.ceil },
+  triton: { cdiv: (a, b) => Math.floor((a + b - 1) / b), next_power_of_2: (n) => 2 ** Math.ceil(Math.log2(n)) },
+};
 const MATH_CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E, inf: Infinity };
 const SCALAR_BUILTINS: Record<string, (...values: number[]) => number> = { max: Math.max, min: Math.min, abs: Math.abs };
 
@@ -126,11 +129,15 @@ export abstract class Expressions extends CompilerState {
     const call = env.call;
     if (call !== undefined) {
       const iterations = call.iterations.get(name);
-      const at = iterations === undefined ? undefined : env.locals.get(iterations.variable);
-      if (iterations !== undefined && isNum(at)) {
-        const value = iterations.values[at.toy];
-        if (value === undefined) this.fail(env, `'${name}' is not computed when ${iterations.variable} is ${at.toy}`, at.toy);
-        return value as Value;
+      const indices = iterations === undefined ? [] : iterations.variables.map((variable) => env.locals.get(variable));
+      const depth = indices.findIndex((n) => !isNum(n));
+      const at = (depth < 0 ? indices : indices.slice(0, depth)) as Num[];
+      if (iterations !== undefined && at.length > 0) {
+        for (let d = at.length; d > 0; d--) {
+          const value = iterations.values.get(at.slice(0, d).map((n) => n.toy).join(','));
+          if (value !== undefined) return value;
+        }
+        this.fail(env, `'${name}' is not computed when ${at.map((n, i) => `${iterations.variables[i]} is ${n.toy}`).join(' and ')}`);
       }
       if (iterations?.before !== undefined && call.finished) return iterations.before;
       if (call.values.has(name)) return call.values.get(name) as Value;
@@ -210,7 +217,7 @@ export abstract class Expressions extends CompilerState {
   }
 
   member(ast: Extract<Ast, { k: 'member' }>, env: Env, mode: Mode): Value {
-    if (this.isMath(ast.obj, env)) {
+    if (this.scalarModule(ast.obj, env) === 'math') {
       if (!(ast.name in MATH_CONSTANTS)) this.fail(env, `math has no constant '${ast.name}'; it has ${Object.keys(MATH_CONSTANTS).join(', ')}`, ast.pos);
       return num(MATH_CONSTANTS[ast.name]);
     }
@@ -224,6 +231,7 @@ export abstract class Expressions extends CompilerState {
     }
     if (base instanceof Result) {
       const output = base.outputs.get(ast.name);
+      if (output === undefined && base.none.has(ast.name)) return null;
       if (output === undefined) this.fail(env, `${base.call.instance.def.name} has no output '${ast.name}'; its outputs are ${[...base.outputs.keys()].join(', ')}`, ast.pos);
       return output;
     }
@@ -523,10 +531,12 @@ export abstract class Expressions extends CompilerState {
     const at = ast.pos;
     const args = (): Value[] => ast.args.map((arg) => this.evaluate(arg, env, mode, false));
     const kwargs = (): Map<string, Value> => new Map(ast.kwargs.map(([key, arg]) => [key, this.evaluate(arg, env, mode, false)]));
-    if (ast.fn.k === 'member' && this.isMath(ast.fn.obj, env)) {
-      const fn = MATH_FUNCTIONS[ast.fn.name];
-      if (fn === undefined) this.fail(env, `math has no function '${ast.fn.name}'; it has ${Object.keys(MATH_FUNCTIONS).join(', ')}`, ast.fn.pos);
-      return this.scalarCall(`math.${ast.fn.name}`, fn, args(), kwargs(), env, at);
+    const scalarModule = ast.fn.k === 'member' ? this.scalarModule(ast.fn.obj, env) : undefined;
+    if (ast.fn.k === 'member' && scalarModule !== undefined) {
+      const functions = SCALAR_MODULES[scalarModule];
+      const fn = functions[ast.fn.name];
+      if (fn === undefined) this.fail(env, `${scalarModule} has no function '${ast.fn.name}'; it has ${Object.keys(functions).join(', ')}`, ast.fn.pos);
+      return this.scalarCall(`${scalarModule}.${ast.fn.name}`, fn, args(), kwargs(), env, at);
     }
     if (ast.fn.k === 'member') {
       const target = this.evaluate(ast.fn.obj, env, mode, false);
@@ -580,9 +590,10 @@ export abstract class Expressions extends CompilerState {
     return this.apply(name, args(), kwargs(), env, mode, top, at);
   }
 
-  private isMath(ast: Ast, env: Env): boolean {
-    if (ast.k !== 'name' || ast.name !== 'math') return false;
-    return !env.locals.has('math') && !(env.call?.values.has('math') ?? false) && !env.instance.members.has('math') && !env.instance.args.has('math');
+  private scalarModule(ast: Ast, env: Env): string | undefined {
+    if (ast.k !== 'name' || !(ast.name in SCALAR_MODULES)) return undefined;
+    const name = ast.name;
+    return !env.locals.has(name) && !(env.call?.values.has(name) ?? false) && !env.instance.members.has(name) && !env.instance.args.has(name) ? name : undefined;
   }
 
   private scalarCall(name: string, fn: (...values: number[]) => number, given: Value[], options: Map<string, Value>, env: Env, at: number): Num {

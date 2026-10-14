@@ -18,6 +18,7 @@ export {
   mountPanels,
   type PanelItem,
   type PanelsOptions,
+  type ImplementationChoice,
   type LossOptions,
   type SgdOptions,
   type SequenceOptions,

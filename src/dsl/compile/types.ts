@@ -89,6 +89,12 @@ export interface Alias {
   tex: string;
 }
 
+export interface Iterations {
+  variables: string[];
+  values: Map<string, Value>;
+  before: Value | undefined;
+}
+
 export class Call {
   readonly values = new Map<string, Value>();
   readonly resultAliases = new Map<string, Map<string, Alias>>();
@@ -100,7 +106,7 @@ export class Call {
   readonly results: string[] = [];
   readonly resultValues: { name: string; value: Value; where: Where }[] = [];
   finished = false;
-  readonly iterations = new Map<string, { variable: string; values: Value[]; before: Value | undefined }>();
+  readonly iterations = new Map<string, Iterations>();
   readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
   created: Node[] = [];
 
@@ -122,6 +128,7 @@ export class Result {
   constructor(
     readonly call: Call,
     readonly outputs: ReadonlyMap<string, Node>,
+    readonly none: ReadonlySet<string> = new Set(),
   ) {}
 }
 
@@ -135,6 +142,7 @@ export interface Env {
 export interface Make {
   name: string;
   path: string;
+  suffix?: string;
   tex: string;
   anon: Node[];
 }

@@ -8,7 +8,7 @@ import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
 import { plates, rowCol, rowsCols, tokenText } from './layout';
-import { type Renderable, targetOf, valuesOf } from './renderable';
+import { type Renderable, showsGrad, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
@@ -58,7 +58,7 @@ export class ScenePopups {
     const { block } = renderable;
     const node = block.node;
     const element = block.elements[index];
-    const backward = c.state.dir === 'backward';
+    const backward = showsGrad(c, node);
     const elemTex = c.explainer.elemTex({ node, index: element.index });
     const value = valuesOf(c, node)[index];
     const label = c.aligned.get(node);
@@ -96,7 +96,7 @@ export class ScenePopups {
 
   private gridOf(node: Node): ValueGrid {
     const [, cols] = rowsCols(node);
-    const backward = this.c.state.dir === 'backward';
+    const backward = showsGrad(this.c, node);
     const values = valuesOf(this.c, node);
     const ordered = new Float64Array(values.length);
     forEachIndex(node.shape, (index, offset) => {

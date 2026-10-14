@@ -34,7 +34,7 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
   const cap = capFor(block.shape, node.shape.length);
   const scale = {
     forward: block.scales.forward ?? scaleFor(node.value.data, node.dtype, cap),
-    backward: block.scales.backward ?? scaleFor(grad === null ? [] : grad.data, node.dtype, cap),
+    backward: block.scales.backward ?? (node.phase === 'backward' ? scaleFor(node.value.data, node.dtype, cap) : scaleFor(grad === null ? [] : grad.data, node.dtype, cap)),
   };
   const renderable: Renderable = {
     block,
@@ -46,7 +46,7 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     scale,
     ticks: {
       forward: block.axis === undefined ? [] : niceTicks(node.value.data, node.dtype, scale.forward, TICK_COUNT, cap),
-      backward: block.axis === undefined || grad === null ? [] : niceTicks(grad.data, node.dtype, scale.backward, TICK_COUNT, cap),
+      backward: block.axis === undefined ? [] : node.phase === 'backward' ? niceTicks(node.value.data, node.dtype, scale.backward, TICK_COUNT, cap) : grad === null ? [] : niceTicks(grad.data, node.dtype, scale.backward, TICK_COUNT, cap),
     },
     title: undefined,
     values: [],
@@ -122,8 +122,12 @@ export function targetOf(c: SceneController, block: Block, row: number): number 
   return label === undefined ? undefined : targetColumn(label, row);
 }
 
+export function showsGrad(c: SceneController, node: Node): boolean {
+  return c.state.dir === 'backward' && node.phase === 'forward';
+}
+
 export function valuesOf(c: SceneController, node: Node): ArrayLike<number> {
-  if (c.state.dir === 'forward') return node.value.data;
+  if (!showsGrad(c, node)) return node.value.data;
   const grad = node.grad;
   return grad === null ? new Float64Array(node.value.size) : grad.data;
 }

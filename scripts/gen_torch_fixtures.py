@@ -878,6 +878,18 @@ def creation_and_reverse_cases():
     return cases
 
 
+def function_support_cases():
+    cases = binary_cases("maximum", torch.maximum)
+    tie = torch.tensor([[1.0, 2.0, -3.0], [0.5, 0.5, 4.0]])
+    other = torch.tensor([[1.0, 0.0, -3.0], [0.5, 2.0, -4.0]])
+    cases.append(op_case("maximum", "ties split the gradient (2, 3)", torch.maximum, [("input", tie), ("input", other)], [tensor_arg(0), tensor_arg(1)]))
+    cases += pointwise_cases("saved", lambda x: x.clone(), randn)
+    cases.append(op_case("grad_of", "(2, 3)", torch.zeros_like, [("input", randn(2, 3))], [tensor_arg(0)]))
+    cases.append(op_case("full", "(2, 3) of -2.5", lambda: torch.full((2, 3), -2.5), [], [[2, 3], -2.5]))
+    cases.append(op_case("full", "(3,) of 0.5", lambda: torch.full((3,), 0.5), [], [[3], 0.5]))
+    return cases
+
+
 DTYPE_NAMES = {torch.bool: "bool", torch.int32: "int32", torch.int64: "int64", torch.bfloat16: "bf16", torch.float32: "fp32"}
 
 
@@ -904,6 +916,8 @@ def promotion_cases():
         cases.append(dtype_case(op, fn, [torch.int64]))
     for op, fn in {"add": torch.add, "mul": torch.mul}.items():
         cases.append(dtype_case(op, fn, [torch.int32, torch.int64]))
+    for dtype in [torch.bool, torch.int32]:
+        cases.append(dtype_case("sum", torch.sum, [dtype]))
     torch.set_default_dtype(previous)
     return cases
 
@@ -931,7 +945,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases() + function_support_cases())
     write("pages.json", pages + stable_pages)
     write("dtypes.json", promotion_cases())
     write("rrms.json", rrms_cases())

@@ -1,6 +1,6 @@
 import { Tensor, broadcastIndex, forEachIndex, formatShape, normDim, offsetOf, reduceMap, unbroadcast } from '../../tensor';
 import type { OpDef } from '../op';
-import { NO_FLOPS, VIEW_COST, movement, numel, pointwise } from './cost';
+import { NO_FLOPS, VIEW_COST, movement, numel, pointwise, write } from './cost';
 
 const CONV_MULTIPLY_ADD = 2;
 
@@ -131,7 +131,7 @@ export const narrowOp: OpDef<NarrowAttrs> = {
   name: 'narrow',
   args: ['input', 'dim', 'start', 'length', 'step'],
   tensors: ['input'],
-  sizes: ['length'],
+  sizes: ['start', 'length'],
   defaults: { step: 1 },
   shape: ([input], attrs) => narrowed(input, attrs).shape,
   forward: ([input], attrs) => {
@@ -1135,7 +1135,7 @@ export const selectScatterOp: OpDef<SelectAttrs> = {
     });
     return [gi, gs];
   },
-  cost: movement(false, [[], []]),
+  cost: write([[], []]),
 };
 
 export interface SliceScatterAttrs {
@@ -1201,5 +1201,5 @@ export const sliceScatterOp: OpDef<SliceScatterAttrs> = {
     });
     return [gi, gs];
   },
-  cost: movement(false, [[], []]),
+  cost: write([[], []]),
 };

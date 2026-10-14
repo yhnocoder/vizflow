@@ -793,8 +793,6 @@ Markdown 文件的写法：
 :::
 
 ::: rope_compare
-scores: 'layers[0].self_attn.eager_attention_forward.Ss'
-weights: 'layers[0].self_attn.eager_attention_forward.P'
 ids: ids
 :::
 ````
@@ -806,7 +804,7 @@ ids: ids
 - 单独一行 `---` 结束当前行，下一行从分隔线后开始。`columns` 块自己占一行，它前后的正文各成一行。
 - `columns 宽度...` 只能写在最外层，里面只能放 `column` 块，每栏一个宽度：数字是像素，其他写法（如 `1fr`）原样作为 CSS 网格宽度。窄屏下各栏改为上下排列。
 - `lead` 块的内容是开头段落，按 Markdown 渲染，字号稍大。
-- 其他名字是内置组件。`rope_dial`（两个箭头随 $t$、$s$ 转动的表盘）和 `rope_curve`（整个 head 的点积随 $t-s$ 变化的曲线）没有内容；`buttons` 的内容是 YAML 列表，每项 `{ label, go }`，点击后跳到第一个显示 `go` 节点的前向步骤，没有这样的步骤时跳到 `go` 所在模块折叠后的那一步；`rope_compare` 的内容是 YAML 映射，`scores`、`weights` 是形状为 $(H, T, T)$ 的打分和权重节点，`ids` 是 token 输入，用来对比加不加 RoPE 的打分。组件名后面不能带参数，参数写在内容里。
+- 其他名字是内置组件。`rope_dial`（两个箭头随 $t$、$s$ 转动的表盘）和 `rope_curve`（整个 head 的点积随 $t-s$ 变化的曲线）没有内容；`buttons` 的内容是 YAML 列表，每项 `{ label, go }`，点击后跳到第一个显示 `go` 节点的前向步骤，没有这样的步骤时跳到 `go` 所在模块折叠后的那一步；`rope_compare` 的内容是 YAML 映射，`ids` 是 token 输入；它用段落 `rope` 数据里的 $\bar{\mathbf{q}}$、$\bar{\mathbf{k}}$ 分别算出加与不加 RoPE 的打分和 causal softmax 权重，不依赖页面采用哪种注意力实现。组件名后面不能带参数，参数写在内容里。
 - 出错时报告 Markdown 文件的行号，例如 `qwen3/rope.md:12:1: '::: lead' is not closed`。组件内容里的节点路径写错时，报告那一行。
 
 ### 5.4 页面里自己的文字

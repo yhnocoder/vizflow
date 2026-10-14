@@ -14,6 +14,14 @@ export function num(n: number): Num {
   return { toy: n, real: n };
 }
 
+export function rangeCount(start: number, stop: number, step: number): number {
+  return Math.max(0, Math.ceil((stop - start) / step));
+}
+
+export function rangeValues(start: number, stop: number, step: number): number[] {
+  return Array.from({ length: rangeCount(start, stop, step) }, (_, k) => start + k * step);
+}
+
 export function realOf(n: Num): RealSize {
   if (n.derive !== undefined) return n.derive;
   const dim = n.dim;

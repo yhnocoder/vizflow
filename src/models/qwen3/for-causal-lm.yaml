@@ -3,6 +3,7 @@ import:
   LogSoftmax: vizflow/nn/log-softmax
   NLLLoss: vizflow/nn/nll-loss
   Qwen3Model: ./model.yaml
+  LigerFusedLinearCrossEntropyFunction: vizflow/nn/liger-fused-linear-cross-entropy
 args:
   V: dim
   d_model: dim
@@ -13,33 +14,50 @@ args:
   num_layers: int
   rope_theta: float
   dtype: dtype
+  attn_implementation: { type: str, options: [eager, flash_attention_2], default: eager }
+  fused_linear_cross_entropy: { type: bool, default: false }
+  flash_block_m: { type: dim, default: 128 }
+  flash_block_n: { type: dim, default: 64 }
+  flash_bwd_block_m: { type: dim, default: 64 }
+  flash_bwd_block_n: { type: dim, default: 128 }
 inputs:
   tokens: { type: list, dtype: str }
   ids: { type: tensor, shape: [T], dtype: int64 }
   y: { type: tensor, shape: [T], dtype: int64 }
 outputs:
-  z: [T, V]
+  z: { type: tensor, shape: [T, V], dtype: dtype, optional: true }
   loss: { type: tensor, shape: [], dtype: fp32 }
 
 init:
   model:
     use: Qwen3Model
-    args: [V, d_model, d_head, d_ff, num_heads, num_kv_heads, num_layers, rope_theta, dtype]
+    args: [V, d_model, d_head, d_ff, num_heads, num_kv_heads, num_layers, rope_theta, dtype, attn_implementation, flash_block_m, flash_block_n, flash_bwd_block_m, flash_bwd_block_n]
   lm_head:
     use: Linear
     args: { in_features: d_model, out_features: V, bias: False }
-  log_softmax: LogSoftmax
-  nll_loss: NLLLoss
+  log_softmax:
+    use: LogSoftmax
+    present: not fused_linear_cross_entropy
+  nll_loss:
+    use: NLLLoss
+    present: not fused_linear_cross_entropy
+  liger_flce:
+    use: LigerFusedLinearCrossEntropyFunction
+    present: fused_linear_cross_entropy
 
 forward:
   - h_norm: model(ids)
   - hidden_states: h_norm
-  - z: lm_head(hidden_states)
-  - zf: z.float()
-  - logp: log_softmax(zf)
-  - result: nll_loss(logp=logp, y=y)
-  - loss: result.loss
-  - lt: result.lt
+  - if: fused_linear_cross_entropy
+    then:
+      - loss: liger_flce(hidden_states, lm_head.weight, y)
+    else:
+      - z: lm_head(hidden_states)
+      - zf: z.float()
+      - logp: log_softmax(zf)
+      - result: nll_loss(logp=logp, y=y)
+      - loss: result.loss
+      - lt: result.lt
 
 tex:
   ids: 'x'
@@ -127,3 +145,10 @@ steps:
       pick:
         append: |
           这里 $N=T={{ T }}$，目标序列是 <code>{{ tokens[1:] | join: " " }}</code>。HF 在 <code>ForCausalLMLoss</code> 里给标签末尾补一个 <code>-100</code> 再错位，所以最后一个位置没有目标、不计入平均；而这一页直接给出错位后的 $T$ 个目标，没有需要忽略的位置。
+  - id: liger_flce
+    title: LigerFusedLinearCrossEntropy
+    subtitle: lm_head 与 cross_entropy 融合
+    text: |
+      <code>fused_linear_cross_entropy</code> 打开时，Liger 用 <code>lce_forward</code> 替换 <code>Qwen3ForCausalLM.forward</code>。训练时有标签，它不调用 <code>self.lm_head</code>，也不返回 logits，而是把最后的 $\viz{hidden_states}$、<code>lm_head.weight</code> 和标签交给 <code>LigerForCausalLMLoss</code>，在里面错位并调用 <code>LigerFusedLinearCrossEntropyFunction</code>。
+
+      融合的目的是显存。{{ real['qwen3-8b'].name }} 的词表是 {{ real['qwen3-8b'].V }}，$T={{ real['qwen3-8b'].T }}$ 时 bf16 的 logits 就有 ${{ real['qwen3-8b'].T }}\times{{ real['qwen3-8b'].V }}\times2$ 字节，转成 fp32 再求 log_softmax 又各多一份。Liger 按块计算，同一时刻只有一块 logits，并且在前向里就算出 $\pfl{\viz{hidden_states}}$ 和 $\pfl{\viz{lm_head.weight}}$，反向不再需要 logits。代价是 lm_head 的梯度在前向就要算，loss 之后即使不需要反向也做了这部分计算。

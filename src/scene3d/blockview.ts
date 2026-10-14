@@ -167,7 +167,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
   title.setFlag(IDLE_FLAG, c.options.steps !== undefined && !active);
-  texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
+  texOf(title, backward && node.phase === 'forward' ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
   if (renderable.bars !== undefined) {
     title.pos = [block.title.x, block.title.y, block.title.z];
     title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';

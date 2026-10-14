@@ -14,8 +14,11 @@ import {
   geluOp,
   identityOp,
   aliasOp,
+  gradOfOp,
+  savedOp,
   logOp,
   mulOp,
+  maximumOp,
   negOp,
   powOp,
   reciprocalOp,
@@ -81,7 +84,7 @@ import {
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { groupedLinearOp, linearComposite, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
-import { arangeOp, causalMaskOp, eyeOp, onesOp, zerosLikeOp, zerosOp } from './creation';
+import { arangeOp, causalMaskOp, eyeOp, fullOp, onesOp, zerosLikeOp, zerosOp } from './creation';
 import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp, rrmsOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -153,6 +156,7 @@ export interface BuiltinOps {
   causal_mask(size: number | string, dtype: Dtype, options?: OpOptions): Node;
   zeros(...args: [...(number | string)[], OpOptions | number | string]): Node;
   ones(...args: [...(number | string)[], OpOptions | number | string]): Node;
+  full(size: (number | string)[], fill_value: number, options?: OpOptions): Node;
   eye(n: number | string, options?: OpOptions): Node;
   zeros_like(input: Node, options?: OpOptions): Node;
   linear(input: Node, weight: Node, bias?: Node | null, options?: OpOptions): Node;
@@ -167,6 +171,8 @@ export interface BuiltinOps {
   relu(input: Node, options?: OpOptions): Node;
   gelu(input: Node, options?: OpOptions): Node;
   identity(input: Node, options?: OpOptions): Node;
+  grad_of(input: Node, options?: OpOptions): Node;
+  saved(input: Node, options?: OpOptions): Node;
   alias(input: Node, options?: OpOptions): Node;
   rotate_half(input: Node, options?: OpOptions): Node;
   clamp(input: Node, options?: ClampOptions): Node;
@@ -234,6 +240,7 @@ export interface BuiltinOps {
   bitwise_or(input: Node, other: Node | number, options?: OpOptions): Node;
   logical_not(input: Node, options?: OpOptions): Node;
   copysign(input: Node, other: Node | number, options?: OpOptions): Node;
+  maximum(input: Node, other: Node | number, options?: OpOptions): Node;
   sort(input: Node, dim?: number, options?: OpOptions): Node;
   scatter(input: Node, dim: number, index: Node, src: Node | number, options?: OpOptions): Node;
   index_put(input: Node, mask: Node, values: Node, options?: OpOptions): Node;
@@ -246,6 +253,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   subOp,
   rsubOp,
   mulOp,
+  maximumOp,
   divOp,
   negOp,
   cosOp,
@@ -265,6 +273,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   geluOp,
   identityOp,
   aliasOp,
+  gradOfOp,
+  savedOp,
   rotateHalfOp,
   clampOp,
   transposeOp,
@@ -327,6 +337,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   causalMaskOp,
   zerosOp,
   onesOp,
+  fullOp,
   eyeOp,
   zerosLikeOp,
   trilOp,

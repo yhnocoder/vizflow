@@ -1,0 +1,103 @@
+module: flash_attn_func
+import:
+  flash_fwd_kernel: ./flash-fwd-kernel.yaml
+  flash_bwd_dot_do_o_kernel: ./flash-bwd-dot-do-o-kernel.yaml
+  flash_bwd_dq_dk_dv_kernel: ./flash-bwd-dq-dk-dv-kernel.yaml
+  flash_bwd_convert_dq_kernel: ./flash-bwd-convert-dq-kernel.yaml
+args:
+  softmax_scale: float
+  block_m: dim
+  block_n: dim
+  bwd_block_m: dim
+  bwd_block_n: dim
+inputs:
+  q: [T, num_heads, d_head]
+  k: [T, num_kv_heads, d_head]
+  v: [T, num_kv_heads, d_head]
+outputs:
+  out: [T, num_heads, d_head]
+
+init:
+  fwd:
+    use: flash_fwd_kernel
+    args: { softmax_scale: softmax_scale, block_m: block_m, block_n: block_n }
+  dot_do_o: flash_bwd_dot_do_o_kernel
+  dq_dk_dv:
+    use: flash_bwd_dq_dk_dv_kernel
+    args: { softmax_scale: softmax_scale, block_m: bwd_block_m, block_n: bwd_block_n }
+  convert_dq:
+    use: flash_bwd_convert_dq_kernel
+    args: { softmax_scale: softmax_scale }
+
+forward:
+  - fwd_result: fwd(q, k, v)
+  - out: fwd_result.out
+  - softmax_lse: fwd_result.softmax_lse
+
+save: [q, k, v, out, softmax_lse]
+backward:
+  - dq: zeros_like(q)
+  - dot: dot_do_o(grad_out, out)
+  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum)
+  - grad_q: convert_dq(main.dq_accum_out, dq)
+  - grad_k: main.dk_expanded.reshape(T, num_kv_heads, num_heads // num_kv_heads, d_head).sum(2) if num_kv_heads != num_heads else main.dk_expanded
+  - grad_v: main.dv_expanded.reshape(T, num_kv_heads, num_heads // num_kv_heads, d_head).sum(2) if num_kv_heads != num_heads else main.dv_expanded
+
+tex:
+  q: '\mathbf{q}'
+  k: '\mathbf{k}'
+  v: '\mathbf{v}'
+  out: '\mathbf{o}'
+  softmax_lse: 'L'
+  grad_out: '\frac{\partial\ell}{\partial\mathbf{o}}'
+  dq: '\mathrm{d}\mathbf{q}'
+  grad_q: '\frac{\partial\ell}{\partial \mathbf{q}}'
+  grad_k: '\frac{\partial\ell}{\partial \mathbf{k}}'
+  grad_v: '\frac{\partial\ell}{\partial \mathbf{v}}'
+
+fold:
+  label: '$\viz{out}$'
+  title: flash_attn_func
+  text: |
+    $$\viz{out}=\operatorname{softmax}\Big(\frac{\mathbf{q}\mathbf{k}^{\top}}{\sqrt{d_h}}+M_{\mathrm{causal}}\Big)\mathbf{v}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{q},\ \partial\viz{k},\ \partial\viz{v}$'
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}},\ \frac{\partial\ell}{\partial \viz{v}}$'
+    text: |
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
+
+steps:
+  - id: fwd
+    subtitle: '<code>_flash_attn_forward</code>'
+
+backward_steps:
+  - id: dq
+    show: dq
+    label: '$\viz{dq}$'
+    title: 分配梯度
+    text: |
+      <code>FlashAttnFunc.backward</code> 收到 $\viz{grad_out}$，先用 <code>torch.empty_like</code> 分配 $\frac{\partial\ell}{\partial \mathbf{q}}$、$\frac{\partial\ell}{\partial \mathbf{k}}$、$\frac{\partial\ell}{\partial \mathbf{v}}$ 的输出缓冲区，再调用 <code>_flash_attn_backward</code>。前向保存的只有 $\mathbf{q}$、$\mathbf{k}$、$\mathbf{v}$、$\viz{out}$ 和 $\viz{softmax_lse}$，没有 $T\times T$ 的概率矩阵，反向按块重新算出它。C++ 的 <code>mha_bwd</code> 依次启动三个 kernel。
+  - id: dot
+    show: dot
+    label: '$D$'
+    title: flash_bwd_dot_do_o_kernel
+    text: |
+      softmax 的反向要用到每行的 $D_t=\sum_s P_{t,s}\,\frac{\partial\ell}{\partial P_{t,s}}$。因为 $\frac{\partial\ell}{\partial P_{t,s}}=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{v}_s$，有 $D_t=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\sum_sP_{t,s}\mathbf{v}_s=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{o}_t$，只要 $\frac{\partial\ell}{\partial \mathbf{o}}$ 和 $\mathbf{o}$ 逐行点积，不需要 $P$。<code>flash_bwd_dot_do_o_kernel</code> 算出它存为 fp32 的 <code>dsoftmax_sum</code>，同时把 <code>dq_accum</code> 清零。
+      $$D={{ dot.dsoftmax_sum | matrix:3 }}$$
+  - id: main
+    show: main
+    title: flash_bwd_dq_dk_dv_loop_seqk_parallel_kernel
+  - id: convert
+    show: convert_dq
+    label: '$\frac{\partial\ell}{\partial \viz{q}}$'
+    title: flash_bwd_convert_dq_kernel
+    text: |
+      上一个 kernel 里不同的 kv 块都要往同一行的 $\mathrm{d}\mathbf{q}$ 加，所以 $\mathrm{d}\mathbf{q}$ 用 fp32 的 <code>dq_accum</code> 和 atomicAdd 累加。<code>flash_bwd_convert_dq_kernel</code> 把它乘上 $1/\sqrt{d_h}$，转回 bf16 写进 $\viz{dq}$。
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ grad_q | matrix:3 }}$$
+  - id: gqa
+    show: [grad_k, grad_v]
+    label: '$\frac{\partial\ell}{\partial \viz{k}},\ \frac{\partial\ell}{\partial \viz{v}}$'
+    title: 把 head 的梯度加回 kv head
+    text: |
+      反向 kernel 按 query head 计算，每个 head 写出自己的 $\mathrm{d}\mathbf{k}$、$\mathrm{d}\mathbf{v}$，形状 $T\times H\times d_h$（<code>dk_expanded</code>）。GQA 下几个 query head 共用一个 kv head，所以 <code>mha_bwd</code> 最后用 <code>at::sum_out</code> 把同一组的 {{ num_heads // num_kv_heads }} 个 head 加起来，得到 $T\times H_{kv}\times d_h$ 的梯度。$H=H_{kv}$ 时直接使用。
+      $$\frac{\partial\ell}{\partial \viz{k}}={{ grad_k | matrix:3 }},\qquad \frac{\partial\ell}{\partial \viz{v}}={{ grad_v | matrix:3 }}$$
