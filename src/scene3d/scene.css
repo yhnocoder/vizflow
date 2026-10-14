@@ -9,6 +9,14 @@
   line-height: 1.6;
   color: var(--fg);
   container-type: inline-size;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.vf-scene input,
+.vf-scene textarea {
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .vf-scene canvas {
