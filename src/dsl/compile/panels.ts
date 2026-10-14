@@ -87,6 +87,31 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       if (page.generate === undefined) fail(field('generation').where, 'a generation panel needs generate on the page');
       return { generation: PENDING_INFER, ...texts(TEXT_KEYS) };
     }
+    if (panel.kv_blocks !== undefined) {
+      checkKeys(panel, new Set(['mode', 'kv_blocks', ...TEXT_KEYS]), at);
+      if (page.generate === undefined) fail(field('kv_blocks').where, 'a kv_blocks panel needs generate on the page');
+      const specWhere = field('kv_blocks').where;
+      const spec = record(panel.kv_blocks, specWhere, 'kv_blocks');
+      checkKeys(spec, new Set(['block_size', 'num_blocks', 'requests']), specWhere);
+      const count = (key: string, min: number) => {
+        const value = spec[key];
+        if (typeof value !== 'number' || !Number.isInteger(value) || value < min) fail(child(specWhere, spec, key), `${key} must be an integer of at least ${min}`);
+        return value as number;
+      };
+      const listed = spec.requests ?? [];
+      const requestsWhere = child(specWhere, spec, 'requests');
+      if (!Array.isArray(listed)) fail(requestsWhere, 'requests must be a list');
+      const others = listed.map((entry, k) => {
+        const entryWhere = child(requestsWhere, listed, k);
+        const request = record(entry, entryWhere, 'a request');
+        checkKeys(request, new Set(['id', 'prompt', 'arrive']), entryWhere);
+        if (typeof request.id !== 'string' || request.id === 'A') fail(child(entryWhere, request, 'id'), "id must be text other than 'A', which names the page's own request");
+        if (!Array.isArray(request.prompt) || request.prompt.length === 0 || !request.prompt.every((t) => typeof t === 'string')) fail(child(entryWhere, request, 'prompt'), 'prompt must be a list of tokens');
+        if (typeof request.arrive !== 'number' || !Number.isInteger(request.arrive) || request.arrive < 1) fail(child(entryWhere, request, 'arrive'), 'arrive must be a decode step, counted from 1');
+        return { id: request.id as string, prompt: request.prompt as string[], arrive: request.arrive as number };
+      });
+      return { kvBlocks: { infer: PENDING_INFER, blockSize: count('block_size', 1), numBlocks: count('num_blocks', 2), others }, ...texts(TEXT_KEYS) };
+    }
     if (panel.code !== undefined) {
       checkKeys(panel, new Set(['mode', 'code', ...TEXT_KEYS]), at);
       if (typeof panel.code !== 'string') fail(field('code').where, 'code must be text');
@@ -122,6 +147,6 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       if (panel.rows !== undefined) out.rows = node('rows').name;
       return out;
     }
-    return fail(at, 'a panel needs one of loss, sequence, generation, code, attention or matrices, or is cost');
+    return fail(at, 'a panel needs one of loss, sequence, generation, kv_blocks, code, attention or matrices, or is cost');
   });
 }

@@ -8,6 +8,7 @@ import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
 import { CostPanel, type CostPanelOptions } from './cost';
 import { Rich, indexed, plain } from './rich';
+import { KvBlocksPanel } from './kv-blocks';
 
 export interface SgdOptions {
   params: Node[];
@@ -48,6 +49,19 @@ export interface MatrixEntry {
   limit?: number;
 }
 
+export interface KvBlocksRequest {
+  id: string;
+  prompt: string[];
+  arrive: number;
+}
+
+export interface KvBlocksOptions {
+  infer: InferSpec;
+  blockSize: number;
+  numBlocks: number;
+  others: KvBlocksRequest[];
+}
+
 export type MatrixSource = Node | ((g: Graph, state: StepState) => Tensor);
 export type MatrixHighlight = Node | { node: Node; axis?: 'row' | 'col'; all?: boolean };
 export type TokenColumn = Node | { node: Node; grad?: boolean; title?: string };
@@ -65,6 +79,7 @@ export type PanelItem =
   | SequenceOptions
   | { code: string; title?: string; note?: string }
   | { generation: InferSpec; title?: string; note?: string }
+  | { kvBlocks: KvBlocksOptions; title?: string; note?: string }
   | { note: string; title?: string };
 
 const SLIDER_MIN = -2.5;
@@ -743,6 +758,14 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   if ('matrix' in item || 'matrices' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
   if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
   if ('generation' in item) return <GenerationPanel ctx={props.ctx} item={item} />;
+  if ('kvBlocks' in item) {
+    return (
+      <Card title={item.title ?? 'KV cache 的块'}>
+        <KvBlocksPanel options={item.kvBlocks} version={props.ctx.version} state={props.ctx.state} />
+        <Show when={item.note}>{(note) => <TemplateText ctx={props.ctx} class="vf-note" text={note()} />}</Show>
+      </Card>
+    );
+  }
   return (
     <Card title={item.title}>
       <TemplateText ctx={props.ctx} class="vf-note" text={item.note} />

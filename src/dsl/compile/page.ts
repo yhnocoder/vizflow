@@ -322,7 +322,11 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     compiled.modes = { train: spec, infer: { ...spec, update: undefined, infer } };
     compiled.steps = compiled.modes.infer;
     const modes = panelModes(c);
-    const panels = compiled.panels.map((item) => (typeof item === 'object' && 'generation' in item ? { ...item, generation: infer } : item));
+    const panels = compiled.panels.map((item) => {
+      if (typeof item === 'object' && 'generation' in item) return { ...item, generation: infer };
+      if (typeof item === 'object' && 'kvBlocks' in item) return { ...item, kvBlocks: { ...item.kvBlocks, infer } };
+      return item;
+    });
     const inMode = (mode: 'train' | 'infer') => panels.filter((_, i) => modes[i] === undefined || modes[i] === mode);
     compiled.modePanels = { train: inMode('train'), infer: inMode('infer') };
     compiled.panels = compiled.modePanels.infer;

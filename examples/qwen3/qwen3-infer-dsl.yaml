@@ -36,6 +36,13 @@ panels:
   - generation: true
     mode: infer
     title: 生成过程
+  - kv_blocks:
+      block_size: 2
+      num_blocks: 8
+      requests:
+        - { id: B, prompt: [the, cat, on, mat], arrive: 1 }
+    mode: infer
+    title: KV cache 的块与前缀共享
   - sequence: true
     mode: train
     tokens: tokens

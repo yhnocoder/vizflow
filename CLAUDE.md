@@ -79,6 +79,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - `src/ui/`：页面上的 DOM 组件，使用 Solid。入口 `src/ui/index.ts`。
 - `src/theme/`：颜色与字体。入口 `src/theme/index.ts`。
 - `src/scene3d/`：3D 场景，布局、相机、柱子、连线、模块标注、悬停与编辑各在单独的文件。入口 `src/scene3d/index.ts`。
+- `src/sim/`：推理服务中 KV cache 的纯数据模拟，`src/sim/serve/` 有 vLLM 的块池与前缀缓存、SGLang 的 radix 树，供 KV cache 面板使用。入口 `src/sim/index.ts`。
 - `src/dsl/`：YAML 页面描述的加载与编译；编译器各部分在 `src/dsl/compile/`。入口 `src/dsl/index.ts`。
 - `src/nn/`：和模型无关的内置 YAML 模块。
 - `src/models/`：每个模型一个目录，放这个模型的 YAML 定义，与 HF 的 `models/<模型>/` 对应，也放包内模块讲解共用的 LaTeX 宏。
