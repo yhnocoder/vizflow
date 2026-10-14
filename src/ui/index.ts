@@ -13,7 +13,7 @@ if (!document.getElementById(styleId)) {
 export { mountSteps } from './steps';
 export { mountSettings } from './settings';
 export { renderFigures } from './figures';
-export { figureNames } from './figure-spec';
+export { figureNames, figureTag } from './figure-spec';
 export {
   mountPanels,
   type PanelItem,

@@ -1,5 +1,5 @@
 import { type Camera, Vector3 } from 'three';
-import { type Placement, avoidOverlaps } from './avoid';
+import { type Box, type Placement, avoidOverlaps, spreadLane } from './avoid';
 import type { Vec3 } from './layout';
 
 export type LabelKind = 'val' | 'tick' | 'ttl' | 'ntl' | 'nv' | 'cls' | 'kk' | 'colh' | 'mod' | 'tok' | 'boxlb';
@@ -16,6 +16,7 @@ export type AnchorName = keyof typeof ANCHORS;
 
 export const LABEL_SAFE_MARGIN = 12;
 export const LABEL_CLIP = 1.2;
+export const LANE_GAP = 4;
 
 export function anchorOffset(anchor: AnchorName): [number, number] {
   return ANCHORS[anchor];
@@ -45,6 +46,7 @@ export class Label {
   readonly movable: boolean;
   readonly hideOnOverlap: boolean;
   visible = true;
+  lane: string | undefined = undefined;
   size: [number, number] | undefined = undefined;
   under: Label[] = [];
   offset: [number, number] | undefined = undefined;
@@ -57,7 +59,7 @@ export class Label {
   private alternate: { key: string; build: () => Node } | undefined = undefined;
   private alternateSize: [number, number] | undefined = undefined;
 
-  constructor(readonly kind: LabelKind, extraClass: string) {
+  constructor(readonly kind: LabelKind, extraClass: string, private readonly host: HTMLElement) {
     this.el = document.createElement('div');
     this.el.className = `vf-lb vf-${kind}${extraClass ? ` ${extraClass}` : ''}`;
     this.anchor = DEFAULT_ANCHOR[kind];
@@ -88,6 +90,7 @@ export class Label {
   }
 
   measure(): [number, number] {
+    if (this.el.parentElement === null) this.host.appendChild(this.el);
     if (this.size === undefined) this.size = [this.el.offsetWidth, this.el.offsetHeight];
     return this.size;
   }
@@ -155,13 +158,12 @@ export class LabelLayer {
   }
 
   add(kind: LabelKind, extraClass = ''): Label {
-    const label = new Label(kind, extraClass);
-    this.root.appendChild(label.el);
+    const label = new Label(kind, extraClass, this.root);
     this.labels.push(label);
     return label;
   }
 
-  project(camera: Camera, width: number, height: number, avoid = true): void {
+  project(camera: Camera, width: number, height: number, avoidAll = true, obstacles: readonly Box[] = []): void {
     const shown: Label[] = [];
     for (const label of this.labels) {
       let off = label.pos === undefined || !label.visible;
@@ -195,6 +197,25 @@ export class LabelLayer {
         priority: label.priority,
       };
     });
+    const lanes = new Map<string, number[]>();
+    shown.forEach((label, i) => {
+      if (label.lane === undefined || label.offset !== undefined) return;
+      lanes.set(label.lane, [...(lanes.get(label.lane) ?? []), i]);
+    });
+    for (const lane of lanes.values()) {
+      const all = lane.map((i) => placements[i].box);
+      const xLo = Math.min(...all.map((b) => b.x));
+      const xHi = Math.max(...all.map((b) => b.x + b.w));
+      const across = obstacles.filter((o) => o.x < xHi && xLo < o.x + o.w);
+      const top = Math.max(LABEL_SAFE_MARGIN, ...across.filter((o) => o.y + o.h / 2 < height / 2).map((o) => o.y + o.h + LABEL_SAFE_MARGIN));
+      const bottom = Math.min(height - LABEL_SAFE_MARGIN, ...across.filter((o) => o.y + o.h / 2 >= height / 2).map((o) => o.y - LABEL_SAFE_MARGIN));
+      const members = lane.filter((i) => {
+        const middle = placements[i].box.y + placements[i].box.h / 2;
+        return middle >= 0 && middle <= height;
+      });
+      spreadLane(members.map((i) => placements[i].box), top, bottom, LANE_GAP);
+      for (const i of members) placements[i] = { ...placements[i], movable: false, hideOnOverlap: false, priority: PRIORITY.title + 1 };
+    }
     const index = new Map(shown.map((label, i) => [label, i]));
     shown.forEach((label, i) => {
       const { box } = placements[i];
@@ -205,7 +226,15 @@ export class LabelLayer {
         if (other.x < box.x + box.w && box.x < other.x + other.w) box.y = Math.max(box.y, other.y + other.h);
       }
     });
-    const adjustments = avoid ? avoidOverlaps(placements, bounds) : placements.map(() => ({ dx: 0, dy: 0, hidden: false }));
+    const avoiding = shown.flatMap((label, i) => (avoidAll || label.movable ? [i] : []));
+    const adjusted = avoidOverlaps(
+      avoiding.map((i) => placements[i]),
+      avoidAll ? bounds : undefined,
+    );
+    const adjustments = placements.map(() => ({ dx: 0, dy: 0, hidden: false }));
+    avoiding.forEach((i, k) => {
+      adjustments[i] = adjusted[k];
+    });
     shown.forEach((label, i) => {
       const { box } = placements[i];
       const { dx, dy, hidden } = adjustments[i];

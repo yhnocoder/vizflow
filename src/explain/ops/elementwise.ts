@@ -1,7 +1,7 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, normalCdf, normalPdf, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
-import { broadcastIndex, formatNumber, normDim } from '../../tensor';
+import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, powOperands, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
+import { type Tensor, broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
   const input = ctx.inputs[arg];
@@ -50,6 +50,11 @@ export const subExplain = binary(
   (_a, _b, arg) => (arg === 0 ? 1 : -1),
   (_a, _b, arg) => (arg === 0 ? '1' : '-1'),
 );
+export const rsubExplain = binary(
+  (a, b) => `${b}-${a}`,
+  (_a, _b, arg) => (arg === 0 ? -1 : 1),
+  (_a, _b, arg) => (arg === 0 ? '-1' : '1'),
+);
 export const mulExplain = binary(
   (a, b) => `${a}\\cdot ${b}`,
   (a, b, arg) => (arg === 0 ? b : a),
@@ -62,6 +67,8 @@ export const divExplain = binary(
 );
 export const negExplain = unary((a) => `-${a}`, () => -1, () => '-1');
 export const expExplain = unary((a) => `\\exp(${a})`, (_x, y) => y, (x) => `e^{${x}}`);
+export const cosExplain = unary((a) => `\\cos ${a}`, (x) => -Math.sin(x), (x) => `-\\sin ${x}`);
+export const sinExplain = unary((a) => `\\sin ${a}`, (x) => Math.cos(x), (x) => `\\cos ${x}`);
 export const logExplain = unary((a) => `\\log ${a}`, (x) => 1 / x, (x) => `\\frac{1}{${x}}`);
 const rsqrtBase = unary(
   (a) => `\\frac{1}{\\sqrt{${a}}}`,
@@ -143,16 +150,40 @@ export const clampExplain: OpExplain = {
   },
 };
 
-const exponentOf =(attrs: object) => (attrs as { exponent: number }).exponent;
+function powRole(attrs: PowAttrs, arg: number): 'base' | 'exponent' {
+  return attrs.input === undefined && arg === 0 ? 'base' : 'exponent';
+}
+
+function powAt(ctx: OpCtx, out: number[]): { base: number; exponent: number } {
+  const { base, exponent } = powOperands(ctx.inputs, ctx.attrs as PowAttrs);
+  const at = (value: Tensor | number) => (typeof value === 'number' ? value : value.get(broadcastIndex(out, value.shape)));
+  return { base: at(base), exponent: at(exponent) };
+}
+
+function powTex(attrs: PowAttrs, ins: readonly string[]): { base: string; exponent: string } {
+  const { base, exponent } = powOperands(ins, attrs);
+  return { base: typeof base === 'number' ? (base < 0 ? `\\left(${base}\\right)` : `${base}`) : base, exponent: `${exponent}` };
+}
 
 export const powExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, _out, _arg, input) => exponentOf(ctx.attrs) * ctx.inputs[0].get(input) ** (exponentOf(ctx.attrs) - 1),
+  local: (ctx, out, arg) => {
+    const { base, exponent } = powAt(ctx, out);
+    return powRole(ctx.attrs as PowAttrs, arg) === 'base' ? exponent * base ** (exponent - 1) : base ** exponent * Math.log(base);
+  },
   tex: {
-    forward: (s) => (exponentOf(s.attrs) === 2 ? `${s.in[0]}\\odot ${s.in[0]}` : `{${s.in[0]}}^{${exponentOf(s.attrs)}}`),
+    forward: (s) => {
+      const attrs = s.attrs as PowAttrs;
+      const { base, exponent } = powTex(attrs, s.in);
+      return attrs.exponent === 2 ? `${base}\\odot ${base}` : `{${base}}^{${exponent}}`;
+    },
     local: (s) => {
-      const p = exponentOf(s.attrs);
-      return p - 1 === 1 ? `${p}${s.in}` : `${p}{${s.in}}^{${p - 1}}`;
+      const attrs = s.attrs as PowAttrs;
+      const { base, exponent } = powTex(attrs, s.ins);
+      if (powRole(attrs, s.arg) === 'exponent') return `{${base}}^{${exponent}}\\ln ${base}`;
+      const p = attrs.exponent;
+      if (p === undefined) return `${exponent}{${base}}^{${exponent}-1}`;
+      return p - 1 === 1 ? `${p}${base}` : `${p}{${base}}^{${p - 1}}`;
     },
   },
 };
@@ -161,7 +192,11 @@ export const transposeExplain: OpExplain = {
   pattern: 'elementwise',
   local: () => 1,
   tex: {
-    forward: (s) => transposedTex(s.in[0]),
+    forward: (s) => {
+      const { dim0, dim1 } = s.attrs as { dim0: number; dim1: number };
+      const matrix = new Set([dim0, dim1]);
+      return (matrix.has(0) && matrix.has(1)) || (matrix.has(-2) && matrix.has(-1)) ? transposedTex(s.in[0]) : `\\operatorname{transpose}(${s.in[0]},${dim0},${dim1})`;
+    },
     local: () => '1',
   },
   selected: (ctx, out) => {
@@ -175,12 +210,17 @@ export const transposeExplain: OpExplain = {
   },
 };
 
+function whereLocal(ctx: OpCtx, out: number[], arg: number): number {
+  const keep = operand(ctx, 0, out) !== 0;
+  return (arg === 1 && keep) || (arg === 2 && !keep) ? 1 : 0;
+}
+
 export const whereExplain: OpExplain = {
   pattern: 'elementwise',
-  local: (ctx, out, arg) => (arg === 1 && operand(ctx, 0, out) !== 0 ? 1 : 0),
+  local: (ctx, out, arg) => whereLocal(ctx, out, arg),
   tex: {
-    forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${scalarTex(s.attrs)})`,
-    local: (s) => (s.arg === 1 && operand(s.ctx, 0, s.outIndex) !== 0 ? '1' : '0'),
+    forward: (s) => `\\operatorname{where}(${s.in[0]},${s.in[1]},${s.in[2] ?? scalarTex(s.attrs)})`,
+    local: (s) => String(whereLocal(s.ctx, s.outIndex, s.arg)),
   },
 };
 
@@ -219,6 +259,13 @@ export const logicalNotExplain = unary((a) => `\\lnot ${a}`, () => 0, () => '0')
 export const eqExplain = binary((a, b) => `\\mathbf{1}[${a}=${b}]`, () => 0, () => '0');
 export const geExplain = binary((a, b) => `\\mathbf{1}[${a}\\ge ${b}]`, () => 0, () => '0');
 export const greaterExplain = binary((a, b) => `\\mathbf{1}[${a}>${b}]`, () => 0, () => '0');
+export const ltExplain = binary((a, b) => `\\mathbf{1}[${a}<${b}]`, () => 0, () => '0');
+export const bitwiseOrExplain = binary((a, b) => `${a}\\vee ${b}`, () => 0, () => '0');
+export const copysignExplain = binary(
+  (a, b) => `\\operatorname{copysign}(${a},${b})`,
+  (a, b, arg) => (arg === 0 ? copysignLocal(a, b) : 0),
+  (a, b, arg) => (arg === 0 ? `\\operatorname{sign}(${a})\\operatorname{sign}(${b})` : '0'),
+);
 export const absExplain = unary((a) => `\\lvert ${a}\\rvert`, (x) => Math.sign(x), (x) => `\\operatorname{sign}(${x})`);
 export const signExplain = unary((a) => `\\operatorname{sign}(${a})`, () => 0, () => '0');
 const minOf = (attrs: object) => (attrs as { min: number }).min;

@@ -1,6 +1,5 @@
 import type { Graph } from '../autograd';
 import type { CompiledPage } from '../dsl';
-import { renderText } from '../formula';
 import type { SceneOptions } from '../scene3d';
 import { createSteps, type Steps, type StepsSpec } from '../steps';
 import { mountPanels, mountSections, mountSteps, type Mounted, type PageSequence, type PanelItem, type SectionItem } from '../ui';
@@ -139,14 +138,14 @@ export class VizflowPage extends HTMLElement {
       const [{ loadPage }, { autoLayout }] = await Promise.all([import('../dsl'), import('../scene3d')]);
       const compiled = await loadPage(new URL(src, document.baseURI).href);
       if (loading !== this.#loading) return;
-      const { layout, modules, levels } = autoLayout(compiled.tree, compiled.steps);
+      const { layout, modules, levels } = autoLayout(compiled.tree, compiled.steps, compiled.levels);
       this.#compiled = compiled;
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
       this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
-      this.#scene = { layout, modules, levels, sequence: this.#sequence, hint: compiled.page.hint, camera: compiled.page.camera };
+      this.#scene = { layout, modules, levels, sequence: this.#sequence, camera: compiled.page.camera };
       this.#schedule();
       this.#flush();
       this.dispatchEvent(new Event('load'));
@@ -229,11 +228,6 @@ export class VizflowPage extends HTMLElement {
     const title = element('h1', 'vf-title');
     title.textContent = page.title;
     header.append(title);
-    if (page.lede !== undefined) {
-      const lede = element('p', 'vf-lede');
-      renderText(page.lede, lede);
-      header.append(lede);
-    }
     return header;
   }
 

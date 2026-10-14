@@ -24,7 +24,7 @@ export class ModuleBraces {
 
   private foldable(module: SceneModule): string | undefined {
     const steps = this.c.steps;
-    if (module.id === undefined || module.fixed === true || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
+    if (module.id === undefined || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
     if (!steps.modules.some((m) => m.id === module.id)) return undefined;
     return module.id;
   }
@@ -102,7 +102,9 @@ export class ModuleBraces {
     const modules = this.c.options.modules ?? [];
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
-      this.labels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
+      const label = this.labels[modules.indexOf(brace.module)];
+      label.pos = braceTip(brace, offset);
+      label.lane = brace.side;
       const points = bracePoints(brace, offset);
       const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];

@@ -1,110 +1,150 @@
 module: RMSNorm
-subtitle: RMSNorm
-formula: '\step{scale}{\of{out}=\of{weight}\odot}\step{normalize}{\of{x}\big/}\step{rms}{\sqrt{\step{mean}{\operatorname{mean}\big(}\step{square}{{\of{x}}^{2}}\step{mean}{\big)}\step{eps}{+\epsilon}}}'
-params:
-  eps:      { type: float, default: 1e-6 }
-  name:     { type: text, default_key: true }
-  intro:    { type: text, default: '' }
-  out_note: { type: text, default: '' }
-  in_note:  { type: text, default: '' }
+args:
+  hidden_size: dim
+  eps: { type: float, default: 1e-6 }
 inputs:
-  x: { shape: [..., n] }
-outputs: [out]
-weights:
-  weight: { shape: [n], init: ones, tex: '\boldsymbol{\gamma}' }
+  x: ['...', hidden_size]
+outputs:
+  out: ['...', hidden_size]
+init:
+  weights:
+    weight: { shape: [hidden_size], init: ones }
+forward:
+  - xf: x.float()
+  - sq: xf ** 2
+  - ms: sq.mean(-1, keepdim=True)
+  - mse: ms + eps
+  - r: rsqrt(mse)
+  - xh: xf * r
+  - xc: xh.to(x.dtype)
+  - out: weight * xc
+tex:
+  weight: '\boldsymbol{\gamma}'
+  xf: '{\viz{x}}_{\mathrm{fp32}}'
+  sq: '{\viz{x}}^{2}'
+  ms: '\mathrm{ms}'
+  mse: '(\mathrm{ms}+\epsilon)'
+  r: 'r'
+  xh: '\hat{\viz{x}}_{\mathrm{fp32}}'
+  xc: '\hat{\viz{x}}'
+formula: '\step{scale}{\viz{out}=\viz{weight}\odot}\step{normalize}{\viz{x}\big/}\step{rms}{\sqrt{\step{mean}{\operatorname{mean}\big(}\step{square}{{\viz{x}}^{2}}\step{mean}{\big)}\step{eps}{+\epsilon}}}'
 fold:
-  label: '$\of{out}$'
-  title: \of{name}（已折叠）
+  label: '$\viz{out}$'
+  title: RMSNorm
   text: |
-    $$\of{out}={{ out | matrix:2 }}$$
+    每一行只和自己那一行有关，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+    $$\viz{out}={{ out | matrix:2 }}$$
   backward:
-    label: '$\partial\of{weight},\ \partial\of{x}$'
-    title: 穿过 \of{name}（已折叠）
+    label: '$\partial\viz{weight},\ \partial\viz{x}$'
+    title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{x}}$'
     text: |
-      $$\frac{\partial\ell}{\partial\of{weight}}={{ weight.grad | matrix:3 }}$$
-body:
-  - sq: { op: x ** 2, tex: '\of{x}^{2}', dtype: fp32 }
-  - ms: { op: 'mean(sq, -1, keepdim=true)', tex: '\mathrm{ms}' }
-  - mse: { op: ms + eps, tex: '(\mathrm{ms}+\epsilon)' }
-  - r:  { op: rsqrt(mse), tex: r }
-  - xh: { op: x * r, tex: '\hat{\of{x}}', dtype: x }
-  - out: xh * weight
+      $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{weight}}={{ weight.grad | matrix:3 }}$$
+
 steps:
+  - id: float
+    show: xf
+    label: '$\viz{xf}$'
+    title: RMSNorm：转成 float32
+    text: |
+      RMSNorm 把每一行缩放到均方根为 1，再乘一个可学习的权重：
+      $$\viz{out}=\viz{weight}\odot\frac{\viz{x}}{\sqrt{\frac{1}{d}\sum_k {\viz{x}}_k^2+\epsilon}}$$
+      和 LayerNorm 相比，它不减均值，也没有 bias。计算从分母里的 ${\viz{x}}_k^2$ 开始：HF 第一行 <code>hidden_states.to(torch.float32)</code> 先转成 float32。
+      $$\viz{xf}={{ xf | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x}$'
+      title: '$\frac{\partial\ell}{\partial \viz{x}}$'
+      text: |
+        平方这一路和归一化那一步的直连在 $\viz{xf}$ 上相加。记 $\mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}$，两路合起来是：
+        $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
+        第二项减去了 $\mathbf{u}$ 在 $\hat{\viz{x}}$ 方向上的分量，所以 $\viz{x}\cdot\frac{\partial\ell}{\partial \viz{x}}=r\,(\viz{x}\cdot\mathbf{u})\,\frac{\epsilon}{\mathrm{ms}+\epsilon}$，$\epsilon$ 可忽略时为 0。也就是说，梯度和这一行的输入垂直。原因是把整行放大或缩小时输出几乎不变，损失也就不会沿这个方向变化。
   - id: square
     show: sq
-    label: '$\of{sq}$'
-    title: \of{name}：逐元素平方
+    label: '$\viz{sq}$'
+    title: 逐元素平方
     text: |
-      \of{intro}HF 的实现先把输入转成 float32 再平方。
-      $$\of{sq}={{ sq | matrix:2 }}$$
+      接着 <code>.pow(2)</code> 逐元素平方。
+      $$\viz{sq}={{ sq | matrix:2 }}$$
     backward:
-      label: '$\partial\of{x}$'
-      title: 传到输入
+      label: '$\partial\viz{xf}$'
+      title: '$\frac{\partial\ell}{\partial \viz{xf}}$'
       text: |
-        平方这一路的局部导数是 $2x$。两条路相加以后，RMSNorm 交给输入的那部分梯度和这一行的输入垂直，因为 RMSNorm 对整行的缩放不敏感。\of{in_note}
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+        平方的局部导数是 $2x$。
+        $$\frac{\partial\ell}{\partial \viz{xf}}={{ xf.grad | matrix:3 }}$$
   - id: mean
     show: ms
-    label: '$\of{ms}$'
+    label: '$\viz{ms}$'
     title: 平方的平均
     text: |
-      每一行对平方取平均，得到 ms，对应 <code>hidden_states.pow(2).mean(-1, keepdim=True)</code>。T 个位置各算各的，互不影响，所以 ms 是每行一个。
+      <code>variance = hidden_states.pow(2).mean(-1, keepdim=True)</code>。每一行对 $d$ 个平方取平均，得到这一行的均方 $\mathrm{ms}_t=\frac{1}{d}\sum_k x_{t,k}^2$。平均只在最后一维上做，所以每行一个数。HF 把它叫 variance，但计算时没有减均值，所以它是二阶原点矩。
       $$\mathrm{ms}={{ ms | matrix:3 }}$$
     backward:
-      label: '$\partial\of{sq}$'
-      title: 穿过平均
+      label: '$\partial\viz{sq}$'
+      title: '$\frac{\partial\ell}{\partial \viz{sq}}$'
       text: |
-        平均值的局部导数是 $1/n$，ms 的梯度除以 $n$ 均分给这一行的每个平方。
-        $$\frac{\partial\ell}{\partial\of{sq}}={{ sq.grad | matrix:3 }}$$
+        局部导数是 $1/d$：$\mathrm{ms}_t$ 的梯度除以 $d$，分给这一行的每个平方。
+        $$\frac{\partial\ell}{\partial \viz{sq}}={{ sq.grad | matrix:3 }}$$
   - id: eps
     show: mse
-    label: '$\of{mse}$'
+    label: '$\viz{mse}$'
     title: 加上 $\epsilon$
     text: |
-      加上 $\epsilon=\of{eps}$，对应 <code>variance + self.variance_epsilon</code>，保证下一步不会除以 0。
-      $$\of{mse}={{ mse | matrix:3 }}$$
+      <code>variance + self.variance_epsilon</code>。考虑到假如一行全为 0，$\viz{ms}=0$，下一步的 $\viz{r}=\frac{1}{\sqrt{\viz{ms}}}$ 会变成 <code>inf</code>，所以加上一个很小的 $\epsilon$ 来避免这种情况。
+      $$\viz{mse}={{ mse | matrix:3 }}$$
     backward:
-      label: '$\partial\of{ms}$'
-      title: 穿过加 $\epsilon$
+      label: '$\partial\viz{ms}$'
+      title: '$\frac{\partial\ell}{\partial \viz{ms}}$'
       text: |
         加常数的局部导数是 1，梯度原样传下去。
-        $$\frac{\partial\ell}{\partial\,\mathrm{ms}}={{ ms.grad | matrix:3 }}$$
+        $$\frac{\partial\ell}{\partial \mathrm{ms}}={{ ms.grad | matrix:3 }}$$
   - id: rms
     show: r
-    label: '$\of{r}$'
+    label: '$\viz{r}$'
     title: 平方根的倒数
     text: |
-      取平方根的倒数，得到这一行的 $r=1/\sqrt{\mathrm{ms}+\epsilon}$，对应一次 <code>torch.rsqrt</code>。
+      <code>torch.rsqrt(...)</code> 一次算出 $r_t=(\mathrm{ms}_t+\epsilon)^{-1/2}$，于是下一步可以用乘法代替除法。
       $$r={{ r | matrix:3 }}$$
     backward:
-      label: '$\partial\of{mse}$'
-      title: 穿过 rsqrt
+      label: '$\partial\viz{mse}$'
+      title: '$\frac{\partial\ell}{\partial \viz{mse}}$'
       text: |
-        $\frac{d}{dv}v^{-1/2}=-\frac{1}{2}v^{-3/2}$，所以局部导数是 $-r^{3}/2$。
-        $$\frac{\partial\ell}{\partial\of{mse}}={{ mse.grad | matrix:3 }}$$
+        $\frac{d}{dv}v^{-1/2}=-\frac12v^{-3/2}$，代入 $v=\mathrm{ms}+\epsilon$ 得局部导数 $-r^{3}/2$。
+        $$\frac{\partial\ell}{\partial \viz{mse}}={{ mse.grad | matrix:3 }}$$
   - id: normalize
     show: xh
-    label: '$\of{xh}$'
+    label: '$\viz{xh}$'
     title: 归一化
     text: |
-      每个分量乘上自己那一行的 $r$。一个元素直接依赖它自己，又经过 $r$ 依赖同一行的其他元素，所以画了两组连线；不同的行之间没有连线。这里不减均值，也没有 bias。乘完以后转回输入的 dtype，对应 <code>hidden_states.to(input_dtype)</code>，所以乘权重时两边都是输入的 dtype。
-      $$\of{xh}={{ xh | matrix:2 }}$$
+      <code>hidden_states * torch.rsqrt(...)</code>，每个分量乘上这一行的 $r$：$\hat x_{t,k}=x_{t,k}\,r_t$。乘完以后每行的均方是 $\frac{\mathrm{ms}_t}{\mathrm{ms}_t+\epsilon}\approx1$，也就是模长约为 $\sqrt d$。
+
+      一个元素直接依赖自己，又经过 $r_t$ 依赖同一行的所有元素。$r_t$ 只由这一行算出，所以行与行之间互不依赖。
+      $$\viz{xh}={{ xh | matrix:2 }}$$
     backward:
-      label: '$\partial\of{r},\ \partial\of{x}$'
-      title: 传到 r，以及输入的直连那条
+      label: '$\partial\viz{r},\ \partial\viz{xf}$'
+      title: '$\frac{\partial\ell}{\partial \viz{r}},\ \frac{\partial\ell}{\partial \viz{xf}}$'
       text: |
-        $r_t$ 有 $d$ 条出边，局部导数各是这一行的输入分量，相加得到 $\partial\ell/\partial r_t=\mathbf{x}_t\cdot\mathbf{u}_t$。输入沿直连那条边拿到 $r_t u_{t,k}$。
+        $r_t$ 用在这一行的 $d$ 个输出里，每一路的局部导数是 $x_{t,k}$，所以 $\frac{\partial\ell}{\partial r_t}=\sum_kx_{t,k}u_{t,k}=\mathbf{x}_t\cdot\mathbf{u}_t$。另一条是直连，局部导数是 $r_t$，所以输入从这一条拿到 $r_t\,u_{t,k}$。
         $$\frac{\partial\ell}{\partial r}={{ r.grad | matrix:3 }}$$
+  - id: cast
+    show: xc
+    label: '$\viz{xc}$'
+    title: 转回输入的 dtype
+    text: |
+      随后 <code>hidden_states.to(input_dtype)</code> 转回输入的 dtype。
+      $$\viz{xc}={{ xc | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{xh}$'
+      title: '$\frac{\partial\ell}{\partial \viz{xh}}$'
+      text: 类型转换的局部导数是 1，梯度转回 float32。
   - id: scale
     show: [weight, out]
-    label: '$\of{out}$'
-    title: 乘上权重 $\of{weight}$
+    label: '$\viz{out}$'
+    title: 乘上权重 $\viz{weight}$
     text: |
-      $\of{weight}$ 是长度为 $d$ 的向量，所有位置共用，所以它的每个分量连到每一行的同一列。\of{out_note}
-      $$\of{out}=\of{weight}\odot\of{xh}={{ out | matrix:2 }}$$
+      <code>self.weight * hidden_states</code>。归一化把每一行的尺度固定了，所以再乘上 $\viz{weight}$，让模型能给每个维度重新设定尺度。它是长度为 $d$ 的向量，初始化为全 1，所有位置共用，所以它的第 $k$ 个分量作用于每一行的第 $k$ 列。
+      $$\viz{out}=\viz{weight}\odot\viz{xc}={{ out | matrix:2 }}$$
     backward:
-      label: '$\partial\of{weight},\ \partial\of{xh}$'
-      title: 传到 $\of{weight}$ 和 $\of{xh}$
+      label: '$\partial\viz{weight},\ \partial\viz{xc}$'
+      title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{xc}}$'
       text: |
-        逐元素乘的两个输入互为对方的局部导数。$\of{weight}$ 被所有位置共用，所以它的梯度要把 $T$ 行加起来。
-        $$\frac{\partial\ell}{\partial\of{weight}}=\sum_t\frac{\partial\ell}{\partial{\of{out}}_t}\odot{\of{xh}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial\of{out}}\odot\of{weight}={{ xh.grad | matrix:3 }}$$
+        逐元素乘的两个输入互为对方的局部导数。$\viz{weight}$ 被 $T$ 行共用，所以梯度按行相加：
+        $$\frac{\partial\ell}{\partial \viz{weight}}=\sum_t\frac{\partial\ell}{\partial {\viz{out}}_t}\odot{\viz{xc}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}={{ xc.grad | matrix:3 }}$$

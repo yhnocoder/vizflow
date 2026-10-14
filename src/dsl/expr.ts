@@ -1,16 +1,17 @@
+export type IndexItem = { k: 'at'; value: Ast } | { k: 'slice'; start?: Ast; stop?: Ast } | { k: 'ellipsis' };
+
 export type Ast =
   | { k: 'num'; v: number; pos: number }
   | { k: 'str'; v: string; pos: number }
   | { k: 'bool'; v: boolean; pos: number }
+  | { k: 'none'; pos: number }
   | { k: 'name'; name: string; pos: number }
   | { k: 'member'; obj: Ast; name: string; pos: number }
-  | { k: 'index'; obj: Ast; index: Ast; end?: Ast; pos: number }
+  | { k: 'index'; obj: Ast; items: IndexItem[]; pos: number }
   | { k: 'call'; fn: Ast; args: Ast[]; kwargs: [string, Ast][]; pos: number }
   | { k: 'list'; items: Ast[]; pos: number }
   | { k: 'neg'; arg: Ast; pos: number }
-  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number }
-  | { k: 'not'; arg: Ast; pos: number }
-  | { k: 'cond'; test: Ast; then: Ast; otherwise: Ast; pos: number };
+  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number };
 
 export type BinaryOp = '+' | '-' | '*' | '/' | '//' | '@' | '**';
 
@@ -25,7 +26,7 @@ export class ParseError extends Error {
 
 type Token = { t: 'num'; v: number; pos: number } | { t: 'str'; v: string; pos: number } | { t: 'id'; v: string; pos: number } | { t: 'op'; v: string; pos: number } | { t: 'end'; pos: number };
 
-const OPERATORS = ['**', '//', '..', '+', '-', '*', '/', '@', '(', ')', '[', ']', ',', '=', '.'];
+const OPERATORS = ['...', '**', '//', '+', '-', '*', '/', '@', '(', ')', '[', ']', ',', '=', '.', ':'];
 
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
@@ -36,8 +37,8 @@ function tokenize(text: string): Token[] {
       i++;
       continue;
     }
-    const number = /^(\d+(\.\d+)?|\.\d+)([eE][-+]?\d+)?/.exec(text.slice(i));
-    if (number !== null && !(c === '.' && text[i + 1] === '.')) {
+    const number = /^(\d+(\.\d*)?|\.\d+)([eE][-+]?\d+)?/.exec(text.slice(i));
+    if (number !== null && !text.startsWith('...', i)) {
       tokens.push({ t: 'num', v: Number(number[0]), pos: i });
       i += number[0].length;
       continue;
@@ -48,8 +49,8 @@ function tokenize(text: string): Token[] {
       i += id[0].length;
       continue;
     }
-    if (c === '"') {
-      const close = text.indexOf('"', i + 1);
+    if (c === '"' || c === "'") {
+      const close = text.indexOf(c, i + 1);
       if (close < 0) throw new ParseError('unterminated string', i);
       tokens.push({ t: 'str', v: text.slice(i + 1, close), pos: i });
       i = close + 1;
@@ -93,58 +94,52 @@ class Parser {
     if (token.t !== 'end') throw new ParseError(`unexpected '${token.v}'`, token.pos);
   }
 
-  private isWord(v: string): boolean {
-    const token = this.peek();
-    return token.t === 'id' && token.v === v;
-  }
-
   expr(): Ast {
-    const then = this.negation();
-    if (!this.isWord('if')) return then;
-    const word = this.take();
-    const test = this.negation();
-    if (!this.isWord('else')) throw new ParseError("expected 'else'", this.peek().pos);
-    this.take();
-    return { k: 'cond', test, then, otherwise: this.expr(), pos: word.pos };
-  }
-
-  private negation(): Ast {
-    if (!this.isWord('not')) return this.sum();
-    const word = this.take();
-    return { k: 'not', arg: this.negation(), pos: word.pos };
-  }
-
-  private sum(): Ast {
-    let left = this.prod();
+    let left = this.term();
     while (this.isOp('+') || this.isOp('-')) {
-      const op = this.take();
-      left = { k: 'bin', op: op.t === 'op' ? (op.v as BinaryOp) : '+', a: left, b: this.prod(), pos: op.pos };
+      const op = this.take() as { v: BinaryOp; pos: number };
+      left = { k: 'bin', op: op.v, a: left, b: this.term(), pos: op.pos };
     }
     return left;
   }
 
-  private prod(): Ast {
-    let left = this.power();
+  private term(): Ast {
+    let left = this.unary();
     while (this.isOp('*') || this.isOp('/') || this.isOp('//') || this.isOp('@')) {
       const op = this.take() as { v: BinaryOp; pos: number };
-      left = { k: 'bin', op: op.v, a: left, b: this.power(), pos: op.pos };
+      left = { k: 'bin', op: op.v, a: left, b: this.unary(), pos: op.pos };
     }
     return left;
-  }
-
-  private power(): Ast {
-    const base = this.unary();
-    if (!this.isOp('**')) return base;
-    const op = this.take();
-    return { k: 'bin', op: '**', a: base, b: this.unary(), pos: op.pos };
   }
 
   private unary(): Ast {
     if (this.isOp('-')) {
       const op = this.take();
-      return { k: 'neg', arg: this.postfix(), pos: op.pos };
+      return { k: 'neg', arg: this.unary(), pos: op.pos };
     }
-    return this.postfix();
+    return this.power();
+  }
+
+  private power(): Ast {
+    const base = this.postfix();
+    if (!this.isOp('**')) return base;
+    const op = this.take();
+    return { k: 'bin', op: '**', a: base, b: this.unary(), pos: op.pos };
+  }
+
+  private indexItem(): IndexItem {
+    if (this.isOp('...')) {
+      this.take();
+      return { k: 'ellipsis' };
+    }
+    const start = this.isOp(':') ? undefined : this.expr();
+    if (!this.isOp(':')) return { k: 'at', value: start as Ast };
+    this.take();
+    const stop = this.isOp(',') || this.isOp(']') ? undefined : this.expr();
+    const item: IndexItem = { k: 'slice' };
+    if (start !== undefined) item.start = start;
+    if (stop !== undefined) item.stop = stop;
+    return item;
   }
 
   private postfix(): Ast {
@@ -153,18 +148,17 @@ class Parser {
       if (this.isOp('.')) {
         const dot = this.take();
         const name = this.take();
-        if (name.t !== 'id') throw new ParseError('expected a name after \'.\'', name.pos);
+        if (name.t !== 'id') throw new ParseError("expected a name after '.'", name.pos);
         node = { k: 'member', obj: node, name: name.v, pos: dot.pos };
       } else if (this.isOp('[')) {
         const open = this.take();
-        const index = this.expr();
-        if (this.isOp('..')) {
+        const items: IndexItem[] = [this.indexItem()];
+        while (this.isOp(',')) {
           this.take();
-          node = { k: 'index', obj: node, index, end: this.expr(), pos: open.pos };
-        } else {
-          node = { k: 'index', obj: node, index, pos: open.pos };
+          items.push(this.indexItem());
         }
         this.expect(']');
+        node = { k: 'index', obj: node, items, pos: open.pos };
       } else if (this.isOp('(')) {
         const open = this.take();
         const args: Ast[] = [];
@@ -196,7 +190,8 @@ class Parser {
     if (token.t === 'num') return { k: 'num', v: token.v, pos: token.pos };
     if (token.t === 'str') return { k: 'str', v: token.v, pos: token.pos };
     if (token.t === 'id') {
-      if (token.v === 'true' || token.v === 'false') return { k: 'bool', v: token.v === 'true', pos: token.pos };
+      if (token.v === 'True' || token.v === 'False') return { k: 'bool', v: token.v === 'True', pos: token.pos };
+      if (token.v === 'None') return { k: 'none', pos: token.pos };
       return { k: 'name', name: token.v, pos: token.pos };
     }
     if (token.t === 'op' && token.v === '(') {
@@ -216,12 +211,6 @@ class Parser {
     }
     throw new ParseError(token.t === 'end' ? 'unexpected end of expression' : `unexpected '${token.v}'`, token.pos);
   }
-
-  range(): [Ast, Ast] {
-    const from = this.sum();
-    this.expect('..');
-    return [from, this.sum()];
-  }
 }
 
 export function parseExpr(text: string): Ast {
@@ -229,11 +218,4 @@ export function parseExpr(text: string): Ast {
   const ast = parser.expr();
   parser.end();
   return ast;
-}
-
-export function parseRange(text: string): [Ast, Ast] {
-  const parser = new Parser(tokenize(text));
-  const range = parser.range();
-  parser.end();
-  return range;
 }

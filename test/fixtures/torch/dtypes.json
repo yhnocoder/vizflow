@@ -1,0 +1,413 @@
+{
+ "torch": "2.14.1+cpu",
+ "command": "uv run scripts/gen_torch_fixtures.py",
+ "seed": 20261010,
+ "cases": [
+  {
+   "op": "exp",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "exp",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "exp",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "exp",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "log",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "log",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "log",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "log",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "cos",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "cos",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "cos",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "cos",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "sin",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sin",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sin",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sin",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "sqrt",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sqrt",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sqrt",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sqrt",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "rsqrt",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "rsqrt",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "rsqrt",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "rsqrt",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "reciprocal",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "reciprocal",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "reciprocal",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "reciprocal",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "sigmoid",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sigmoid",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sigmoid",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "sigmoid",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "erf",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "erf",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "erf",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "erf",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "logsumexp",
+   "inputs": [
+    "bool"
+   ],
+   "args": [
+    -1
+   ],
+   "output": "fp32"
+  },
+  {
+   "op": "logsumexp",
+   "inputs": [
+    "int32"
+   ],
+   "args": [
+    -1
+   ],
+   "output": "fp32"
+  },
+  {
+   "op": "logsumexp",
+   "inputs": [
+    "int64"
+   ],
+   "args": [
+    -1
+   ],
+   "output": "fp32"
+  },
+  {
+   "op": "logsumexp",
+   "inputs": [
+    "bf16"
+   ],
+   "args": [
+    -1
+   ],
+   "output": "bf16"
+  },
+  {
+   "op": "div",
+   "inputs": [
+    "int64",
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "div",
+   "inputs": [
+    "bool",
+    "bool"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "div",
+   "inputs": [
+    "int32",
+    "int64"
+   ],
+   "args": [],
+   "output": "fp32"
+  },
+  {
+   "op": "div",
+   "inputs": [
+    "int64",
+    "bf16"
+   ],
+   "args": [],
+   "output": "bf16"
+  },
+  {
+   "op": "neg",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "int64"
+  },
+  {
+   "op": "abs",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "int64"
+  },
+  {
+   "op": "relu",
+   "inputs": [
+    "int64"
+   ],
+   "args": [],
+   "output": "int64"
+  },
+  {
+   "op": "add",
+   "inputs": [
+    "int32",
+    "int64"
+   ],
+   "args": [],
+   "output": "int64"
+  },
+  {
+   "op": "mul",
+   "inputs": [
+    "int32",
+    "int64"
+   ],
+   "args": [],
+   "output": "int64"
+  }
+ ]
+}

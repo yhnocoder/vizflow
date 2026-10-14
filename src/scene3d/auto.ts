@@ -15,7 +15,7 @@ import {
   stack,
 } from './layout';
 import type { StepsSpec } from '../steps';
-import { type LevelPlan, levelPlan } from './levels';
+import { type LevelPlan, type LevelSpec, levelPlan } from './levels';
 import type { SceneModule } from './modules';
 
 export type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
@@ -61,7 +61,7 @@ class Sink {
   }
 }
 
-const colsOf = (n: Node) => rowsCols(n.shape)[1];
+const colsOf = (n: Node) => rowsCols(n)[1];
 const halfSpan = (cols: number) => ((cols - 1) / 2) * BOARD_COLUMN_SPACING;
 const leftReach = (cols: number) => halfSpan(cols) + AXIS_OFFSET + AUTO_LABEL_ROOM;
 const rightReach = (cols: number) => halfSpan(cols) + PLATE_SIDE_MARGIN;
@@ -88,9 +88,9 @@ function boardReach(b: Node, aPlaced: boolean): [number, number] {
   return [aPlaced ? left : Math.max(left, aLeft), rightReach(cols)];
 }
 
-export function autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan } {
-  if (steps !== undefined && (steps.modules?.length ?? 0) > 0 && steps.backward === 'reverse') {
-    const levels = levelPlan(steps);
+export function autoLayout(tree: LayoutTree, steps?: StepsSpec, spec?: LevelSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan } {
+  if (steps !== undefined && spec !== undefined && steps.backward === 'reverse') {
+    const levels = levelPlan(steps, spec);
     return { layout: [], modules: levels.modules, levels };
   }
   const all = treeNodes(tree.children);
@@ -151,7 +151,7 @@ export function autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: Layou
       const [l, r] = reaches[i];
       const ax = group.length === 1 ? x : edge + l;
       edge += l + r + AUTO_BOARD_GAP;
-      const rows = rowsCols(out.shape)[0];
+      const rows = rowsCols(out)[0];
       sink.items.push(board(a, b, out, { at: [ax, level * AUTO_LEVEL, -(BOARD_FRONT + (rows - 1) * BATCH_ROW_SPACING)] }));
       sink.spans.push({ level, left: ax - l, right: ax + r });
       if (!sink.placed.has(a)) sink.place(a, level, ax - BOARD_A_OFFSET);

@@ -4,12 +4,12 @@ import { capFor } from './scales';
 
 export interface SceneModule {
   id?: string;
-  fixed?: boolean;
   title: string;
   subtitle?: string;
   nodes: Node[];
   side?: 'left' | 'right' | 'outer';
   inner?: boolean;
+  column?: number;
 }
 
 export const MODULE_GAP = 1.6;
@@ -121,7 +121,7 @@ export function levelBraces(
     const range = module.id === undefined ? undefined : ranges.get(module.id);
     if (range === undefined) return [];
     const side = module.side ?? 'left';
-    const x = side === 'left' ? bounds.xMin - gaps.left : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
+    const x = side === 'left' ? bounds.xMin - gaps.left - MODULE_STEP * (module.column ?? 0) : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
     return [{ module, side: side === 'left' ? 'left' : 'right', thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz }];
   });
 }

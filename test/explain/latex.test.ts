@@ -64,6 +64,7 @@ describe('LaTeX templates render with KaTeX', () => {
       const card = ex.edgeCard(e);
       renders(card.title);
       renders(card.local.tex);
+      if (e.constant) continue;
       renders(card.upstream!.tex);
       renders(card.product!.tex);
     }

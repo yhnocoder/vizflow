@@ -263,11 +263,11 @@ function causalSoftmax(S: number[][]): number[][] {
   });
 }
 
-const matrixOf = (node: Node) => range(node.shape[0]).map((r) => range(node.shape[1]).map((c) => node.value.get([r, c])));
+const headOf = (node: Node, head: number) => range(node.shape[1]).map((r) => range(node.shape[2]).map((c) => node.value.get([head, r, c])));
 
 export function RopeCompare(props: { version: Accessor<number>; spec: RopeSpec; compare: RopeCompareSpec }) {
   const { spec, compare } = props;
-  const heads = range(compare.scores.length);
+  const heads = range(compare.scores.shape[0]);
   const [head, setHead] = createSignal(0);
   const view = createMemo(() => {
     props.version();
@@ -277,8 +277,8 @@ export function RopeCompare(props: { version: Accessor<number>; spec: RopeSpec; 
     const k = headMatrix(spec.k, kvHead(spec, h), spec.dh);
     const T = q.length;
     const S0 = range(T).map((t) => range(T).map((s) => q[t].reduce((a, v, c) => a + v * k[s][c], 0) * scale));
-    const S1 = matrixOf(compare.scores[h]);
-    const P1 = matrixOf(compare.weights[h]);
+    const S1 = headOf(compare.scores, h);
+    const P1 = headOf(compare.weights, h);
     const lim = Math.max(...S0.flat(), ...S1.flat().filter(Number.isFinite).map(Math.abs), ...S0.flat().map(Math.abs)) || 1;
     const tokens = Array.from(compare.ids.value.data, (id) => compare.ids.tokens?.[Math.round(id)] ?? String(Math.round(id)));
     return {

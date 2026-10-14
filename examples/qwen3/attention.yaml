@@ -9,11 +9,13 @@ args:
   d_head: dim
   num_heads: dim
   num_kv_heads: dim
-  theta: { type: float, default: 1e6 }
 inputs:
-  x: { type: tensor, shape: [T, d_model], dtype: dtype }
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, d_head]
+  sin: [T, d_head]
 outputs:
-  att: { type: tensor, shape: [T, d_model], dtype: dtype }
+  att: [T, d_model]
 
 init:
   q_proj:
@@ -31,28 +33,29 @@ init:
   k_norm:
     use: RMSNorm
     args: { hidden_size: d_head }
-  apply_rotary_pos_emb:
-    use: RoPE
-    args: [theta]
+  apply_rotary_pos_emb: RoPE
   eager_attention_forward: GQA
   o_proj:
     use: Linear
     args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
 
 forward:
-  - M: causal_mask(T)
   - q_linear: q_proj(x)
-  - q: view(q_linear, T, num_heads, d_head)
-  - k_linear: k_proj(x)
-  - k: view(k_linear, T, num_kv_heads, d_head)
-  - v_linear: v_proj(x)
-  - v: view(v_linear, T, num_kv_heads, d_head)
+  - q: q_linear.view(T, num_heads, d_head)
   - qn: q_norm(q)
+  - qt: qn.transpose(0, 1)
+  - k_linear: k_proj(x)
+  - k: k_linear.view(T, num_kv_heads, d_head)
   - kn: k_norm(k)
-  - rotated: apply_rotary_pos_emb(q=qn, k=kn)
+  - kt: kn.transpose(0, 1)
+  - v_linear: v_proj(x)
+  - v: v_linear.view(T, num_kv_heads, d_head)
+  - vt: v.transpose(0, 1)
+  - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
   - qr: rotated.q_embed
   - kr: rotated.k_embed
-  - o: eager_attention_forward(q=qr, k=kr, v=v, mask=M)
+  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask)
+  - o: attn_output.reshape(T, num_heads * d_head)
   - att: o_proj(o)
 
 tex:
@@ -61,11 +64,15 @@ tex:
   v: '\mathbf{v}'
   qn: '\bar{\mathbf{q}}'
   kn: '\bar{\mathbf{k}}'
+  qt: '\bar{\mathbf{q}}'
+  kt: '\bar{\mathbf{k}}'
+  vt: '\mathbf{v}'
+  attn_output: '\mathbf{o}'
   qr: "\\mathbf{q}'"
   kr: "\\mathbf{k}'"
   o: '\mathbf{o}'
   att: '\mathbf{att}'
-  M: 'M'
+  mask: 'M'
   q_proj.weight: 'W_q'
   k_proj.weight: 'W_k'
   v_proj.weight: 'W_v'
@@ -81,15 +88,15 @@ formula: |-
   \begin{aligned}
   \step{apply_rotary_pos_emb.*}{\viz{qr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
-  \step{q_norm.*}{\mathrm{norm}(}
+  \step{qk_norm.*}{\mathrm{norm}(}
   \step{q_proj}{\viz{x}{\viz{q_proj.weight}}^{\top}}
-  \step{q_norm.*}{)}
+  \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{apply_rotary_pos_emb.*}{\viz{kr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
-  \step{k_norm.*}{\mathrm{norm}(}
+  \step{qk_norm.*}{\mathrm{norm}(}
   \step{k_proj}{\viz{x}{\viz{k_proj.weight}}^{\top}}
-  \step{k_norm.*}{)}
+  \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{v_proj}{\viz{v}}&
   \step{v_proj}{=\viz{x}{\viz{v_proj.weight}}^{\top}}\\
@@ -102,299 +109,194 @@ fold:
   label: '$\viz{att}=\mathrm{self\_attn}(\viz{x})$'
   title: self_attn
   text: |
-    q/k/v 投影、q_norm/k_norm、RoPE、eager_attention_forward 和 o_proj 都收进了盒子，从 $\viz{x}$ 直接到 $\viz{att}$。这和 HF 里 <code>self.self_attn(hidden_states)</code> 这一次调用一一对应：input_layernorm 在它之前，残差相加在它之后，都不属于 self_attn，所以仍然画在盒子外面。参数留在盒子里照常显示。连线是整体 Jacobian 的元素：位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以是块下三角。
-    $$\viz{att}=\mathrm{self\_attn}(\viz{x})={{ att | matrix:2 }}$$
+    位置 $t$ 的输出是 $\sum_{s\le t}P_{t,s}\mathbf{v}_s$ 经过 o_proj 的结果，因此只依赖 $s\le t$ 的输入，Jacobian 是块下三角的。
+    $$\viz{att}={{ att | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\viz{x}$'
-    title: 穿过 self_attn
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
     text: |
-      一次反向同时算出盒子里所有参数的梯度，以及交给 $\viz{x}$ 的梯度 $\frac{\partial\ell}{\partial\viz{att}}J_{\mathrm{attn}}$。
-      $$\frac{\partial\ell}{\partial\viz{x}}={{ x.grad | matrix:3 }}$$
+      一次反向算出 attention 全部参数的梯度和 $\pfl{\viz{x}}$。反向乘的是 Jacobian 的转置，块下三角转置以后是块上三角，所以位置 $s$ 的输入从所有 $t\ge s$ 的输出收到梯度。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+layout:
+  merge:
+    - [q_norm, k_norm]
 
 steps:
   - id: q_proj
-    brace: { title: q_proj, subtitle: nn.Linear }
-    show: [q_proj.weight.T, q_linear, q]
+    subtitle: nn.Linear
     label: '$\viz{q}$'
     title: q_proj
     text: |
-      q_proj 把 $\viz{x}$ 投影成 query。q 有 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$，一共宽 {{ num_heads*d_head }}。Qwen3 的 q_proj、k_proj、v_proj 都没有 bias。代码里接下来的 <code>view</code> 只是把列按 head 分组，不移动数据，图里用列之间的空隙表示 head 的分界；q_norm、k_norm 之后的 <code>transpose(1, 2)</code> 也只是换轴。
-      $$\mathbf{q}=\viz{x}W_q^{\top}={{ q | matrix:2 }}$$
+      注意力要回答的问题是：位置 $t$ 应该从哪些位置取信息。做法是给每个位置算一个 query $\mathbf{q}_t$ 和一个 key $\mathbf{k}_s$，用点积 $\mathbf{q}_t\cdot\mathbf{k}_s$ 衡量匹配程度。
+
+      query 由线性投影得到：<code>self.q_proj(hidden_states)</code> 是一次没有 bias 的线性投影，宽度 $H\,d_h={{ num_heads }}\times{{ d_head }}={{ num_heads * d_head }}$。接着 <code>.view(hidden_shape)</code> 把每一行切成 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$，形状变成 $T\times H\times d_h$。view 只改变形状的解释，不移动数据。HF 的张量多一个 batch 维，这一页没有，所以轴的编号比 HF 少 1。
+      $$\viz{q}=\viz{x}{\viz{q_proj.weight}}^{\top}={{ q | matrix:2 }}$$
     backward:
-      label: '$\partial W_q,\ \partial\viz{x}$'
-      title: 传到 q_proj 权重和 $\viz{x}$
+      label: '$\partial\viz{q_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{q_proj.weight}},\ \pfl{\viz{x}}$'
       text: |
-        权重的梯度是「输入的转置乘输出的梯度」，$T$ 个位置的贡献在矩阵乘里自动加起来。
-        $$\frac{\partial\ell}{\partial W_q^{\top}}=\viz{x}^{\top}\frac{\partial\ell}{\partial\mathbf{q}}$$
+        对 $\viz{q}=\viz{x}W_q^{\top}$，两个梯度是：
+        $$\pf{\ell}{W_q^{\top}}={\viz{x}}^{\top}\pfl{\viz{q}},\qquad \pfl{\viz{x}}\mathrel{+}=\pfl{\viz{q}}\,W_q$$
+        第一个式子展开是 $\sum_t\mathbf{x}_t^{\top}\pfl{\mathbf{q}_t}$，每个位置贡献一个外积，矩阵乘法把它们加在一起。view 的反向只是把形状改回去。
   - id: k_proj
-    brace: { title: k_proj, subtitle: nn.Linear }
-    show: [k_proj.weight.T, k_linear, k]
+    subtitle: nn.Linear
     label: '$\viz{k}$'
     title: k_proj
     text: |
-      k_proj 的输入也是 $\viz{x}$。k 只有 {{ num_kv_heads }} 个 kv head，宽 {{ num_kv_heads*d_head }}，几个 query head 共用一个 kv head，这就是 GQA。HF 先算 q_proj 和 q_norm，再算 k_proj 和 k_norm；两条路互不依赖，这里先画三个投影，再一起画两个 norm。
-      $$\mathbf{k}=\viz{x}W_k^{\top}={{ k | matrix:2 }}$$
+      key 由同一个 $\viz{x}$ 投影得到，但只有 $H_{kv}={{ num_kv_heads }}$ 个 head，宽 {{ num_kv_heads * d_head }}，所以几个 query head 共用一个 kv head，这种做法叫 GQA（grouped-query attention）。它的好处是推理时 k、v 的缓存缩小为 $H_{kv}/H$。
+
+      HF 先算完 q 这一路（q_proj、view、q_norm、transpose），再算 k 这一路。两路互不依赖，所以先后顺序不影响结果。
+      $$\viz{k}=\viz{x}{\viz{k_proj.weight}}^{\top}={{ k | matrix:2 }}$$
     backward:
-      label: '$\partial W_k,\ \partial\viz{x}$'
-      title: 传到 k_proj 权重和 $\viz{x}$
+      label: '$\partial\viz{k_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{k_proj.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        和 q_proj 相同：$\pf{\ell}{W_k^{\top}}={\viz{x}}^{\top}\pfl{\viz{k}}$，$\viz{x}$ 再加上 $\pfl{\viz{k}}W_k$。
   - id: v_proj
-    brace: { title: v_proj, subtitle: nn.Linear }
-    show: [v_proj.weight.T, v_linear, v]
+    subtitle: nn.Linear
     label: '$\viz{v}$'
     title: v_proj
     text: |
-      v_proj 的输入还是 $\viz{x}$，宽度和 k 相同。value 不做 norm。
-      $$\mathbf{v}=\viz{x}W_v^{\top}={{ v | matrix:2 }}$$
+      value 是被取回的内容，宽度和 k 相同。q_norm、k_norm 和 RoPE 都作用在分数上，而 v 不参与打分，只是加权求和的对象，所以 v 既不做 norm，也不做 RoPE。<code>value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)</code> 一行完成投影、分 head 和换轴。
+      $$\viz{v}=\viz{x}{\viz{v_proj.weight}}^{\top}={{ v | matrix:2 }}$$
     backward:
-      label: '$\partial W_v,\ \partial\viz{x}$'
-      title: 传到 v_proj 权重和 $\viz{x}$
+      label: '$\partial\viz{v_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{v_proj.weight}},\ \pfl{\viz{x}}$'
       text: |
-        $\viz{x}$ 用在三个投影里，它的梯度是三条路相加：$n_{t,k}$ 沿第 $k$ 行穿过三块权重，一共 ${{ num_heads*d_head }}+{{ num_kv_heads*d_head }}+{{ num_kv_heads*d_head }}$ 段。
-        $$\frac{\partial\ell}{\partial\viz{x}}=\frac{\partial\ell}{\partial\mathbf{q}}W_q+\frac{\partial\ell}{\partial\mathbf{k}}W_k+\frac{\partial\ell}{\partial\mathbf{v}}W_v={{ x.grad | matrix:3 }}$$
+        $\viz{x}$ 用在三个投影里，$x_{t,k}$ 影响三个投影的全部 ${{ num_heads * d_head }}+{{ num_kv_heads * d_head }}+{{ num_kv_heads * d_head }}$ 个输出分量，所以它的梯度是三路之和：
+        $$\pfl{\viz{x}}=\pfl{\viz{q}}W_q+\pfl{\viz{k}}W_k+\pfl{\viz{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: qk_norm
-    show: [q_norm, k_norm]
+    show: zip(q_norm, k_norm)
     title: q_norm $\cdot$ k_norm
     subtitle: Qwen3RMSNorm，按 head_dim
     formula: |-
-      \step{q_norm.scale}{\viz{qn}=\viz{q_norm.weight}\odot}
-      \step{q_norm.normalize}{\viz{q}\big/}
-      \step{q_norm.rms}{\sqrt{\operatorname{mean}\big(
-      \step{q_norm.square}{ {\viz{q}}^{2}}\big)+\epsilon}}
+      \step{scale}{\viz{qn}=\viz{q_norm.weight}\odot}
+      \step{normalize}{\viz{q}\big/}
+      \step{rms}{\sqrt{\operatorname{mean}\big(
+      \step{square}{ {\viz{q}}^{2}}\big)+\epsilon}}
     fold:
       label: '$\viz{qn},\ \viz{kn}$'
       title: q_norm 和 k_norm
       text: |
-        每个位置、每个 head 各自做 RMSNorm，Jacobian 是 $d_h\times d_h$ 的小块。
-        $$\bar{\mathbf{q}}={{ qn | matrix:2 }}$$
+        每个位置、每个 head 各做一次 RMSNorm，所以 Jacobian 是 $d_h\times d_h$ 的小块。
+        $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
       backward:
         label: '$\partial\boldsymbol{\gamma},\ \partial\viz{q},\ \partial\viz{k}$'
-        title: 穿过 q_norm 和 k_norm
+        title: '$\pfl{\boldsymbol{\gamma}},\ \pfl{\viz{q}},\ \pfl{\viz{k}}$'
         text: |
-          $$\frac{\partial\ell}{\partial\mathbf{q}}={{ q.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ q_norm.weight.grad | matrix:3 }}$$
-    steps:
-      q_norm:
-        steps:
-          square:
-            title: q_norm、k_norm：逐元素平方
-            text: |
-              Qwen3 比 Qwen2 多了这一步：在 RoPE 之前，对 q 和 k 的每个 head 各做一次 RMSNorm，范围是 $d_h$，而不是整个 hidden size。它让点积的尺度更稳定。
-              $$\mathbf{q}^{2}={{ q_norm.sq | matrix:2 }}$$
-            backward:
-              title: 传到 q 和 k
-              text: |
-                两条路相加。每个 head 交回去的梯度都和这个 head 的输入垂直。
-                $$\frac{\partial\ell}{\partial\mathbf{q}}={{ q.grad | matrix:3 }}$$
-                $$\frac{\partial\ell}{\partial\mathbf{k}}={{ k.grad | matrix:3 }}$$
-          rms:
-            title: 每个 head 的均方根倒数
-            text: |
-              q 的每个位置、每个 head 各有一个 $r^{q}$，k 只有一个 kv head，每个位置一个 $r^{k}$。
-              $$r^{q}={{ q_norm.r | matrix:3 }},\qquad r^{k}={{ k_norm.r | matrix:3 }}$$
-            backward:
-              title: 传到 ms 和平方
-              text: |
-                $\partial r/\partial\,\mathrm{ms}=-r^3/2$，再除以 $d_h$ 均分给这一组的每个平方。
-                $$\frac{\partial\ell}{\partial\,\mathrm{ms}^{q}}={{ q_norm.ms.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\,\mathrm{ms}^{k}}={{ k_norm.ms.grad | matrix:3 }}$$
-          normalize:
-            title: 归一化
-            text: |
-              每个分量乘上自己那一组的 $r$。连线只在同一个 head 的同一行之内。
-              $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
-            backward:
-              title: 传到 r 和 q、k 的直连那条
-              text: |
-                和普通的 RMSNorm 一样，只是每组只有 $d_h$ 个分量。
-                $$\frac{\partial\ell}{\partial r^{q}}={{ q_norm.r.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial r^{k}}={{ k_norm.r.grad | matrix:3 }}$$
-          scale:
-            title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
-            text: |
-              $\boldsymbol{\gamma}_q$ 的长度是 $d_h$，两个 query head 和所有位置共用，所以它的每个分量连到 ${{ num_heads }}\times T$ 个元素。
-              $$\bar{\mathbf{q}}={{ qn | matrix:2 }},\qquad \bar{\mathbf{k}}={{ kn | matrix:2 }}$$
-            backward:
-              title: 传到 $\viz{q_norm.weight}$、$\viz{k_norm.weight}$ 和 $\viz{q_norm.xh}$、$\viz{k_norm.xh}$
-              text: |
-                $\boldsymbol{\gamma}_q$ 被两个 head 和三个位置共用，它的梯度把这六组贡献加起来。
-                $$\frac{\partial\ell}{\partial\boldsymbol{\gamma}_q}={{ q_norm.weight.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\boldsymbol{\gamma}_k}={{ k_norm.weight.grad | matrix:3 }}$$
-      k_norm:
-        beside: q_norm
+          $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }}$$
+    edit:
+      square:
+        title: q_norm、k_norm：逐元素平方
+        text: |
+          <code>self.q_norm(... .view(hidden_shape))</code>：Qwen3 在 RoPE 之前对 q、k 的每个 head 各做一次 RMSNorm，范围是 $d_h$ 个分量。这是 Qwen3 相对 Qwen2 新增的一步。
+
+          它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
+          $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|\gamma_{q,c}|\,\max_c|\gamma_{k,c}|$$
+          后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
+          $${\viz{q}}^{2}={{ q_norm.sq | matrix:2 }},\qquad {\viz{k}}^{2}={{ k_norm.sq | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{q}},\ \pfl{\viz{k}}$'
+          text: |
+            两路相加后，每个 head 交回的梯度和这个 head 的输入垂直（$\epsilon$ 可忽略时），推导与 RMSNorm 的一般情形相同，只是 $d$ 换成 $d_h$。
+            $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{k}}={{ k.grad | matrix:3 }}$$
+      mean:
+        text: |
+          每个位置、每个 head 对 $d_h$ 个平方取平均。q 有 {{ num_heads }} 个 head，所以每个位置有 {{ num_heads }} 个 $\mathrm{ms}^{q}$，k 相应地有 {{ num_kv_heads }} 个。
+          $$\viz{q_norm.ms}={{ q_norm.ms | matrix:3 }},\qquad \viz{k_norm.ms}={{ k_norm.ms | matrix:3 }}$$
+      rms:
+        title: 每个 head 的均方根倒数
+        text: |
+          $$\viz{q_norm.r}={{ q_norm.r | matrix:3 }},\qquad \viz{k_norm.r}={{ k_norm.r | matrix:3 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.ms}},\ \pfl{\viz{k_norm.ms}}$'
+          text: |
+            局部导数是 $-r^3/2$，下一步再除以 $d_h$ 分给这一组的每个平方。
+            $$\pfl{\viz{q_norm.ms}}={{ q_norm.ms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.ms}}={{ k_norm.ms.grad | matrix:3 }}$$
+      normalize:
+        text: |
+          每个分量乘上自己那一组的 $r$。这个 $r$ 只由同一个位置、同一个 head 的分量算出，所以每个分量只和这些分量有关。
+          $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
+        backward:
+          text: |
+            $$\pfl{\viz{q_norm.r}}={{ q_norm.r.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.r}}={{ k_norm.r.grad | matrix:3 }}$$
+      scale:
+        title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
+        text: |
+          $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，所以每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
+          $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.weight}},\ \pfl{\viz{k_norm.weight}}$'
+          text: |
+            $\viz{q_norm.weight}$ 的梯度把 {{ num_heads }} 个 head、$T$ 个位置的贡献加起来，一共 ${{ num_heads }}\times T$ 组。
+            $$\pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.weight}}={{ k_norm.weight.grad | matrix:3 }}$$
   - id: apply_rotary_pos_emb
     fold:
-      text: |
-        这几步合成一个旋转：每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，转过角度 $t\,\omega_c$。Jacobian 是一个个 $2\times2$ 的旋转矩阵，位置 1 是单位阵。
-        $$\begin{pmatrix}q'_c\\ q'_{c+2}\end{pmatrix}=\begin{pmatrix}\cos t\omega_c & -\sin t\omega_c\\ \sin t\omega_c & \cos t\omega_c\end{pmatrix}\begin{pmatrix}\bar q_c\\ \bar q_{c+2}\end{pmatrix}$$
+      append: |
+        这里的 $\mathbf{q}$ 是 $\viz{qn}$，即 q_norm 之后的 query。
+        $$\viz{qr}={{ qr | matrix:2 }}$$
       backward:
         text: |
-          旋转矩阵的转置就是它的逆，反向把梯度转回 $-t\,\omega_c$。
-          $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }}$$
-    steps:
+          反向乘的是旋转矩阵的转置，它也是旋转，所以梯度的模长不变，方向转回 $-t\,\omega_c$。
+          $$\pfl{\viz{qn}}={{ qn.grad | matrix:3 }},\qquad \pfl{\viz{kn}}={{ kn.grad | matrix:3 }}$$
+    edit:
       cos:
-        title: RoPE：乘 cos
-        text: |
-          RoPE 的公式是 $\mathbf{q}'=\bar{\mathbf{q}}\odot\cos+\mathrm{rotate\_half}(\bar{\mathbf{q}})\odot\sin$，这里按代码的顺序一行一步画出来：乘 cos，rotate_half 的切两半、后半取负、拼回，乘 sin，相加。cos/sin 表的每一行对应一个位置；列按频率排，$\omega_i=\theta^{-2i/d_h}$，Qwen3 的 rope_theta 是 $\theta=10^6$；这里只有 $d_h=4$ 和 3 个位置，用 $10^6$ 的话第 2、4 列几乎不转，看不出循环，所以改用 $\theta=10$，频率是 $(1,\,0.316,\,1,\,0.316)$。表的第 1 行是 position_id $t=0$，角度为 0，cos 全是 1；第 2 行 $t=1$：$\cos 1=0.540$、$\cos 0.316=0.950$；第 3 行 $t=2$：$\cos 2=-0.416$、$\cos 0.632=0.807$。第 $c$ 列和第 $c+2$ 列是 rotate_half 配成的一对，HF 用 <code>torch.cat((freqs, freqs))</code> 生成这张表，所以它们的频率相同、数值也相同。两个 q head 和 k 用的是同一张表。下图把位置延长到 24，阴影是这里用到的前 3 个位置：快的那组周期约 6.3 个位置，慢的那组约 20 个位置。
-
-          {{ apply_rotary_pos_emb.cos | rope_wave:cos }}
-
-          $$\cos={{ apply_rotary_pos_emb.cos | matrix:3 }},\qquad \bar{\mathbf{q}}\odot\cos={{ apply_rotary_pos_emb.qc | matrix:2 }}$$
-        backward:
-          title: 传到 $\viz{qn}$、$\viz{kn}$
-          text: |
-            $\bar{\mathbf{q}}$ 有两条路：乘 cos 的直连，和经过 rotate_half 的那条。两条相加，等于用 $-t\,\omega$ 把梯度转回去。
-            $$\frac{\partial\ell}{\partial\bar{\mathbf{q}}}={{ qn.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{\mathbf{k}}}={{ kn.grad | matrix:3 }}$$
-      rh:
-        text: |
-          取负的后半段放到前面，前半段放到后面，拼回 $d_h=4$ 列。拼接只是搬动元素，局部导数是 1，每个元素只连一条线。合起来 $\mathrm{rotate\_half}(x_1,x_2,x_3,x_4)=(-x_3,-x_4,x_1,x_2)$。
-          $$\mathrm{rh}(\bar{\mathbf{q}})={{ apply_rotary_pos_emb.qrh | matrix:2 }}$$
-        backward:
-          text: 拼接的反向把梯度按列切回两段：$\bar q_{c}$ 最终从 $\mathrm{rh}_{c+2}$ 拿到 $+1$ 倍，$\bar q_{c+2}$ 经过取负从 $\mathrm{rh}_{c}$ 拿到 $-1$ 倍。
+        append: |
+          <code>cos, sin = position_embeddings</code> 是模型开头 rotary_emb 算好的表，每一层用同一组。q 有 {{ num_heads }} 个 head，k 有 {{ num_kv_heads }} 个，都乘同一张表。HF 的表带 batch 维，要先 <code>cos.unsqueeze(1)</code> 加一个 head 维才能和 q 广播。而这一页没有 batch 维，所以表直接按广播相乘。
+          $$\cos={{ cos | matrix:3 }}$$
       sin:
-        title: 乘 sin
         notes:
-          - at: 'apply_rotary_pos_emb.sin[0,0,1]'
-            text: '$t=0$ 时 $\sin 0=0$，这一行全是 0'
-        text: |
-          第 1 行（$t=0$）的 sin 全是 0，所以第一行在这一步全部变成 0。sin 表同样是周期的，和 cos 差四分之一个周期。
-
-          {{ apply_rotary_pos_emb.sin | rope_wave:sin }}
-
-          $$\sin={{ apply_rotary_pos_emb.sin | matrix:3 }},\qquad \mathrm{rh}(\bar{\mathbf{q}})\odot\sin={{ apply_rotary_pos_emb.qs | matrix:2 }}$$
-        backward:
-          title: 传到 rotate_half 的输出
-          text: |
-            局部导数是对应位置的 sin。
-            $$\frac{\partial\ell}{\partial\,\mathrm{rh}(\bar{\mathbf{q}})}=\frac{\partial\ell}{\partial\mathbf{q}'}\odot\sin={{ apply_rotary_pos_emb.qrh.grad | matrix:3 }}$$
-      add:
-        title: 相加
-        text: |
-          合起来看，每个 head 里的第 $c$ 和第 $c+2$ 个分量组成一对，被一起转了角度 $t\,\omega_c$。q 和 k 转过的角度只取决于各自的位置，所以 $\mathbf{q}'_t\cdot\mathbf{k}'_s$ 只依赖位置差 $t-s$。
-          $$\mathbf{q}'={{ qr | matrix:2 }},\qquad \mathbf{k}'={{ kr | matrix:2 }}$$
-        backward:
-          title: RoPE 反向：穿过相加
-          text: |
-            相加的两个输入都拿到同样的梯度。
-            $$\frac{\partial\ell}{\partial(\bar{\mathbf{q}}\odot\cos)}=\frac{\partial\ell}{\partial(\mathrm{rh}\odot\sin)}=\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
+          - at: 'sin[0, 1]'
+            text: '$t=0$ 时 $\sin 0=0$，这一行全为 0'
   - id: eager_attention_forward
-    brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
-    steps:
+    subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$'
+    flat: true
+    edit:
       krep:
-        title: repeat_kv：复制 k
-        text: |
-          GQA 里 kv head 比 query head 少：这里 {{ num_heads }} 个 query head 共用 {{ num_kv_heads }} 个 kv head。HF 的 eager 实现先用 <code>repeat_kv</code> 把 k 复制 $n_\text{rep}={{ num_heads//num_kv_heads }}$ 份，每个 query head 拿到一份。复制的局部导数是 1。
-          $$\mathbf{k}'^{(1)}=\mathbf{k}'^{(2)}=\mathbf{k}'$$
-        backward:
-          title: repeat_kv 反向：两份加回一份
-          text: |
-            k 被复制给了两个 query head，反向时两份梯度在这里相加，回到唯一的 kv head。GQA 省下的是 k、v 的投影和缓存，梯度的数学形式不变。
-            $$\frac{\partial\ell}{\partial\mathbf{k}'}=\frac{\partial\ell}{\partial\mathbf{k}'^{(1)}}+\frac{\partial\ell}{\partial\mathbf{k}'^{(2)}}={{ kr.grad | matrix:3 }}$$
-      vrep:
-        title: repeat_kv：复制 v
-        text: |
-          v 也复制两份，直接画成上方 $P\mathbf{v}$ 那一步用的两块板。
-          $$\mathbf{v}^{(1)}=\mathbf{v}^{(2)}=\mathbf{v}={{ v | matrix:2 }}$$
-        backward:
-          title: v 的两份加回一份
-          text: |
-            v 同样把两个 head 的梯度相加。
-            $$\frac{\partial\ell}{\partial\mathbf{v}}={{ v.grad | matrix:3 }}$$
-      kT:
-        title: 转置
-        text: <code>key_states.transpose(2, 3)</code> 把 $d_h$ 换到行、位置换到列，接下来就能按「行向量乘板」来算 $\mathbf{q}'\mathbf{k}'^{\top}$。转置只是换轴，局部导数是 1。
-        backward:
-          title: 转置回去
-          text: 把梯度转置回 $T\times d_h$。
+        append: |
+          这里 $H={{ num_heads }}$，$H_{kv}={{ num_kv_heads }}$，$n_{\mathrm{rep}}={{ num_heads // num_kv_heads }}$。
       S:
-        title: 打分：$\mathbf{q}\mathbf{k}^{\top}$
-        text: |
-          每个 head 各自算一个 $T\times T$ 的分数表：$S_{t,s}$ 是位置 $t$ 的 query 和位置 $s$ 的 key 的点积。$q'_{t,c}$ 沿第 $c$ 行经过 $T$ 个方块，每一列累加后落到 $S_{t,s}$。
-          $$S^{(1)}={{ eager_attention_forward.S[1] | matrix:2 }},\qquad S^{({{ num_heads }})}={{ eager_attention_forward.S[num_heads] | matrix:2 }}$$
-        backward:
-          title: 传到 $\viz{qr}$ 和 $\mathbf{k}^{\top}$
-          text: |
-            和普通矩阵乘一样，只是这里两边都是激活：$\frac{\partial\ell}{\partial\mathbf{q}'}=\frac{\partial\ell}{\partial S}\mathbf{k}'$，$\frac{\partial\ell}{\partial\mathbf{k}'^{\top}}=\mathbf{q}'^{\top}\frac{\partial\ell}{\partial S}$。$\mathbf{q}'$ 的两个 head 各收到自己那一份。
-            $$\frac{\partial\ell}{\partial\mathbf{q}'}={{ qr.grad | matrix:3 }}$$
+        append: |
+          $$S^{({{ num_heads - 1 }})}={{ eager_attention_forward.S[num_heads - 1] | matrix:2 }}$$
       Ssc:
-        title: 缩放
-        text: |
-          乘上 scaling $=1/\sqrt{d_h}=0.5$。点积的方差随 $d_h$ 增长，除以 $\sqrt{d_h}$ 让 softmax 的输入不至于太大。
-          $$\tilde{S}^{(1)}={{ eager_attention_forward.Ss[1] | matrix:2 }},\qquad \tilde{S}^{({{ num_heads }})}={{ eager_attention_forward.Ss[num_heads] | matrix:2 }}$$
-        backward:
-          title: 穿过缩放
-          text: |
-            局部导数是 $1/\sqrt{d_h}=0.5$。
-            $$\frac{\partial\ell}{\partial S^{(1)}}={{ eager_attention_forward.S[1].grad | matrix:3 }}$$
+        append: |
+          这一页 $1/\sqrt{d_h}={{ d_head ** -0.5 }}$。在 Qwen3 里 q、k 已经过 q_norm、k_norm，所以 $\boldsymbol{\gamma}$ 全为 1 时上面方差的假设近似成立。进一步，把 q_norm 那一步的上界除以 $\sqrt{d_h}$，可知缩放之后分数的绝对值不超过 $\sqrt{d_h}\,\max|\gamma_q|\,\max|\gamma_k|$。
       mask:
-        title: causal mask
         notes:
-          - at: 'M[0,2]'
+          - at: 'mask[0, 2]'
             side: left
-            text: '$s>t$ 的格子是 $-\infty$，取 exp 之后变成 0'
-        text: |
-          加上 causal mask：$s>t$ 的位置加 $-\infty$，位置 $t$ 只能看到自己和之前的位置。mask 是常量，不需要梯度。HF 实现里填的不是真正的 $-\infty$，而是这个 dtype 能表示的最小值，取 exp 之后同样是 0。
-          $$M={{ M | matrix:2 }},\qquad \bar{S}^{(1)}={{ eager_attention_forward.Sm[1] | matrix:2 }}$$
-        backward:
-          title: 穿过 mask
-          text: 加常量，梯度原样传下去。mask 本身不需要梯度。
-      exp:
-        title: softmax：取 exp
-        text: |
-          softmax 按定义拆成三步画：取 exp、按行求和、相除。$e^{-\infty}=0$，被 mask 的位置在这里变成 0。torch 的 softmax kernel 会先减去每行的最大值再取 exp，防止溢出；这一项在相除时会约掉，结果和梯度都不变，这里为了看清结构按定义画。
-          $$\mathrm{ex}^{(1)}={{ eager_attention_forward.ex[1] | matrix:3 }},\qquad \mathrm{ex}^{({{ num_heads }})}={{ eager_attention_forward.ex[num_heads] | matrix:3 }}$$
-        backward:
-          title: 穿过 exp
-          text: |
-            exp 的导数是它自己。合起来就是熟悉的 softmax 反向：$\frac{\partial\ell}{\partial\bar S_{t,s}}=P_{t,s}\big(g_{t,s}-\sum_{s'}P_{t,s'}g_{t,s'}\big)$，其中 $g=\partial\ell/\partial P$。被 mask 的格子 ex 是 0，梯度也是 0。
-            $$\frac{\partial\ell}{\partial\bar{S}^{(1)}}={{ eager_attention_forward.Sm[1].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\bar{S}^{({{ num_heads }})}}={{ eager_attention_forward.Sm[num_heads].grad | matrix:3 }}$$
-      sum:
-        title: 按行求和
-        text: |
-          每个 head、每一行各有一个 $Z$。
-          $$Z^{(1)}={{ eager_attention_forward.Z[1] | matrix:3 }},\qquad Z^{({{ num_heads }})}={{ eager_attention_forward.Z[num_heads] | matrix:3 }}$$
-        backward:
-          title: 传回 ex
-          text: |
-            求和的局部导数是 1，$Z_t$ 的梯度复制给这一行的每个 $\mathrm{ex}$，再和直连那条加起来。
-            $$\frac{\partial\ell}{\partial\,\mathrm{ex}^{(1)}}={{ eager_attention_forward.ex[1].grad | matrix:3 }}$$
+            text: '$s>t$ 的格子是 dtype 的最小值，取 exp 之后为 0'
+        append: |
+          mask 来自 <code>Qwen3Model.forward</code> 里的 <code>create_causal_mask</code>，每一层用同一个。
       div:
-        title: 注意力权重
         notes:
-          - at: 'eager_attention_forward.P[1][0,0]'
-            text: '第一个位置只能看到自己，$P_{1,1}=1$'
-        text: |
-          每一行除以自己的 $Z$，得到位置 $t$ 对之前各位置的注意力分布，每行加起来是 1。第一行只能看自己，所以 $P_{1,1}=1$。Qwen3 的 attention_dropout 是 0，这里没有 dropout。
-          $$P^{(1)}={{ eager_attention_forward.P[1] | matrix:3 }},\qquad P^{({{ num_heads }})}={{ eager_attention_forward.P[num_heads] | matrix:3 }}$$
-        backward:
-          title: softmax 反向：穿过相除
-          text: |
-            $\mathrm{ex}_{t,s}$ 直连 $P_{t,s}$，局部导数 $1/Z_t$；同时 $Z_t$ 连到这一行每个 $P$，局部导数 $-\mathrm{ex}_{t,s}/Z_t^2$。
-            $$\frac{\partial\ell}{\partial Z^{(1)}}={{ eager_attention_forward.Z[1].grad | matrix:3 }}$$
-      pv:
-        title: P v
-        text: |
-          每个 head 用注意力权重对 $\mathbf{v}$ 的各行做加权平均。板的行是位置 $s$，列是 $d_h$；$P_{t,s}$ 沿第 $s$ 行经过 $d_h$ 个方块。
-          $$\mathbf{o}^{(1)}=P^{(1)}\mathbf{v}^{(1)}={{ eager_attention_forward.o[1] | matrix:2 }},\qquad \mathbf{o}^{({{ num_heads }})}={{ eager_attention_forward.o[num_heads] | matrix:2 }}$$
-        backward:
-          title: 传到 P 和 v
-          text: |
-            $\partial\ell/\partial P=\frac{\partial\ell}{\partial\mathbf{o}}\mathbf{v}^{\top}$，$\partial\ell/\partial\mathbf{v}=P^{\top}\frac{\partial\ell}{\partial\mathbf{o}}$。被 mask 的格子 $P_{t,s}=0$，所以它们不会把梯度传给后面位置的 v。
-            $$\frac{\partial\ell}{\partial P^{(1)}}={{ eager_attention_forward.P[1].grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial\mathbf{v}^{(1)}}={{ eager_attention_forward.V[1].grad | matrix:3 }}$$
-      concat:
-        title: 拼回 $T\times{{ num_heads*d_head }}$
-        text: |
-          <code>attn_output.transpose(1, 2).reshape(B, T, -1)</code> 把两个 head 的输出并排拼回去。只是换轴和重排，局部导数是 1。
-          $$\mathbf{o}=[\,\mathbf{o}^{(1)}\,|\,\mathbf{o}^{(2)}\,]={{ o | matrix:2 }}$$
-        backward:
-          title: 拆回两个 head
-          text: 拼接的反向是把梯度按列切回去。
+          - at: 'eager_attention_forward.P[0, 0, 0]'
+            text: '位置 0 只能看到自己，$P_{0,0}=1$'
+        append: |
+          位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3 的 <code>attention_dropout</code> 是 0，所以训练时省去 dropout 也不改变结果。
+          $$P^{({{ num_heads - 1 }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
+  - id: reshape
+    show: o
+    label: '$\viz{o}$'
+    title: 拼回 $T\times{{ num_heads * d_head }}$
+    text: |
+      <code>attn_output.reshape(*input_shape, -1).contiguous()</code> 把 $T\times H\times d_h$ 合并成 $T\times H d_h$，{{ num_heads }} 个 head 的输出在每一行里并排：
+      $${\viz{o}}_t=[\,\mathbf{o}^{(0)}_t\,|\,\cdots\,|\,\mathbf{o}^{({{ num_heads - 1 }})}_t\,],\qquad \viz{o}={{ o | matrix:2 }}$$
+      上一步的 contiguous 已经让数据按这个顺序排好，所以 reshape 不再复制。局部导数是 1。
+    backward:
+      title: '$\pfl{\viz{attn_output}}$'
+      text: 把梯度按列切回 {{ num_heads }} 个 head。
   - id: o_proj
-    brace: { title: o_proj, subtitle: nn.Linear }
-    show: [o_proj.weight.T, att]
+    subtitle: nn.Linear
     label: o_proj
     title: o_proj
     text: |
-      投影回 $d_{\mathrm{model}}$ 维。o_proj 也没有 bias。
-      $$\mathbf{att}=\mathbf{o}W_o^{\top}={{ att | matrix:2 }}\qquad (T\times {{ num_heads*d_head }})({{ num_heads*d_head }}\times d_{\mathrm{model}})=(T\times d_{\mathrm{model}})$$
+      各 head 的输出只是并排放着，彼此没有交换信息，所以 <code>self.o_proj(attn_output)</code> 用一个没有 bias 的线性层把它们混合，投影回 $d_{\mathrm{model}}$ 维：
+      $$\viz{att}=\viz{o}{\viz{o_proj.weight}}^{\top}={{ att | matrix:2 }},\qquad (T\times{{ num_heads * d_head }})({{ num_heads * d_head }}\times{{ d_model }})$$
+      按 head 把 $W_o$ 的列分块，${\viz{att}}_t=\sum_h\mathbf{o}^{(h)}_tW_o^{(h)\top}$，也就是每个 head 各自投影后相加。
     backward:
-      label: '$\partial W_o,\ \partial\mathbf{o}$'
-      title: 传到 o_proj 权重和 o
+      label: '$\partial\viz{o_proj.weight},\ \partial\viz{o}$'
+      title: '$\pfl{\viz{o_proj.weight}},\ \pfl{\viz{o}}$'
       text: |
-        和其他 Linear 一样：权重的梯度是外积，$T$ 个位置的贡献加在一起；输入的梯度是输出的梯度乘权重。
-        $$\frac{\partial\ell}{\partial W_o^{\top}}=\mathbf{o}^{\top}\frac{\partial\ell}{\partial\mathbf{att}},\qquad \frac{\partial\ell}{\partial\mathbf{o}}=\frac{\partial\ell}{\partial\mathbf{att}}W_o={{ o.grad | matrix:3 }}$$
+        $$\pf{\ell}{W_o^{\top}}={\viz{o}}^{\top}\pfl{\viz{att}},\qquad \pfl{\viz{o}}=\pfl{\viz{att}}W_o={{ o.grad | matrix:3 }}$$

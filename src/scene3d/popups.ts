@@ -1,40 +1,19 @@
 import { type Node, isIntegerDtype, moduleJacobian } from '../autograd';
 import { render, renderText } from '../formula';
 import type { StepModule } from '../steps';
-import { formatNumber, formatShape, offsetOf } from '../tensor';
-import { WAVE_INVERSE, checkFigure, figureTag } from '../ui/figure-spec';
-import { renderFigures } from '../ui/figures';
+import { forEachIndex, formatNumber, formatShape, offsetOf } from '../tensor';
 import { BOX_FOLDED_TEXT, type SceneBox } from './boxes';
 import { type ValueGrid, edgeCardElement, nodeCardElement, placePop, placeTip, valueGridElement } from './cards';
 import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
-import { rowsCols, tokenText } from './layout';
+import { plates, rowCol, rowsCols, tokenText } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
-export const BOX_FIXED_CARD_NOTE = '这个盒子只用来示意，数值按恒等映射处理，不能展开。';
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
-export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
 const TIP_DIGITS = 3;
-const ROPE_TOLERANCE = 1e-6;
-
-function ropeKind(node: Node): string | undefined {
-  const shape = node.shape;
-  if (shape.length < 2 || shape.slice(1, -1).some((size) => size !== 1)) return undefined;
-  const T = shape[0];
-  const dh = shape[shape.length - 1];
-  const at = (t: number, c: number) => node.value.get([t, ...shape.slice(1, -1).map(() => 0), c]);
-  return Object.keys(WAVE_INVERSE).find((kind) => {
-    if (checkFigure('rope_wave', shape, [kind]) !== undefined) return false;
-    const f = kind === 'cos' ? Math.cos : Math.sin;
-    const omegas = Array.from({ length: dh }, (_, c) => WAVE_INVERSE[kind](at(1, c)));
-    for (let t = 0; t < T; t++) for (let c = 0; c < dh; c++) if (Math.abs(at(t, c) - f(t * omegas[c])) > ROPE_TOLERANCE) return false;
-    return true;
-  });
-}
-
 function texTitle(title: string): string {
   const parts = title.split('$');
   return parts.map((part, i) => (i % 2 === 1 ? part : part.trim() === '' ? '' : `\\text{${part}}`)).join('');
@@ -116,23 +95,21 @@ export class ScenePopups {
   }
 
   private gridOf(node: Node): ValueGrid {
-    const [, cols] = rowsCols(node.shape);
+    const [, cols] = rowsCols(node);
     const backward = this.c.state.dir === 'backward';
-    return { label: backward ? '梯度' : '当前值', values: valuesOf(this.c, node), cols, heads: node.shape.length === 3 ? node.shape[1] : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
+    const values = valuesOf(this.c, node);
+    const ordered = new Float64Array(values.length);
+    forEachIndex(node.shape, (index, offset) => {
+      const [row, col] = rowCol(node, index);
+      ordered[row * cols + col] = values[offset];
+    });
+    return { label: backward ? '梯度' : '当前值', values: ordered, cols, heads: node.shape.length === 3 ? plates(node).count : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
   }
 
   showNodeCard(node: Node, el: HTMLElement): void {
     const c = this.c;
     this.pinned = { node, el };
     const card = nodeCardElement(c.explainer.nodeCard(node, c.state.dir), this.gridOf(node));
-    const wave = c.state.dir === 'forward' && node.kind === 'buffer' ? ropeKind(node) : undefined;
-    if (wave !== undefined) {
-      const figure = document.createElement('div');
-      figure.className = 'vf-pop-figure';
-      figure.innerHTML = figureTag('rope_wave', node.name, [wave]);
-      renderFigures(figure, c.g);
-      card.querySelector('.vf-eqs')?.after(figure);
-    }
     this.pop.replaceChildren(card);
     this.pop.hidden = false;
     this.tip.hidden = true;
@@ -153,7 +130,7 @@ export class ScenePopups {
     const fragment = document.createDocumentFragment();
     const title = document.createElement('h4');
     title.className = 'vf-pop-title';
-    renderText(module.fixed ? module.title : `${module.title}（${BOX_FOLDED_TEXT}）`, title);
+    renderText(`${module.title}（${BOX_FOLDED_TEXT}）`, title);
     fragment.appendChild(title);
     if (io !== undefined) {
       const J = moduleJacobian(c.g, module, io.input, io.output);
@@ -180,7 +157,7 @@ export class ScenePopups {
     }
     const note = document.createElement('p');
     note.className = 'vf-nt';
-    note.textContent = module.fixed ? BOX_FIXED_CARD_NOTE : BOX_CARD_NOTE;
+    note.textContent = BOX_CARD_NOTE;
     fragment.appendChild(note);
     this.pinned = undefined;
     this.pop.replaceChildren(fragment);
@@ -192,7 +169,7 @@ export class ScenePopups {
   }
 
   showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
-    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
+    this.pop.replaceChildren(d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;
     const rect = this.c.root.getBoundingClientRect();
     placePop(this.c.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -216,21 +193,5 @@ export class ScenePopups {
       note: JACOBIAN_CARD_NOTE,
     };
     return edgeCardElement(card, d.edge.id, d.fromNode.dtype);
-  }
-
-  private linkCard(d: DrawnEdge): DocumentFragment {
-    const fragment = document.createDocumentFragment();
-    const title = document.createElement('h4');
-    title.className = 'vf-pop-title';
-    title.dataset.edgeId = d.edge.id;
-    title.appendChild(render(d.fromNode.tex));
-    const note = document.createElement('p');
-    note.className = 'vf-nt';
-    note.textContent = LINK_CARD_NOTE;
-    const dtype = document.createElement('div');
-    dtype.className = 'vf-dtype';
-    dtype.textContent = `dtype ${d.fromNode.dtype}`;
-    fragment.append(title, note, dtype);
-    return fragment;
   }
 }

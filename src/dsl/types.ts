@@ -1,151 +1,261 @@
-import type { Nested } from '../tensor';
-
-export type Name = string;
-export type Expr = string;
-export type Tex = string;
-export type Text = string;
+export type Expression = string;
+export type Reference = string;
 export type Path = string;
-export type DimExpr = Name | number | string;
-export type ModuleRef = string;
-export type StepPath = string;
+export type TemplateText = string;
+export type Latex = string;
+export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
+export type Scalar = string | number | boolean;
+export type Value = Scalar | Value[] | ExpressionValue;
+export type Dimension = number | Expression;
+export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
+export type ArgDeclaration = ArgType | ArgField;
+export type ModuleList = `list[${string}]`;
+export type LoopBinding = `${string} = ${string}[${string}]`;
+export type ArgValue = Expression | number | boolean;
+export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>)[];
+export type Declaration = Dimension[] | TensorField | ListField;
+export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
+export type Step = NamedStep | LoopStep;
+export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel;
 
-export type ParamDecl =
-  | { type: 'int' | 'float'; default?: number }
-  | { type: 'dim'; default?: number }
-  | { type: 'bool'; default?: boolean }
-  | { type: 'op'; values?: Name[]; default?: Name }
-  | { type: 'module'; values?: Name[]; default?: Name }
-  | { type: 'tex' | 'text'; default?: string };
-
-export interface InputDecl {
-  shape?: DimExpr[];
-  tex?: Tex;
+export interface ExpressionValue {
+  expr: Expression;
 }
 
-export interface WeightDecl {
-  shape: DimExpr[];
+export interface ArgField {
+  type: ArgType;
+  default?: Value;
+}
+
+export interface TensorField {
+  type: 'tensor';
+  shape: Dimension[];
+  dtype: TensorDtype | Expression;
+}
+
+export interface ListField {
+  type: 'list';
+  dtype: 'str' | TensorDtype | Expression;
+}
+
+export interface Page {
+  title: string;
+  camera?: Camera;
+  import?: Record<string, string>;
+  preamble?: string;
+  model: string;
+  config: PageConfig;
+  data: Record<string, Value>;
+  modules: Record<string, Module>;
+  panels?: Panel[];
+  sections?: Section[];
+}
+
+export interface PageConfig {
+  [arg: string]: Value | Tokenizer | Record<string, RealConfig> | undefined;
+  seed?: number;
+  tokenizer?: Tokenizer;
+  real?: Record<string, RealConfig>;
+}
+
+export interface RealConfig {
+  [dim: string]: string | number;
+  name: string;
+}
+
+export interface Tokenizer {
+  vocab: string[];
+}
+
+export interface Camera {
+  direction?: [number, number, number];
+  polar?: [number, number];
+  follow?: boolean;
+}
+
+export interface Module {
+  import?: Record<string, string>;
+  args?: Record<string, ArgDeclaration>;
+  inputs: Record<string, Declaration>;
+  outputs: Record<string, Declaration>;
+  init?: Initializers;
+  forward: Assignment[];
+  tex?: Record<Reference, Latex>;
+  formula?: Latex;
+  fold?: Fold;
+  layout?: Layout;
+  steps?: Step[];
+  unshown?: Reference[];
+}
+
+export interface ModuleFile extends Module {
+  module: string;
+}
+
+export interface Initializers {
+  [name: string]: ModuleInitializer | Record<string, TensorInit> | undefined;
+  weights?: Record<string, TensorInit>;
+  buffers?: Record<string, TensorInit>;
+}
+
+export interface TensorInit {
+  shape: Dimension[];
+  dtype?: TensorDtype | Expression;
   init?: 'ones' | 'zeros' | 'normal' | 'uniform';
-  tex?: Tex;
+  value?: Expression;
+  present?: Expression;
 }
 
-export interface BufferDecl {
-  value: Expr;
-  tex?: Tex;
+export interface ModuleInstance {
+  use: string;
+  args?: Args;
+  count?: never;
 }
 
-export interface NodeDecl {
-  op: Expr;
-  tex?: Tex;
-  when?: Expr | boolean;
+export interface ModuleListInstance {
+  use: ModuleList;
+  count: Dimension;
+  args?: Args;
 }
 
-export interface Instance {
-  use: ModuleRef;
-  params?: Record<Name, number | string>;
-  inputs: Record<Name, Expr>;
-  outputs?: Record<Name, Name>;
-  weights?: Record<Name, Name>;
-  suffix?: Tex;
-  tex?: Record<Name, Tex>;
-  steps?: Record<StepPath, StepPatch>;
-  when?: Expr | boolean;
+export interface Assignment {
+  [name: string]: Expression;
 }
 
-export interface Group {
-  body: Item[];
-  when?: Expr | boolean;
+export interface Layout {
+  place?: Record<Reference, Placement>;
+  merge?: Reference[][];
+}
+
+export interface Placement {
+  with?: Reference;
+  before?: Reference;
+  after?: Reference;
+  left?: Reference;
+  right?: Reference;
+}
+
+export interface Explanation {
+  label?: TemplateText;
+  title?: TemplateText;
+  text?: TemplateText;
+  append?: TemplateText;
+}
+
+export interface Backward extends Explanation {
+  notes?: Note[];
+}
+
+export interface Fold extends Explanation {
+  backward?: Backward;
+}
+
+export interface StepOptions extends Explanation {
+  show?: Expression | Expression[];
+  subtitle?: TemplateText;
+  expand?: boolean | Expression;
+  flat?: boolean;
+  brace?: boolean;
+  formula?: Latex;
+  notes?: Note[];
+  fold?: Fold;
+  backward?: Backward;
+  edit?: Record<Path, StepOptions>;
+}
+
+export interface NamedStep extends StepOptions {
+  id: string;
   steps?: Step[];
-  subtitle?: Text;
+  loop?: never;
 }
 
-export interface ForItem {
-  for: Name;
-  in: string;
-  brace?: Text;
-  sequential?: boolean;
-  when?: Expr | boolean;
-  body: Item[];
+export interface LoopStep {
+  id: string;
+  loop: LoopBinding;
+  defaults: StepOptions;
+  rules?: LoopRule[];
 }
 
-export type Item = Record<Name, Expr | NodeDecl | Instance | Group> | ForItem;
-
-export interface NoteSpec {
-  at: Path;
-  text: Text;
-  side?: 'left' | 'right' | 'above' | 'below';
+export interface LoopRule extends StepOptions {
+  at: number;
 }
 
-export interface Step {
-  id: Name;
-  show: Expr | Expr[];
-  notes?: NoteSpec[];
-  active?: Expr[];
-  label?: Tex;
-  title?: Text;
-  text?: Text;
-  when?: Expr | boolean;
+export interface Note {
+  at: Reference;
+  text: TemplateText;
+  side?: 'left' | 'right';
 }
 
-export interface StepText {
-  title?: Text;
-  text?: Text;
+export interface PanelText {
+  title?: TemplateText;
+  note?: TemplateText;
 }
 
-export interface StepPatch {
-  title?: Text;
-  label?: Tex;
-  text?: Text;
-  append?: Text;
-  notes?: NoteSpec[];
-  when?: Expr | boolean;
+export interface LossPanel extends PanelText {
+  loss: LossOptions;
 }
 
-export interface ModuleFile {
-  module: Name;
-  import?: Record<Name, ModuleRef>;
-  subtitle?: Text;
-  params?: Record<Name, ParamDecl>;
-  inputs: Record<Name, InputDecl>;
-  outputs: Name[];
-  weights?: Record<Name, WeightDecl>;
-  buffers?: Record<Name, BufferDecl>;
-  body: Item[];
-  steps?: Step[];
-  backward?: Record<Name, StepText>;
+export interface LossOptions {
+  parts?: Reference;
+  hint?: TemplateText;
 }
 
-export type PanelSpec = 'loss' | Record<string, unknown>;
-
-export type SectionBlockSpec =
-  | { text: Text }
-  | { lead: Text }
-  | { buttons: { label: Text; go: Path }[] }
-  | 'rope_dial'
-  | 'rope_curve'
-  | { rope_compare: { scores: Path | Path[]; weights: Path | Path[]; ids: Path } };
-
-export type SectionRowSpec = SectionBlockSpec[] | { columns?: (number | string)[]; cells: SectionBlockSpec[][] };
-
-export interface SectionSpec {
-  title?: Text;
-  rope?: { q: Path | Path[]; k: Path | Path[]; rows?: [number, number]; head?: number; theta: number; dh: number; positions?: number };
-  src?: string;
-  rows?: SectionRowSpec[];
+export interface SequencePanel extends PanelText {
+  sequence: true;
+  tokens: Reference;
+  input: Reference;
+  label: Reference;
+  labels?: TemplateText[];
+  sgd?: Sgd;
+  random?: boolean;
+  reset?: boolean;
 }
 
-export interface PageFile extends Omit<ModuleFile, 'module' | 'inputs' | 'outputs'> {
-  title: Text;
-  lede?: Text;
-  hint?: Text;
-  camera?: Record<string, unknown>;
-  overview?: StepText & { notes?: NoteSpec[] };
-  modules?: Record<Name, Omit<ModuleFile, 'module'>>;
-  dims: Record<Name, number>;
-  real?: Record<Name, number | string>;
-  vocab?: string[];
-  init?: { seed: number };
-  inputs: Record<Name, { tokens: string[] } | { value: Nested }>;
-  values?: Record<Path, Nested>;
-  panels?: PanelSpec[];
-  sections?: SectionSpec[];
+export interface Sgd {
+  params: 'all' | Reference[];
+  lr: number;
+  label?: TemplateText;
+}
+
+export interface AttentionPanel extends PanelText {
+  attention: Reference;
+  ids: Reference;
+}
+
+export interface MatrixPanel extends PanelText {
+  matrices: MatrixDisplay[];
+  highlight?: Highlight;
+  rows?: Reference;
+}
+
+export interface MatrixDisplay {
+  matrix: Reference;
+  grad?: boolean;
+  caption?: TemplateText;
+  limit?: number;
+}
+
+export interface Highlight {
+  node: Reference;
+  all?: boolean;
+}
+
+export interface CodePanel extends PanelText {
+  code: string;
+}
+
+export interface Section {
+  title: TemplateText;
+  src: string;
+  rope?: RopeDisplay;
+}
+
+export interface RopeDisplay {
+  q: Reference;
+  k: Reference;
+  rows: [number, number];
+  head: number;
+  theta: number;
+  d_head: Expression | number;
+  positions: number;
 }

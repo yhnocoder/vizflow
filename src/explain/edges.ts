@@ -18,12 +18,13 @@ export function contextOf(node: Node): OpCtx {
 
 function flowArgs(node: Node): number[] {
   const def = opDef(node.op as string);
-  return node.inputs.map((_, arg) => arg).filter((arg) => (node.inputs[arg].grad !== null || node.inputs[arg].kind === 'buffer') && (def === undefined || inputDifferentiable(def, arg)));
+  return node.inputs.map((_, arg) => arg).filter((arg) => def === undefined || inputDifferentiable(def, arg));
 }
 
 function edge(op: Node, arg: number, suffix: string, from: ElemRef | CellRef, to: ElemRef | CellRef): FlowEdge {
   const made: FlowEdge = { id: `${op.name}:${arg}:${suffix}`, op, arg, from, to };
-  if (op.inputs[arg]?.kind === 'buffer') made.constant = true;
+  const input = op.inputs[arg];
+  if (input !== undefined && (input.kind === 'buffer' || input.grad === null)) made.constant = true;
   return made;
 }
 
@@ -96,26 +97,28 @@ function batchedContractEdges(op: Node, args: number[]): FlowEdge[] {
   return edges;
 }
 
+export function batchedCells(op: Node): boolean {
+  const [A, B] = op.inputs;
+  return op.op === 'matmul' && A.shape.length === 3 && B.shape.length === 3 && op.shape.length === 3;
+}
+
 function contractEdges(op: Node, args: number[]): FlowEdge[] {
   const [A, B] = op.inputs;
-  if (op.op === 'matmul' && isBatched(A.shape, B.shape)) return batchedContractEdges(op, args);
-  const rows = A.shape.length === 1 ? 1 : A.shape[0];
-  const inner = B.shape[0];
-  const cols = B.shape.length === 1 ? 1 : B.shape[1];
+  const cells = batchedCells(op);
+  if (op.op === 'matmul' && isBatched(A.shape, B.shape) && !cells) return batchedContractEdges(op, args);
+  const batch = cells ? op.shape.slice(0, -2) : [];
+  const rows = A.shape.length === 1 ? 1 : cells ? A.shape[1] : A.shape[0];
+  const inner = B.shape.length === 1 ? B.shape[0] : B.shape[B.shape.length - 2];
+  const cols = B.shape.length === 1 ? 1 : B.shape[B.shape.length - 1];
   const edges: FlowEdge[] = [];
-  for (let r = 0; r < rows; r++) {
-    for (let k = 0; k < inner; k++) {
-      for (let i = 0; i < cols; i++) {
-        const index: [number, number, number] = [r, k, i];
-        const cell: CellRef = { cell: { op, index } };
-        const { a, b, out } = matmulOperands(op, index);
-        const suffix = index.join(',');
-        edges.push(edge(op, 0, suffix, { node: A, index: a }, cell));
-        edges.push(edge(op, 1, suffix, { node: B, index: b }, cell));
-        edges.push(edge(op, -1, suffix, cell, { node: op, index: out }));
-      }
-    }
-  }
+  forEachIndex([...batch, rows, inner, cols], (index) => {
+    const cell: CellRef = { cell: { op, index } };
+    const { a, b, out } = matmulOperands(op, index);
+    const suffix = index.join(',');
+    edges.push(edge(op, 0, suffix, { node: A, index: a }, cell));
+    edges.push(edge(op, 1, suffix, { node: B, index: b }, cell));
+    edges.push(edge(op, -1, suffix, cell, { node: op, index: out }));
+  });
   return edges;
 }
 

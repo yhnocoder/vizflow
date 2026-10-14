@@ -44,3 +44,24 @@ export function promoteDtypes(dtypes: readonly Dtype[], fallback: Dtype, where: 
   const floats = dtypes.filter((d) => FLOAT_RANK[d] !== undefined);
   return floats.length > 0 ? widest(floats, FLOAT_RANK, where) : widest(dtypes, INT_RANK, where);
 }
+
+const FLOAT_INFO: Partial<Record<Dtype, { max: number; eps: number }>> = {
+  fp8_e4m3: { max: 448, eps: 2 ** -3 },
+  fp8_e5m2: { max: 57344, eps: 2 ** -2 },
+  fp16: { max: 65504, eps: 2 ** -10 },
+  bf16: { max: 3.3895313892515355e38, eps: 2 ** -7 },
+  fp32: { max: 3.4028234663852886e38, eps: 2 ** -23 },
+  fp64: { max: Number.MAX_VALUE, eps: Number.EPSILON },
+};
+
+export function finfoMin(dtype: Dtype, where: string): number {
+  const info = FLOAT_INFO[dtype];
+  if (info === undefined) throw new Error(`${where}: dtype ${dtype} is not a floating point type`);
+  return -info.max;
+}
+
+export function saturated(value: number, dtype: Dtype): boolean {
+  if (!Number.isFinite(value)) return true;
+  const info = FLOAT_INFO[dtype];
+  return info !== undefined && Math.abs(value) >= info.max * (1 - info.eps);
+}

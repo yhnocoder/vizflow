@@ -1,0 +1,64 @@
+module: RotaryEmbedding
+args:
+  d_head: dim
+  rope_theta: float
+inputs:
+  x: ['...']
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  cos: [T, d_head]
+  sin: [T, d_head]
+init:
+  buffers:
+    inv_freq:
+      shape: [d_head // 2]
+      dtype: fp32
+      value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)
+forward:
+  - freqs: position_ids[..., None].float() * inv_freq.float()
+  - emb: cat([freqs, freqs], dim=-1)
+  - cos: emb.cos().to(x.dtype)
+  - sin: emb.sin().to(x.dtype)
+tex:
+  inv_freq: '\boldsymbol{\omega}'
+  freqs: 't\,\boldsymbol{\omega}'
+  emb: '\boldsymbol{\theta}'
+  cos: '\cos'
+  sin: '\sin'
+formula: '\step{cos_sin}{\viz{cos}=\cos\big(}\step{emb}{\operatorname{cat}\big(}\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}}\step{emb}{,\ \cdot\big)}\step{cos_sin}{\big)}'
+fold:
+  label: '$\viz{cos},\ \viz{sin}$'
+  title: 位置编码表
+  text: |
+    第 $t$ 行第 $c$ 列是 $\cos(t\,\omega_{c\bmod d_h/2})$。
+    $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
+
+steps:
+  - id: freqs
+    label: '$\viz{freqs}$'
+    title: 每个位置、每组频率的角度
+    text: |
+      RoPE 把 q、k 的分量两两配对，每一对按位置转一个角度（原理见 section「RoPE：用旋转来编码位置」）。这一步算出所有角度。
+
+      频率 <code>inv_freq</code> 在 <code>__init__</code> 里算好，是一个 buffer：
+      $$\omega_i=\theta^{-2i/d_h},\qquad i=0,\dots,d_h/2-1,\qquad \viz{inv_freq}={{ inv_freq | matrix:3 }}$$
+      代码是 <code>1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))</code>，<code>arange(0, dim, 2)</code> 给出的正是 $2i$。$i$ 越大，$\omega_i$ 越小，转得越慢。
+
+      有了频率，再乘上位置就得到角度：<code>freqs = position_ids[..., None].float() * self.inv_freq.to(device=x.device, dtype=torch.float)</code> 是位置与频率的外积，得到 $T\times d_h/2$ 的表：
+      $${\viz{freqs}}_{t,i}=t\,\omega_i,\qquad \viz{freqs}={{ freqs | matrix:3 }}$$
+  - id: emb
+    label: '$\viz{emb}$'
+    title: 角度表复制成 $d_h$ 列
+    text: |
+      <code>emb = torch.cat((freqs, freqs), dim=-1)</code> 把角度表左右拼两份，得到 $T\times d_h$：
+      $${\viz{emb}}_{t,c}={\viz{emb}}_{t,c+d_h/2}=t\,\omega_c,\qquad c=0,\dots,d_h/2-1$$
+      复制的原因在后面的 <code>rotate_half</code>：HF 把第 $c$ 和第 $c+d_h/2$ 个分量配成一对，同一对的两个分量必须用同一个角度，所以第 $c$ 列和第 $c+d_h/2$ 列放同一个角度。拼成 $d_h$ 列以后，表的宽度和每个 head 相同，于是 cos、sin 可以直接和 q、k 逐元素相乘。
+      $$\viz{emb}={{ emb | matrix:3 }}$$
+  - id: cos_sin
+    show: [cos, sin]
+    label: '$\viz{cos},\ \viz{sin}$'
+    title: 取 cos 和 sin
+    text: |
+      <code>cos = emb.cos() * self.attention_scaling</code>，sin 相同。默认的 RoPE 里 <code>attention_scaling</code> 是 1，所以这两张表就是角度的 cos 和 sin。角度和 cos、sin 都在 float32 里算，最后的 <code>cos.to(dtype=x.dtype)</code> 才转成输入的 dtype。
+      $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
+      这两张表只由位置和 $\theta$ 决定，和输入的内容无关，所以不需要梯度：<code>forward</code> 带 <code>@torch.no_grad()</code>，反向不经过这里。

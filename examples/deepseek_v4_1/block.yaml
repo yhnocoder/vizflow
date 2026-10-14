@@ -1,0 +1,181 @@
+module: Block
+subtitle: Block，Single-Pass mHC 包着注意力和 MoE
+import:
+  RMSNorm: vizflow/nn/rmsnorm
+  HyperConnection: vizflow/nn/hyper-connection
+  HyperConnectionMerge: vizflow/nn/hyper-connection-merge
+  CSA2Attention: vizflow/nn/csa2-attention
+  Engram: vizflow/nn/engram
+  MoE: ./moe.yaml
+params:
+  H:  { type: dim }
+  D:  { type: dim }
+  rd: { type: dim }
+  rq: { type: dim }
+  g:  { type: dim }
+  dg: { type: dim }
+  W:  { type: dim }
+  theta: { type: float }
+  yarn_factor:   { type: float, default: 1 }
+  yarn_original: { type: int, default: 0 }
+  compress:     { type: bool, default: false }
+  m:            { type: dim, default: 1 }
+  gated:        { type: bool, default: false }
+  kv_source:    { type: bool, default: false }
+  index_source: { type: bool, default: false }
+  cand_source:  { type: bool, default: false }
+  use_cand:     { type: bool, default: false }
+  HI: { type: dim }
+  cI: { type: dim }
+  kI: { type: dim }
+  B:  { type: dim }
+  bs: { type: dim }
+  E:  { type: dim }
+  K:  { type: dim }
+  f:  { type: dim }
+  limit: { type: float }
+  iters: { type: int }
+  has_engram: { type: bool, default: false }
+  Vg: { type: dim }
+  dgr: { type: dim }
+  hc_detail:   { type: bool, default: false }
+  attn_open:   { type: bool, default: false }
+  attn_detail: { type: bool, default: false }
+  index_detail: { type: bool, default: false }
+  ffn_detail:  { type: bool, default: false }
+inputs:
+  X:           { shape: [T, N, d] }
+  pre_in:      { shape: [T, N] }
+  image_mask:  { shape: [T] }
+  hash:        { shape: [T, C], when: has_engram }
+  engram_mask: { shape: [T], when: has_engram }
+  C_in:        { shape: [Tc, D], when: 'false if kv_source else compress' }
+  K_in:        { shape: [Tc, cI], when: 'false if kv_source else index_source' }
+  idx_in:      { shape: [T, kI], when: 'false if index_source else compress' }
+  cand_in:     { shape: [T, Tc], when: use_cand }
+outputs:
+  - X_out
+  - pre
+  - { name: C, when: kv_source }
+  - { name: KI, when: kv_source }
+  - { name: idx, when: index_source }
+  - { name: cand, when: cand_source }
+fold:
+  label: '$\of{X_out}=\mathrm{block}(\of{X})$'
+  title: Block（已折叠）
+  text: |
+    整个 Block 收成一个盒子，输入和输出都是 \of{N} 条 stream。
+    $$\of{X_out}={{ X_out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\of{X}$'
+    title: 穿过 Block（已折叠）
+body:
+  - engram:
+      use: Engram
+      when: has_engram
+      params: { Vg: Vg, dg: dgr, eps: 1e-20 }
+      inputs: { X: X, hash: hash, mask: engram_mask }
+      outputs: { out: Xe }
+      tex: { out: '\mathbf{X}^{\mathrm{eng}}' }
+  - hc_attn:
+      use: HyperConnection
+      title: hc_attn
+      subtitle: hc_mixes 和 hc_pre，注意力之前
+      suffix: a
+      folded: not hc_detail
+      params: { iters: iters, eps: 1e-20, project_first: true, single_pass: true }
+      inputs: { X: Xe if has_engram else X, pre_in: pre_in }
+      outputs: { post: post_a, comb: C_a, collapsed: x_a, pre: pre_a }
+      formula: '\step{collapse,collapse_sum}{\of{x_a}=\textstyle\sum_n(\of{pre_in})_n\,{\of{X}}_{n}},\quad\step{pre_sigmoid.*,pre_eps}{\of{pre_a}=\sigma(}\step{pre_scale}{\alpha_{\mathrm{pre}}}\step{mix_first,square,mean,eps,rsqrt,scale}{\,r\,(\mathrm{flat}(\of{X})W_{\mathrm{fn}}^{\top})_{\mathrm{pre}}}\step{pre_base}{+\mathbf{b}_{\mathrm{pre}}}\step{pre_sigmoid.*,pre_eps}{)+\epsilon}'
+      fold:
+        text: |
+          计算和第 0 层的 hc_attn 相同，那里展开画了每一步；参数是这一层自己的。注意力的输入用前一个子层算出的 pre 合成，这一组算出的 pre 交给这一层的 FFN。
+          $$\of{x_a}={{ x_a | matrix:2 }}$$
+      steps:
+        first_col_sum:
+          text: |
+            参考实现的 <code>hc_split_sinkhorn</code> 先做一次按列归一化，再做 hc_sinkhorn_iters $-1$ 轮「按行、按列」。这里一共 $\of{iters}$ 次迭代，真实模型是 20 次。每个 token 的矩阵各自归一化。先按列求和（<code>comb.sum(-2)</code>）。
+            $$\mathbf{1}^{\top}C^{\mathrm{init}}={{ hc_attn.cs0 | matrix:3 }}$$
+  - attn_norm:
+      use: RMSNorm
+      subtitle: RMSNorm
+      suffix: a
+      folded: true
+      params: { eps: 1e-20, cast_last: true }
+      inputs: { x: x_a }
+      outputs: { out: n_a }
+      fold:
+        text: |
+          计算和 ViT block 的 norm1 相同，那里展开画了每一步：平方、求平均、加 $\epsilon$、取 rsqrt、乘权重。语言模型里的 RMSNorm 都用 $\epsilon=10^{-20}$；权重是这一层自己的。
+          $$\of{n_a}={{ n_a | matrix:2 }}$$
+  - attn:
+      use: CSA2Attention
+      folded: not attn_open
+      params: { H: H, D: D, rd: rd, rq: rq, g: g, dg: dg, W: W, theta: theta, yarn_factor: yarn_factor, yarn_original: yarn_original, eps: 1e-20, compress: compress, m: m, gated: gated, kv_source: kv_source, index_source: index_source, cand_source: cand_source, use_cand: use_cand, HI: HI, cI: cI, kI: kI, B: B, bs: bs, detail: attn_detail, index_detail: index_detail, norm_ref: ViT block 的 norm1 }
+      inputs: { x: n_a, C_in: C_in, K_in: K_in, idx_in: idx_in, cand_in: cand_in }
+      outputs: { att: att, C: C, KI: KI, idx: idx, cand: cand }
+      fold:
+        text: |
+          这一层只有滑动窗口注意力，计算和第 0 层的 attn 相同，那里展开画了每一步；参数是这一层自己的。
+          $$\of{att}={{ att | matrix:2 }}$$
+  - hc_attn_post:
+      use: HyperConnectionMerge
+      title: hc_post
+      subtitle: 注意力之后，写回 stream
+      suffix: a
+      folded: not hc_detail
+      params: { broadcast: true }
+      inputs: { X: Xe if has_engram else X, y: att, post: post_a, comb: C_a }
+      outputs: { out: X_a }
+      fold:
+        text: |
+          计算和第 0 层注意力之后的 hc_post 相同，那里展开画了每一步。
+          $$\of{X_a}={{ X_a | matrix:2 }}$$
+  - hc_ffn:
+      use: HyperConnection
+      title: hc_ffn
+      subtitle: hc_mixes 和 hc_pre，MoE 之前
+      suffix: f
+      folded: true
+      params: { iters: iters, eps: 1e-20, project_first: true, single_pass: true }
+      inputs: { X: X_a, pre_in: pre_a }
+      outputs: { post: post_f, comb: C_f, collapsed: x_f, pre: pre }
+      fold:
+        text: |
+          计算和第 0 层的 hc_attn 相同，那里展开画了每一步；参数是这个实例自己的。FFN 的输入用这一层注意力那一组算出的 pre 合成，这一组算出的 pre 交给下一层的注意力。
+          $$\of{x_f}={{ x_f | matrix:2 }},\qquad \of{pre}={{ pre | matrix:3 }}$$
+  - ffn_norm:
+      use: RMSNorm
+      subtitle: RMSNorm
+      suffix: f
+      folded: true
+      params: { eps: 1e-20, cast_last: true }
+      inputs: { x: x_f }
+      outputs: { out: n_f }
+      fold:
+        text: |
+          计算和 ViT block 的 norm1 相同，那里展开画了每一步；$\epsilon=10^{-20}$，权重是这一层自己的。
+          $$\of{n_f}={{ n_f | matrix:2 }}$$
+  - ffn:
+      use: MoE
+      folded: not ffn_detail
+      params: { E: E, K: K, f: f, limit: limit }
+      inputs: { x: n_f, image_mask: image_mask }
+      outputs: { out: moe }
+      fold:
+        text: |
+          计算和第 0 层的 ffn 相同，那里展开画了每一步；参数是这一层自己的，选中的专家来自这一层的 gate。
+          $$\of{moe}={{ moe | matrix:2 }}$$
+  - hc_ffn_post:
+      use: HyperConnectionMerge
+      title: hc_post
+      subtitle: MoE 之后，写回 stream
+      suffix: f
+      folded: true
+      params: { broadcast: true }
+      inputs: { X: X_a, y: moe, post: post_f, comb: C_f }
+      outputs: { out: X_out }
+      fold:
+        text: |
+          计算和第 0 层注意力之后的 hc_post 相同，那里展开画了每一步；写回的是 MoE 的输出。
+          $$\of{X_out}={{ X_out | matrix:2 }}$$

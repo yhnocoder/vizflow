@@ -1,0 +1,15 @@
+module: Embedding
+args:
+  num_embeddings: dim
+  embedding_dim: dim
+inputs:
+  x: { type: tensor, shape: ['...'], dtype: int64 }
+outputs:
+  out: { type: tensor, shape: ['...', embedding_dim], dtype: weight.dtype }
+init:
+  weights:
+    weight: { shape: [num_embeddings, embedding_dim], init: normal }
+forward:
+  - out: embedding(x, weight)
+tex:
+  weight: E

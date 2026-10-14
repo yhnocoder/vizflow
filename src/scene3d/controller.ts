@@ -13,6 +13,7 @@ import { FoldBoxes } from './boxes';
 import { type EditHost, mountEditor } from './edit';
 import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
+import type { Box } from './avoid';
 import { LabelLayer } from './labels';
 import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
@@ -243,7 +244,7 @@ export class SceneController implements EditHost {
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
-    const overview = dir === 'forward' && this.state.index === 0;
+    const overview = dir === 'forward' && this.state.kind === 'overview';
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     markFar(this);
@@ -270,6 +271,10 @@ export class SceneController implements EditHost {
       if (this.edgeLines.hover === undefined) this.popups.hideUnpinned();
     }
     this.requestFrame();
+  }
+
+  private overlays(): Box[] {
+    return [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-ovnav, .vf-formula, .vf-key, .vf-hint')].flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
   }
 
   private updateGeometry(): void {
@@ -311,7 +316,7 @@ export class SceneController implements EditHost {
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
-      this.labels.project(this.camera, this.width, this.height, !this.follow);
+      this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
       this.notes.place();
       this.labelsDirty = false;
       this.screenVersion++;

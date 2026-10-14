@@ -3,8 +3,12 @@ import type { Node } from '../../src/autograd';
 import { graph } from '../../src/core';
 import '../../src/explain';
 import type { Block } from '../../src/scene3d/layout';
-import { levelPlan } from '../../src/scene3d/levels';
-import type { StepModule, StepsSpec } from '../../src/steps';
+import { type LevelSpec, levelPlan } from '../../src/scene3d/levels';
+import { type StepModule, type StepsSpec, createSteps } from '../../src/steps';
+
+function linesOf(spec: StepsSpec): LevelSpec {
+  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [] };
+}
 
 const T = 2;
 const H = 3;
@@ -12,7 +16,8 @@ const DH = 2;
 
 function headGraph() {
   const g = graph({ dims: { T, H, dh: DH } });
-  const x = g.input('x', [T, H, DH], Array.from({ length: T }, (_, t) => Array.from({ length: H }, (_, h) => Array.from({ length: DH }, (_, c) => Math.sin(1 + t * 1.3 + h * 0.7 + c * 0.4)))));
+  const flat = g.input('flat', [T, H * DH], Array.from({ length: T }, (_, t) => Array.from({ length: H * DH }, (_, k) => Math.sin(1 + t * 1.3 + Math.floor(k / DH) * 0.7 + (k % DH) * 0.4))));
+  const x = g.view(flat, [T, H, DH], { name: 'x' });
   const gamma = g.param('gamma', [DH], [0.9, 1.1]);
   const sq = g.pow(x, 2, { name: 'sq' });
   const ms = g.mean(sq, -1, { keepdim: true, name: 'ms' });
@@ -30,39 +35,41 @@ function headGraph() {
     outputs: [y],
     nodes: inside,
     params: [gamma],
-    fixed: false,
     folded: false,
-    segment: 'norm',
+    foldable: true,
     forward: {},
     backward: {},
   };
-  const step = (show: Node[], extra: Partial<StepsSpec['forward'][number]> = {}) => ({ show, title: show.map((n) => n.name).join(', '), segment: 'norm', module: 'norm', ...extra });
+  const step = (show: Node[], extra: Partial<StepsSpec['forward'][number]> = {}) => ({ show, title: show.map((n) => n.name).join(', '), module: 'norm', ...extra });
   const spec: StepsSpec = {
     forward: [
-      { show: [x, gamma], title: 'inputs', kind: 'inputs' },
+      { show: [flat, gamma], title: 'inputs' },
       step([sq]),
       step([ms, g.node('shifted')!, r]),
       step([hat]),
       step([y]),
-      { show: [loss], title: 'loss', segment: 'loss' },
+      { show: [loss], title: 'loss' },
     ],
     backward: 'reverse',
     modules: [module],
   };
-  return { spec, x, ms, r, hat, y };
+  return { spec, flat, x, ms, r, hat, y };
 }
 
 const blockOf = (blocks: Block[], node: Node) => blocks.find((b) => b.node === node && b.copyOf === undefined)!;
 
 describe('levelPlan with rank-3 tensors', () => {
   it('draws (T, H, dh) as T rows of H side-by-side boards with a gap between heads', () => {
-    const { spec, x, hat } = headGraph();
-    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
-    for (const node of [x, hat]) {
+    const { spec, flat, x, hat } = headGraph();
+    const layout = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
+    const blocks = layout.blocks;
+    expect(layout.sourceOf.get(x)).toBe(flat);
+    expect(blocks.some((b) => b.node === x)).toBe(false);
+    const element = blockOf(blocks, hat).elements.find((e) => e.index.join() === '1,2,1')!;
+    expect([element.row, element.col]).toEqual([1, 2 * DH + 1]);
+    for (const node of [flat, hat]) {
       const block = blockOf(blocks, node);
       expect([block.rows, block.cols, block.shape]).toEqual([T, H * DH, 'bar']);
-      const element = block.elements.find((e) => e.index.join() === '1,2,1')!;
-      expect([element.row, element.col]).toEqual([1, 2 * DH + 1]);
       const xs = Array.from({ length: H * DH }, (_, col) => block.elements.find((e) => e.row === 0 && e.col === col)!.x);
       const steps = xs.slice(1).map((v, i) => v - xs[i]);
       const inside = steps.filter((_, i) => (i + 1) % DH !== 0);
@@ -73,9 +80,9 @@ describe('levelPlan with rank-3 tensors', () => {
   });
 
   it('draws one disc per row and head for a (T, H, 1) reduction, beside each head', () => {
-    const { spec, x, ms, r } = headGraph();
-    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
-    const xBlock = blockOf(blocks, x);
+    const { spec, flat, ms, r } = headGraph();
+    const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
+    const xBlock = blockOf(blocks, flat);
     for (const node of [ms, r]) {
       const block = blockOf(blocks, node);
       expect([block.shape, block.rows, block.cols]).toEqual(['disc', T, H]);
@@ -91,7 +98,7 @@ describe('levelPlan with rank-3 tensors', () => {
 
   it('hides the inside of a folded module and keeps its output', () => {
     const { spec, hat, y } = headGraph();
-    const { blocks, boxes } = levelPlan(spec).resolve({ folded: (id) => id === 'norm', aligned: new Map() });
+    const { blocks, boxes } = levelPlan(spec, linesOf(spec)).resolve({ folded: (id) => id === 'norm', aligned: new Map() });
     expect(blockOf(blocks, hat).hidden).toBe(true);
     expect(blockOf(blocks, y).hidden).toBe(false);
     expect(boxes.map((b) => b.module.id)).toEqual(['norm']);
@@ -120,22 +127,21 @@ function flatGraph() {
     outputs: [y],
     nodes: [sq, ms, g.node('shifted')!, r, hat, y],
     params: [gamma],
-    fixed: false,
     folded: false,
-    segment: 'norm',
+    foldable: true,
     forward: {},
     backward: {},
   };
-  const step = (show: Node[]) => ({ show, title: show.map((n) => n.name).join(', '), segment: 'norm', module: 'norm' });
+  const step = (show: Node[]) => ({ show, title: show.map((n) => n.name).join(', '), module: 'norm' });
   const spec: StepsSpec = {
     forward: [
-      { show: [ids, E, gamma], title: 'inputs', kind: 'inputs' },
-      { show: [e], title: 'e', segment: 'embed' },
+      { show: [ids, E, gamma], title: 'inputs' },
+      { show: [e], title: 'e' },
       step([sq]),
       step([ms, g.node('shifted')!, r]),
       step([hat]),
       step([y]),
-      { show: [loss], title: 'loss', segment: 'loss' },
+      { show: [loss], title: 'loss' },
     ],
     backward: 'reverse',
     modules: [module],
@@ -146,7 +152,7 @@ function flatGraph() {
 describe('levelPlan with rank-2 activations', () => {
   it('draws (T, d) activations as plates of bars and only the (T, 1) statistics as discs', () => {
     const { spec, e, sq, ms, r, hat, y, D } = flatGraph();
-    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
     for (const node of [e, sq, hat, y]) {
       const block = blockOf(blocks, node);
       expect([node.name, block.shape, block.rows, block.cols, block.plate !== undefined]).toEqual([node.name, 'bar', T, D, true]);
@@ -158,6 +164,53 @@ describe('levelPlan with rank-2 activations', () => {
   });
 });
 
+describe('levelPlan with an outer product of positions and frequencies', () => {
+  it('draws the positions as a column, the frequency buffer under the columns of the product, and no node for the new axis or the cast', () => {
+    const g = graph({ dims: { T: 3, K: 2 } });
+    const t = g.arange('T', { name: 't' });
+    const w = g.buffer('w', ['K'], [1, 0.5]);
+    const column = g.unsqueeze(t, -1, { name: 'column' });
+    const cast = g.identity(column, { dtype: 'fp32', name: 'cast' });
+    const y = g.mul(cast, w, { name: 'y' });
+    const loss = g.loss(g.sum(y, null, { name: 'loss' }));
+    const spec: StepsSpec = { forward: [{ show: [t], title: 't' }, { show: [w, y], title: 'y' }, { show: [loss], title: 'loss' }], backward: 'reverse' };
+    const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
+    expect(blocks.some((b) => b.node === column || b.node === cast)).toBe(false);
+    const xs = (node: Node) => [...new Set(blockOf(blocks, node).elements.map((e) => e.x))];
+    expect([blockOf(blocks, t).rows, blockOf(blocks, t).cols]).toEqual([3, 1]);
+    expect(xs(w)).toEqual(xs(y));
+    expect(blockOf(blocks, w).elements[0].y).toBe(blockOf(blocks, t).elements[0].y);
+    const steps = createSteps(g, spec);
+    steps.go(2);
+    expect(steps.state().revealed(w)).toBe(true);
+    steps.dispose();
+  });
+});
+
+describe('levelPlan with a matrix operand shaped like a statistic', () => {
+  it('draws the right operand of a matmul as bars even when the output has the shape of the left operand', () => {
+    const g = graph({ dims: {} });
+    const q = g.input('q', [2, 3, 3], Array.from({ length: 2 }, (_, t) => Array.from({ length: 3 }, (_, h) => [t + h, t - h, 0.5])));
+    const k = g.input('k', [3, 3], [[1, 0, 2], [0, 1, -1], [2, 1, 0]]);
+    const kt = g.transpose(k, 0, 1, { name: 'kt' });
+    const s = g.matmul(q, kt, { name: 's' });
+    const loss = g.loss(g.sum(s, null, { name: 'loss' }));
+    const spec: StepsSpec = {
+      forward: [
+        { show: [q, k], title: 'inputs' },
+        { show: [kt], title: 'kt' },
+        { show: [s], title: 's' },
+        { show: [loss], title: 'loss' },
+      ],
+      backward: 'reverse',
+    };
+    const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
+    const block = blockOf(blocks, kt);
+    expect([block.shape, block.cols]).toEqual(['bar', 3]);
+    expect(blocks.every((b) => b.elements.every((e) => Number.isFinite(e.x) && Number.isFinite(e.z)))).toBe(true);
+  });
+});
+
 describe('levelPlan with views and head-selecting boards', () => {
   it('draws a view on its input and reads each head of a rank-3 operand under its own columns', () => {
     const g = graph({ dims: { T, H: 2, dh: DH } });
@@ -166,21 +219,23 @@ describe('levelPlan with views and head-selecting boards', () => {
     const flat = g.mul(x, 2, { name: 'flat' });
     const heads = g.view(flat, T, 2, DH);
     const S = g.select_matmul(heads, K, 1, { name: 'S' });
-    const loss = g.loss(g.sum(S, null, { name: 'loss' }));
+    const other = g.mul(x, 3, { name: 'other' });
+    const loss = g.loss(g.add(g.sum(S, null), g.sum(other, null), { name: 'loss' }));
     const module: StepModule = {
-      id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], fixed: false, folded: false, segment: 'att', forward: {}, backward: {},
+      id: 'att', parent: null, title: 'att', subtitle: '', inputs: [x], outputs: [S], nodes: [flat, heads, S], params: [K], folded: false, foldable: true, forward: {}, backward: {},
     };
     const spec: StepsSpec = {
       forward: [
-        { show: [x, K], title: 'inputs', kind: 'inputs' },
-        { show: [flat, heads], title: 'flat', segment: 'att', module: 'att' },
-        { show: [S], title: 'S', segment: 'att', module: 'att' },
-        { show: [loss], title: 'loss', segment: 'loss' },
+        { show: [x, K], title: 'inputs' },
+        { show: [flat], title: 'flat', module: 'att' },
+        { show: [other], title: 'other' },
+        { show: [S], title: 'S', module: 'att' },
+        { show: [loss], title: 'loss' },
       ],
       backward: 'reverse',
       modules: [module],
     };
-    const layout = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const layout = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
     expect(layout.blocks.some((b) => b.node === heads)).toBe(false);
     expect(layout.sourceOf.get(heads)).toBe(flat);
     const board = layout.boards.find((b) => b.op === S)!;
@@ -203,10 +258,10 @@ function groupedGraph() {
   const loss = g.loss(g.sum(out, null, { name: 'loss' }));
   const spec: StepsSpec = {
     forward: [
-      { show: [x, ids, W], title: 'inputs', kind: 'inputs' },
-      { show: [xs, group], title: 'xs', segment: 'a' },
-      { show: [W, out], title: 'out', segment: 'a' },
-      { show: [loss], title: 'loss', segment: 'loss' },
+      { show: [x, ids, W], title: 'inputs' },
+      { show: [xs, group], title: 'xs' },
+      { show: [W, out], title: 'out' },
+      { show: [loss], title: 'loss' },
     ],
     backward: 'reverse',
   };
@@ -216,7 +271,7 @@ function groupedGraph() {
 describe('levelPlan with grouped_linear', () => {
   it('draws the weight as one slab per group beside the rows of that group', () => {
     const { spec, xs, W, out } = groupedGraph();
-    const { blocks } = levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+    const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
     const weight = blockOf(blocks, W);
     expect(weight.slabs!.map((s) => s.used)).toEqual([false, true, false, true]);
     expect(weight.rowLabels.map((l) => l.text)).toEqual(['expert_idx=0', 'expert_idx=1', 'expert_idx=2', 'expert_idx=3']);

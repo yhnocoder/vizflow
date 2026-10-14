@@ -1,6 +1,8 @@
 module: HyperConnectionMerge
 subtitle: 子层输出写回 stream，加上混合后的 stream
-formula: '\step{add}{\of{out}=}\step{expand,cast}{\of{post}\otimes\of{y}}\step{add}{+}\step{column,column_sum,stack,cast}{\of{comb}^{\top}\of{X}}'
+formula: '\step{add,sum_fp32}{\of{out}=}\step{expand,cast}{\of{post}\otimes\of{y}}\step{add,sum_fp32}{+}\step{column,column_sum,stack,cast,outer,pair_sum}{\of{comb}^{\top}\of{X}}'
+params:
+  broadcast: { type: bool, default: false }
 inputs:
   X:    { shape: [T, N, d] }
   y:    { shape: [T, d] }
@@ -16,20 +18,26 @@ fold:
     label: '$\partial\of{X},\ \partial\of{y},\ \partial\of{post},\ \partial\of{comb}$'
     title: 穿过写回（已折叠）
 body:
-  - post_c:   { op: identity(post), dtype: X, tex: '\of{post}' }
-  - comb_c:   { op: identity(comb), dtype: X, tex: '\of{comb}' }
-  - expanded: { op: 'view(post_c, T, N, 1) * view(y, T, 1, d)', tex: '\of{post}\otimes\of{y}' }
+  - post_c:   { op: identity(post), dtype: X, tex: '\of{post}', when: not broadcast }
+  - comb_c:   { op: identity(comb), dtype: X, tex: '\of{comb}', when: not broadcast }
+  - expanded: { op: 'view(post, T, N, 1) * view(y, T, 1, d) if broadcast else view(post_c, T, N, 1) * view(y, T, 1, d)', tex: '\of{post}\otimes\of{y}' }
   - for: k
     in: 1..N
     brace: 'stream \of{k}'
+    when: not broadcast
     body:
       - ck[k]:   { op: 'select(comb_c, 2, k-1)', tex: 'C_{:,\of{k}}' }
       - prod[k]: { op: 'view(ck[k], T, N, 1) * X', tex: 'C_{:,\of{k}}\odot\of{X}' }
       - mixk[k]: { op: 'sum(prod[k], 1, keepdim=true)', tex: '(\of{comb}^{\top}\of{X})_{\of{k}}' }
-  - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}' }
-  - out: { op: expanded + mixed }
+  - mixed: { op: 'cat(mixk[1..N], dim=1)', tex: '\of{comb}^{\top}\of{X}', when: not broadcast }
+  - prod: { op: 'view(comb, T, N, N, 1) * view(X, T, N, 1, d)', tex: '\of{comb}\odot\of{X}', when: broadcast }
+  - mixed: { op: 'sum(prod, 1)', tex: '\of{comb}^{\top}\of{X}', when: broadcast }
+  - out: { op: expanded + mixed, when: not broadcast }
+  - summed: { op: expanded + mixed, tex: '\of{post}\otimes\of{y}+\of{comb}^{\top}\of{X}', when: broadcast }
+  - out: { op: identity(summed), dtype: y, when: broadcast }
 steps:
   - id: cast
+    when: not broadcast
     show: [post_c, comb_c]
     label: '$\of{post},\ \of{comb}$'
     title: post 和 comb 转回 stream 的 dtype
@@ -40,6 +48,7 @@ steps:
       label: '$\partial\of{post},\ \partial\of{comb}$'
       title: 梯度转回 float32
   - id: expand
+    when: not broadcast
     show: expanded
     label: '$\of{post}\otimes\of{y}$'
     title: 子层的输出按 post 写进每条 stream
@@ -52,7 +61,22 @@ steps:
       text: |
         $\of{y}$ 收到的梯度是 \of{N} 条 stream 的梯度按 post 加权求和。
         $$\frac{\partial\ell}{\partial\of{y}}={{ y.grad | matrix:3 }}$$
+  - id: expand
+    when: broadcast
+    show: expanded
+    label: '$\of{post}\otimes\of{y}$'
+    title: 子层的输出按 post 写进每条 stream
+    text: |
+      子层的输出 $\of{y}$ 只有一条，按每个 token 的 post 系数复制进 \of{N} 条 stream：第 $n$ 条 stream 得到 $w_{\mathrm{post},n}\,\of{y}$。对应参考实现 <code>hc_post</code> 里的 <code>post.unsqueeze(-1) * x.unsqueeze(-2)</code>。post 是 float32，乘积也是 float32。
+      $$\of{post}\otimes\of{y}={{ expanded | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{post},\ \partial\of{y}$'
+      title: 传到 post 和子层的输出
+      text: |
+        $\of{y}$ 收到的梯度是 \of{N} 条 stream 的梯度按 post 加权求和。
+        $$\frac{\partial\ell}{\partial\of{y}}={{ y.grad | matrix:3 }}$$
   - id: column
+    when: not broadcast
     show: ['ck[1..N]', 'prod[1..N]']
     label: '$C_{:,k}\odot\of{X}$'
     title: comb 的第 $k$ 列给输入的 stream 加权
@@ -62,6 +86,7 @@ steps:
       label: '$\partial\of{comb},\ \partial\of{X}$'
       title: 传到 comb 的第 $k$ 列和输入的 stream
   - id: column_sum
+    when: not broadcast
     show: 'mixk[1..N]'
     label: '$(\of{comb}^{\top}\of{X})_k$'
     title: 加起来得到第 $k$ 条 stream
@@ -71,6 +96,7 @@ steps:
       label: '$\partial(C_{:,k}\odot\of{X})$'
       title: 梯度复制给每条输入的 stream
   - id: stack
+    when: not broadcast
     show: mixed
     label: '$\of{comb}^{\top}\of{X}$'
     title: \of{N} 条 stream 拼回去
@@ -79,7 +105,30 @@ steps:
     backward:
       label: '$\partial(\of{comb}^{\top}\of{X})_k$'
       title: 按 stream 切开
+  - id: outer
+    when: broadcast
+    show: prod
+    label: '$\of{prod}$'
+    title: comb 的每个元素乘对应的输入 stream
+    text: |
+      参考实现的 <code>hc_post</code> 写的是 <code>torch.sum(comb.unsqueeze(-1) * residual.unsqueeze(-2), dim=2)</code>。<code>comb.unsqueeze(-1)</code> 的形状是 $(T, N, N, 1)$，<code>residual.unsqueeze(-2)</code> 是 $(T, N, 1, d)$，相乘时广播成 $(T, N, N, d)$：第 $(j, k)$ 块是 $C_{j,k}\,{\of{X}}_j$，即输入的第 $j$ 条 stream 乘 comb 的第 $j$ 行第 $k$ 列。
+    backward:
+      label: '$\partial\of{comb},\ \partial\of{X}$'
+      title: 传到 comb 和输入的 stream
+      text: 广播的反向把复制出去的几份梯度加回来：$C_{j,k}$ 的梯度是第 $(j,k)$ 块的梯度与 ${\of{X}}_j$ 的点积，${\of{X}}_j$ 的梯度是 \of{N} 块按 $C_{j,k}$ 加权的和。
+  - id: pair_sum
+    when: broadcast
+    show: mixed
+    label: '$\of{comb}^{\top}\of{X}$'
+    title: 按输入的 stream 求和
+    text: |
+      <code>dim=2</code> 是输入 stream 的那一维 $j$，求和后输出的第 $k$ 条 stream 是 $\sum_j C_{j,k}\,{\of{X}}_j$，也就是 $\of{comb}^{\top}\of{X}$。用的是 comb 的第 $k$ 列，Sinkhorn 之后的 comb 不对称，下标的顺序不能换。
+      $$\of{comb}^{\top}\of{X}={{ mixed | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{prod}$'
+      title: 梯度复制给每条输入的 stream
   - id: add
+    when: not broadcast
     show: out
     label: '$\of{out}$'
     title: 两部分相加
@@ -91,3 +140,28 @@ steps:
       title: 梯度分给写回的输出和混合的输入
       text: |
         $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+  - id: sum_fp32
+    when: broadcast
+    show: summed
+    label: '$\of{summed}$'
+    title: 两部分相加
+    text: |
+      这就是这一子层之后的 \of{N} 条 stream。这里没有普通的 $\mathbf{x}+\mathrm{attn}(\mathbf{x})$ 残差，残差这一路是 comb 混合过的输入 stream。comb 的元素都是正数，每一列加起来接近 1，所以每条输出 stream 里来自输入的部分是输入 stream 的加权平均，它的大小不超过最大的一条输入 stream。
+      $$\of{summed}={{ summed | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{expanded},\ \partial\,\mathrm{mixed}$'
+      title: 梯度分给写回的输出和混合的输入
+      text: |
+        $$\frac{\partial\ell}{\partial\of{X}}={{ X.grad | matrix:3 }}$$
+  - id: cast_out
+    when: broadcast
+    show: out
+    label: '$\of{out}$'
+    title: 转回子层输出的 dtype
+    text: |
+      <code>return y.type_as(x)</code>：上面的乘法和求和都在 float32 里做，结果转成子层输出 $\of{y}$ 的 dtype，作为下一个子层的 stream。
+      $$\of{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\of{summed}$'
+      title: 穿过类型转换
+      text: 类型转换的局部导数是 1，梯度转回 float32。

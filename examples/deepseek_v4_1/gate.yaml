@@ -1,0 +1,150 @@
+module: Gate
+subtitle: Gate，sqrtsoftplus 打分，图片 token 用另一组偏置
+import:
+  Softplus: vizflow/nn/softplus
+formula: '\step{scale}{\mathbf{p}=\of{rsf}\cdot}\step{gather,sum,eps,normalize}{\dfrac{\mathbf{s}_{\mathbf{i}}}{\sum\mathbf{s}_{\mathbf{i}}+10^{-20}}},\quad\step{logits,temp,softplus.*,sqrt}{\mathbf{s}=\sqrt{\operatorname{softplus}(\of{x}W^{\top}/\tau)}},\quad\step{bias,topk}{\mathbf{i}=\operatorname{topk}_{K}(\mathbf{s}+\mathbf{b}^{\mathrm{sel}})}'
+params:
+  E:    { type: dim }
+  K:    { type: dim }
+  rsf:  { type: float, default: 1.5 }
+  temp: { type: float, default: 1 }
+inputs:
+  x:          { shape: [T, d] }
+  image_mask: { shape: [T] }
+outputs: [idx, rw]
+weights:
+  Wr:      { shape: [E, d], tex: 'W_{r}' }
+  bias:    { shape: [E], dtype: fp32, tex: '\mathbf{b}_{\mathrm{text}}' }
+  bias_vl: { shape: [E], dtype: fp32, tex: '\mathbf{b}_{\mathrm{vl}}' }
+fold:
+  label: '$\of{idx},\ \of{rw}=\mathrm{gate}(\of{x})$'
+  title: gate（已折叠）
+  text: |
+    每个位置选出 $K=\of{K}$ 个路由专家的编号 $\of{idx}$，并给出它们的权重 $\of{rw}$。
+    $$\of{idx}={{ idx | matrix }},\qquad \of{rw}={{ rw | matrix:3 }}$$
+  backward:
+    label: '$\partial W_r,\ \partial\of{x}$'
+    title: 穿过 gate（已折叠）
+body:
+  - xf:     { op: identity(x), tex: '{\of{x}}_{\mathrm{fp32}}', dtype: fp32 }
+  - Wrf:    { op: identity(Wr), tex: '{W_{r}}_{\mathrm{fp32}}', dtype: fp32 }
+  - logits: { op: xf @ Wrf.T, tex: '\mathbf{r}' }
+  - lt:     { op: logits / temp, tex: '\mathbf{r}/\tau' }
+  - softplus:
+      use: Softplus
+      inputs: { x: lt }
+      outputs: { out: sp }
+      tex: { out: '\operatorname{softplus}(\mathbf{r}/\tau)' }
+  - s:      { op: sqrt(sp), tex: '\mathbf{s}' }
+  - imc:    { op: 'unsqueeze(image_mask, -1)', tex: '\mathbf{m}^{\mathrm{img}}_{\mathrm{col}}' }
+  - bsel:   { op: 'where(imc, bias_vl, bias)', tex: '\mathbf{b}^{\mathrm{sel}}' }
+  - sc:     { op: s + bsel, tex: '\tilde{\mathbf{s}}' }
+  - idx:    { op: 'topk_indices(sc, K, -1)', tex: '\mathbf{i}' }
+  - w:      { op: 'gather(s, -1, idx)', tex: '\mathbf{s}_{\mathbf{i}}' }
+  - ws:     { op: 'sum(w, -1, keepdim=true)', tex: '\textstyle\sum\mathbf{s}_{\mathbf{i}}' }
+  - den:    { op: ws + 1e-20, tex: '\textstyle\sum\mathbf{s}_{\mathbf{i}}+10^{-20}' }
+  - wn:     { op: w / den, tex: '\bar{\mathbf{w}}' }
+  - rw:     { op: wn * rsf, tex: '\mathbf{p}' }
+steps:
+  - id: float
+    show: [xf, Wrf]
+    label: '$\of{xf},\ \of{Wrf}$'
+    title: 转成 float32
+    text: <code>linear(x.float(), self.weight.float())</code>：gate 的输入和权重都先转成 float32，打分在 float32 里算。类型转换不改变这一页的数值，局部导数是 1。
+    backward:
+      label: '$\partial\of{x},\ \partial W_r$'
+      title: 穿过类型转换
+  - id: logits
+    show: [Wrf.T, logits]
+    label: '$\of{logits}$'
+    title: 每个专家一个分数
+    text: |
+      gate 的权重 $W_r$ 每行对应一个路由专家，$\of{x}W_r^{\top}$ 给每个位置、每个专家一个分数。
+      $$\mathbf{r}={{ logits | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{Wrf},\ \partial\of{xf}$'
+      title: 传到 gate 的权重和 $\of{x}$
+  - id: temp
+    show: lt
+    label: '$/\tau$'
+    title: 除以温度
+    text: |
+      <code>/ self.gate_temp</code>：温度 $\tau=\of{temp}$。V4.1 的 gate_temp 取默认值 1，这一步不改变数值，参考实现照样做了这次除法。
+    backward:
+      label: '$\partial\of{logits}$'
+      title: 穿过除法
+  - id: sqrt
+    show: s
+    label: '$\of{s}=\sqrt{\cdot}$'
+    title: 开平方，得到亲和度
+    text: |
+      打分函数是 <code>sqrtsoftplus</code>：<code>F.softplus(scores).sqrt()</code>。$\of{s}$ 是每个专家的亲和度，后面的权重用它。
+      $$\of{s}={{ s | matrix:3 }}$$
+    backward:
+      label: '$\partial\operatorname{softplus}$'
+      title: 穿过开平方
+      text: |
+        只有被选中的专家把梯度传回 $\of{s}$，没选中的那几列梯度是 0。
+        $$\frac{\partial\ell}{\partial\of{s}}={{ s.grad | matrix:3 }}$$
+  - id: bias
+    show: [bias, bias_vl, imc, bsel, sc]
+    label: '$\of{sc}=\of{s}+\of{bsel}$'
+    title: 加上负载均衡的偏置，图片 token 用另一组
+    text: |
+      <code>bias = torch.where(image_mask.unsqueeze(-1), self.bias_vl, bias)</code>，其中 <code>bias = self.bias</code>：文字 token 用 $\mathbf{b}_{\mathrm{text}}$，图片区间里的 token（包括起止和换行标记）用 $\mathbf{b}_{\mathrm{vl}}$。两组偏置都只用来挑专家，不进入权重；它们是参数，但 top-k 不可导，损失的梯度到不了它们。参考实现只有推理代码，没有写这两组偏置在训练时怎样更新。
+      $$\mathbf{b}_{\mathrm{text}}={{ bias | matrix:3 }},\qquad \mathbf{b}_{\mathrm{vl}}={{ bias_vl | matrix:3 }}$$
+      $$\of{sc}={{ sc | matrix:3 }}$$
+  - id: topk
+    show: idx
+    label: '$\of{idx}$'
+    title: 'top-$K$：选出 $K$ 个专家'
+    text: |
+      <code>(scores + bias).topk(self.topk, dim=-1)[1]</code>：每个位置按 $\of{sc}$ 选出最大的 $K=\of{K}$ 个专家的编号。真实模型里每个 token 从 384 个路由专家里选 6 个。编号是整数，没有梯度。
+      $$\of{idx}={{ idx | matrix }}$$
+  - id: gather
+    show: w
+    label: '$\mathbf{s}_{\mathbf{i}}$'
+    title: 取出选中专家的亲和度
+    text: |
+      <code>weights = scores.gather(1, indices)</code>：权重用不带偏置的 $\of{s}$。
+      $$\mathbf{s}_{\mathbf{i}}={{ w | matrix:3 }}$$
+    backward:
+      label: '$\partial\of{s}$'
+      title: 只有选中的专家有梯度
+  - id: sum
+    show: ws
+    label: '$\sum\mathbf{s}_{\mathbf{i}}$'
+    title: 选中的亲和度相加
+    text: |
+      $$\textstyle\sum\mathbf{s}_{\mathbf{i}}={{ ws | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{s}_{\mathbf{i}}$'
+      title: 梯度复制给每个专家
+  - id: eps
+    show: den
+    label: '$+10^{-20}$'
+    title: 加 $10^{-20}$
+    text: 参考实现的注释写明这里用 $10^{-20}$，与训练一致，不用 norm_eps。
+    backward:
+      label: '$\partial\sum\mathbf{s}_{\mathbf{i}}$'
+      title: 加常数，梯度原样传下去
+  - id: normalize
+    show: wn
+    label: '$\of{wn}$'
+    title: 归一化
+    text: |
+      <code>weights /= weights.sum(dim=-1, keepdim=True) + 1e-20</code>：每个位置的权重加起来是 1。
+      $$\bar{\mathbf{w}}={{ wn | matrix:3 }}$$
+    backward:
+      label: '$\partial\mathbf{s}_{\mathbf{i}},\ \partial\of{den}$'
+      title: 穿过归一化
+  - id: scale
+    show: rw
+    label: '$\of{rw}$'
+    title: 乘 route_scale
+    text: |
+      <code>weights *= self.route_scale</code>，route_scale $=\of{rsf}$。
+      $$\mathbf{p}={{ rw | matrix:3 }}$$
+    backward:
+      label: '$\partial\bar{\mathbf{w}}$'
+      title: 穿过缩放

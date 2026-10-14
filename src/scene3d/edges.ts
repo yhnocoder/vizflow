@@ -1,9 +1,11 @@
-import { type Graph, type Node, moduleJacobian } from '../autograd';
-import { type FlowEdge, matmulOperands } from '../explain';
+import type { Graph, Node } from '../autograd';
+import { moduleJacobians } from '../autograd/jacobian';
+import { type CellRef, type FlowEdge, matmulOperands } from '../explain';
 import type { StepModule } from '../steps';
 import type { SceneController } from './controller';
 import { LONG_EDGE } from './edgelines';
 import { tokenAxes } from './hover';
+import { indexOf } from '../tensor';
 import { type Block, type Element, LINE_HEIGHT, type Vec3, elementAt } from './layout';
 import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
@@ -14,8 +16,6 @@ export const SPLIT_JACOBIAN_BOW = 1.4;
 
 const SAME_LEVEL = 0.05;
 const JACOBIAN_EPSILON = 1e-12;
-const LINK_REVEALED = 0.32;
-const LINK_HIDDEN = 0.06;
 
 export interface DrawnEdge {
   edge: FlowEdge;
@@ -29,28 +29,27 @@ export interface DrawnEdge {
   screen: number[];
   bow?: number;
   jac?: { module: StepModule; value: number };
-  link?: boolean;
   backRow?: boolean;
 }
 
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
 
 const crossRowCache = new WeakMap<object, Set<Node>>();
-const jacobianCache = new WeakMap<Graph, { version: number; byPair: Map<string, number[][]> }>();
+const jacobianCache = new WeakMap<Graph, { version: number; byOutput: Map<string, Map<Node, number[][]>> }>();
 
 function cachedJacobian(g: Graph, module: StepModule, input: Node, output: Node): number[][] {
   let cache = jacobianCache.get(g);
   if (cache === undefined || cache.version !== g.version) {
-    cache = { version: g.version, byPair: new Map() };
+    cache = { version: g.version, byOutput: new Map() };
     jacobianCache.set(g, cache);
   }
-  const key = `${module.id}:${input.id}:${output.id}`;
-  let J = cache.byPair.get(key);
-  if (J === undefined) {
-    J = moduleJacobian(g, module, input, output);
-    cache.byPair.set(key, J);
+  const key = `${module.id}:${output.id}`;
+  let byInput = cache.byOutput.get(key);
+  if (byInput === undefined) {
+    byInput = moduleJacobians(g, module, module.inputs, output);
+    cache.byOutput.set(key, byInput);
   }
-  return J;
+  return byInput.get(input)!;
 }
 
 function crossRowOps(c: SceneController): Set<Node> {
@@ -73,7 +72,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   if (c.lod) return drawn;
   const levels = c.levelLayout;
   const backward = c.state.dir === 'backward';
-  const overview = c.state.dir === 'forward' && c.state.index === 0;
+  const overview = c.state.dir === 'forward' && c.state.kind === 'overview';
   const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
   const push = (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => {
     const style = edgeStyle({
@@ -104,11 +103,12 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const bR = renderableFor(c, board.b);
       const oR = renderableFor(c, board.out);
       if (aR === undefined || bR === undefined || oR === undefined || !shown(board.out) || !shown(board.b) || !shown(board.a)) continue;
-      const index = 'cell' in edge.to ? edge.to.cell.index : (edge.from as { cell: { index: [number, number, number] } }).cell.index;
-      const [r, k, i] = index;
+      const index = 'cell' in edge.to ? edge.to.cell.index : (edge.from as CellRef).cell.index;
+      const [r, k, i] = index.slice(-3);
+      const batch = index.slice(0, -3);
       const operands = matmulOperands(edge.op, index);
       const y = board.y + LINE_HEIGHT;
-      const tile = (block: Block, kk: number, ii: number) => block.elements.find((e) => e.row === kk && e.col === ii)!;
+      const tile = (block: Block, kk: number, ii: number) => (block === board.b ? elementAt(block, matmulOperands(edge.op, [...batch, r, kk, ii]).b) : block.elements.find((e) => e.row === kk && e.col === ii)!);
       const [tileW, tileD] = board.b.footprint;
       const outElement = elementAt(board.out, operands.out);
       const rows = [board.out.batched ? r : undefined];
@@ -139,13 +139,12 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const from = edge.from;
     const to = edge.to;
     if (backward && edge.constant) continue;
-    const copy = levels?.copyFor(from.node, to.node);
-    const fromR = copy === undefined ? renderableOf(c, from.node) : renderableFor(c, copy);
+    const fromR = renderableOf(c, from.node);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
-    const rows = [rowOf(fromR, from.index), rowOf(toR, to.index)];
     const fromElement = elementOf(fromR.block, from.node, from.index);
     const toElement = elementOf(toR.block, to.node, to.index);
+    const rows = [rowOf(fromR, fromElement.index), rowOf(toR, toElement.index)];
     let entry: EdgeEntry;
     if (fromR.block.table !== undefined && Math.abs(fromElement.y - toElement.y) < SAME_LEVEL) {
       const y = toElement.y + LINE_HEIGHT;
@@ -172,15 +171,17 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   for (const pair of levels.io) {
     const inR = renderableOf(c, pair.input);
     const outR = renderableFor(c, pair.outputBlock);
-    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block)) continue;
+    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block) || (inR.far && outR.far)) continue;
     const J = cachedJacobian(c.g, pair.module, pair.input, pair.output);
     const grad = pair.output.grad;
     J.forEach((row, oi) => {
       row.forEach((value, ii) => {
         if (Math.abs(value) <= JACOBIAN_EPSILON) return;
-        const fromElement = inR.block.elements[ii];
-        const toElement = outR.block.elements[oi];
-        const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromElement.index }, to: { node: pair.output, index: toElement.index } };
+        const fromIndex = indexOf(pair.input.shape, ii);
+        const toIndex = indexOf(pair.output.shape, oi);
+        const fromElement = elementOf(inR.block, pair.input, fromIndex);
+        const toElement = elementOf(outR.block, pair.output, toIndex);
+        const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromIndex }, to: { node: pair.output, index: toIndex } };
         const entry = {
           edge,
           fromNode: pair.input,
@@ -192,28 +193,6 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
           jac: { module: pair.module, value },
         };
         push(entry, inR, outR, [rowOf(inR, fromElement.index), rowOf(outR, toElement.index)], (grad === null ? 0 : grad.data[oi]) === 0);
-      });
-    });
-  }
-  for (const link of levels.links) {
-    const origR = renderableFor(c, link.original);
-    const copyR = renderableFor(c, link.copy);
-    if (origR === undefined || copyR === undefined || !shown(link.original) || !shown(link.copy) || (origR.far && copyR.far)) continue;
-    const node = link.original.node;
-    const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
-    link.copy.elements.forEach((element) => {
-      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index: element.index }, to: { node, index: element.index } };
-      drawn.push({
-        edge,
-        fromNode: node,
-        toNode: node,
-        contract: false,
-        endpoints: () => [anchorOut(c, node, element.index, origR)!, anchorIn(c, node, element.index, copyR)!],
-        flat: false,
-        link: true,
-        points: [],
-        style: { opacity },
-        screen: [],
       });
     });
   }

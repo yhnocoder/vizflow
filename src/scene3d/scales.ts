@@ -1,3 +1,5 @@
+import { type Dtype, saturated } from '../autograd';
+
 export const SCALE_FILL = 0.8;
 export const BAR_CAP = 1.2;
 export const TILE_CAP = 0.85;
@@ -16,9 +18,9 @@ export function capFor(shape: 'bar' | 'tile' | 'disc' | 'box', dims: number): nu
   return dims === 1 ? VECTOR_CAP : BAR_CAP;
 }
 
-export function scaleFor(values: ArrayLike<number>, cap = BAR_CAP): number {
+export function scaleFor(values: ArrayLike<number>, dtype: Dtype, cap = BAR_CAP): number {
   let max = 0;
-  for (let i = 0; i < values.length; i++) if (Number.isFinite(values[i])) max = Math.max(max, Math.abs(values[i]));
+  for (let i = 0; i < values.length; i++) if (!saturated(values[i], dtype)) max = Math.max(max, Math.abs(values[i]));
   return max === 0 ? 1 : (cap * SCALE_FILL) / max;
 }
 
@@ -56,11 +58,11 @@ function ticksWithStep(lo: number, hi: number, step: number): number[] {
   return ticks;
 }
 
-export function niceTicks(values: ArrayLike<number>, scale: number, count = TICK_COUNT, cap = BAR_CAP): number[] {
+export function niceTicks(values: ArrayLike<number>, dtype: Dtype, scale: number, count = TICK_COUNT, cap = BAR_CAP): number[] {
   let lo = 0;
   let hi = 0;
   for (let i = 0; i < values.length; i++) {
-    if (!Number.isFinite(values[i])) continue;
+    if (saturated(values[i], dtype)) continue;
     lo = Math.min(lo, values[i]);
     hi = Math.max(hi, values[i]);
   }

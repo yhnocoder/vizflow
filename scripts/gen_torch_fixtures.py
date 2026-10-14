@@ -535,6 +535,7 @@ def transformer_op_fixtures():
     cases += pointwise_cases("relu", F.relu, randn)
     cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
+    cases += pointwise_cases("alias", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
     cases += head_cases()
     cases += linear_attention_cases()
@@ -762,6 +763,73 @@ def clamp_cases():
     return cases
 
 
+def integer_and_scatter_cases():
+    cases = []
+    small = randint(4, (3, 4))
+    cases.append(op_case("lt", "int64 with a scalar", lambda x: torch.lt(x, 2), [("label", small)], [tensor_arg(0), 2]))
+    cases.append(op_case("lt", "float (3, 4) and (3, 1)", torch.lt, [("label", randn(3, 4)), ("label", randn(3, 1))], [tensor_arg(0), tensor_arg(1)]))
+    p, q = randint(2, (3, 4)).bool(), randint(2, (4,)).bool()
+    left, right = randint(1 << 30, (4, 3)), randint(1 << 30, (4, 3))
+    cases.append(op_case("bitwise_or", "bool (3, 4) and (4,)", torch.bitwise_or, [("label", p), ("label", q)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_or", "int64 (4, 3)", torch.bitwise_or, [("label", left), ("label", right)], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("bitwise_or", "int64 with a scalar", lambda x: torch.bitwise_or(x, 5), [("label", left)], [tensor_arg(0), 5]))
+    signed = randint(1 << 20, (5, 1)) - (1 << 19)
+    cases.append(op_case("floor_divide", "negative and positive int64 by a scalar", lambda x: torch.floor_divide(x, 3), [("label", signed)], [tensor_arg(0), 3]))
+    cases.append(op_case("floor_divide", "int64 (5, 1) by (1, 3) with a negative divisor", torch.floor_divide, [("label", signed), ("label", torch.tensor([[7, -4, 13]]))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("logical_not", "int64 (3, 4)", torch.logical_not, [("label", small)], [tensor_arg(0)]))
+    cases.append(op_case("logical_not", "bool (4,)", torch.logical_not, [("label", q)], [tensor_arg(0)]))
+    a = torch.cat([randn(5), torch.zeros(1, dtype=torch.float64)]).reshape(2, 3)
+    cases.append(op_case("copysign", "(2, 3) with (2, 3), including a zero input", torch.copysign, [("input", a), ("label", randn(2, 3))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("copysign", "(2, 3) with (3,) including -0", torch.copysign, [("input", randn(2, 3)), ("label", torch.tensor([1.5, -0.0, -2.0], dtype=torch.float64))], [tensor_arg(0), tensor_arg(1)]))
+    cases.append(op_case("copysign", "(4,) with a scalar", lambda x: torch.copysign(x, -1.0), [("input", randn(4))], [tensor_arg(0), -1.0]))
+    for shape, dim in [((3, 5), -1), ((4, 3), 0)]:
+        cases.append(op_case("sort", f"{shape} dim {dim}", lambda x, dim=dim: torch.sort(x, dim=dim, stable=True).values, [("input", distinct(*shape))], [tensor_arg(0), dim]))
+    ties = torch.tensor([[3, 1, 3, 0, 1, 2], [5, 5, 4, 4, 5, 0]])
+    cases.append(op_case("sort", "int64 (2, 6) with ties, default dim", lambda x: torch.sort(x, stable=True).values, [("label", ties)], [tensor_arg(0)]))
+    for shape, dim, index, source in [((3, 5), 1, [[4, 0], [1, 2], [3, 1]], (3, 2)), ((4, 2), 0, [[2, 0], [0, 3]], (2, 2))]:
+        cases.append(
+            op_case(
+                "scatter",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, s, dim=dim: torch.scatter(x, dim, i, s),
+                [("input", randn(*shape)), ("label", torch.tensor(index)), ("input", randn(*source))],
+                [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    for shape, dim, index, value in [((3, 5), 1, [[4, 0], [1, 2], [3, 1]], 0.0), ((4, 2), 0, [[2, 0], [0, 3]], -1.5)]:
+        cases.append(
+            op_case(
+                "scatter",
+                f"{shape} dim {dim} index {index} value {value}",
+                lambda x, i, dim=dim, value=value: torch.scatter(x, dim, i, value),
+                [("input", randn(*shape)), ("label", torch.tensor(index))],
+                [tensor_arg(0), dim, tensor_arg(1), value],
+            )
+        )
+    mask = torch.tensor([True, False, True, True])
+    grid = torch.tensor([[True, False, False], [False, True, True]])
+    for title, shape, picked, values in [
+        ("(4, 3) rows from (3, 3)", (4, 3), mask, (3, 3)),
+        ("(4, 3) one row (3,) broadcast", (4, 3), mask, (3,)),
+        ("(2, 3, 2) by a (2, 3) mask from (3, 2)", (2, 3, 2), grid, (3, 2)),
+        ("(2, 3, 2) by a (2, 3) mask from (1, 2)", (2, 3, 2), grid, (1, 2)),
+    ]:
+        cases.append(
+            op_case(
+                "index_put",
+                title,
+                lambda x, m, v: x.index_put((m.bool(),), v),
+                [("input", randn(*shape)), ("label", picked.clone()), ("input", randn(*values))],
+                [tensor_arg(0), tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    keep = (randn(3, 1) > 0).to(torch.float64)
+    cases.append(op_case("where", "condition (3, 1) input (3, 4) other tensor (4,)", lambda c, x, y: torch.where(c != 0, x, y), [("label", keep), ("input", randn(3, 4)), ("input", randn(4))], [tensor_arg(0), tensor_arg(1), tensor_arg(2)]))
+    cases.append(op_case("pad", "(2, 3) pad [0, 1] value 2.5", lambda x: F.pad(x, (0, 1), value=2.5), [("input", randn(2, 3))], [tensor_arg(0), [0, 1]], {"value": 2.5}))
+    cases.append(op_case("unsqueeze", "int64 (2, 3) dim 1", lambda x: torch.unsqueeze(x, 1), [("label", randint(1 << 40, (2, 3)))], [tensor_arg(0), 1]))
+    return cases
+
+
 def floor_divide_cases():
     positions = torch.arange(1, 10).unsqueeze(-1)
     ints = randint(1 << 20, (4, 3)) - (1 << 19)
@@ -771,6 +839,60 @@ def floor_divide_cases():
         op_case("floor_divide", "int64 (4, 3) by (3,)", torch.floor_divide, [("label", ints), ("label", torch.tensor([3, -5, 11]))], [tensor_arg(0), tensor_arg(1)]),
         op_case("floor_divide", "float (3, 4) by a scalar", lambda x: torch.floor_divide(x, 0.7), [("label", randn(3, 4) * 4)], [tensor_arg(0), 0.7]),
     ]
+
+
+def attention_layout_cases():
+    cases = []
+    for shape, n_rep in [((2, 3, 4), 2), ((2, 2, 3, 2), 3)]:
+        dim = len(shape) - 3
+        cases.append(op_case("repeat_kv", f"{shape} n_rep {n_rep}", lambda x, n_rep=n_rep, dim=dim: torch.repeat_interleave(x, n_rep, dim), [("input", randn(*shape))], [tensor_arg(0), n_rep]))
+    cases.append(op_case("contiguous", "(2, 3, 4)", lambda x: x.contiguous(), [("input", randn(2, 3, 4))], [tensor_arg(0)]))
+    return cases
+
+
+def trigonometric_cases():
+    return unary_cases("cos", torch.cos) + unary_cases("sin", torch.sin)
+
+
+def creation_and_reverse_cases():
+    cases = binary_cases("rsub", torch.rsub) + scalar_operand_cases("rsub", torch.rsub)
+    cases.append(op_case("pow", "scalar base 10.0 with exponent (2, 3)", lambda x: torch.pow(10.0, x), [("input", randn(2, 3))], [10.0, tensor_arg(0)]))
+    cases.append(op_case("pow", "base (2, 3) with exponent (3,)", torch.pow, [("input", positive(2, 3)), ("input", randn(3))], [tensor_arg(0), tensor_arg(1)]))
+    for args in [(5,), (2, 7), (1, 8, 3), (0.5, 2.5, 0.5), (6, 0, -2)]:
+        cases.append(op_case("arange", f"arange{args}", lambda args=args: torch.arange(*args), [], list(args)))
+    for size, dtype, name in [(4, torch.float32, "fp32"), (3, torch.bfloat16, "bf16")]:
+        cases.append(op_case("causal_mask", f"size {size} {name}", lambda size=size, dtype=dtype: torch.full((size, size), torch.finfo(dtype).min, dtype=dtype).triu(1), [], [size, name]))
+    return cases
+
+
+DTYPE_NAMES = {torch.bool: "bool", torch.int32: "int32", torch.int64: "int64", torch.bfloat16: "bf16", torch.float32: "fp32"}
+
+
+def dtype_case(op, fn, dtypes, args=()):
+    inputs = [torch.tensor([1, 2]).to(dtype) for dtype in dtypes]
+    return {"op": op, "inputs": [DTYPE_NAMES[d] for d in dtypes], "args": list(args), "output": DTYPE_NAMES[fn(*inputs, *args).dtype]}
+
+
+def promotion_cases():
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    floating = {
+        "exp": torch.exp, "log": torch.log, "cos": torch.cos, "sin": torch.sin, "sqrt": torch.sqrt, "rsqrt": torch.rsqrt,
+        "reciprocal": torch.reciprocal, "sigmoid": torch.sigmoid, "erf": torch.erf, "logsumexp": torch.logsumexp,
+    }
+    cases = []
+    for op, fn in floating.items():
+        args = (-1,) if op == "logsumexp" else ()
+        for dtype in [torch.bool, torch.int32, torch.int64, torch.bfloat16]:
+            cases.append(dtype_case(op, fn, [dtype], args))
+    for pair in [(torch.int64, torch.int64), (torch.bool, torch.bool), (torch.int32, torch.int64), (torch.int64, torch.bfloat16)]:
+        cases.append(dtype_case("div", torch.div, list(pair)))
+    for op, fn in {"neg": torch.neg, "abs": torch.abs, "relu": torch.relu}.items():
+        cases.append(dtype_case(op, fn, [torch.int64]))
+    for op, fn in {"add": torch.add, "mul": torch.mul}.items():
+        cases.append(dtype_case(op, fn, [torch.int32, torch.int64]))
+    torch.set_default_dtype(previous)
+    return cases
 
 
 def write(name, cases):
@@ -788,8 +910,9 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
     write("pages.json", pages + stable_pages)
+    write("dtypes.json", promotion_cases())
 
 
 if __name__ == "__main__":

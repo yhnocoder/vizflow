@@ -94,7 +94,7 @@ export class EdgeLines {
     const element = bar === undefined ? undefined : block!.elements[bar.index];
     const related = this.edges.map((d) => element !== undefined && this.touchesBar(d));
     this.lines.setPolylines(
-      this.edges.flatMap((d, i) => (d.backRow === true && !related[i] ? [] : [{ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, related[i]) }])),
+      this.edges.flatMap((d, i) => (d.backRow === true && !related[i] ? [] : [{ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, related[i]), dashed: d.edge.op.op === 'alias' }])),
     );
     const axis = block === undefined ? undefined : this.tokenAxes.get(block.node);
     this.tokenFrame.set(block !== undefined && element !== undefined && axis !== undefined ? tokenRect(block, element, axis) : undefined);

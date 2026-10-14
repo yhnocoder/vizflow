@@ -69,6 +69,8 @@ function opTokenAxis(node: Node, axes: Map<Node, number>): number | undefined {
       return first !== dim && inputs.every((n) => axes.get(n) === first) ? first : undefined;
     }
     case 'view':
+    case 'reshape':
+    case 'unsqueeze':
       return first === undefined ? undefined : viewAxis(inputs[0].shape, shape, first);
     case 'nll_loss':
       return attrs.reduction === 'none' && first === 0 ? 0 : undefined;

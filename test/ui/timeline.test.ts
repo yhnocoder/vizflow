@@ -5,7 +5,7 @@ import { createSteps, type StepInfo } from '../../src/steps';
 import { mountSteps, type Mounted } from '../../src/ui';
 import { shown } from './shown';
 
-type Extra = { kind?: string; segment?: string; sub?: string; module?: string };
+type Extra = { kind?: string; label?: string; groups: string[]; module?: string };
 
 const mounted: Mounted[] = [];
 
@@ -34,15 +34,22 @@ function timelineSteps() {
     ],
   });
   const extra: Extra[] = [
-    { kind: 'overview', segment: '总览' },
-    { kind: 'inputs', segment: '输入' },
-    { kind: 'op', segment: 'self_attn' },
-    { kind: 'op', segment: 'self_attn', sub: 'q_norm $\\cdot$ k_norm' },
-    { kind: 'op', segment: 'self_attn', sub: 'q_norm $\\cdot$ k_norm' },
-    { kind: 'module', segment: '$\\cdots$ 第 1 到 $N-1$ 层', module: 'mlp' },
+    { kind: 'overview', groups: [] },
+    { kind: 'inputs', label: '输入', groups: [] },
+    { kind: 'op', groups: ['attn'] },
+    { kind: 'op', groups: ['attn', 'qk'] },
+    { kind: 'op', groups: ['attn', 'qk'] },
+    { kind: 'module', groups: ['layers'], module: 'mlp' },
   ];
-  steps.list.forEach((info: StepInfo, i) => Object.assign(info, extra[i] ?? { kind: 'op', segment: 'nll_loss' }));
-  Object.assign(steps, { modules: [{ id: 'mlp' }] });
+  steps.list.forEach((info: StepInfo, i) => Object.assign(info, extra[i] ?? { kind: 'op', groups: [] }));
+  Object.assign(steps, {
+    modules: [{ id: 'mlp' }],
+    groups: [
+      { id: 'attn', title: 'self_attn' },
+      { id: 'qk', title: 'q_norm $\\cdot$ k_norm' },
+      { id: 'layers', title: '$\\cdots$ 第 1 到 $N-1$ 层' },
+    ],
+  });
   return steps;
 }
 

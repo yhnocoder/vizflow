@@ -5,7 +5,9 @@ import {
   clampExplain,
   divExplain,
   erfExplain,
+  cosExplain,
   expExplain,
+  sinExplain,
   logExplain,
   mulExplain,
   negExplain,
@@ -21,6 +23,7 @@ import {
   softplusExplain,
   sqrtExplain,
   subExplain,
+  rsubExplain,
   transposeExplain,
   whereExplain,
   greaterExplain,
@@ -35,7 +38,10 @@ import {
   absExplain,
   signExplain,
   clampMinExplain,
+  ltExplain,
+  bitwiseOrExplain,
   logicalNotExplain,
+  copysignExplain,
 } from './elementwise';
 import {
   catExplain,
@@ -53,6 +59,8 @@ import {
   permuteExplain,
   repeatExplain,
   repeatInterleaveExplain,
+  repeatKvExplain,
+  contiguousExplain,
   reshapeExplain,
   scatterExplain,
   selectExplain,
@@ -60,7 +68,10 @@ import {
   topkMaskExplain,
   unsqueezeExplain,
   viewExplain,
+  sortExplain,
+  indexPutExplain,
 } from './index_ops';
+import { arangeExplain, causalMaskExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
 import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
@@ -69,10 +80,15 @@ import { logSoftmaxExplain, softmaxExplain } from './softmax';
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   add: addExplain,
   sub: subExplain,
+  rsub: rsubExplain,
+  arange: arangeExplain,
+  causal_mask: causalMaskExplain,
   mul: mulExplain,
   div: divExplain,
   neg: negExplain,
   exp: expExplain,
+  cos: cosExplain,
+  sin: sinExplain,
   log: logExplain,
   pow: powExplain,
   rsqrt: rsqrtExplain,
@@ -85,6 +101,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   relu: reluExplain,
   gelu: geluExplain,
   identity: identityExplain,
+  alias: identityExplain,
   rotate_half: rotateHalfExplain,
   clamp: clampExplain,
   transpose: transposeExplain,
@@ -132,10 +149,17 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   clamp_min: clampMinExplain,
   repeat: repeatExplain,
   cummax: cummaxExplain,
+  lt: ltExplain,
+  bitwise_or: bitwiseOrExplain,
   logical_not: logicalNotExplain,
+  copysign: copysignExplain,
+  sort: sortExplain,
   scatter: scatterExplain,
+  index_put: indexPutExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
+  repeat_kv: repeatKvExplain,
+  contiguous: contiguousExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);
