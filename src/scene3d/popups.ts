@@ -103,7 +103,7 @@ export class ScenePopups {
       const [row, col] = rowCol(node, index);
       ordered[row * cols + col] = values[offset];
     });
-    return { label: backward ? '梯度' : '当前值', values: ordered, cols, heads: node.shape.length === 3 ? plates(node).count : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
+    return { label: backward ? '梯度' : '当前值', values: ordered, cols, heads: node.shape.length >= 3 ? plates(node).count : undefined, digits: !backward && isIntegerDtype(node.dtype) ? 0 : undefined };
   }
 
   showNodeCard(node: Node, el: HTMLElement): void {

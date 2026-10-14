@@ -99,7 +99,8 @@ function batchedContractEdges(op: Node, args: number[]): FlowEdge[] {
 
 export function batchedCells(op: Node): boolean {
   const [A, B] = op.inputs;
-  return op.op === 'matmul' && A.shape.length === 3 && B.shape.length === 3 && op.shape.length === 3;
+  const rank = op.shape.length;
+  return op.op === 'matmul' && (rank === 3 || rank === 4) && A.shape.length === rank && B.shape.length === rank;
 }
 
 function contractEdges(op: Node, args: number[]): FlowEdge[] {
@@ -107,7 +108,7 @@ function contractEdges(op: Node, args: number[]): FlowEdge[] {
   const cells = batchedCells(op);
   if (op.op === 'matmul' && isBatched(A.shape, B.shape) && !cells) return batchedContractEdges(op, args);
   const batch = cells ? op.shape.slice(0, -2) : [];
-  const rows = A.shape.length === 1 ? 1 : cells ? A.shape[1] : A.shape[0];
+  const rows = A.shape.length === 1 ? 1 : cells ? A.shape[A.shape.length - 2] : A.shape[0];
   const inner = B.shape.length === 1 ? B.shape[0] : B.shape[B.shape.length - 2];
   const cols = B.shape.length === 1 ? 1 : B.shape[B.shape.length - 1];
   const edges: FlowEdge[] = [];
