@@ -607,8 +607,9 @@ class Plan implements LevelPlan {
           this.setLane(e, main.lane, traced);
           continue;
         }
-        if (n.kind === 'op' && n.op === 'cat' && inputs.every((i) => i.lane === main.lane)) {
-          this.setLane(e, main.lane, inputs.flatMap((i) => i.offsets));
+        const joined = inputs.flatMap((i) => i.offsets);
+        if (n.kind === 'op' && n.op === 'cat' && inputs.every((i) => i.lane === main.lane) && new Set(joined).size === joined.length) {
+          this.setLane(e, main.lane, joined);
           continue;
         }
         const start = n.kind === 'op' && n.op === 'narrow' ? ((n.attrs as { start: number }).start ?? 0) : n.kind === 'op' && n.op === 'select' && n.inputs[0].shape.length === 3 && (n.attrs as { dim: number }).dim === 1 ? (n.attrs as { index: number }).index * n.inputs[0].shape[2] : 0;
