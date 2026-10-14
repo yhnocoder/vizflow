@@ -2,7 +2,7 @@ import type { Node } from '../autograd';
 import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plateAxes, plates, rowCol, rowsCols, sourceIndex } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -1171,6 +1171,11 @@ class Plan implements LevelPlan {
     return Math.max(1, ...this.entries.filter((e) => e.kind === 'plate').map((e) => e.rows));
   }
 
+  private headsOf(n: Node): { count: number; width: number } {
+    const view = n.shape.length === 3 ? n : this.drawnOn.get(n)?.find((v) => v.shape.length === 3);
+    return view === undefined ? { count: 1, width: rowsCols(n)[1] } : plates(view);
+  }
+
   private block(e: Entry, hidden: boolean, aligned: ReadonlyMap<Node, Node>): Block {
     const y = e.level.y;
     const xs = e.xs ?? [0];
@@ -1217,7 +1222,7 @@ class Plan implements LevelPlan {
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
     const slabs = this.slabsOf(e, elements, footprint, y);
-    const chunks = slabs === undefined && !scalar ? chunksOf(n, elements, footprint, y) : undefined;
+    const chunks = slabs === undefined && !scalar ? chunksOf(this.headsOf(n), elements, footprint, y) : undefined;
     const slabGroup = this.slabbed.get(n);
     const slabLabels = slabGroup === undefined ? undefined : slabs!.map((slab, g) => ({ text: groupText(slabGroup, g), col: g, x: x1 + ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: slab.plate.z, anchor: 'right' as const }));
     const classLabels = (named ?? []).slice(0, e.cols).map((text, col) =>
@@ -1263,12 +1268,11 @@ function groupText(group: Node, value: number): string {
   return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;
 }
 
-function chunksOf(n: Node, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
-  const { count } = plates(n);
-  if (n.shape.length !== 3 || count < 2) return undefined;
-  const { chunk } = plateAxes(n);
+function chunksOf(heads: { count: number; width: number }, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
+  const { count, width } = heads;
+  if (count < 2) return undefined;
   return Array.from({ length: count }, (_, p) => {
-    const members = elements.filter((el) => el.index[chunk] === p);
+    const members = elements.filter((el) => Math.floor(el.col / width) === p);
     const xs = members.map((el) => el.x);
     const zs = members.map((el) => el.z);
     const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
