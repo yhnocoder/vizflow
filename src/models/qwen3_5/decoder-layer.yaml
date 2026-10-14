@@ -1,0 +1,165 @@
+module: Qwen3_5DecoderLayer
+import:
+  Qwen3_5RMSNorm: ./rmsnorm.yaml
+  Qwen3_5GatedDeltaNet: ./gated-deltanet.yaml
+  Qwen3_5Attention: ./attention.yaml
+  Qwen3MLP: ../qwen3/mlp.yaml
+  SiLU: vizflow/nn/silu
+
+args:
+  layer_type: str
+  d_model: dim
+  d_head: dim
+  d_ff: dim
+  num_heads: dim
+  num_kv_heads: dim
+  linear_num_key_heads: dim
+  linear_num_value_heads: dim
+  linear_key_head_dim: dim
+  linear_value_head_dim: dim
+  linear_conv_kernel_dim: dim
+  chunk_size: { type: dim, default: 64 }
+inputs:
+  x: [T, d_model]
+  cos: [T, rotary_dim]
+  sin: [T, rotary_dim]
+  attention_mask: { type: tensor, shape: [T, T], dtype: dtype, optional: true }
+outputs:
+  out: [T, d_model]
+
+init:
+  linear_attn:
+    use: Qwen3_5GatedDeltaNet
+    present: layer_type == 'linear_attention'
+    args:
+      d_model: d_model
+      num_k_heads: linear_num_key_heads
+      num_v_heads: linear_num_value_heads
+      head_k_dim: linear_key_head_dim
+      head_v_dim: linear_value_head_dim
+      conv_kernel_size: linear_conv_kernel_dim
+      chunk_size: chunk_size
+  self_attn:
+    use: Qwen3_5Attention
+    present: layer_type == 'full_attention'
+    args: [d_model, d_head, num_heads, num_kv_heads]
+  mlp:
+    use: Qwen3MLP
+    args: [d_model, d_ff, { act: SiLU }]
+  input_layernorm:
+    use: Qwen3_5RMSNorm
+    args: { hidden_size: d_model }
+  post_attention_layernorm:
+    use: Qwen3_5RMSNorm
+    args: { hidden_size: d_model }
+
+forward:
+  - res: x
+  - h: input_layernorm(res)
+  - att: linear_attn(h) if layer_type == 'linear_attention' else self_attn(h, mask=attention_mask, cos=cos, sin=sin)
+  - a: res + att
+  - n: post_attention_layernorm(a)
+  - down: mlp(n)
+  - out: a + down
+
+tex:
+  res: '\mathbf{h}'
+  h: '\mathbf{h}'
+  att: '\mathbf{att}'
+  a: '\mathrm{att}_\mathrm{res}'
+  n: '\mathbf{n}'
+  down: '\mathbf{down}'
+  out: '\mathbf{h}_{\mathrm{out}}'
+  mlp.a: '\mathbf{s}'
+
+formula: |-
+  \begin{aligned}
+  \step{res1}{\viz{a}}&
+  \step{res1}{=\viz{res}+}
+  \step{linear_attn.*,self_attn.*}{\mathrm{mixer}\big(}
+  \step{input_layernorm.*}{\mathrm{norm}(\viz{x})}
+  \step{linear_attn.*,self_attn.*}{\big)}\\
+  \step{res2}{\viz{out}}&
+  \step{res2}{=\viz{a}+}
+  \step{mlp.*}{\mathrm{mlp}\big(}
+  \step{post_attention_layernorm.*}{\mathrm{norm}(\viz{a})}
+  \step{mlp.*}{\big)}
+  \end{aligned}
+fold:
+  label: '$\viz{out}=\mathrm{layer}(\viz{x})$'
+  title: Qwen3_5DecoderLayer
+  text: |
+    一层是两次「先 norm、再计算、再加回」。token mixer 在 linear_attention 层是 Gated DeltaNet，在 full_attention 层是带输出门的 softmax 注意力：
+    $$\viz{a}=\viz{x}+\mathrm{mixer}(\mathrm{norm}(\viz{x})),\qquad \viz{out}=\viz{a}+\mathrm{mlp}(\mathrm{norm}(\viz{a}))$$
+    位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以整层的 Jacobian 是块下三角的，对角块里含有残差带来的单位阵。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
+    text: |
+      一次反向算出这一层全部参数的梯度和 $\pfl{\viz{x}}$。由上面的展开式，$\pfl{\viz{x}}$ 里有一项就是 $\pfl{\viz{out}}$ 本身，它沿两条残差原样传过整层。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+steps:
+  - id: input_layernorm
+    subtitle: Qwen3_5RMSNorm
+    edit:
+      float:
+        append: |
+          这是 input_layernorm，在 token mixer 之前。和 Qwen3 一样是 Pre-Norm 结构：残差路径上的 $\viz{x}$ 本身不做 norm，只有送进 token mixer 的那一份做。
+        backward:
+          append: |
+            $\viz{x}$ 除了经过 norm 拿到的梯度，还沿残差直接收到 $\pfl{\viz{a}}$，所以 $\pfl{\viz{x}}$ 是两者之和。
+    fold:
+      text: |
+        每一行只和自己有关，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
+        $$\viz{h}={{ h | matrix:2 }}$$
+      backward:
+        text: |
+          $$\pfl{\viz{input_layernorm.weight}}={{ input_layernorm.weight.grad | matrix:3 }}$$
+  - id: linear_attn
+    subtitle: Qwen3_5GatedDeltaNet
+  - id: self_attn
+    subtitle: Qwen3_5Attention
+  - id: res1
+    show: a
+    brace: true
+    subtitle: '$\viz{res}+\viz{att}$'
+    label: '$\viz{a}=\viz{res}+\viz{att}$'
+    title: 残差相加
+    text: |
+      <code>hidden_states = residual + hidden_states</code>。token mixer 的输出作为增量加到输入上。
+      $$\viz{a}=\viz{x}+\viz{att}={{ a | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x},\ \partial\viz{att}$'
+      title: '$\pfl{\viz{x}},\ \pfl{\viz{att}}$'
+      text: |
+        相加对两个输入的局部导数都是 1，梯度复制成两份：一份进入 token mixer，一份沿残差直接交给 $\viz{x}$。
+        $$\pfl{\viz{att}}=\pfl{\viz{a}}={{ a.grad | matrix:3 }}$$
+  - id: post_attention_layernorm
+    subtitle: Qwen3_5RMSNorm
+    edit:
+      float:
+        append: |
+          这是 post_attention_layernorm，在 MLP 之前，计算与 input_layernorm 相同，但参数各自独立。
+  - id: mlp
+    subtitle: Qwen3_5MLP
+    edit:
+      gate_proj:
+        append: |
+          Qwen3.5 的 <code>Qwen3_5MLP</code> 与 Qwen3 的 MLP 计算相同，这里直接使用 Qwen3 的定义。这一页 $d_{\mathrm{ff}}={{ d_ff }}$。
+  - id: res2
+    show: out
+    brace: true
+    subtitle: '$\viz{a}+\viz{down}$'
+    label: '$\viz{out}=\viz{a}+\viz{down}$'
+    title: 残差相加
+    text: |
+      <code>hidden_states = residual + hidden_states</code>，MLP 的输出作为增量加到 $\viz{a}$ 上，得到这一层的输出。
+      $$\viz{out}=\viz{a}+\viz{down}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{a},\ \partial\viz{down}$'
+      title: '$\pfl{\viz{a}},\ \pfl{\viz{down}}$'
+      text: |
+        梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\viz{a}$。
+        $$\pfl{\viz{down}}=\pfl{\viz{out}}={{ out.grad | matrix:3 }}$$

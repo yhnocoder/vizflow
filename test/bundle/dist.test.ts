@@ -115,7 +115,7 @@ describe('build output', () => {
 
   test('dsl bundles the YAML parser and the core module files, and no other entry loads them', () => {
     expect(bundledLibraries('dsl.js')).toEqual(['yaml']);
-    expect(graphCode('dsl.js')).toContain('module: RMSNorm');
+    expect(graphCode('dsl.js')).toContain('module: Qwen3RMSNorm');
     for (const entry of ['core.js', 'steps.js', 'ui.js', 'element.js']) expect(bundledLibraries(entry), entry).not.toContain('yaml');
   });
 

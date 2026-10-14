@@ -1,0 +1,57 @@
+module: causal_conv1d_fn
+import:
+  SiLU: vizflow/nn/silu
+args:
+  activation: { type: module, default: SiLU }
+inputs:
+  hidden_states: [C, T]
+  weight: [C, _]
+outputs:
+  out: [C, T]
+init:
+  act: activation
+forward:
+  - x_t: hidden_states.transpose(0, 1)
+  - conv: causal_conv1d(x_t, weight)
+  - a: act(conv)
+  - out: a.transpose(0, 1)
+tex:
+  x_t: '\mathbf{u}'
+  conv: '\mathbf{c}'
+  a: '\phi(\mathbf{c})'
+  out: '\phi(\mathbf{c})'
+formula: '\step{conv}{\viz{out}=}\step{act.*}{\phi\big(}\step{conv}{\mathrm{conv}_{\mathrm{causal}}(\viz{hidden_states},\viz{weight})}\step{act.*}{\big)}'
+fold:
+  label: '$\viz{out}=\phi(\mathrm{conv}(\viz{hidden_states}))$'
+  title: causal_conv1d_fn
+  text: |
+    每个通道各自做一次长度为 $K$ 的因果卷积，再逐元素经过激活函数。位置 $t$ 的输出只依赖位置 $t-K+1$ 到 $t$ 的输入，通道之间互不影响。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{weight},\ \partial\viz{hidden_states}$'
+    title: '$\pfl{\viz{weight}},\ \pfl{\viz{hidden_states}}$'
+    text: |
+      $$\pfl{\viz{hidden_states}}={{ hidden_states.grad | matrix:3 }}$$
+
+steps:
+  - id: conv
+    show: conv
+    label: '$\viz{conv}$'
+    title: 因果深度卷积
+    text: |
+      HF 的 <code>causal_conv1d_fn</code> 收到的是 $(B, C, T)$，先执行 <code>hidden_states.to(weight.dtype)</code>，输入和权重的 dtype 相同，这次转换不改变数值，图里不画。然后调用 <code>F.conv1d(..., weight=weight.unsqueeze(1), bias=bias, padding=padding, groups=hidden_size)</code>，其中 <code>padding = weight.shape[-1] - 1</code>，<code>groups</code> 等于通道数，所以每个通道 $c$ 只用自己的 $K$ 个系数，这种卷积叫深度卷积（depthwise convolution）。两端各补 $K-1$ 个 0，再用 <code>[:, :, :seq_len]</code> 只留前 $T$ 个输出，结果等于只在左边补 $K-1$ 个 0：
+      $$c_{t,c}=\sum_{j=0}^{K-1}W_{c,j}\,u_{t-K+1+j,\,c}\qquad(u_{s,c}=0,\ s<0)$$
+      所以位置 $t$ 只看当前和之前的 $K-1$ 个位置。图里的 <code>causal_conv1d</code> 按 $(T, C)$ 排布计算，所以前后各有一次换轴把 HF 的 $(C, T)$ 换成 $(T, C)$ 再换回来；数值和 <code>F.conv1d</code> 加切片相同。连线只在同一个通道之内。conv1d 没有 bias，<code>self.conv1d.bias</code> 是 None。
+      $$\viz{conv}={{ conv | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{weight},\ \partial\mathbf{u}$'
+      title: '$\pfl{\viz{weight}},\ \pfl{\mathbf{u}}$'
+      text: |
+        $u_{s,c}$ 的梯度来自它之后 $K$ 个位置的输出，各乘对应的系数；$W_{c,j}$ 的梯度是这个通道所有位置的贡献之和。$T<K$ 时，每个通道的前 $K-T$ 个系数只会乘到左边补的 0，碰不到真实输入，梯度是 0。
+        $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: act
+    subtitle: SiLU
+    edit:
+      sigmoid.neg:
+        append: |
+          这里是 <code>out = ACT2FN[activation](out)</code>，<code>activation</code> 是 <code>config.hidden_act</code>，即 <code>"silu"</code>。最后的 <code>out.to(hidden_states.dtype)</code> 也不改变 dtype，图里不画。

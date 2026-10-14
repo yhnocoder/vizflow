@@ -8,7 +8,7 @@ inputs:
   query: [T, num_v_heads, k_head_dim]
   key: [T, num_v_heads, k_head_dim]
   value: [T, num_v_heads, v_head_dim]
-  g: { type: tensor, shape: [T, num_v_heads], dtype: fp32 }
+  g: { type: tensor, shape: [T, num_v_heads], dtype: _ }
   beta: [T, num_v_heads]
 outputs:
   attn_out: [T, num_v_heads, v_head_dim]
@@ -33,7 +33,7 @@ forward:
   - beta_u: beta_p.unsqueeze(-1)
   - v_beta: value_p * beta_u
   - k_beta: key_p * beta_u
-  - query_c: query_s_chunks if False else query_p.reshape(num_v_heads, -1, chunk_size, k_head_dim)
+  - query_c: query_p.reshape(num_v_heads, -1, chunk_size, k_head_dim)
   - key_c: key_p.reshape(num_v_heads, -1, chunk_size, k_head_dim)
   - k_beta_c: k_beta.reshape(num_v_heads, -1, chunk_size, k_head_dim)
   - v_beta_c: v_beta.reshape(num_v_heads, -1, chunk_size, v_head_dim)
@@ -428,8 +428,7 @@ steps:
             label: '$\partial S$'
             title: 第 {{ i }} 块：新状态的梯度分给两项
             text: |
-              状态的梯度来自下一块的三处使用（预测 value、query 读出、整块衰减）。最后一块的状态 HF 不返回（<code>output_final_state=False</code>），梯度是 0。
-              $$\pfl{\viz{last_recurrent_state}}={{ last_recurrent_state.grad | matrix:3 }}$$
+              状态的梯度来自下一块的三处使用（预测 value、query 读出、整块衰减），加法把它原样交给两项。最后一块算出的状态 HF 不返回（<code>output_final_state=False</code>），它不影响损失，这一块的衰减与写入也就没有梯度。
   - id: reshape
     show: [core_padded, core_trimmed]
     label: '$\viz{core_trimmed}$'

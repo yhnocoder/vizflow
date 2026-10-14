@@ -231,11 +231,12 @@ panels:
 - 参数的 dtype 由页面 `config.dtype` 统一设定，根模块声明了 `dtype` 参数时也传给它；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
 - `Linear` 的 `bias` 默认是 `True`，与 `nn.Linear` 相同；HF 写了 `bias=False` 的地方页面也写 `bias: False`。自己的模块要可选的权重时写 `{ shape, present: 参数名 }`，参数为假时权重不创建，`forward` 里它是 `None`。
 - `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度，`_` 对上一个维度但不绑定名字。绑定的名字在模块的 shape、dtype、`init`、`forward`、步骤的 `show` 以及讲解文本的 `{{ }}` 和 `\viz{}` 里都没有再被引用时编译报错，通常是参数名拼错了；讲解正文里直接写出的名字不算引用。不需要名字的维度写 `_`。
-- `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`permute`、`unsqueeze`、`contiguous`）或类型转换的结果；其余的写进 `unshown`，否则编译报错。
+- `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`permute`、`unsqueeze`、`squeeze`、`contiguous`）或类型转换的结果；其余的写进 `unshown`，否则编译报错。
+- 层的类型不同时（如 Qwen3.5 的 `layer_types`），层列表写 `index: layer_idx`，`args` 里用 `layer_types[layer_idx]` 给每层传类型，层模块用 `present: layer_type == 'linear_attention'` 只建对应的子模块。每层收到的参数不同时，`forward` 写循环 `{ for: i in range(num_layers), do: [ - h: "layers[i](h, attention_mask=causal_mask if layer_types[i] == 'full_attention' else None)" ] }`，层模块把这个输入声明成 `optional: true`。循环里可以用 `x[:, i]: 表达式` 写入张量的一部分，对应 HF 的原地赋值。
 - tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
 - 3D 布局由库按模块结构自动排布，页面不写布局。公式卡片固定在画布右上角、工具按钮下方；翻页用画布下方的步骤条。
 
-包内模块分两处。`vizflow/nn/` 放和模型无关的模块，目前按这套写法实现的有 `Linear`、`Embedding`（内置，不需要导入）、`silu`、`sigmoid`、`log-softmax`、`nll-loss`。`vizflow/models/<模型>/` 放一个模型的完整定义，与 HF 的 `models/<模型>/modeling_<模型>.py` 对应，每个类或函数一个文件，例如 `vizflow/models/qwen3/rmsnorm` 是 `Qwen3RMSNorm`。每个模型有自己的一份，实现与另一个模型相同时可以直接导入那个模型的文件。包内文件之间用 `./x.yaml`、`../qwen3/x.yaml` 相对引用。包内模块讲解里用到的 LaTeX 宏在 `src/models/preamble.sty`，每个页面都会载入，页面的 `preamble` 在它之上追加。`vizflow/nn/` 下其余的文件和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
+包内模块分两处。`vizflow/nn/` 放和模型无关的模块，目前按这套写法实现的有 `Linear`、`Embedding`（内置，不需要导入）、`silu`、`sigmoid`、`log-softmax`、`nll-loss`、`conv1d`。`vizflow/models/<模型>/` 放一个模型的完整定义，与 HF 的 `models/<模型>/modeling_<模型>.py` 对应，每个类或函数一个文件，例如 `vizflow/models/qwen3/rmsnorm` 是 `Qwen3RMSNorm`，目前有 `qwen3` 和 `qwen3_5`。每个模型有自己的一份，实现与另一个模型相同时可以直接导入那个模型的文件。包内文件之间用 `./x.yaml`、`../qwen3/x.yaml` 相对引用。包内模块讲解里用到的 LaTeX 宏在 `src/models/preamble.sty`，每个页面都会载入，页面的 `preamble` 在它之上追加。`vizflow/nn/` 下其余的文件和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
 
 只需要编译结果、不需要元素时，用 `dsl` 入口：
 
@@ -371,6 +372,7 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `pad` | `g.pad(a, [0, 0, 0, p])`、`g.pad(a, 0, 0, 0, p)`、`g.pad(a, [0, 1], { value: -Infinity })` | 与 `F.pad` 的常数补位相同，补的值是 `value`（默认 0）：每两个数是一维的（前面补几个, 后面补几个），从最后一维往前数；数可以是维度名。DSL 里写 `pad(x, 0, 0, 0, P)` |
 | `triu` | `g.triu(a, diagonal)` | 与 `torch.triu` 相同，最后两维里列号减行号小于 `diagonal`（默认 0）的元素变成 0 |
 | `tril` | `g.tril(a, -1)` | 与 `torch.tril` 相同 |
+| `squeeze` | `g.squeeze(a, 1)` | 与 `torch.squeeze(a, dim)` 相同，去掉大小为 1 的一维 |
 | `expand` | `g.expand(a, -1, G, n)` | 与 `Tensor.expand` 相同：长度为 1 的维复制成给出的长度，`-1` 保持原长度，前面可以多出新的维；反向把复制出的梯度加回来源元素；数可以是维度名 |
 | `reshape` | `g.reshape(a, -1, E)` | 与 `Tensor.reshape` 相同，数值和 `view` 一样按行优先排列；HF 写 reshape 的地方用它 |
 | `logical_not` | `g.logical_not(m)` | 与 `torch.logical_not` 相同，0 变成 true、非 0 变成 false，输出 `bool`，没有梯度。HF 对 bool 张量写的 `~m` 用它 |

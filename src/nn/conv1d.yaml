@@ -1,0 +1,15 @@
+module: Conv1d
+args:
+  in_channels: dim
+  out_channels: dim
+  kernel_size: dim
+  groups: { type: dim, default: 1 }
+  padding: { type: dim, default: 0 }
+  bias: { type: bool, default: True }
+init:
+  weights:
+    weight: { shape: [out_channels, in_channels // groups, kernel_size], init: uniform }
+    bias: { shape: [out_channels], init: uniform, present: bias }
+tex:
+  weight: W
+  bias: '\mathbf{b}'

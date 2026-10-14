@@ -398,6 +398,7 @@ export abstract class Modules extends Expressions {
     const dtypeWhere = child(env.where, field, 'dtype');
     const dtype = field.dtype;
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
+    if (dtype === '_') return;
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
       this.checkUsed(call, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
@@ -456,7 +457,7 @@ export abstract class Modules extends Expressions {
       if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
       else fields(entry, at, ['args', 'count', 'present']);
     });
-    walk(decl.forward, section('forward'), expression);
+    walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
     walk(decl.unshown, section('unshown'), expression);
     walk(decl.layout, section('layout'), expression);
     walk(decl.tex, section('tex'), latex);

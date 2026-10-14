@@ -1,0 +1,130 @@
+module: Qwen3_5TextModel
+import:
+  Qwen3_5RMSNorm: ./rmsnorm.yaml
+  Qwen3_5TextRotaryEmbedding: ./rotary-embedding.yaml
+  Qwen3_5DecoderLayer: ./decoder-layer.yaml
+args:
+  V: dim
+  d_model: dim
+  d_head: dim
+  d_ff: dim
+  num_heads: dim
+  num_kv_heads: dim
+  num_layers: int
+  layer_types: list
+  linear_num_key_heads: dim
+  linear_num_value_heads: dim
+  linear_key_head_dim: dim
+  linear_value_head_dim: dim
+  linear_conv_kernel_dim: dim
+  chunk_size: { type: dim, default: 64 }
+  partial_rotary_factor: float
+  rope_theta: float
+  dtype: dtype
+inputs:
+  ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  h_norm: [T, d_model]
+
+init:
+  embed_tokens:
+    use: Embedding
+    args: { num_embeddings: V, embedding_dim: d_model }
+  layers:
+    use: list[Qwen3_5DecoderLayer]
+    count: num_layers
+    index: layer_idx
+    args:
+      - layer_type: 'layer_types[layer_idx]'
+      - d_model: d_model
+      - d_head: d_head
+      - d_ff: d_ff
+      - num_heads: num_heads
+      - num_kv_heads: num_kv_heads
+      - linear_num_key_heads: linear_num_key_heads
+      - linear_num_value_heads: linear_num_value_heads
+      - linear_key_head_dim: linear_key_head_dim
+      - linear_value_head_dim: linear_value_head_dim
+      - linear_conv_kernel_dim: linear_conv_kernel_dim
+      - chunk_size: chunk_size
+  norm:
+    use: Qwen3_5RMSNorm
+    args: { hidden_size: d_model }
+  rotary_emb:
+    use: Qwen3_5TextRotaryEmbedding
+    args: [d_head, partial_rotary_factor, rope_theta]
+
+forward:
+  - e: embed_tokens(ids)
+  - position_ids: arange(T)
+  - causal_mask: causal_mask(T, dtype=e.dtype)
+  - h: e
+  - position_embeddings: rotary_emb(h, position_ids)
+  - cos: position_embeddings.cos
+  - sin: position_embeddings.sin
+  - for: i in range(num_layers)
+    do:
+      - h: "layers[i](h, cos=cos, sin=sin, attention_mask=causal_mask if layer_types[i] == 'full_attention' else None)"
+  - h_norm: norm(h)
+
+tex:
+  e: '\mathbf{e}'
+  h: '\mathbf{h}'
+  h_norm: '\mathbf{h}_{\mathrm{norm}}'
+  position_ids: '\mathbf{t}'
+  cos: '\cos'
+  sin: '\sin'
+  causal_mask: '\mathbf{M}'
+  embed_tokens.weight: 'E'
+
+steps:
+  - id: embed
+    label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
+    title: embedding
+    show: [ids, embed_tokens.weight, e]
+    text: |
+      <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
+      $${\viz{e}}_t=\viz{embed_tokens.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
+      把取行写成矩阵乘法是为了反向推导：令 $O_{t,v}=[x_t=v]$ 是 one-hot 矩阵，则 $\viz{e}=O\,\viz{embed_tokens.weight}$。
+    backward:
+      label: '$\pfl{\viz{embed_tokens.weight}}$'
+      text: |
+        由 $\viz{e}=O\,\viz{embed_tokens.weight}$ 得 $\pfl{\viz{embed_tokens.weight}}=O^{\top}\pfl{\viz{e}}$，也就是梯度加回被取到的行（scatter-add）：没出现的 token 那一行是 0，出现几次就累加几次。
+        $$\pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
+  - id: prepare
+    title: position_and_mask
+    steps:
+      - id: position_ids
+        show: position_ids
+        label: '$\viz{position_ids}$'
+        title: 位置编号
+        text: |
+          调用时没有传 <code>position_ids</code>，<code>Qwen3_5TextModel.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，训练时没有 KV cache，<code>past_seen_tokens</code> 是 0。Qwen3.5 是多模态模型，位置编号有 4 组：<code>position_ids.view(1, 1, -1).expand(4, inputs_embeds.shape[0], -1)</code>，第 0 组 <code>text_position_ids</code> 用来生成 mask，后 3 组是 mRoPE 的时间、高、宽三个方向。纯文本输入时 4 组完全相同，所以这里只画一组：
+          $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
+          位置编号是整数常量，没有梯度。
+      - id: mask
+        show: [causal_mask, position_ids]
+        label: '$\viz{causal_mask}$'
+        title: causal mask
+        text: |
+          训练时 $T$ 个位置同时预测，位置 $t$ 的目标是 $x_{t+1}$，所以位置 $t$ 只能看 $s\le t$，否则可以直接读出答案。HF 在这里生成两种 mask：<code>causal_mask_mapping = {"full_attention": create_causal_mask(**mask_kwargs), "linear_attention": create_recurrent_attention_mask(**mask_kwargs)}</code>。full_attention 层用的是下面的 $\viz{causal_mask}$，$s>t$ 的格子是 dtype 能表示的最小值，取 exp 以后是 0：
+          $$\viz{causal_mask}={{ causal_mask | matrix:2 }}$$
+          linear_attention 层的递推本身只往后传，不需要 causal mask；<code>create_recurrent_attention_mask</code> 只用来标出 padding，这一页没有 padding，它返回 None，图里不画。mask 是常量，没有梯度。
+      - id: rotary_emb
+        title: rotary_emb
+        subtitle: Qwen3_5TextRotaryEmbedding
+  - id: layers
+    loop: layer = layers[i]
+    defaults:
+      show: layer
+      title: Qwen3_5DecoderLayer
+      subtitle: '第 {{ i }} 层（layers[{{ i }}]），{{ layer_types[i] }}'
+  - id: norm
+    title: model.norm
+    subtitle: Qwen3_5RMSNorm
+    text: |-
+      <code>hidden_states = self.norm(hidden_states)</code>，在全部 decoder 层之后、lm_head 之前。Pre-Norm 结构里残差路径从不归一化，$\viz{h}$ 是 embedding 加上 {{ num_layers }} 层全部增量的和，尺度没有约束，所以要再做一次 RMSNorm，归一化后才交给 lm_head。
+    fold:
+      backward:
+        text: |
+          $$\pfl{\viz{h}}={{ h.grad | matrix:3 }}$$
