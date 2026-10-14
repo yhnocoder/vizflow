@@ -421,13 +421,14 @@ class Plan implements LevelPlan {
     const result =
       !this.boards.has(n) && !isLeafLike(n) && n.inputs.length > 0 &&
       (n.shape.length === 2 || (n.shape.length === 3 && plates(n).width === 1)) &&
+      n.shape[n.shape.length - 1] === 1 &&
       this.consumers(n).some((u) => {
         const main = u.inputs[0];
         if (this.source(main) === n) return u.shape.join() === main.shape.join() && this.isDisc(u);
         const used = u.inputs.slice(1).find((i) => this.source(i) === n);
         if (used === undefined) return false;
         const broadcasts = explainOf(u.op as string)?.pattern === 'elementwise' && used.shape.length <= u.shape.length && used.shape.every((size, i) => size === 1 || size === u.shape[u.shape.length - used.shape.length + i]);
-        return main.shape.join() === u.shape.join() && broadcasts && this.shapeOf(u)[1] > cols;
+        return main.shape.join() === u.shape.join() && broadcasts && used.shape[used.shape.length - 1] === 1 && u.shape[u.shape.length - 1] > 1 && this.shapeOf(u)[1] > cols;
       });
     this.discMemo.set(n, result);
     return result;
