@@ -583,20 +583,21 @@ export abstract class Modules extends Expressions {
       const local = { ...env, locals: new Map([...env.locals, [' base', base]]) };
       return this.evaluate({ k: 'index', obj: { k: 'name', name: ' base', pos }, items, pos }, local, mode, false);
     };
-    const into = (base: Value, rest: { item: IndexItem; dim: number }[], top: boolean): Value => {
+    const into = (base: () => Value, rest: { item: IndexItem; dim: number }[], top: boolean): Value => {
       if (rest.length === 0) return this.evaluate(this.parse(text, env), env, mode, false);
       const [{ item, dim }, ...others] = rest;
+      const whole = base();
       if (item.k === 'at') {
         if (item.value.k === 'name' && item.value.name === 'None') this.fail(env, `'${name}[${target}]' cannot write through None`);
         const shifted = others.map((o) => ({ ...o, dim: dim >= 0 && o.dim > dim ? o.dim - 1 : o.dim }));
-        const src = into(part(base, item, dim), shifted, false);
-        return this.apply('select_scatter', [base, src, num(dim), scalar(item.value)], new Map(), env, mode, top, pos);
+        const src = into(() => part(whole, item, dim), shifted, false);
+        return this.apply('select_scatter', [whole, src, num(dim), scalar(item.value)], new Map(), env, mode, top, pos);
       }
       if (item.k !== 'slice') return this.fail(env, `'${name}[${target}]' has an entry that cannot be written`);
-      const src = into(part(base, item, dim), others, false);
-      return this.apply('slice_scatter', [base, src, num(dim), scalar(item.start), scalar(item.stop)], new Map(), env, mode, top, pos);
+      const src = into(() => part(whole, item, dim), others, false);
+      return this.apply('slice_scatter', [whole, src, num(dim), scalar(item.start), scalar(item.stop)], new Map(), env, mode, top, pos);
     };
-    return into(this.evaluate({ k: 'name', name, pos }, env, mode, false), picks, true);
+    return into(() => this.evaluate({ k: 'name', name, pos }, env, mode, false), picks, true);
   }
 
   private scanAliases(call: Call, items: { name: string; text: unknown; where: Where }[]): void {
