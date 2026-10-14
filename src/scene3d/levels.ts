@@ -619,12 +619,31 @@ class Plan implements LevelPlan {
         this.setLane(e, main.lane, offsets);
       }
     }
-    for (const lane of this.lanes) {
-      const group = this.groupSize(lane);
-      const width = Math.max(0, ...lane.members.flatMap((m) => m.offsets)) + 1;
-      if (group > 0) for (let b = group; b < width; b += group) lane.breaks.add(b);
+    const seen = new Map<Entry, Set<number>>();
+    const levelCuts = new Map<string, Set<number>>();
+    const keyOf = (e: Entry) => `${this.levels.indexOf(e.level)}:${this.lanes.indexOf(e.lane!)}`;
+    for (const e of this.entries) {
+      if (e.lane === undefined) continue;
+      const cuts = levelCuts.get(keyOf(e)) ?? new Set<number>();
+      for (const c of this.laneCuts(e, seen)) cuts.add(c);
+      levelCuts.set(keyOf(e), cuts);
     }
-    for (const e of this.entries) if (e.xs === undefined && e.lane !== undefined) e.xs = this.slabbed.has(e.node) ? slabXs(e) : e.offsets.map((o) => position(e.lane!, o));
+    for (const e of this.entries) {
+      if (e.xs !== undefined || e.lane === undefined) continue;
+      if (this.slabbed.has(e.node)) {
+        e.xs = slabXs(e);
+        continue;
+      }
+      const cuts = [...(levelCuts.get(keyOf(e)) ?? [])];
+      const aligned = e.node.inputs.map((i) => this.entryOf.get(i) ?? this.entryOf.get(this.source(i))).filter((f) => f !== undefined && f !== e && f.lane === e.lane && f.xs !== undefined && !this.slabbed.has(f.node));
+      e.xs = e.offsets.map((o) => {
+        const f = aligned.find((a) => a!.offsets.includes(o));
+        if (f === undefined) return position(e.lane!, o) + cuts.filter((c) => c <= o).length * COLUMN_BREAK;
+        const inherited = this.laneCuts(f, seen);
+        const extra = [...this.laneCuts(e, seen)].filter((c) => c > Math.min(...e.offsets) && c <= o && !inherited.has(c)).length;
+        return f.xs![f.offsets.indexOf(o)] + extra * COLUMN_BREAK;
+      });
+    }
     for (const [e, main] of beside) e.xs = this.sideXs(e, main);
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
   }
@@ -739,7 +758,7 @@ class Plan implements LevelPlan {
       const tile = level.entries.find((e) => e.node === b.b && e.kind === 'tile')!;
       this.setLane(out, lane, offsets);
       this.setLane(tile, lane, offsets);
-      done.add(out);
+        done.add(out);
       done.add(tile);
       if (same) offset += n;
     });
@@ -770,18 +789,67 @@ class Plan implements LevelPlan {
   private groupSize(lane: Lane): number {
     let size = 0;
     for (const m of lane.members) {
-      for (const node of [m.node, ...(this.drawnOn.get(m.node) ?? [])]) {
-        const { count, width } = plates(node);
-        if (node.shape.length === 3 && count > 1 && width > 1 && (size === 0 || width < size)) size = width;
-        for (const u of this.computed) {
-          if (u.kind !== 'op' || !u.inputs.includes(node)) continue;
-          const attrs = u.attrs as { size?: number; length?: number; dim?: number };
-          const s = typeof attrs.size === 'number' ? attrs.size : u.op === 'narrow' && attrs.dim === node.shape.length - 1 ? attrs.length : undefined;
-          if (s !== undefined && s > 0 && s < m.cols && (size === 0 || s < size)) size = s;
-        }
+      const own = this.entryGroup(m);
+      if (own > 0 && (size === 0 || own < size)) size = own;
+    }
+    return size;
+  }
+
+  private entryGroup(m: Entry): number {
+    let size = 0;
+    for (const node of [m.node, ...(this.drawnOn.get(m.node) ?? [])]) {
+      const { count, width } = plates(node);
+      if (node.shape.length === 3 && count > 1 && width > 1 && (size === 0 || width < size)) size = width;
+      for (const u of this.computed) {
+        if (u.kind !== 'op' || !u.inputs.includes(node)) continue;
+        const attrs = u.attrs as { size?: number; length?: number; dim?: number };
+        const s = typeof attrs.size === 'number' ? attrs.size : u.op === 'narrow' && attrs.dim === node.shape.length - 1 ? attrs.length : undefined;
+        if (s !== undefined && s > 0 && s < m.cols && (size === 0 || s < size)) size = s;
       }
     }
     return size;
+  }
+
+  private laneCuts(e: Entry, seen: Map<Entry, Set<number>>): Set<number> {
+    const known = seen.get(e);
+    if (known !== undefined) return known;
+    const cuts = new Set(this.columnCuts(e).filter((k) => e.offsets[k] > e.offsets[k - 1]).map((k) => e.offsets[k]));
+    const start = Math.min(...e.offsets);
+    if (e.level.entries.some((o) => o !== e && o.lane === e.lane && o.offsets.includes(start - 1))) cuts.add(start);
+    seen.set(e, cuts);
+    const n = e.node;
+    const board = this.boards.get(n);
+    const from = board !== undefined ? [this.drawnA(board)] : n.inputs.map((i) => this.entryOf.get(this.source(i)));
+    const hi = Math.max(...e.offsets);
+    for (const f of from) {
+      if (f === undefined || f === e || f.lane !== e.lane) continue;
+      for (const c of this.laneCuts(f, seen)) {
+        if (f.cols !== e.cols || f.offsets.join() === e.offsets.join()) {
+          if (c <= hi) cuts.add(c);
+          continue;
+        }
+        const k = f.offsets.indexOf(c);
+        if (k > 0) cuts.add(e.offsets[k]);
+      }
+    }
+    return cuts;
+  }
+
+  private columnCuts(e: Entry): number[] {
+    const cuts = new Set<number>();
+    const group = this.entryGroup(e);
+    if (group > 0) for (let k = group; k < e.cols; k += group) cuts.add(k);
+    const n = e.node;
+    if (n.kind === 'op' && n.op === 'cat' && n.shape.length > 0) {
+      const attrs = n.attrs as { dim: number; pieces: number | null };
+      const last = n.shape.length - 1;
+      if ((attrs.dim + n.shape.length) % n.shape.length === last) {
+        const widths = attrs.pieces === null ? n.inputs.map((i) => i.shape[last]) : Array.from({ length: attrs.pieces }, () => n.inputs[0].shape[last]);
+        let at = 0;
+        for (const w of widths.slice(0, -1)) cuts.add((at += w));
+      }
+    }
+    return [...cuts].filter((k) => k > 0 && k < e.cols);
   }
 
   private assignTitles(): void {
