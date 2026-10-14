@@ -21,6 +21,10 @@ inputs:
   sin: [T, qk_rope_head_dim]
 outputs:
   att: [T, d_model]
+cache:
+  nodes: [kv_latent, k_emb]
+  note: 每个位置只缓存压缩后的 latent 和转过的共享 RoPE key，不存每个 head 的 k、v，这是 MLA 的设计目的。HF transformers 5.19 的 <code>past_key_values.update(kv_nope, k_rot)</code> 存的就是这两个张量，但每一步仍用 kv_b_proj 把缓存的全部行展开成每个 head 的 k、v；vLLM、SGLang 把 kv_b_proj 的权重合并进 query 和输出投影，直接在 latent 上算注意力，省掉这次展开。
+
 init:
   constants:
     scaling: "(qk_nope_head_dim + qk_rope_head_dim) ** -0.5 * ((0.1 * mscale_all_dim * math.log(factor) + 1.0) ** 2 if rope_type != 'default' and mscale_all_dim != 0 and factor > 1 else 1.0)"

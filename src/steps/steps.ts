@@ -614,6 +614,15 @@ class StepsImpl implements Steps {
       return path;
     };
     const cacheGroups = (decls: CacheDecl[]) => commonPrefix(kept.filter((group) => nodesOf(group).some((n) => decls.some((c) => c.members.includes(n)))).map(pathOf));
+    const cachedRoots = (nodes: Node[]) => {
+      const out = new Set<Node>();
+      const walk = (n: Node) => {
+        if (cacheSet.has(n)) out.add(n);
+        else if (derived.has(n)) n.inputs.forEach(walk);
+      };
+      nodes.forEach(walk);
+      return [...out];
+    };
     const within = (phase: string, parts: { info: StepInfo }[]) => [phase, ...commonPrefix(parts.map((part) => part.info.groups))];
     const shownBy = (shown: number) => new Set([...revealed].filter((n) => (cache.first(n) ?? 0) < shown));
     const push = (info: Omit<StepInfo, 'index' | 'dir' | 'kind'>, active: Iterable<Node>, rows: RowSpec, notes?: StepNote[]) => {
@@ -748,8 +757,8 @@ class StepsImpl implements Steps {
 
     const runs: { cache: boolean; groups: Group[] }[] = [];
     for (const group of kept) {
-      const isCache = inCache(group);
       const last = runs[runs.length - 1];
+      const isCache = nodesOf(group).length === 0 && last !== undefined ? last.cache : inCache(group);
       if (last !== undefined && last.cache === isCache) last.groups.push(group);
       else runs.push({ cache: isCache, groups: [group] });
     }
@@ -897,7 +906,7 @@ class StepsImpl implements Steps {
         const readParts = parts.filter((part) => part.prod.every((n) => derived.has(n)) && part.prod.some((n) => reads.has(n)));
         const pushReads = () => {
           const weights = readParts.some((part) => part.prod.some((n) => n.op === 'matmul' && n.inputs.some((i) => horizons(i).every((h) => h === undefined))));
-          const sources = readParts.flatMap((part) => part.active).filter((n) => cacheSet.has(n));
+          const sources = cachedRoots(readParts.flatMap((part) => part.active));
           push(
             {
               id: `d:${row}:${k}:read`,
