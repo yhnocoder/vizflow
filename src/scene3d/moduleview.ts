@@ -102,7 +102,9 @@ export class ModuleBraces {
     const modules = this.c.options.modules ?? [];
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
-      this.labels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
+      const label = this.labels[modules.indexOf(brace.module)];
+      label.pos = braceTip(brace, offset);
+      label.lane = brace.side;
       const points = bracePoints(brace, offset);
       const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];

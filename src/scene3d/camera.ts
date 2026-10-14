@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
+import { LABEL_SAFE_MARGIN } from './labels';
 import type { Renderable } from './renderable';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
@@ -16,7 +17,6 @@ export const FOLLOW_PIXELS_PER_UNIT = 44;
 export const FOLLOW_MIN_HALF_WIDTH = 17.6;
 export const FOLLOW_RATE = 9;
 export const FOLLOW_TOP_ROOM = 1.5;
-export const FOLLOW_OVERVIEW_MARGIN = 6;
 export const FOLLOW_STEP_MARGIN = 10;
 export const FOLLOW_STEP_LIFT = 0.9;
 export const FOLLOW_EDGE_FILL = 0.82;
@@ -182,22 +182,37 @@ export class CameraRig {
   private followGoal(): FollowGoal {
     const c = this.c;
     const hh = this.halfHeight();
-    const { lo, top } = this.levelRange();
     const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
     const points = allPoints(c);
-    if (keys.length === 0) {
-      const zoom = Math.min(1, (2 * hh) / (top - lo + FOLLOW_OVERVIEW_MARGIN));
-      return { y: (lo + top - FOLLOW_TOP_ROOM) / 2, side: this.followSide(zoom, keys, points), zoom };
-    }
+    if (keys.length === 0) return this.overviewGoal(points, keys);
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
     const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
     const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap, points));
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom };
+  }
+
+  private overviewGoal(points: Vec3[], keys: Renderable[]): FollowGoal {
+    const c = this.c;
+    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+    const ys = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
+    const lo = Math.min(...ys);
+    const hi = Math.max(...ys);
+    const labelPad = Math.max(0, ...c.labels.labels.filter((l) => l.kind === 'mod' && l.visible && l.pos !== undefined).map((l) => l.frameSize()[1] / 2));
+    const marginTop = Math.max(chromeEdge(c, '.vf-stage-tools', 'bottom'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
+    const marginBottom = Math.max(chromeEdge(c, '.vf-ovnav', 'top'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
+    const perUnit = c.height / (2 * this.halfHeight());
+    const room = Math.max(1, c.height - marginTop - marginBottom);
+    const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit));
+    const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
+    const target = this.controls.target;
+    const now = target.x * up.x + target.y * up.y + target.z * up.z;
+    const y = target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y);
+    return { y, side: this.followSide(zoom, keys, points), zoom };
   }
 
   placeCamera(): void {
@@ -243,4 +258,10 @@ export class CameraRig {
     clearTimeout(this.wheelTimer);
     this.wheelTimer = window.setTimeout(() => this.c.refresh(), WHEEL_SETTLE_MS);
   }
+}
+
+function chromeEdge(c: SceneController, selector: string, edge: 'top' | 'bottom'): number {
+  const el = c.root.querySelector<HTMLElement>(selector);
+  if (el === null || el.offsetHeight === 0) return 0;
+  return edge === 'bottom' ? el.offsetTop + el.offsetHeight : c.height - el.offsetTop;
 }

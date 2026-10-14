@@ -13,6 +13,7 @@ import { FoldBoxes } from './boxes';
 import { type EditHost, mountEditor } from './edit';
 import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
+import type { Box } from './avoid';
 import { LabelLayer } from './labels';
 import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
@@ -272,6 +273,10 @@ export class SceneController implements EditHost {
     this.requestFrame();
   }
 
+  private overlays(): Box[] {
+    return [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-ovnav, .vf-formula, .vf-key, .vf-hint')].flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
+  }
+
   private updateGeometry(): void {
     for (const renderable of this.renderables) {
       if (renderable.bars !== undefined) updateBars(this, renderable, renderable.bars);
@@ -311,7 +316,7 @@ export class SceneController implements EditHost {
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
-      this.labels.project(this.camera, this.width, this.height, !this.follow);
+      this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
       this.notes.place();
       this.labelsDirty = false;
       this.screenVersion++;

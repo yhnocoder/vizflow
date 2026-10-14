@@ -204,6 +204,7 @@ export interface LevelSpec {
 }
 
 export const PLACE_GAP = 1.6;
+export const PLACE_TITLE_ROOM = 1.2;
 
 export function levelPlan(spec: StepsSpec, layout: LevelSpec): LevelPlan {
   return new Plan(spec, layout);
@@ -247,6 +248,7 @@ class Plan implements LevelPlan {
     this.buildLevels();
     this.placeSides();
     this.assignColumns();
+    this.assignTitles();
     this.placeApart();
     this.assignTitles();
     this.buildModules();
@@ -636,6 +638,8 @@ class Plan implements LevelPlan {
       return xs.length === 0 ? undefined : [Math.min(...xs), Math.max(...xs)];
     };
     const shift = (entries: Entry[], dx: number) => entries.forEach((e) => (e.xs = e.xs?.map((x) => x + dx)));
+    const facing = (leftOnes: Entry[], rightOnes: Entry[]) =>
+      PLACE_GAP + (leftOnes.some((e) => e.title === 'right' || e.kind === 'vector') ? PLACE_TITLE_ROOM : 0) + (rightOnes.some((e) => e.title === 'left' || e.kind === 'tile') ? PLACE_TITLE_ROOM : 0);
     for (const { node, side, of } of this.layout.sides) {
       const e = this.entryOf.get(node);
       const target = this.entryOf.get(of);
@@ -644,15 +648,15 @@ class Plan implements LevelPlan {
       const [tlo, thi] = span([target]) ?? [0, 0];
       if (side === 'left') {
         const [, hi] = span([e]) ?? [0, 0];
-        shift([e], tlo - PLACE_GAP - hi);
+        shift([e], tlo - facing([e], [target]) - hi);
       } else if (side === 'right') {
         const [lo] = span([e]) ?? [0, 0];
-        shift([e], thi + PLACE_GAP - lo);
+        shift([e], thi + facing([target], [e]) - lo);
       }
       for (let blocking = this.overlapping(e, others); blocking.length > 0; blocking = this.overlapping(e, others)) {
         const [lo, hi] = span([e]) ?? [0, 0];
         const [blo, bhi] = span(blocking) ?? [0, 0];
-        shift([e], side === 'left' ? blo - PLACE_GAP - hi : bhi + PLACE_GAP - lo);
+        shift([e], side === 'left' ? blo - facing([e], blocking) - hi : bhi + facing(blocking, [e]) - lo);
       }
     }
     this.layout.merges.forEach((_, i) => {
@@ -662,7 +666,7 @@ class Plan implements LevelPlan {
       for (const level of new Set(rightEntries.map((e) => e.level))) {
         const l = span(leftEntries.filter((e) => e.level === level));
         const r = span(rightEntries.filter((e) => e.level === level));
-        if (l !== undefined && r !== undefined) need = Math.max(need, l[1] + PLACE_GAP - r[0]);
+        if (l !== undefined && r !== undefined) need = Math.max(need, l[1] + facing(leftEntries.filter((e) => e.level === level), rightEntries.filter((e) => e.level === level)) - r[0]);
       }
       if (need > 0) shift(rightEntries, need);
     });
@@ -779,6 +783,7 @@ class Plan implements LevelPlan {
   }
 
   private assignTitles(): void {
+    for (const e of this.entries) e.title = 'none';
     for (const level of this.levels) {
       const lanes = new Map<Lane | undefined, Entry[]>();
       for (const e of level.entries) {
@@ -868,6 +873,7 @@ class Plan implements LevelPlan {
       return {
         visible: shown.length > 0,
         board: shown.some((e) => e.kind === 'tile' && e.table === undefined),
+        tiled: shown.some((e) => e.kind === 'tile'),
         tileRows: Math.max(0, ...shown.filter((e) => e.kind === 'tile' && e.table === undefined).map((e) => e.rows)),
         linear: shown.some((e) => e.kind === 'tile' && isLeafLike(e.node) && e.table === undefined),
         scalar: own.length > 0 && own.every((e) => e.kind === 'disc' || e.kind === 'box'),
@@ -880,9 +886,9 @@ class Plan implements LevelPlan {
     type Flags = ReturnType<typeof flags>;
     const opens = (f: Flags, prev: Flags) => f.module !== null && f.module !== prev.module && this.chain(f.module).some((m) => m.id === prev.module);
     const gap = (f: Flags, prev: Flags, before: Flags | undefined): number => {
-      if (f.scalar) return prev.board ? GAP.scalarAfterBoard : f.loss ? GAP.loss : GAP.scalar;
+      if (f.scalar) return prev.tiled ? GAP.scalarAfterBoard : f.loss ? GAP.loss : GAP.scalar;
       if (f.board) return !f.linear ? GAP.board : prev.board ? GAP.linearBoard : GAP.ownBoard;
-      if (prev.board) return opens(f, prev) ? GAP.moduleAfterBoard : GAP.afterBoard;
+      if (prev.tiled) return opens(f, prev) ? GAP.moduleAfterBoard : GAP.afterBoard;
       if (prev.scalar) return f.vector ? GAP.vectorAfterScalar : before?.board ? GAP.afterBoardScalar : GAP.afterScalar;
       if (prev.vector) return GAP.afterVector;
       return GAP.plate;
@@ -1102,13 +1108,14 @@ class Plan implements LevelPlan {
     const z1 = Math.max(...ez);
     const scalar = e.kind === 'disc' || e.kind === 'box';
     const front = Math.max(...zs);
+    const label = e.table === undefined ? undefined : e.table.inputs.find((i) => i.kind === 'label');
+    const rowStep = label?.tokens !== undefined && zs.length > 1 ? Math.abs(zs[1] - zs[0]) : 0;
     let title: Anchor;
-    if (e.kind === 'tile') title = { x: x0 + TITLE.board[0], y, z: Math.min(...zs) + TITLE.board[1], anchor: 'left' };
+    if (e.kind === 'tile') title = { x: x0 + TITLE.board[0], y, z: Math.min(...zs) + TITLE.board[1] - rowStep, anchor: 'left' };
     else if (e.kind === 'vector') title = { x: x1 + TITLE.vector[0], y: y + TITLE.vector[1], z: zVector, anchor: 'right' };
     else if (e.title === 'below' || (e.title === 'left' && this.hasGroupLabels(e))) title = { x: (x0 + x1) / 2, y: y + TITLE.below[0], z: front + TITLE.below[1], anchor: 'below' };
     else if (e.title === 'right') title = { x: x1 + TITLE.right[0], y: y + TITLE.right[1], z: front, anchor: 'right' };
     else title = { x: x0 + TITLE.left[0], y: y + TITLE.left[1], z: front, anchor: 'left' };
-    const label = e.table === undefined ? undefined : e.table.inputs.find((i) => i.kind === 'label');
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
     const slabs = this.slabsOf(e, elements, footprint, y);
