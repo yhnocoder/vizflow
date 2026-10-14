@@ -6,8 +6,8 @@ outputs:
   loss: { type: tensor, shape: [], dtype: dtype }
   lt: { type: tensor, shape: [N], dtype: dtype }
 forward:
-  - pick: logp.gather(-1, y.view(-1, 1)).view(-1)
-  - lt: -pick
+  - pick: logp.gather(-1, y.view(-1, 1))
+  - lt: -pick.view(-1)
   - loss: lt.mean()
 tex:
   pick: '\log p_{y}'

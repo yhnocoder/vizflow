@@ -1,13 +1,40 @@
-import type { OpCtx, OpExplain } from '../../autograd';
+import type { Node, OpCtx, OpExplain } from '../../autograd';
+import { elemTexWith } from '../elem';
 import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, selectScatterTarget, sliceScatterSource, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
 import { broadcastIndex, formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
+
+const INDEX_LETTERS = ['i', 'j', 'k', 'l', 'm'];
+const RESHAPE_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'unsqueeze', 'squeeze']);
+
+function indexLetters(shape: readonly number[]): string[] {
+  let next = 0;
+  return shape.map((size) => (size === 1 ? '1' : INDEX_LETTERS[next++]));
+}
+
+function sizesAbove1(shape: readonly number[]): string {
+  return shape.filter((size) => size !== 1).join(',');
+}
+
+function reshapeSource(node: Node): Node {
+  let current = node;
+  while (current.kind === 'op' && RESHAPE_OPS.has(current.op as string) && sizesAbove1(current.inputs[0].shape) === sizesAbove1(current.shape)) current = current.inputs[0];
+  return current;
+}
 
 export const gatherExplain: OpExplain = {
   pattern: 'select',
   local: () => 1,
   tex: {
-    forward: (s) => `\\operatorname{gather}(${s.in[0]},${s.in[1]})`,
+    forward: (s) => `\\operatorname{gather}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]})`,
     local: () => '1',
+  },
+  element: (node) => {
+    const [x, index] = node.inputs;
+    const dim = normDim((node.attrs as { dim: number }).dim, node.shape.length);
+    const letters = indexLetters(node.shape);
+    const source = reshapeSource(index);
+    const picked = elemTexWith(source, indexLetters(source.shape));
+    return `${elemTexWith(node, letters)}=${elemTexWith(x, letters.map((letter, d) => (d === dim ? picked : letter)))}`;
   },
   selected: (ctx, out) => {
     const dim = normDim((ctx.attrs as { dim: number }).dim, out.length);

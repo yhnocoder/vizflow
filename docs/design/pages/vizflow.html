@@ -667,7 +667,7 @@ isLeafLike(node: Node): boolean</code></pre>
 <p>悬停卡片分两种，内容都由 <code>explain</code> 根据运算定义生成。<code>ui</code> 和 <code>scene3d</code> 只负责显示，以后增加 2D 渲染时卡片可以直接复用。</p>
 <p><b>层名卡片</b>在悬停层名时出现。</p>
 <ul>
-  <li>前向：标题为节点的 tex（<code>$\mathbf{z}$</code>）；公式为 <code>tex = 前向模板</code>，例如 $\mathbf{z} = \mathbf{h}W^{\top}$；下面依次列出 shape、真实模型（给了 <code>real</code> 时，写作 <code>Qwen3-8B：(1, 151936)</code>）、dtype、当前值。当前值超过 8 个元素时只列前 8 个，后面加省略号。运算的 <code>explain</code> 写了 <code>note(ctx, tex)</code> 时，返回的文字是卡片的说明，例如 grouped_linear 写出每块权重用于哪几行（「第 1、2 行用 $W[0]$」）；节点的 <code>card</code> 选项给了说明时用节点的。</li>
+  <li>前向：标题为节点的 tex（<code>$\mathbf{z}$</code>）；公式为 <code>tex = 前向模板</code>，例如 $\mathbf{z} = \mathbf{h}W^{\top}$；运算的 <code>explain</code> 写了 <code>element(node)</code> 时，公式下面再加一行逐元素的写法。gather 用它写出取的是哪一格，例如 nll_loss 里 $\log p_{y,i}=\mathrm{logp}_{i,y_i}$：下标按输出不为 1 的维度依次用 $i,j,k,l,m$，index 是对另一个张量只改变大小为 1 的维度的 view、reshape、unsqueeze 或 squeeze 时，写成那个张量的元素。gather 的前向模板写出 dim，例如 $\operatorname{gather}(\mathbf{logp},-1,\cdot)$。下面依次列出 shape、真实模型（给了 <code>real</code> 时，写作 <code>Qwen3-8B：(1, 151936)</code>）、dtype、当前值。当前值超过 8 个元素时只列前 8 个，后面加省略号。运算的 <code>explain</code> 写了 <code>note(ctx, tex)</code> 时，返回的文字是卡片的说明，例如 grouped_linear 写出每块权重用于哪几行（「第 1、2 行用 $W[0]$」）；节点的 <code>card</code> 选项给了说明时用节点的。</li>
   <li>反向：标题为 <code>$\frac{\partial\ell}{\partial X}$</code>，$X$ 是节点的 tex；公式是链式法则展开，对节点 $X$ 的每个消费者 $Y$ 写一项（只计结构上通向损失的运算，旁支和损失之后的节点不列，它们的项恒为 0），只有一个消费者时不写求和：</li>
 </ul>
 \begin{equation}

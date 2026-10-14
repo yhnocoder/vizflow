@@ -68,7 +68,9 @@ function rightTex(node: Node, drawnFrom?: Node): string | undefined {
 
 function forwardTex(node: Node, drawnFrom?: Node): string[] {
   const right = rightTex(node, drawnFrom);
-  return right === undefined ? [node.tex] : [`${node.tex}=${right}`];
+  if (right === undefined) return [node.tex];
+  const element = explainOf(node.op as string)?.element?.(node);
+  return element === undefined ? [`${node.tex}=${right}`] : [`${node.tex}=${right}`, element];
 }
 
 function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
