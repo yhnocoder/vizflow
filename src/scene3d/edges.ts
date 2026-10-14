@@ -68,6 +68,31 @@ function crossRowOps(c: SceneController): Set<Node> {
   return ops;
 }
 
+function padEdges(c: SceneController, fromR: Renderable, push: (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => void): void {
+  const pad = fromR.block.pad!;
+  if (!shown(fromR.block)) return;
+  for (const op of c.visible) {
+    if (op.kind !== 'op' || op.op !== 'causal_conv1d' || op.inputs[0] !== pad.of) continue;
+    const toR = renderableOf(c, op);
+    if (toR === undefined || !shown(toR.block)) continue;
+    const [T, C] = op.shape;
+    const K = op.inputs[1].shape[1];
+    const dilation = (op.attrs as { dilation?: number }).dilation ?? 1;
+    for (let t = 0; t < T; t++) {
+      for (let ch = 0; ch < C; ch++) {
+        for (let j = 0; j < K; j++) {
+          const s = t - (K - 1 - j) * dilation;
+          if (s >= 0) continue;
+          const cell = pad.cells.find((e) => e.index[0] === s && e.index[1] === ch)!;
+          const edge: FlowEdge = { id: `pad:${op.name}:${t},${ch}#${j}`, op, arg: 0, from: { node: pad.of, index: [s, ch] }, to: { node: op, index: [t, ch] }, constant: true };
+          const from: Vec3 = [cell.x, cell.y, cell.z];
+          push({ edge, fromNode: pad.of, toNode: op, contract: false, endpoints: () => [from, anchorIn(c, op, [t, ch], toR)!], flat: false }, fromR, toR, [undefined, undefined], false);
+        }
+      }
+    }
+  }
+}
+
 export function buildEdges(c: SceneController): DrawnEdge[] {
   const drawn: DrawnEdge[] = [];
   if (c.lod) return drawn;
@@ -168,6 +193,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     if (isBackRow(edge.op, from.index, to.index, toR.block, toElement)) entry.backRow = true;
     push(entry, fromR, toR, rows, c.explainer.zeroGrad(edge));
   }
+  if (!backward) for (const r of c.renderables) if (r.block.pad !== undefined) padEdges(c, r, push);
   if (levels === undefined) return drawn;
   for (const pair of levels.io) {
     const inR = renderableOf(c, pair.input);

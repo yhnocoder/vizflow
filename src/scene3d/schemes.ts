@@ -27,6 +27,8 @@ export interface SchemeGraph {
   constant(n: Node): boolean;
   scope(n: Node): string | null;
   parent(id: string): string | null;
+  pack(n: Node): string | undefined;
+  rides(n: Node): boolean;
   places: Place[];
 }
 
@@ -124,12 +126,33 @@ function iterationOf(n: Node): string | undefined {
   return ITERATION.exec(n.name.slice(n.name.lastIndexOf('.') + 1))?.[1];
 }
 
+function loopIterations(g: SchemeGraph): Map<Node, string> {
+  const out = new Map<Node, string>();
+  const last = new Map<string | null, { index: number; loop: number } | undefined>();
+  let loops = 0;
+  for (const n of [...g.nodes].sort((p, q) => p.id - q.id)) {
+    const scope = g.scope(n);
+    const index = iterationOf(n);
+    if (index === undefined) {
+      last.set(scope, undefined);
+      continue;
+    }
+    const k = Number(index);
+    const before = last.get(scope);
+    const loop = before !== undefined && k >= before.index ? before.loop : ++loops;
+    last.set(scope, { index: k, loop });
+    out.set(n, `${loop}.${k}`);
+  }
+  return out;
+}
+
 function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
   const members = new Set(g.nodes);
+  const iterations = options.iterations === 'together' ? loopIterations(g) : new Map<Node, string>();
   const chainOf = (n: Node): (string | null)[] => {
     const out: (string | null)[] = [];
     for (let m = g.scope(n); m !== null; m = g.parent(m)) out.unshift(m);
-    const iteration = options.iterations === 'together' ? iterationOf(n) : undefined;
+    const iteration = iterations.get(n);
     if (iteration !== undefined) out.push(`${out[out.length - 1] ?? ''}#${iteration}`);
     return [null, ...out];
   };
@@ -179,14 +202,9 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
       .filter((r) => itemOf.get(r.low)?.module === null && itemOf.get(r.high)?.module === null)
       .map((r) => ({ kind: r.kind, low: itemOf.get(r.low)!, high: itemOf.get(r.high)! }));
     const placed = new Set(own.flatMap((r) => [r.low, r.high]));
-    const roles = new Map<string, Item[]>();
-    for (const item of items) {
-      if (item.module !== null || placed.has(item) || item.constant || g.preds(item.nodes[0]).length === 0) continue;
-      const role = [...g.preds(item.nodes[0])].map((p) => p.id).sort((a, b) => a - b).join();
-      roles.set(role, [...(roles.get(role) ?? []), item]);
-    }
-    const siblings = [...roles.values()].filter((group) => group.length > 1);
-    for (const group of siblings) for (const other of group.slice(1)) own.push({ kind: 'equal', low: group[0], high: other });
+    const reach = reachability(order, succs);
+    const groups = roleGroups(g, items, placed, reach);
+    for (const group of groups) for (const other of group.slice(1)) own.push({ kind: 'equal', low: group[0], high: other });
     for (let round = 0, changed = true; changed && round < items.length + 1; round++) {
       changed = false;
       for (const item of order) start.set(item, Math.max(floor.get(item) ?? 0, ...[...preds.get(item)!].map((p) => start.get(p)! + p.height)));
@@ -207,7 +225,15 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
       start.set(item, Math.max(start.get(item)!, latest(item)));
     }
     const height = () => Math.max(0, ...items.map((item) => start.get(item)! + item.height));
-    const widthAt = (l: number) => items.filter((item) => start.get(item)! <= l && l < start.get(item)! + item.height).reduce((sum, item) => sum + item.width, 0);
+    const unitOf = new Map<Item, Item[]>(items.map((item) => [item, [item]]));
+    for (const group of groups) {
+      const unit = [...new Set(group.flatMap((item) => unitOf.get(item)!))];
+      for (const item of unit) unitOf.set(item, unit);
+    }
+    const widthAt = (l: number) => {
+      const active = items.filter((item) => start.get(item)! <= l && l < start.get(item)! + item.height);
+      return [...new Set(active.map((item) => unitOf.get(item)!))].reduce((sum, unit) => sum + Math.max(...unit.filter((item) => active.includes(item)).map((item) => item.width)), 0);
+    };
     for (let l = 0; l < height(); l++) {
       let excess = widthAt(l) - options.width;
       if (excess <= 0) continue;
@@ -233,6 +259,41 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
   return layout(null, 0, g.nodes).local;
 }
 
+const INDEX = /\[\d+\]|#\d+\.\d+$/g;
+
+function copyKey(item: Item): string {
+  return item.module === null ? `node:${item.nodes[0].name.replace(INDEX, '[]')}` : `module:${item.module.replace(INDEX, '[]')}`;
+}
+
+function reachability(order: Item[], succs: Map<Item, Set<Item>>): Map<Item, Set<Item>> {
+  const reach = new Map<Item, Set<Item>>();
+  for (const item of [...order].reverse()) {
+    const out = new Set<Item>();
+    for (const s of succs.get(item)!) {
+      out.add(s);
+      for (const r of reach.get(s)!) out.add(r);
+    }
+    reach.set(item, out);
+  }
+  return reach;
+}
+
+function roleGroups(g: SchemeGraph, items: Item[], placed: Set<Item>, reach: Map<Item, Set<Item>>): Item[][] {
+  const keyed = new Map<string, Item[]>();
+  const add = (key: string, item: Item) => keyed.set(key, [...(keyed.get(key) ?? []), item]);
+  for (const item of items) {
+    if (placed.has(item) || item.constant) continue;
+    add(copyKey(item), item);
+    if (item.module !== null) continue;
+    const n = item.nodes[0];
+    const computed = g.preds(n).filter((p) => !g.constant(p));
+    if (computed.length > 0) add(`siblings:${computed.map((p) => p.id).sort((a, b) => a - b).join()}`, item);
+    const pack = g.pack(n);
+    if (pack !== undefined) add(`pack:${pack}`, item);
+  }
+  return [...keyed.values()].filter((group) => group.length > 1 && group.every((p) => group.every((q) => !reach.get(p)!.has(q))));
+}
+
 function topological(items: Item[], preds: Map<Item, Set<Item>>): Item[] {
   const out: Item[] = [];
   const seen = new Set<Item>();
@@ -246,8 +307,46 @@ function topological(items: Item[], preds: Map<Item, Set<Item>>): Item[] {
   return out;
 }
 
+function reaches(g: SchemeGraph, from: Node, to: Node): boolean {
+  const seen = new Set<Node>();
+  const visit = (n: Node): boolean => {
+    if (n === from) return true;
+    if (seen.has(n)) return false;
+    seen.add(n);
+    return g.preds(n).some(visit);
+  };
+  return visit(to);
+}
+
+function contract(g: SchemeGraph): SchemeGraph {
+  const riders = new Set(g.nodes.filter((n) => g.rides(n)));
+  const memo = new Map<Node, Node[]>();
+  const preds = (n: Node): Node[] => {
+    const known = memo.get(n);
+    if (known !== undefined) return known;
+    const out = new Set(g.preds(n).flatMap((p) => (riders.has(p) ? preds(p) : [p])));
+    out.delete(n);
+    memo.set(n, [...out]);
+    return memo.get(n)!;
+  };
+  return { ...g, nodes: g.nodes.filter((n) => !riders.has(n)), preds };
+}
+
 export function schemeLevels(scheme: Exclude<LevelScheme, 'lines'>, g: SchemeGraph, options: SchemeOptions = DEFAULT_SCHEME_OPTIONS): Map<Node, number> {
-  if (scheme === 'asap') return prepared(g);
-  if (scheme === 'alap') return alap(g);
-  return nested(g, options);
+  const kept = contract(g);
+  const level = scheme === 'asap' ? prepared(kept) : scheme === 'alap' ? alap(kept) : nested(kept, options);
+  for (const { kind, low, high } of constraints(kept, new Set(kept.nodes))) {
+    if (kind === 'equal' ? level.get(low) === level.get(high) : level.get(low)! < level.get(high)!) continue;
+    const place = g.places.find((p) => [p.node, p.of].includes(low) && [p.node, p.of].includes(high))!;
+    const [n, input] = reaches(kept, low, high) ? [high, low] : reaches(kept, high, low) ? [low, high] : [undefined, undefined];
+    if (n === undefined) throw new Error(`layout: place '${place.key}' of '${place.node.name}' conflicts with the other places of '${low.name}' and '${high.name}'`);
+    throw new Error(`layout: place '${place.key}' of '${place.node.name}' puts '${n.name}' on or below its input '${input.name}'`);
+  }
+  const succ = successors(g);
+  for (const n of [...g.nodes].reverse()) {
+    if (level.has(n)) continue;
+    const users = succ.get(n)!.map((u) => level.get(u)!);
+    level.set(n, new Set(users).size === 1 ? users[0] : Math.min(...users) - 0.5);
+  }
+  return level;
 }

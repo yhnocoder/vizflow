@@ -184,6 +184,7 @@ export const ROW_NAME_LIFT = 0.03;
 export const BRACE_FRONT = 0.6;
 export const ROW_GROUP_GAP = 0.45;
 export const STACK_GAP = 0.9;
+const COPY_INDEX = /\[\d+\]/g;
 export const BRACE_TITLE_JOIN = ' · ';
 
 const zPlate = (r: number) => LEVEL_FRONT + r * LEVEL_ROW;
@@ -239,6 +240,7 @@ class Plan implements LevelPlan {
   private readonly kernels = new Map<Node, Node>();
   private readonly kernelTiles = new Map<Node, Entry>();
   private readonly stacked = new Map<Node, Node>();
+  private readonly copies = new Map<Entry, Entry>();
   private readonly tables = new Map<Node, Node>();
   private readonly rowGroups = new Map<Node, Node>();
   private readonly labelledGroups = new Set<Node>();
@@ -263,6 +265,7 @@ class Plan implements LevelPlan {
     this.findRowGroups();
     this.buildLevels();
     this.placeSides();
+    this.findCopies();
     this.assignColumns();
     this.assignTitles();
     this.makeTitleRoom();
@@ -542,7 +545,7 @@ class Plan implements LevelPlan {
       const known = constantOf.get(n);
       if (known !== undefined) return known;
       constantOf.set(n, true);
-      const value = n.kind !== 'label' && n.inputs.every(constant);
+      const value = n.kind !== 'label' && n.kind !== 'input' && n.inputs.every(constant);
       constantOf.set(n, value);
       return value;
     };
@@ -550,8 +553,12 @@ class Plan implements LevelPlan {
       nodes,
       preds,
       constant: (n) => constant(n) || (n.kind === 'op' && n.op === 'alias'),
-      scope: (n) => this.innermost(n)?.id ?? null,
-      parent: (id) => this.byId.get(id)?.parent ?? null,
+      ...this.schemeScopes(nodes),
+      pack: (n) => {
+        const group = (n.attrs as { group?: unknown } | undefined)?.group;
+        return n.kind === 'op' && typeof group === 'string' ? `${n.op}:${group}` : undefined;
+      },
+      rides: (n) => this.ridesBoards(n),
       places: this.layout.places ?? [],
     }, this.layout.options);
     const moveTo = new Map<Node, Node>();
@@ -560,16 +567,40 @@ class Plan implements LevelPlan {
         if (this.computed.has(board.b) && this.consumers(board.b).length === 1) moveTo.set(board.b, board.op);
         continue;
       }
-      const a = board.a;
-      if (!members.has(a)) continue;
-      const users = this.consumers(a);
-      const at = index.get(board.op)!;
-      if (index.get(a) === at - 1 && users.every((u) => index.get(u) === at && this.boards.get(u)?.linear && this.boards.get(u)?.a === a)) moveTo.set(a, board.op);
+      if (members.has(board.a) && index.get(board.a) === index.get(board.op)) moveTo.set(board.a, board.op);
     }
     this.moveKernels(moveTo);
     const used = [...new Set(nodes.filter((n) => !moveTo.has(n)).map((n) => index.get(n)!))].sort((p, q) => p - q);
     const levelAt = new Map(used.map((l) => [l, this.newLevel()]));
     for (const n of nodes) if (!moveTo.has(n) && !this.entryOf.has(n)) this.placeNode(n, levelAt.get(index.get(n)!)!, moveTo);
+  }
+
+  private ridesBoards(n: Node): boolean {
+    const users = this.consumers(n);
+    return this.computed.has(n) && users.length > 0 && users.every((u) => this.boards.get(u)?.linear && this.boards.get(u)?.a === n);
+  }
+
+  private schemeScopes(nodes: Node[]): { scope(n: Node): string | null; parent(id: string): string | null } {
+    const members = new Set(nodes);
+    const own = (list: Node[]) => new Set(list.filter((n) => members.has(n)));
+    const modules = this.stepModules.map((m) => ({ id: m.id, nodes: own(m.nodes) })).filter((m) => m.nodes.size > 0);
+    const crosses = (p: Set<Node>, q: Set<Node>) => {
+      const shared = [...p].filter((n) => q.has(n)).length;
+      return shared > 0 && shared < p.size && shared < q.size;
+    };
+    const same = (p: Set<Node>, q: Set<Node>) => p.size === q.size && [...p].every((n) => q.has(n));
+    const groups = [...modules];
+    for (const b of this.braces) {
+      const set = own(b.nodes);
+      if (b.module !== undefined || set.size === 0 || groups.some((g) => crosses(set, g.nodes) || same(set, g.nodes))) continue;
+      groups.push({ id: `brace:${b.id}`, nodes: set });
+    }
+    type Group = (typeof groups)[number];
+    const inside = (inner: Group, outer: Group) => inner !== outer && inner.nodes.size < outer.nodes.size && [...inner.nodes].every((n) => outer.nodes.has(n));
+    const smallest = (found: Group[]) => found.reduce<Group | undefined>((best, group) => (best === undefined || group.nodes.size < best.nodes.size ? group : best), undefined);
+    const scopeOf = new Map(nodes.map((n) => [n, smallest(groups.filter((group) => group.nodes.has(n)))?.id ?? null]));
+    const parentOf = new Map(groups.map((group) => [group.id, smallest(groups.filter((outer) => inside(group, outer)))?.id ?? null]));
+    return { scope: (n) => scopeOf.get(n) ?? null, parent: (id) => parentOf.get(id) ?? null };
   }
 
   private moveKernels(moveTo: Map<Node, Node>): void {
@@ -651,7 +682,7 @@ class Plan implements LevelPlan {
       const other = this.mergeSide(e.node);
       return side !== undefined && other !== undefined && side !== other;
     };
-    for (const e of level.entries) if (e !== skip && e.lane === lane && e.kind !== 'tile' && e.kind !== 'vector' && !apart(e)) e.offsets.forEach((o) => out.add(o));
+    for (const e of level.entries) if (e !== skip && e.lane === lane && !this.copies.has(e) && e.kind !== 'tile' && e.kind !== 'vector' && !apart(e)) e.offsets.forEach((o) => out.add(o));
     return out;
   }
 
@@ -678,13 +709,43 @@ class Plan implements LevelPlan {
     return this.entryOf.get(board.a)!;
   }
 
+  private findCopies(): void {
+    const width = this.layout.options?.width ?? Infinity;
+    if ((this.layout.scheme ?? 'lines') === 'lines' || !Number.isFinite(width)) return;
+    const familyOf = (e: Entry) => `${e.kind}:${e.node.name.replace(COPY_INDEX, '[]')}`;
+    const indexOf = (e: Entry) => [...e.node.name.matchAll(COPY_INDEX)].map((m) => m[0]).join('');
+    const wide = new Set<string>();
+    const byLevel = new Map<Level, Map<string, Entry[]>>();
+    for (const level of this.levels) {
+      const families = new Map<string, Entry[]>();
+      for (const e of level.entries) if (/\[\d+\]/.test(e.node.name)) families.set(familyOf(e), [...(families.get(familyOf(e)) ?? []), e]);
+      byLevel.set(level, families);
+      if (level.entries.filter((e) => this.computed.has(e.node) && e.kind !== 'tile').length <= width) continue;
+      for (const [family, members] of families) if (new Set(members.map(indexOf)).size > 1) wide.add(family);
+    }
+    for (const families of byLevel.values()) {
+      for (const [family, members] of families) {
+        if (!wide.has(family)) continue;
+        const ordered = [...members].sort((p, q) => indexOf(p).localeCompare(indexOf(q), undefined, { numeric: true }));
+        ordered.slice(1).forEach((e) => this.copies.set(e, ordered[0]));
+      }
+    }
+    const step = Math.max(0, ...[...this.copies.values()].map((e) => e.rows * LEVEL_ROW)) + STACK_GAP;
+    for (const families of byLevel.values()) {
+      for (const members of families.values()) {
+        const ordered = members.filter((e) => this.copies.has(e)).sort((p, q) => indexOf(p).localeCompare(indexOf(q), undefined, { numeric: true }));
+        ordered.forEach((e, k) => (e.zShift = -(k + 1) * step));
+      }
+    }
+  }
+
   private assignColumns(): void {
     const done = new Set<Entry>();
     const beside: [Entry, Entry][] = [];
     for (const level of this.levels) {
       const ordered = [...level.entries].sort((p, q) => this.order(p) - this.order(q));
       for (const e of ordered) {
-        if (done.has(e)) continue;
+        if (done.has(e) || this.copies.has(e)) continue;
         done.add(e);
         const n = e.node;
         if (e.kind === 'tile' && e.table === undefined) continue;
@@ -717,7 +778,8 @@ class Plan implements LevelPlan {
         const inputs = n.inputs.map((i) => this.entryOf.get(i)).filter((i): i is Entry => i !== undefined);
         const main = inputs[0];
         if (main === undefined) {
-          this.setLane(e, this.stream, consecutive(0, e.cols));
+          const taken = this.occupied(level, this.stream, e);
+          this.setLane(e, this.stream, consecutive(e.kind === 'plate' && consecutive(0, e.cols).some((k) => taken.has(k)) ? Math.max(...taken) + 3 : 0, e.cols));
           continue;
         }
         if (e.kind === 'disc' || e.kind === 'box' || e.cols === 1) {
@@ -750,6 +812,7 @@ class Plan implements LevelPlan {
       const out = this.entryOf.get(op);
       if (out?.lane !== undefined) this.setLane(tile, out.lane, out.offsets);
     }
+    for (const [e, base] of this.copies) if (base.lane !== undefined) this.setLane(e, base.lane, base.offsets);
     const seen = new Map<Entry, Set<number>>();
     const levelCuts = new Map<string, Set<number>>();
     const keyOf = (e: Entry) => `${this.levels.indexOf(e.level)}:${this.lanes.indexOf(e.lane!)}`;
@@ -777,7 +840,8 @@ class Plan implements LevelPlan {
     }
     for (const [op, tile] of this.kernelTiles) tile.xs = this.entryOf.get(op)?.xs ?? tile.xs;
     for (const [e, main] of beside) e.xs = this.sideXs(e, main);
-    for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
+    for (const e of this.entries) if (e.xs === undefined && !this.copies.has(e)) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
+    for (const [e, base] of this.copies) e.xs = base.xs;
   }
 
   private makeTitleRoom(): void {
@@ -846,7 +910,7 @@ class Plan implements LevelPlan {
     });
     const companions = (e: Entry): Entry[] => [e, ...[this.tiles.get(e.node), this.kernelTiles.get(e.node)].filter((t): t is Entry => t !== undefined && t.lane === e.lane && !this.stacked.has(e.node))];
     for (const level of this.levels) {
-      const plates = level.entries.filter((e) => (e.kind === 'plate' || e.kind === 'disc') && e.xs !== undefined && !this.stacked.has(e.node));
+      const plates = level.entries.filter((e) => (e.kind === 'plate' || e.kind === 'disc') && e.xs !== undefined && !this.stacked.has(e.node) && !this.copies.has(e));
       plates.forEach((e, i) => {
         const group = companions(e);
         const earlier = plates.slice(0, i).filter((o) => o.lane !== e.lane).flatMap(companions);
@@ -854,7 +918,7 @@ class Plan implements LevelPlan {
         for (let blocking = hit(); blocking.length > 0; blocking = hit()) {
           const [lo] = span(group)!;
           const [, hi] = span(blocking)!;
-          const riders = this.entries.filter((o) => o.level === level && [...this.stacked].some(([op, base]) => op === o.node && group.some((g) => g.node === base)));
+          const riders = this.entries.filter((o) => o.level === level && ([...this.stacked].some(([op, base]) => op === o.node && group.some((g) => g.node === base)) || group.includes(this.copies.get(o)!)));
           shift([...group, ...riders], hi + facing(blocking, group) - lo);
         }
       });
@@ -910,7 +974,7 @@ class Plan implements LevelPlan {
       return;
     }
     const a = this.drawnA(board);
-    const group = [...this.boards.values()].filter((b) => !b.batched && !this.stacked.has(b.op) && this.entryOf.get(b.op)?.level === level && this.drawnA(b) === a).sort((p, q) => p.op.id - q.op.id);
+    const group = [...this.boards.values()].filter((b) => !b.batched && !this.stacked.has(b.op) && this.entryOf.get(b.op)?.level === level && !this.copies.has(this.entryOf.get(b.op)!) && this.drawnA(b) === a).sort((p, q) => p.op.id - q.op.id);
     const same = a.level === level;
     const total = group.reduce((sum, b) => sum + b.b.shape[1], 0);
     let lane: Lane;
@@ -1089,13 +1153,13 @@ class Plan implements LevelPlan {
       const span = `${brace.depth}:${first}:${last}`;
       const twin = spans.get(span);
       if (twin !== undefined && !twin.nodes.some((n) => brace.nodes.includes(n))) {
-        twin.title = `${twin.title}${BRACE_TITLE_JOIN}${brace.title}`;
+        if (!twin.title.split(BRACE_TITLE_JOIN).includes(brace.title)) twin.title = `${twin.title}${BRACE_TITLE_JOIN}${brace.title}`;
         if (brace.subtitle !== undefined && !(twin.subtitle ?? '').split(BRACE_TITLE_JOIN).includes(brace.subtitle)) twin.subtitle = twin.subtitle === undefined ? brace.subtitle : `${twin.subtitle}${BRACE_TITLE_JOIN}${brace.subtitle}`;
         twin.nodes = [...twin.nodes, ...brace.nodes];
         continue;
       }
       const gap = this.levels.slice(first, last + 1).find((l) => !levels.includes(l));
-      if (gap !== undefined && (this.layout.scheme ?? 'lines') === 'lines') {
+      if (gap !== undefined && !['asap', 'alap'].includes(this.layout.scheme ?? 'lines')) {
         const between = gap.entries.map((e) => e.node.name).join(', ');
         throw new Error(`steps: the brace of '${brace.id}' (${brace.title}) frames tensors that are not next to each other; ${between} lies between them`);
       }
@@ -1213,6 +1277,11 @@ class Plan implements LevelPlan {
 
     const blockOf = new Map<Entry, Block>();
     for (const e of this.entries) blockOf.set(e, this.block(e, hiddenOf(e), ctx.aligned));
+    for (const op of this.kernels.keys()) {
+      const input = this.entryOf.get(op.inputs[0]);
+      const block = input === undefined ? undefined : blockOf.get(input);
+      if (block !== undefined && block.plate !== undefined) block.pad = convPad(op, block);
+    }
     const blocks = [...blockOf.values()];
 
     const boards: BoardGeometry[] = [];
@@ -1427,6 +1496,30 @@ class Plan implements LevelPlan {
 }
 
 export const TILE_FRAME_PAD: [number, number] = [0.42, 0.3];
+
+function convPad(op: Node, block: Block): Block['pad'] {
+  const input = op.inputs[0];
+  const [T, C] = input.shape;
+  const rows = (op.inputs[1].shape[1] - 1) * ((op.attrs as { dilation?: number }).dilation ?? 1);
+  const at = (index: number[]) => {
+    const mapped = block.node === input ? index : sourceIndex(input, block.node, index);
+    return mapped === undefined ? undefined : block.elements.find((e) => e.index.every((v, d) => v === mapped[d]));
+  };
+  const cells: Element[] = [];
+  for (let c = 0; c < C; c++) {
+    const first = at([0, c]);
+    if (first === undefined) return undefined;
+    const second = T > 1 ? at([1, c]) : undefined;
+    const step = second === undefined ? [0, 0, LEVEL_ROW] : [second.x - first.x, 0, second.z - first.z];
+    for (let s = -rows; s < 0; s++) cells.push({ index: [s, c], row: s, col: c, x: first.x + s * step[0], y: first.y, z: first.z + s * step[2] });
+  }
+  if (cells.length === 0) return undefined;
+  const [w, d] = block.footprint;
+  const xs = cells.map((e) => e.x);
+  const zs = cells.map((e) => e.z);
+  const plate = { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: block.plate!.y, z: (Math.min(...zs) + Math.max(...zs)) / 2, w: Math.max(...xs) - Math.min(...xs) + w + PLATE_MARGIN, d: Math.max(...zs) - Math.min(...zs) + d + PLATE_MARGIN };
+  return { of: input, cells, plate };
+}
 
 function groupText(group: Node, value: number): string {
   return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;

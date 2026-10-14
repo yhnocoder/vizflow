@@ -228,6 +228,8 @@ export class PlateMesh {
   private readonly frames: LineLoop[] = [];
   private readonly frameMaterial: LineBasicMaterial;
   private readonly frameGeometry: BufferGeometry | undefined;
+  private readonly padMaterial: LineBasicMaterial;
+  private padGeometry: BufferGeometry | undefined;
   readonly axis: LineSegments | undefined;
   private readonly axisMaterial: LineBasicMaterial;
 
@@ -235,8 +237,8 @@ export class PlateMesh {
     readonly block: Block,
     theme: ThemeColors,
   ) {
-    const plates = block.slabs?.map((slab) => slab.plate) ?? block.chunks ?? [block.plate!];
-    this.faded = block.slabs?.map((slab) => !slab.used) ?? plates.map(() => false);
+    const plates = [...(block.slabs?.map((slab) => slab.plate) ?? block.chunks ?? [block.plate!]), ...(block.pad === undefined ? [] : [block.pad.plate])];
+    this.faded = [...(block.slabs?.map((slab) => !slab.used) ?? plates.slice(0, block.pad === undefined ? undefined : -1).map(() => false)), ...(block.pad === undefined ? [] : [true])];
     this.material = new MeshLambertMaterial({ color: new Color(...theme.line) });
     for (const plate of plates) {
       const geometry = new BoxGeometry(plate.w, PLATE_THICKNESS, plate.d);
@@ -252,6 +254,7 @@ export class PlateMesh {
       this.outlineMaterials.push(outlineMaterial);
     }
     this.frameMaterial = inkMaterial(theme);
+    this.padMaterial = inkMaterial(theme);
     if (block.frameHalf !== undefined) {
       const [hw, hd] = block.frameHalf;
       this.frameGeometry = new BufferGeometry().setFromPoints([
@@ -267,6 +270,15 @@ export class PlateMesh {
         this.group.add(frame);
       }
     }
+    if (block.pad !== undefined) {
+      const [hw, hd] = [block.footprint[0] / 2, block.footprint[1] / 2];
+      this.padGeometry = new BufferGeometry().setFromPoints([new Vector3(-hw, 0, -hd), new Vector3(hw, 0, -hd), new Vector3(hw, 0, hd), new Vector3(-hw, 0, hd)]);
+      for (const cell of block.pad.cells) {
+        const square = new LineLoop(this.padGeometry, this.padMaterial);
+        square.position.set(cell.x, cell.y + FRAME_LIFT, cell.z);
+        this.group.add(square);
+      }
+    }
     this.axisMaterial = inkMaterial(theme);
     if (block.axis !== undefined) {
       this.axis = new LineSegments(new BufferGeometry(), this.axisMaterial);
@@ -278,6 +290,7 @@ export class PlateMesh {
     this.material.color.setRGB(...theme.line);
     for (const material of this.outlineMaterials) material.color.setRGB(...theme.ink);
     this.frameMaterial.color.setRGB(...theme.ink);
+    this.padMaterial.color.setRGB(...theme.ink);
     this.axisMaterial.color.setRGB(...theme.ink);
   }
 
@@ -289,6 +302,7 @@ export class PlateMesh {
       material.opacity = (state.far || this.faded[i] ? PLATE_FAR : revealed ? PLATE_REVEALED : PLATE_HIDDEN) * ink;
     });
     this.frameMaterial.opacity = (revealed ? FRAME_REVEALED : FRAME_HIDDEN) * ink;
+    this.padMaterial.opacity = (revealed ? FRAME_REVEALED : FRAME_HIDDEN) * ink;
     this.frames.forEach((frame, r) => {
       frame.position.x = frameXs[Math.min(r, frameXs.length - 1)];
       if (frameZs !== undefined) frame.position.z = frameZs[Math.min(r, frameZs.length - 1)];
@@ -317,6 +331,8 @@ export class PlateMesh {
     for (const material of this.outlineMaterials) material.dispose();
     this.frameMaterial.dispose();
     this.frameGeometry?.dispose();
+    this.padMaterial.dispose();
+    this.padGeometry?.dispose();
     this.axis?.geometry.dispose();
     this.axisMaterial.dispose();
   }

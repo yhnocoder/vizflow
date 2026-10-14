@@ -1,0 +1,85 @@
+module: FanOutToy
+import:
+  Qwen3MLP: vizflow/models/qwen3/mlp
+args:
+  d_model: dim
+  d_head: dim
+  d_ff: dim
+  num_heads: dim
+  num_experts: int
+  dtype: dtype
+inputs:
+  x: [T, d_model]
+outputs:
+  out: [T, d_model]
+init:
+  q_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: False }
+  k_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: False }
+  v_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head, bias: False }
+  experts:
+    use: list[Qwen3MLP]
+    count: num_experts
+    args: [d_model, d_ff]
+forward:
+  - q: q_proj(x).view(T, num_heads, d_head).transpose(0, 1)
+  - k: k_proj(x).view(T, num_heads, d_head).transpose(0, 1)
+  - v: v_proj(x).view(T, num_heads, d_head).transpose(0, 1)
+  - att: zeros(num_heads, T, d_head)
+  - lses: zeros(num_heads, T, 1)
+  - for: h in range(num_heads)
+    do:
+      - S: q[h] @ k[h].T
+      - ex: S.exp()
+      - Z: ex.sum(-1, keepdim=True)
+      - P: ex / Z
+      - lses[h]: Z.log()
+      - att[h]: P @ v[h]
+  - mixed: att.transpose(0, 1).reshape(T, num_heads * d_head) + lses.sum(0)
+  - acc: zeros(T, d_model)
+  - for: e in range(num_experts)
+    do:
+      - y: experts[e](mixed)
+      - acc: acc + y
+  - out: acc
+tex:
+  mixed: '\mathbf{m}'
+unshown: [out]
+steps:
+  - id: buffers
+    show: [att, lses]
+    title: 输出缓冲
+  - id: qkv
+    show: [q, k, v]
+    title: q、k、v 投影
+  - id: head
+    loop: h in range(num_heads)
+    defaults:
+      title: head {{ h }}
+      steps:
+        - id: S
+          show: [S, ex, Z, P]
+          title: head {{ h }} 的概率
+  - id: write
+    loop: h in range(num_heads)
+    defaults:
+      show: [lses, att]
+      title: 写入 head {{ h }} 的输出和 log-sum-exp
+  - id: mix
+    show: [mixed, acc]
+    title: 合并各 head
+  - id: expert
+    loop: e in range(num_experts)
+    defaults:
+      show: experts[e]
+      title: 专家 {{ e }}
+  - id: add
+    loop: e in range(num_experts)
+    defaults:
+      show: acc
+      title: 加上专家 {{ e }} 的输出

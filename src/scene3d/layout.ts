@@ -144,6 +144,7 @@ export interface Block {
   quiet?: boolean;
   untitled?: boolean;
   table?: { label: Node; half: [number, number] };
+  pad?: { of: Node; cells: Element[]; plate: Plate };
 }
 
 export interface BoardGeometry {

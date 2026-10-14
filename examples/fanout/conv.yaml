@@ -1,0 +1,30 @@
+module: ConvToy
+import:
+  causal_conv1d_fn: vizflow/models/qwen3_5/causal-conv1d-fn
+args:
+  C: dim
+  K: dim
+  dtype: dtype
+inputs:
+  x: [T, C]
+outputs:
+  out: [T, C]
+init:
+  weights:
+    weight: { shape: [C, K], init: uniform }
+  causal_conv1d_fn: causal_conv1d_fn
+forward:
+  - h: x.exp()
+  - x_c: h.transpose(0, 1)
+  - y: causal_conv1d_fn(x_c, weight)
+  - out: y.transpose(0, 1)
+steps:
+  - id: tr
+    show: [h, x_c]
+    title: exp 和换轴
+  - id: conv
+    show: causal_conv1d_fn
+    title: 卷积
+  - id: back
+    show: out
+    title: 换回
