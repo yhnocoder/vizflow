@@ -526,19 +526,23 @@ defineComposite(def: CompositeDef): void</code></pre>
 interface BackwardOverride { title?: string; text?: string; label?: string }
 interface ForwardStep {
   show: Node | Node[]; active?: Node | Node[]; title: string; text?: string; label?: string;
-  kind?: 'inputs' | 'op'; segment?: string; sub?: string; module?: string; backward?: BackwardOverride;
+  groups?: string[]; module?: string; formula?: { title: string; tex: string }; backward?: BackwardOverride; marks?: string[];
 }
 type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record&lt;number, BackwardOverride&gt; };
+interface StepGroup { id: string; title: string }
+interface StepBrace { id: string; title: string; subtitle?: string; nodes: Node[]; depth: number; module?: string }
 
 interface PageModule {
   id: string; parent: string | null; title: string; subtitle: string;
   inputs: Node[]; outputs: Node[]; nodes: Node[]; params: Node[];
   folded: boolean;
 }
-interface StepModule extends PageModule { segment: string; sub?: string; forward: BackwardOverride; backward: BackwardOverride }
+interface StepModule extends PageModule { foldable: boolean; forward: BackwardOverride; backward: BackwardOverride }
 
 interface StepsSpec {
   forward: ForwardStep[];
+  groups?: StepGroup[];
+  braces?: StepBrace[];
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride };
   backward?: BackwardSpec;
   modules?: StepModule[];
@@ -565,7 +569,7 @@ interface Steps {
 interface StepInfo {
   dir: 'forward' | 'backward'; index: number; id: string; kind: StepKind;
   label: string; title: string; text: string; nodes: Node[];
-  segment: string; sub?: string; module?: string; forwardId?: string;
+  groups: string[]; module?: string; forwardId?: string;
 }
 interface StepState {
   dir: 'forward' | 'backward';
@@ -577,7 +581,7 @@ interface StepState {
 }
 allVisible(g: Graph): StepState
 isLeafLike(node: Node): boolean</code></pre>
-<p>前向步骤由页面列出，因为前向分几步、每一步讲什么是作者对内容的组织。第 0 步是总览，由 <code>overview</code> 给出，默认标题「总览」。</p>
+<p>前向步骤由页面列出，因为前向分几步、每一步讲什么是作者对内容的组织。<code>backward</code> 不是 <code>'reverse'</code> 时，第 0 步是总览，由 <code>overview</code> 给出，默认标题「总览」。<code>backward: 'reverse'</code> 的步骤（页面描述文件编译出的步骤都是这样）不自动加总览：总览和输入步骤是普通的步骤声明，见「折叠与反向步骤」。</p>
 <ul>
   <li>前向第 $k$ 步（$k \ge 1$）：revealed 为第 1 到 $k$ 步 <code>show</code> 的并集；active 为第 $k$ 步的 <code>active</code>，默认等于 <code>show</code>。总览时全部 revealed、全部 active。</li>
   <li><code>visible</code> 是所有 <code>forward.show</code> 的并集，按拓扑序排列。没有放进任何一步的中间节点不显示，也不单独成为反向步骤。</li>
@@ -595,16 +599,16 @@ isLeafLike(node: Node): boolean</code></pre>
 <p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边的不透明度降低（当前步骤 0.35，总览 0.12），读者可以直接看出哪些路径上没有梯度。所有连线都画成实线：虚线在边很多的场景里会形成大片断续的纹理，干扰阅读，所以只用不透明度区分状态。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
 <p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
-<p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），输入步骤是 <code>f:inputs</code>，反向步骤是 <code>b:k</code>，反向总览是 <code>b:overview</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>。<code>segment</code> 是步骤条上的分段名，默认是按钮文字；<code>sub</code> 是段内小标题；<code>module</code> 是这一步所属的最内层模块。</p>
+<p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：自动加的总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），反向步骤是 <code>b:k</code>，第 $k$ 个步骤声明是总览时它的反向总览是 <code>b:k</code> 并带 <code>forwardId</code> <code>f:k</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>。<code>groups</code> 是这一步从外到内所在的分组 id，标题在 <code>StepsSpec.groups</code> 里，步骤条按它分段；<code>module</code> 是这一步所属的最内层模块。<code>braces</code> 是场景里的括号，<code>depth</code> 是嵌套深度，最外层是 0。</p>
 
 <h3>折叠与反向步骤</h3>
 <p>一整层 Transformer 有上百个节点，逐个运算讲解时读者看不到结构。页面描述文件编译出的步骤用 <code>backward: 'reverse'</code> 和 <code>modules</code>：每个模块可以折叠成一步，折叠后它的内部节点从图上隐去，只留输入、输出和参数，读者先看整体，再展开感兴趣的模块。JavaScript 页面也可以直接这样写。</p>
 <ul>
-  <li><code>PageModule</code> 描述一个模块：<code>nodes</code> 是它的运算节点；<code>inputs</code> 是被它使用、但不在模块里的运算节点；<code>params</code> 是它用到的叶子（权重的转置同时带上权重本身）；<code>outputs</code> 是被模块外使用的节点，没有时取最后一个节点；<code>parent</code> 是外层模块的 id。<code>StepModule</code> 另外带分段名、小标题和折叠后那一步的前向、反向文字。</li>
-  <li>折叠状态的初值是 <code>folded</code>。<code>folded(id)</code> 读取，<code>setFolded(id, b)</code> 与 <code>setAllFolded(b)</code> 修改，id 不存在时抛错 <code>folded: module 'x' does not exist</code>、<code>setFolded: module 'x' does not exist</code>。状态改变后步骤列表重建，然后通知订阅者。</li>
-  <li>前向：总览之后，<code>kind: 'inputs'</code> 的步骤（有的话）是第 1 步。其余每个步骤声明是一个单元：<code>show</code> 里不是叶子的节点是它算出的节点，没有时取全部 <code>show</code>；它用到的节点是这些节点的输入（权重的转置同时带上权重）；<code>active</code> 默认是两者的并集。叶子指 input、param、label、buffer 和权重的转置（<code>isLeafLike</code>）。前向第 $k$ 步的 revealed 是输入步骤的 <code>show</code>，加上到这一步为止各单元算出的节点和高亮的叶子；输入步骤只列参数，buffer 在第一个使用它的步骤里出现。</li>
+  <li><code>PageModule</code> 描述一个模块：<code>nodes</code> 是它的运算节点；<code>inputs</code> 是被它使用、但不在模块里的运算节点；<code>params</code> 是它用到的叶子（权重的转置同时带上权重本身）；<code>outputs</code> 是被模块外使用的节点，没有时取最后一个节点；<code>parent</code> 是外层模块的 id。<code>StepModule</code> 另外带 <code>foldable</code> 和折叠后那一步的前向、反向文字。</li>
+  <li><code>foldable</code> 为假的模块（例如 <code>zip</code> 合成的步骤和 <code>flat</code> 的调用）只用来记录结构，<code>setAllFolded</code> 不改变它。折叠状态的初值是 <code>folded</code>。<code>folded(id)</code> 读取，<code>setFolded(id, b)</code> 与 <code>setAllFolded(b)</code> 修改，id 不存在时抛错 <code>folded: module 'x' does not exist</code>、<code>setFolded: module 'x' does not exist</code>。状态改变后步骤列表重建，然后通知订阅者。</li>
+  <li>前向：每个步骤声明是一个单元。<code>show</code> 包含全部 <code>visible</code> 的单元是总览（<code>kind: 'overview'</code>），全部显示、全部高亮，不计入之后的 revealed；<code>show</code> 全是叶子的单元是输入步骤（<code>kind: 'inputs'</code>）。其余单元：<code>show</code> 里不是叶子的节点是它算出的节点，没有时取全部 <code>show</code>；它用到的节点是这些节点的输入（权重的转置同时带上权重）；<code>active</code> 默认是两者的并集。叶子指 input、param、label、buffer 和权重的转置（<code>isLeafLike</code>）。前向第 $k$ 步的 revealed 是输入步骤的 <code>show</code>，加上到这一步为止各单元算出的节点和高亮的叶子；输入步骤只列参数，buffer 在第一个使用它的步骤里出现。</li>
   <li>单元所属的模块链上有折叠的模块时，从最外层的折叠模块开始，连续属于它的单元合成一个 <code>kind: 'module'</code> 步骤：显示模块的输出，高亮输出、输入和参数，标题默认「标题（已折叠）」，按钮文字默认是模块标题。</li>
-  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点，或者单元显示的节点都没有梯度时跳过，只有第一步例外。后一条让 <code>topk_mask</code> 这类不可导的选择不出现在反向里，即使它的输入从别的路径收到了梯度。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，输出都没有梯度时同样跳过；标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。<code>overview.backward</code> 给出时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
+  <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点，或者单元显示的节点都没有梯度时跳过，只有第一步例外。后一条让 <code>topk_mask</code> 这类不可导的选择不出现在反向里，即使它的输入从别的路径收到了梯度。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，输出都没有梯度时同样跳过；标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。总览单元写了 <code>backward</code> 时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
   <li>折叠或展开以后，当前位置尽量保持：依次找 id 相同的步骤、同一方向里节点有重叠的步骤、包含原来那一步的折叠模块步骤，都没有时回到同一方向的第一步。</li>
 </ul>
 <p>反向按单元倒序，而不是按节点倒序，是因为读者在前向里按单元建立的分组（例如 RMSNorm 的四步）在反向里应当一一对应；折叠后一个模块只占一步，前向与反向的步数随之一起变化。</p>
@@ -819,8 +823,8 @@ interface SceneHandle { resetView(): void; dispose(): void }</code></pre>
 <p>节点多的页面（例如 Qwen3 的一整个 decoder 层）手写每个模板的位置很繁琐。<code>autoLayout</code> 按模块层级生成 <code>layout</code> 和 <code>modules</code>，结果直接交给 <code>mountScene</code>，生成的仍然是 <code>stack</code> 和 <code>board</code> 模板，编辑模式照常可用。</p>
 <pre><code class="language-ts">type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
 interface LayoutTree { kind: 'module'; title?: string; subtitle?: string; children: LayoutEntry[] }
-autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan }</code></pre>
-<p><code>steps</code> 带有 <code>modules</code> 并且 <code>backward</code> 是 <code>'reverse'</code> 时（页面描述文件编译出的步骤都是这样），<code>autoLayout</code> 不用布局树，改按步骤生成分层布局：<code>layout</code> 为空，<code>levels</code> 是 <code>levelPlan(steps)</code>，<code>modules</code> 来自步骤的模块记录，规则见下一节「分层布局」。否则按下面的规则从布局树生成模板。</p>
+autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan }</code></pre>
+<p>给了 <code>levels</code> 并且 <code>steps.backward</code> 是 <code>'reverse'</code> 时（页面描述文件编译出的页面都是这样），<code>autoLayout</code> 不用布局树，改用分层布局：<code>layout</code> 为空，返回的 <code>levels</code> 是 <code>levelPlan(steps, levels)</code>，<code>modules</code> 来自步骤的括号，规则见下一节「分层布局」。否则按下面的规则从布局树生成模板。</p>
 <p><code>children</code> 按计算顺序排列，权重和 buffer 放在第一次用到它的节点前面。<code>parallel</code> 的每个分支是一次重复的计算，例如每个 attention head 一个分支；页面描述文件里 <code>beside</code> 并排的每一项也是一个分支。最外层的树是根，不画大括号；<code>title</code> 为空的树也不画。</p>
 <ul>
   <li>主列自下而上。每行元素数大于 1 的节点占一层，层高 4.2；相邻的这类节点连同它们之间的标量节点放进同一个 <code>stack</code>（<code>back</code> 为 0，<code>scalars</code> 为 <code>'row'</code>），标量节点按 <code>stack</code> 的规则放在两层之间的侧面或目标列上方，跟在侧面节点后面的标量排成一行。主列的中心是 $x=0$，每层的第 0 行在 $z=0$。</li>
@@ -846,14 +850,14 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
 <p>对照页 <code>examples/auto-layout-qwen3.html</code> 的建图代码与 <code>examples/qwen3-structure.html</code> 相同，布局和大括号由 <code>autoLayout</code> 生成。两页的差别：自动布局按顺序排主列，k 的 k_norm 和 RoPE 排在两个 head 的竖道下面，手写布局把它们放在 head 的旁边、与 q 同高，所以自动布局的场景更高；$\boldsymbol{\gamma}$ 与使用它的节点同高，手写布局放得更低。YAML 写的 <code>examples/qwen3/qwen3-dsl.yaml</code> 用的是分层布局。</p>
 
 <h3>分层布局</h3>
-<p>分层布局按前向步骤把场景排成一列自下而上的「层」，每一层是一个 $y$ 高度，层里的块沿 $x$ 方向排开。它与讲解的步骤一一对应：读者在第几步，相机就停在哪几层；模块折叠时它的层收进一个盒子。<code>levelPlan(steps)</code> 在挂载前算出层和列，<code>resolve({ folded, aligned })</code> 在每次折叠状态变化时按当前的折叠状态算出各层的高度、盒子和大括号的范围，场景据此重建。</p>
+<p>分层布局把场景排成一列自下而上的「层」，每一层是一个 $y$ 高度，层里的块沿 $x$ 方向排开。层由 <code>forward</code> 和 <code>layout</code> 决定，步骤只决定哪一步亮哪些块，不改变块的位置；每个张量只有一个位置。模块折叠时它的层收进一个盒子。<code>levelPlan(steps, levels)</code> 在挂载前算出层和列，<code>levels</code> 是编译结果里的 <code>LevelSpec</code>，<code>resolve({ folded, aligned })</code> 在每次折叠状态变化时按当前的折叠状态算出各层的高度、盒子和大括号的范围，场景据此重建。</p>
 <p><b>层怎么分。</b></p>
 <ul>
-  <li>每个前向单元（输入步骤以外的步骤声明里算出的节点）占自己的几层，单元内按依赖深度分层：不依赖本单元其他节点的在第一层，依赖它们的往上一层。</li>
+  <li><code>LevelSpec.lines</code> 是按 <code>forward</code> 一行一层排出的层：调用子模块的一行展开成子模块的各层，<code>layout.place</code> 的 <code>before</code>、<code>after</code> 移动层，<code>merge</code> 的两个调用逐层合并。一行里的节点按依赖深度再分层：不依赖这一行其他节点的在第一层，依赖它们的往上一层。</li>
+  <li><code>sides</code> 记录 <code>place</code> 的 <code>with</code>、<code>left</code>、<code>right</code>：节点放进目标所在的层，横向范围与同层的块重叠时向外挪开，与目标之间留 <code>PLACE_GAP</code>（1.6，暂定），重叠按 <code>COLUMN_BREAK</code> 判断。<code>merges</code> 记录合并的两边，右边的块整体右移到与左边留出 <code>PLACE_GAP</code>。</li>
   <li><code>matmul</code> 与 <code>select_matmul</code> 画成板：$B$ 画成权重板放在输出所在的层，输出的每一列对着 $B$ 的一列。两边都是三维的批量 matmul 画成按 batch 并排的几块板：$A$、$B$ 和输出的分块轴都是 batch 维，输出与 $B$ 的第 $b$ 块对着 $A$ 的第 $b$ 块，$A$ 的每一行沿着这一块往上连到格子；板的列从 $A$ 最左的一列开始，列距与 $A$ 相同，$A$ 在同一层时放在 $A$ 右侧 <code>BOARD_GAP</code>（1.45）处。$A$ 是二维、$B$ 是三维或反过来的批量 matmul 不画板，直接连线。$B$ 是权重（或权重的转置）的线性层，如果输入 $A$ 只被下一个单元的板使用、并且这些板的 $A$ 都是它，$A$ 移到板的那一层，与板并排（例如 q、k、v 投影共用一个输入）。$B$ 是激活（注意力里的 $\mathbf{k}^{\top}$、$\mathbf{v}$）时，$B$ 移到板的那一层。</li>
   <li><code>embedding</code> 的输出与 embedding 表画在同一层，表画成权重板。</li>
   <li>布局运算（view、reshape、transpose、permute、unsqueeze、contiguous）和类型转换（<code>identity</code> 带 dtype，即 <code>.float()</code>、<code>.to(dtype)</code>）只改变形状、下标的排法或存储精度，默认不单独画：它们不出现在任何步骤的 <code>show</code> 里时，图上用最初的源节点代表它们，不占新的层，也没有自己的连线；使用它们的运算直接连到源节点上对应的元素（按下标换算，transpose 交换下标，其余按行主序位置）。作为矩阵乘右操作数的布局节点（$W^{\top}$、$\mathbf{k}^{\top}$）画成权重板，所以总要显示。步骤在 <code>show</code> 里列出一个布局节点时，它独占一层，按自己的分块轴画，与源节点之间画逐元素一一对应的连线（局部导数 1），读者能看到形状怎么变。</li>
-  <li>一个节点在某个顶层模块里算出、在另一个模块里被使用时，使用的模块里画一份副本：副本独占一层，放在第一个使用它的单元之前；被线性层的板当作 $A$ 使用时，副本放在板的那一层。原件和副本之间画一条连线，已出现时不透明度 0.32，否则 0.06。读者在每个模块的入口都能看到这个模块拿到的输入，不必回头找。</li>
   <li>一维权重（RMSNorm 的 $\boldsymbol{\gamma}$）和 buffer 放在使用它的运算的主输入所在的层，列对着运算输出的列；主输入不在紧挨着的下一层时（例如 RoPE 的 $t\,\boldsymbol{\omega}$，位置编号和它之间隔着 causal mask），放在运算输出所在的层。没有输入的运算（<code>arange</code>、<code>causal_mask</code>）占自己的层，画成柱子板；只在一列里使用、随后被 <code>unsqueeze</code> 成 $(N, 1)$ 的一维张量画成一列。</li>
 </ul>
 <p><b>块的种类。</b>平面张量画成柱子板（plate）；矩阵乘的 $B$ 和 embedding 表画成权重板（tile），放在板层的后方；一维权重画成一排柱子（vector），放在这一层后方；每行一个数、并且被更宽的逐元素运算按广播规则使用的张量（RMSNorm 的 $\mathrm{ms}$、$r$，softmax 的 $Z$）画成圆柱（disc）；作为矩阵乘的右操作数或作为下标使用的张量不算，即使运算输出的形状恰好与另一个输入相同，放在源张量右侧；0 维的损失画成方块（box）。三维张量按分块轴画（见「三维张量」），块与块之间多留一道缝；代表三维布局节点的二维源节点（例如被 view 成 $(T, H, d_h)$ 的 $(T, H d_h)$）也按块宽分组；一个节点被 <code>narrow</code> 按固定宽度切开使用时也按这个宽度分组。</p>
@@ -883,9 +887,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
     <tr><td>这一层只有占位模块的输出</td><td>7.2</td></tr>
     <tr><td>这一层只有标量：上一层是板 / 这一层是损失 / 其他</td><td>3.2 / 2.0 / 1.2</td></tr>
     <tr><td>这一层是板：线性层 / 其他</td><td>3.5 / 2.7</td></tr>
-    <tr><td>这一层只有副本</td><td>5.3</td></tr>
     <tr><td>上一层是板</td><td>4.2</td></tr>
-    <tr><td>上一层只有副本</td><td>2.6</td></tr>
     <tr><td>上一层只有标量：这一层有一维权重 / 其他</td><td>1.1 / 1.3</td></tr>
     <tr><td>上一层有一维权重</td><td>3.0</td></tr>
     <tr><td>其他</td><td>2.3</td></tr>
@@ -909,13 +911,13 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
   <li>盒子的标签是「标题 · 已折叠」，占位模块只显示标题。点击标签展开（占位模块不能展开）；悬停时卡片显示这个模块的整体 Jacobian（<code>moduleJacobian</code>）的数值格子、「输入 → 输出」和参数，说明「点这个标签可以展开。」或「这个盒子只用来示意，数值按恒等映射处理，不能展开。」。</li>
   <li>盒子里不再画内部运算的连线，改为从模块输入到输出画整体 Jacobian 的连线：每个绝对值大于 $10^{-12}$ 的元素一条，上游梯度为 0 时不透明度降低；写了 <code>split</code> 的模块（例如整个 decoder 层）跨越的层多，连线向外弯 1.4，不穿过中间的块。反向时悬停这条线，卡片显示 $(J_{\text{标题}})_{i,j}$、上游梯度和两者的乘积，说明「折叠后的整体 Jacobian 元素。」。位置 $t$ 的输出只依赖 $s \le t$ 的输入，所以注意力模块的连线是块下三角，读者从连线就能看出因果结构。</li>
 </ul>
-<p><b>大括号。</b>每个模块记录一个大括号，竖直范围从它最低一层往下 0.6（是板时 0.9）到最高一层往上 1.0（只有一层且是板时 1.4），折叠时是盒子的范围。模块直接读取的输入画在更低的层时，大括号再往下延伸到那一层下方 0.6，读者能看到模块从哪里取输入；同一侧另有一个不包含它的大括号落在这段延伸的范围内时不延伸，两个括号的标签不会叠在一起，例如 MLA 里 RoPE 的输入 $\mathbf{k}_{\mathrm{rot}}$ 在 kv_a_layernorm 之下。位置分三种：</p>
+<p><b>大括号。</b>每个模块记录一个大括号，竖直范围从它最低一层往下 0.6（是板时 0.9）到最高一层往上 1.0（只有一层且是板时 1.4），折叠时是盒子的范围。模块直接读取的输入画在更低的层时，大括号再往下延伸到那一层下方 0.6，读者能看到模块从哪里取输入；同一侧另有一个不包含它的大括号落在这段延伸的范围内时不延伸，两个括号的标签不会叠在一起，例如 MLA 里 RoPE 的输入 $\mathbf{k}_{\mathrm{rot}}$ 在 kv_a_layernorm 之下。括号来自 <code>StepsSpec.braces</code>，框住的张量必须在连续的层里，否则 <code>levelPlan</code> 报错 <code>steps: the brace of 'id' (标题) frames tensors that are not next to each other; 名字 lies between them</code>。位置按嵌套深度分三种：</p>
 <ul>
-  <li><code>outer</code>：顶层的 <code>split</code> 模块和占位模块，放在场景右侧最外，离内容 2.2 再往外 4.0，画成双线（两条线相距 0.016），例如 decoder 层与「第 1 到 $N-1$ 层」。</li>
-  <li><code>left</code>：父模块没有 <code>split</code> 的子模块，放在左侧离内容 1.7，按内层处理（相机跟随的概览里隐藏）。</li>
-  <li><code>right</code>：其余模块，放在右侧离内容 2.2。</li>
+  <li><code>outer</code>：深度 0 并且里面还有括号的，放在场景右侧最外，离内容 2.2 再往外 4.0，画成双线（两条线相距 0.016），例如 decoder 层。</li>
+  <li><code>right</code>：其余深度 0 和深度 1 的括号，放在右侧离内容 2.2。</li>
+  <li><code>left</code>：深度 2 及更深的括号，放在左侧离内容 1.7，深度每加 1 再往外 2.2，按内层处理（相机跟随的概览里隐藏）。</li>
 </ul>
-<p>不属于任何模块的连续步骤按分段名合成一个分段括号：含参数的放右侧，否则放左侧。合成后只框住一个张量的分段不画括号，因为括号上的名字与张量自己的标签重复；步骤里显式写了 <code>brace</code> 的仍然画。括号放在最前一行前方 0.6 的深度。大括号的标签上有「▸ 展开」或「▾ 折叠」，点击切换这个模块的折叠状态；占位模块没有这个按钮。</p>
+<p>括号放在最前一行前方 0.6 的深度。大括号的标签上有「▸ 展开」或「▾ 折叠」，点击切换这个模块的折叠状态；占位模块没有这个按钮。</p>
 <p>分层布局的这些值在 <code>scene3d/levels.ts</code> 里以 <code>GAP</code>、<code>FOLD</code>、<code>BOX_MARGIN</code>、<code>BRACE_PAD</code>、<code>BRACE_X</code> 等常量给出，改动时对照 Qwen3 页的截图检查各层的标签是否互相遮挡。</p>
 
 <h3>相机</h3>
@@ -999,7 +1001,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules
 mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { steps?: Steps; sequence?: PageSequence }): Mounted
 mountSections(el: string | HTMLElement, g: Graph, items: SectionItem[], options?: { steps?: Steps; onJump?: () =&gt; void }): Mounted
 interface Mounted { dispose(): void }</code></pre>
-<p><code>mountSteps</code> 画出步骤条、左右按钮和讲解正文，正文里的 <code>&lt;vf-figure&gt;</code> 换成内置小图。步骤条有两种样式。<code>steps.modules</code> 为空时是前向、反向两组按钮。不为空时是时间轴：第一行是「前向」「反向」两个标签页、一条分段进度条和「当前位置/总步数」，进度条按当前方向的步骤的 <code>segment</code> 把相邻的同名步骤分成一段，每段的宽度与段内步数成正比，当前段内按位置填充，点击一段跳到它的第一步；第二行是当前段的名字（折叠模块的段后加「（已折叠）」）、段内各步的按钮，<code>sub</code> 变化处插入小标题。几十步的页面用分段代替一长排按钮，读者能看出自己在哪个模块里。</p>
+<p><code>mountSteps</code> 画出步骤条、左右按钮和讲解正文，正文里的 <code>&lt;vf-figure&gt;</code> 换成内置小图。步骤条有两种样式。<code>steps.modules</code> 为空时是前向、反向两组按钮。不为空时是时间轴：第一行是「前向」「反向」两个标签页、一条分段进度条和「当前位置/总步数」，进度条按当前方向的步骤的第一级分组（<code>groups[0]</code>）把相邻的步骤分成一段，没有分组的步骤各自一段，每段的宽度与段内步数成正比，当前段内按位置填充，点击一段跳到它的第一步；第二行是当前段的名字（分组的标题，折叠模块的段后加「（已折叠）」）、段内各步的按钮，最内层分组变化处插入它的标题作为小标题。几十步的页面用分段代替一长排按钮，读者能看出自己在哪个模块里。</p>
 <p>指针移到进度条的一段上（或用键盘聚焦它）时，这一段上方弹出一张小卡片，箭头指向这一段：第一行是段名和状态，状态是「第 i / n 步」（当前段，用 <code>--pos</code> 着色）、「n 步」（还没到）或「n 步 · 已完成」；下面最多列出 5 个步骤的按钮文字，已完成的圆点实心，当前步用 <code>--pos</code>；段内多于 5 步时列出当前步附近的 5 步，前后各写「前 k 步」「后 k 步」。只有一步、且按钮文字等于段名时不列步骤。读者不用点进去就能知道每一段讲什么。</p>
 <p>键盘的左右方向键切换步骤。焦点在输入框或步骤条以外的按钮上，或按着 Alt、Ctrl、Meta 时不响应；焦点在步骤条自己的按钮上时照常切换。同一页有多个步骤条时，只有最近一次点击或聚焦落在其中的那个响应方向键，点击步骤条以外的地方不改变这一选择。</p>
 <p>步骤按钮的左右内边距为 9px，桌面宽度下 lm_head 页的 11 个按钮在约 860px 宽的步骤卡片里排成一行。步骤卡片宽度不超过 560px 时按钮排成一行横向滚动，右端 24px 渐隐，提示还可以往右滚。讲解正文和面板里的独立公式块超出宽度时在公式块内横向滚动，不截断。</p>
@@ -1103,7 +1105,7 @@ type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad'
 <p>卡片从上到下是：页面尺寸与真实尺寸的切换按钮；真实尺寸下的 $B$ 与 $T$ 两个滑块（暂定范围：$B$ 取 1 到 256，$T$ 取 128 到 131072，都按 2 的幂移动；$T$ 的初值是 <code>real</code> 里的 <code>T</code>，<code>real</code> 没有 <code>T</code> 时不显示这个滑块）；「已分配」与峰值（注明峰值所在的步骤）；有推算的层时，下一行写出其中推算的字节数；按类别堆叠的横条，总宽代表峰值，未用到峰值的部分是灰色，每段里推算的部分画斜线；图例；本步 FLOP 与前向、反向的累计；每一步一根柱子的 FLOP 图，叠一条已分配显存的折线，当前步高亮，点一根柱子跳到那一步；最后是折叠起来的「怎么统计的」。指针移到横条的一段或图例上，下方弹出这一类张量的列表（tex、倍数标记、shape、大小，按大小排列，最多 8 个，其余合计；「×N 层」表示按占位模块推算，「×k」表示循环的倍数）；移到「本步」上，列出这一步的运算、它们的 FLOP 公式和数值。点击会固定弹出的列表，再点一次取消，触屏也能查看。</p>
 <p>面板只统计本页计算图里的张量，以及按上面的规则从它推算出来的部分。页面没有画出的层不计入；页面把 softmax 等运算拆成几步时，保存的张量按拆开后的运算统计，可能多于 PyTorch 的融合算子；页面用稠密写法表示 MoE（全部专家的输出拼成一个张量）时，按这个张量的真实 shape 统计。这些差别和上面的推算规则都写在面板的「怎么统计的」里，读者看到的数字与代码的统计方式一致。</p>
 <p>面板的标题、列标题、按钮文字、序列标签和图注都按 <code>renderText</code> 渲染，数学符号只用 LaTeX 写；默认标题里的节点名用节点的 tex，例如 matrix 面板的默认标题是 <code>$W^{\top}$，(4, 5)</code>。</p>
-<p><code>mountSections</code> 画出页面描述文件的讲解段落（<code>SectionItem</code>，见 <a href="dsl.html">vizflow 页面描述文件</a> 的「讲解段落」）。每段是一张卡片，行按 CSS 网格分栏，窄屏下各栏上下排列。正文用 <code>renderMarkdown</code> 渲染，可以写模板，随数值更新；<code>lead</code> 是字号稍大的开头段落。内置组件：<code>rope_dial</code> 画两个随位置 $t$、$s$ 转动的箭头（实线是旋转后的 $\mathbf{q}'$、$\mathbf{k}'$，虚线是旋转前），<code>rope_curve</code> 画一个 head 的点积随 $t-s$ 变化的曲线，两者共用段落的 <code>rope</code> 数据和同一组滑块状态；<code>rope_compare</code> 并排比较每个 head 加与不加 RoPE 的打分和权重；<code>buttons</code> 的每个按钮跳到第一个显示 <code>go</code> 节点的前向步骤，没有这样的步骤时跳到 <code>go</code> 所在模块折叠后的那一步，然后调用 <code>onJump</code>（元素用它把画布滚进视野）。没有传 <code>steps</code> 时按钮抛错 <code>section: buttons need the steps option</code>，找不到步骤时抛错 <code>section: node 'x' is not shown by any forward step</code>；段落没有 <code>rope</code> 却用了 RoPE 组件时抛错 <code>section: rope_dial needs the section's rope option</code>。</p>
+<p><code>mountSections</code> 画出页面描述文件的讲解段落（<code>SectionItem</code>，见 <a href="dsl.html">vizflow 页面描述文件</a> 的「Panel 与 Section」）。每段是一张卡片，行按 CSS 网格分栏，窄屏下各栏上下排列。正文用 <code>renderMarkdown</code> 渲染，可以写模板，随数值更新；<code>lead</code> 是字号稍大的开头段落。内置组件：<code>rope_dial</code> 画两个随位置 $t$、$s$ 转动的箭头（实线是旋转后的 $\mathbf{q}'$、$\mathbf{k}'$，虚线是旋转前），<code>rope_curve</code> 画一个 head 的点积随 $t-s$ 变化的曲线，两者共用段落的 <code>rope</code> 数据和同一组滑块状态；<code>rope_compare</code> 并排比较每个 head 加与不加 RoPE 的打分和权重；<code>buttons</code> 的每个按钮跳到第一个显示 <code>go</code> 节点的前向步骤，没有这样的步骤时跳到 <code>go</code> 所在模块折叠后的那一步，然后调用 <code>onJump</code>（元素用它把画布滚进视野）。没有传 <code>steps</code> 时按钮抛错 <code>section: buttons need the steps option</code>，找不到步骤时抛错 <code>section: node 'x' is not shown by any forward step</code>；段落没有 <code>rope</code> 却用了 RoPE 组件时抛错 <code>section: rope_dial needs the section's rope option</code>。</p>
 <p><code>ui</code> 内部用 Solid：计算图一更新，面板、步骤条、正文和卡片里许多零散的位置需要各自刷新，Solid 的细粒度响应式让每处只在自己读到的值变化时更新。Solid 只是内部实现，页面通过 <code>mount</code> 调用，不需要编译 JSX，手写 HTML 的静态站可以直接使用。3D 场景用 three.js 命令式编写，不经过 Solid。</p>
 
 <h3>页面元素</h3>
