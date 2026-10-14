@@ -14,7 +14,6 @@ export interface EdgeContext {
   revealedTo: boolean;
 }
 
-export const EDGE_HIDDEN = 0.06;
 export const EDGE_OVERVIEW = 0.35;
 export const EDGE_OVERVIEW_CONTRACT = 0.2;
 export const EDGE_OVERVIEW_ZERO = 0.12;
@@ -28,14 +27,13 @@ export const EDGE_UNFOCUSED_FACTOR = 0.4;
 
 export function edgeStyle(ctx: EdgeContext): EdgeStyle | null {
   if (ctx.far) return null;
+  if (ctx.dir === 'forward' ? !ctx.revealedTo : !ctx.revealedFrom) return null;
   let style: EdgeStyle;
   if (ctx.dir === 'forward') {
-    if (!ctx.revealedTo) style = { opacity: EDGE_HIDDEN };
-    else if (ctx.overview) style = { opacity: ctx.contract ? EDGE_OVERVIEW_CONTRACT : EDGE_OVERVIEW };
+    if (ctx.overview) style = { opacity: ctx.contract ? EDGE_OVERVIEW_CONTRACT : EDGE_OVERVIEW };
     else if (ctx.current) style = { opacity: ctx.contract ? EDGE_ACTIVE_CONTRACT : EDGE_ACTIVE };
     else style = { opacity: EDGE_IDLE };
-  } else if (!ctx.revealedFrom) style = { opacity: EDGE_HIDDEN };
-  else if (ctx.overview) style = { opacity: ctx.zeroGrad ? EDGE_OVERVIEW_ZERO : ctx.contract ? EDGE_OVERVIEW_CONTRACT : EDGE_OVERVIEW };
+  } else if (ctx.overview) style = { opacity: ctx.zeroGrad ? EDGE_OVERVIEW_ZERO : ctx.contract ? EDGE_OVERVIEW_CONTRACT : EDGE_OVERVIEW };
   else if (ctx.current) style = { opacity: ctx.zeroGrad ? EDGE_ACTIVE_ZERO : ctx.contract ? EDGE_ACTIVE_CONTRACT_BACKWARD : EDGE_ACTIVE_BACKWARD };
   else style = { opacity: EDGE_IDLE };
   if (!ctx.focused) style.opacity *= EDGE_UNFOCUSED_FACTOR;

@@ -223,7 +223,7 @@ describe('edge style', () => {
   };
 
   it('follows the forward rules', () => {
-    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...base, revealedTo: false })).toBeNull();
     expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.35 });
     expect(edgeStyle({ ...base, overview: true, contract: true })).toEqual({ opacity: 0.2 });
     expect(edgeStyle({ ...base, current: true })).toEqual({ opacity: 0.85 });
@@ -234,8 +234,8 @@ describe('edge style', () => {
 
   it('follows the backward rules', () => {
     const backward = { ...base, dir: 'backward' as const };
-    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.06 });
-    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...backward, revealedFrom: false })).toBeNull();
+    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toBeNull();
     expect(edgeStyle({ ...backward, zeroGrad: true, current: true })).toEqual({ opacity: 0.35 });
     expect(edgeStyle({ ...backward, current: true })).toEqual({ opacity: 0.9 });
     expect(edgeStyle({ ...backward, current: true, contract: true })).toEqual({ opacity: 0.65 });
