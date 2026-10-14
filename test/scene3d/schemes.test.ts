@@ -78,6 +78,23 @@ describe('nested levels', () => {
     expect(level.get(node('k1'))).toBe(level.get(node('kr'))! + 1);
   });
 
+  it('does not hold a ring attention round back for a communication it does not use', () => {
+    const toys: Toy[] = [{ name: 'x' }];
+    for (let r = 0; r < 2; r++) toys.push({ name: `k[${r}]`, inputs: ['x'] });
+    for (let r = 0; r < 2; r++) toys.push({ name: `K[${r}][0]`, inputs: [`k[${r}]`] }, { name: `S[${r}][0]`, inputs: [`K[${r}][0]`] }, { name: `recv[${r}][0]`, inputs: [`k[${1 - r}]`], pack: 'send_recv:cp' });
+    for (let r = 0; r < 2; r++) toys.push({ name: `K[${r}][1]`, inputs: [`recv[${r}][0]`] }, { name: `S[${r}][1]`, inputs: [`K[${r}][1]`] });
+    const { g, node } = toyGraph(toys);
+    for (const iterations of ['overlap', 'together'] as const) {
+      const level = schemeLevels('nested', g, { iterations, width: 8 });
+      for (let r = 0; r < 2; r++) {
+        expect(level.get(node(`K[${r}][0]`))).toBe(level.get(node(`k[${r}]`))! + 1);
+        expect(level.get(node(`S[${r}][0]`))).toBe(level.get(node(`K[${r}][0]`))! + 1);
+        expect(level.get(node(`S[${r}][0]`))).toBeLessThan(level.get(node(`S[${r}][1]`))!);
+        expect(level.get(node(`S[${r}][1]`))).toBe(level.get(node('S[0][1]')));
+      }
+    }
+  });
+
   it('puts a left matrix shared by matmuls on their level', () => {
     const { g, node } = toyGraph([{ name: 'x' }, { name: 'h', inputs: ['x'], rides: true }, { name: 'q', inputs: ['h'] }, { name: 'k', inputs: ['h'] }]);
     const level = schemeLevels('nested', g);

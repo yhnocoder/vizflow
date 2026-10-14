@@ -291,7 +291,29 @@ function roleGroups(g: SchemeGraph, items: Item[], placed: Set<Item>, reach: Map
     const pack = g.pack(n);
     if (pack !== undefined) add(`pack:${pack}`, item);
   }
-  return [...keyed.values()].filter((group) => group.length > 1 && group.every((p) => group.every((q) => !reach.get(p)!.has(q))));
+  const waits = communications(g);
+  const signature = (item: Item) => [...new Set(item.nodes.flatMap((n) => [...waits(n)]))].sort().join('|');
+  const split = [...keyed].flatMap(([key, group]) => {
+    if (key.startsWith('pack:')) return [group];
+    const bySignature = new Map<string, Item[]>();
+    for (const item of group) bySignature.set(signature(item), [...(bySignature.get(signature(item)) ?? []), item]);
+    return [...bySignature.values()];
+  });
+  return split.filter((group) => group.length > 1 && group.every((p) => group.every((q) => !reach.get(p)!.has(q))));
+}
+
+function communications(g: SchemeGraph): (n: Node) => Set<string> {
+  const memo = new Map<Node, Set<string>>();
+  const waits = (n: Node): Set<string> => {
+    const known = memo.get(n);
+    if (known !== undefined) return known;
+    const out = new Set<string>();
+    memo.set(n, out);
+    if (g.pack(n) !== undefined) out.add(n.name.replace(INDEX, '[]'));
+    for (const p of g.preds(n)) for (const c of waits(p)) out.add(c);
+    return out;
+  };
+  return waits;
 }
 
 function topological(items: Item[], preds: Map<Item, Set<Item>>): Item[] {
