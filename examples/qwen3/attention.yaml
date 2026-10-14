@@ -59,6 +59,9 @@ forward:
   - att: o_proj(o)
 
 tex:
+  q_linear: '\mathbf{q}'
+  k_linear: '\mathbf{k}'
+  v_linear: '\mathbf{v}'
   q: '\mathbf{q}'
   k: '\mathbf{k}'
   v: '\mathbf{v}'
