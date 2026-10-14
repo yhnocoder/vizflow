@@ -16,6 +16,7 @@ export const STREAM_X = -7.2;
 export const STREAM_SPACING = 0.95;
 export const BOARD_GAP = 1.45;
 export const COLUMN_BREAK = 0.6;
+export const TITLE_ROOM = 4.6;
 export const SPACING_MAX = 1.45;
 export const SPACING_MIN = 0.74;
 export const SPACING_SPAN = 11.4;
@@ -249,6 +250,7 @@ class Plan implements LevelPlan {
     this.placeSides();
     this.assignColumns();
     this.assignTitles();
+    this.makeTitleRoom();
     this.placeApart();
     this.assignTitles();
     this.buildModules();
@@ -660,6 +662,27 @@ class Plan implements LevelPlan {
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
   }
 
+  private makeTitleRoom(): void {
+    const crowded = (): { at: number; need: number } | undefined => {
+      let found: { at: number; need: number } | undefined;
+      for (const level of this.levels) {
+        const group = level.entries.filter((e) => e.xs !== undefined && e.title === 'left' && e.kind !== 'tile' && e.kind !== 'disc' && e.kind !== 'box');
+        group.sort((p, q) => Math.min(...p.xs!) - Math.min(...q.xs!));
+        group.forEach((e, i) => {
+          if (i === 0) return;
+          const at = Math.min(...e.xs!);
+          const gap = at - Math.max(...group[i - 1].xs!);
+          if (gap > 0 && gap < TITLE_ROOM - 1e-9 && (found === undefined || at < found.at)) found = { at, need: TITLE_ROOM - gap };
+        });
+      }
+      return found;
+    };
+    for (let cut = crowded(); cut !== undefined; cut = crowded()) {
+      const { at, need } = cut;
+      for (const e of this.entries) if (e.xs !== undefined && Math.min(...e.xs) >= at - 1e-9) e.xs = e.xs.map((x) => x + need);
+    }
+  }
+
   private overlapping(e: Entry, others: Entry[]): Entry[] {
     const xs = e.xs ?? [];
     return others.filter((o) => (o.xs ?? []).some((x) => xs.some((own) => Math.abs(own - x) < COLUMN_BREAK)));
@@ -867,7 +890,6 @@ class Plan implements LevelPlan {
   private assignTitles(): void {
     for (const e of this.entries) e.title = 'none';
     for (const level of this.levels) {
-      const lanes = new Map<Lane | undefined, Entry[]>();
       for (const e of level.entries) {
         if (e.kind === 'disc' || e.kind === 'box') {
           e.title = 'left';
@@ -887,12 +909,7 @@ class Plan implements LevelPlan {
           e.title = 'below';
           continue;
         }
-        lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
-      }
-      for (const group of lanes.values()) {
-        group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => {
-          e.title = i === 0 ? 'left' : 'below';
-        });
+        e.title = 'left';
       }
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
