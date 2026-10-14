@@ -11,9 +11,15 @@ export type Ast =
   | { k: 'call'; fn: Ast; args: Ast[]; kwargs: [string, Ast][]; pos: number }
   | { k: 'list'; items: Ast[]; pos: number }
   | { k: 'neg'; arg: Ast; pos: number }
-  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number };
+  | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number }
+  | { k: 'cmp'; op: CompareOp; a: Ast; b: Ast; pos: number }
+  | { k: 'cond'; test: Ast; then: Ast; other: Ast; pos: number };
 
-export type BinaryOp = '+' | '-' | '*' | '/' | '//' | '@' | '**';
+export type BinaryOp = '+' | '-' | '*' | '/' | '//' | '%' | '@' | '**';
+
+export type CompareOp = '==' | '!=' | '<' | '<=' | '>' | '>=';
+
+const COMPARE_OPS: readonly string[] = ['==', '!=', '<', '<=', '>', '>='];
 
 export class ParseError extends Error {
   constructor(
@@ -26,7 +32,7 @@ export class ParseError extends Error {
 
 type Token = { t: 'num'; v: number; pos: number } | { t: 'str'; v: string; pos: number } | { t: 'id'; v: string; pos: number } | { t: 'op'; v: string; pos: number } | { t: 'end'; pos: number };
 
-const OPERATORS = ['...', '**', '//', '+', '-', '*', '/', '@', '(', ')', '[', ']', ',', '=', '.', ':'];
+const OPERATORS = ['...', '**', '//', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%', '@', '(', ')', '[', ']', ',', '=', '.', ':'];
 
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
@@ -94,7 +100,33 @@ class Parser {
     if (token.t !== 'end') throw new ParseError(`unexpected '${token.v}'`, token.pos);
   }
 
+  private isWord(v: string): boolean {
+    const token = this.peek();
+    return token.t === 'id' && token.v === v;
+  }
+
   expr(): Ast {
+    const then = this.comparison();
+    if (!this.isWord('if')) return then;
+    const at = this.take();
+    const test = this.comparison();
+    if (!this.isWord('else')) throw new ParseError("expected 'else'", this.peek().pos);
+    this.take();
+    return { k: 'cond', test, then, other: this.expr(), pos: at.pos };
+  }
+
+  private comparison(): Ast {
+    const left = this.sum();
+    const token = this.peek();
+    if (token.t !== 'op' || !COMPARE_OPS.includes(token.v)) return left;
+    this.take();
+    const node: Ast = { k: 'cmp', op: token.v as CompareOp, a: left, b: this.sum(), pos: token.pos };
+    const next = this.peek();
+    if (next.t === 'op' && COMPARE_OPS.includes(next.v)) throw new ParseError('write chained comparisons as separate comparisons', next.pos);
+    return node;
+  }
+
+  private sum(): Ast {
     let left = this.term();
     while (this.isOp('+') || this.isOp('-')) {
       const op = this.take() as { v: BinaryOp; pos: number };
@@ -105,7 +137,7 @@ class Parser {
 
   private term(): Ast {
     let left = this.unary();
-    while (this.isOp('*') || this.isOp('/') || this.isOp('//') || this.isOp('@')) {
+    while (this.isOp('*') || this.isOp('/') || this.isOp('//') || this.isOp('%') || this.isOp('@')) {
       const op = this.take() as { v: BinaryOp; pos: number };
       left = { k: 'bin', op: op.v, a: left, b: this.unary(), pos: op.pos };
     }
@@ -192,6 +224,7 @@ class Parser {
     if (token.t === 'id') {
       if (token.v === 'True' || token.v === 'False') return { k: 'bool', v: token.v === 'True', pos: token.pos };
       if (token.v === 'None') return { k: 'none', pos: token.pos };
+      if (token.v === 'if' || token.v === 'else') throw new ParseError(`unexpected '${token.v}'`, token.pos);
       return { k: 'name', name: token.v, pos: token.pos };
     }
     if (token.t === 'op' && token.v === '(') {

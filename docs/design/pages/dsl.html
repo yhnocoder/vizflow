@@ -331,7 +331,7 @@ data:
 <p>模块文件用 <code>module</code> 写模块名，页面文件的 <code>modules</code> 也可以直接写模块。模块只能读取自己的参数、输入，以及 <code>init</code> 和 <code>forward</code> 定义的名字，同一作用域里一个名字只能定义一次。</p>
 
 <h3>args</h3>
-<p>类型是 <code>dim</code>、<code>int</code>、<code>float</code>、<code>bool</code>、<code>dtype</code> 或 <code>module</code>，有默认值时写 <code>{ type: float, default: 1e-6 }</code>。使用处的 <code>args</code> 可以是字典或列表，列表里的裸名字表示传入调用者同名的值。</p>
+<p>类型是 <code>dim</code>、<code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、<code>list</code>、<code>dtype</code> 或 <code>module</code>，有默认值时写 <code>{ type: float, default: 1e-6 }</code>。使用处的 <code>args</code> 可以是字典或列表，列表里的裸名字表示传入调用者同名的值。</p>
 
 <h3>inputs 与 outputs</h3>
 <pre><code class="language-yaml">inputs:
@@ -356,7 +356,8 @@ data:
       dtype: fp32
       value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)</code></pre>
 <ul>
-  <li>子模块写 <code>{ use, args }</code>，没有参数时只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建层列表，第 $i$ 层的路径是 <code>layers[i]</code>。</li>
+  <li>子模块写 <code>{ use, args }</code>，没有参数时只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建层列表，第 $i$ 层的路径是 <code>layers[i]</code>。层列表写 <code>index: layer_idx</code> 时，<code>args</code> 对每一层单独求值，<code>layer_idx</code> 是这一层的序号，对应 HF 的 <code>Qwen3_5DecoderLayer(config, layer_idx)</code>。不同类型的层用这个序号读 <code>layer_types[layer_idx]</code>，再由模块自己按类型创建子模块。</li>
+  <li>子模块也可以写 <code>present</code>，为假时不创建，名字是 <code>None</code>，对应 HF 里 <code>if</code> 分支只创建其中一个子模块。</li>
   <li><code>weights</code> 和 <code>buffers</code> 的字段相同，区别只在 <code>weights</code> 有梯度。两者都可以写 <code>shape</code>、<code>dtype</code>、<code>present</code>，取值用 <code>init</code> 或 <code>value</code> 二选一。</li>
   <li><code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数。</li>
   <li><code>value</code> 是编译时求值的表达式，不能读张量。</li>
@@ -379,6 +380,20 @@ data:
   <li>同一个实例可以调用多次，共用参数；第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。层列表依次调用各层，第一个位置参数逐层串联。</li>
   <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算和类型转换不单独画，画在最近的已画出的源节点上。</li>
   <li>每个 <code>forward</code> 结果都要被某一步展示，或由一个被展示的模块调用算出，否则报错。确实不需要展示的结果写进 <code>unshown</code>。</li>
+  <li>表达式支持比较 <code>==</code>、<code>!=</code>、<code>&lt;</code>、<code>&lt;=</code>、<code>&gt;</code>、<code>&gt;=</code>（不能连写），条件表达式 <code>a if 条件 else b</code>（只求值选中的一边，条件必须是 True 或 False），以及数的 <code>%</code>（与 Python 一样，结果与除数同号）。</li>
+</ul>
+<pre><code class="language-yaml">forward:
+  - core_attn_out: zeros_like(value)
+  - for: i in range(num_chunks)
+    do:
+      - q_i: query[:, i]
+      - v_new: v_i - v_prime
+      - core_attn_out[:, i]: attn_inter + attn_i @ v_new
+      - last_recurrent_state: last_recurrent_state * decay_i + update_i</code></pre>
+<ul>
+  <li>循环写 <code>{ for: i in range(n), do: [...] }</code> 或 <code>range(start, stop)</code>，编译时展开，每一轮的节点路径带 <code>[i]</code>，tex 带下标 $_{i}$，例如 <code>q_i[1]</code>。真实规模下轮数不同时，显存与计算量按真实轮数计算。</li>
+  <li>循环里可以重新绑定循环外定义的名字，对应 HF 在循环里改写 <code>last_recurrent_state</code>；循环外同一个名字只能定义一次。</li>
+  <li><code>x[下标]: 表达式</code> 是 HF 的 <code>x[...] = ...</code>，只能写在循环里，得到写入后的新张量，原张量不变。下标里每一维是 <code>:</code>、一个整数或一段切片，可以有一个 <code>...</code>。整数下标编译成 <code>select_scatter</code>，切片编译成 <code>slice_scatter</code>，多个维度从左到右嵌套，例如 <code>attn[..., i, :i]</code> 是 <code>select_scatter(attn, slice_scatter(attn[..., i], 新值, -1, None, i), -2, i)</code>。</li>
 </ul>
 
 <h2>Layout</h2>
@@ -462,6 +477,16 @@ data:
     - at: -1
       subtitle: 最后一层</code></pre>
 <p><code>loop</code> 对列表的每一项生成一步，<code>i</code> 从 0 开始。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则，再求值模板。<code>show</code> 默认是循环变量。</p>
+<pre><code class="language-yaml">- id: chunk
+  loop: i in range(num_chunks)
+  defaults:
+    title: 第 {{ i }} 块
+    steps:
+      - { id: v_new, show: [v_prime, v_new] }
+      - { id: state, show: last_recurrent_state }</code></pre>
+<p><code>loop: i in range(n)</code> 对 forward 循环的每一轮生成一步，步骤的 id 是 <code>chunk[i]</code>，<code>at</code> 按轮的序号匹配。<code>show</code> 必须写。</p>
+<p class="hint">规则 11：在 <code>range</code> 循环步骤里，forward 循环里绑定的名字取第 <code>i</code> 轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
+<p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
 
 <h2>tex 与 formula</h2>
 <p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。</p>

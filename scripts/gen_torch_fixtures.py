@@ -862,6 +862,16 @@ def creation_and_reverse_cases():
         cases.append(op_case("arange", f"arange{args}", lambda args=args: torch.arange(*args), [], list(args)))
     for size, dtype, name in [(4, torch.float32, "fp32"), (3, torch.bfloat16, "bf16")]:
         cases.append(op_case("causal_mask", f"size {size} {name}", lambda size=size, dtype=dtype: torch.full((size, size), torch.finfo(dtype).min, dtype=dtype).triu(1), [], [size, name]))
+    cases.append(op_case("zeros", "(2, 3)", lambda: torch.zeros(2, 3), [], [2, 3]))
+    cases.append(op_case("ones", "(3, 2)", lambda: torch.ones(3, 2), [], [3, 2]))
+    cases.append(op_case("eye", "3", lambda: torch.eye(3), [], [3]))
+    cases.append(op_case("zeros_like", "(2, 3)", torch.zeros_like, [("input", randn(2, 3))], [tensor_arg(0)]))
+    for diagonal in [0, -1]:
+        cases.append(op_case("tril", f"(2, 3, 3) diagonal {diagonal}", lambda x, diagonal=diagonal: torch.tril(x, diagonal), [("input", randn(2, 3, 3))], [tensor_arg(0), diagonal]))
+    for shape, src, dim, index in [((2, 3, 2), (2, 2), 1, 2), ((3, 4), (3,), -1, 0)]:
+        cases.append(op_case("select_scatter", f"{shape} dim {dim} index {index}", lambda x, v, dim=dim, index=index: torch.select_scatter(x, v, dim, index), [("input", randn(*shape)), ("input", randn(*src))], [tensor_arg(0), tensor_arg(1), dim, index]))
+    for shape, src, dim, start, end in [((3, 4), (3, 2), -1, 1, 3), ((4, 2), (2, 2), 0, None, 2)]:
+        cases.append(op_case("slice_scatter", f"{shape} dim {dim} {start}:{end}", lambda x, v, dim=dim, start=start, end=end: torch.slice_scatter(x, v, dim, start, end), [("input", randn(*shape)), ("input", randn(*src))], [tensor_arg(0), tensor_arg(1), dim, start, end]))
     return cases
 
 

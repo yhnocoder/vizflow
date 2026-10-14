@@ -333,6 +333,7 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `rsub` | `g.rsub(a, 1)` | 计算 $1-a$，DSL 里的 `1 - x` |
 | `arange` | `g.arange('T')`、`g.arange(0, 'd', 2, { dtype: 'fp32' })` | 与 `torch.arange` 相同，默认 int64，步长为 0 时报错；没有输入 |
 | `causal_mask` | `g.causal_mask('T', 'bf16')` | $(T,T)$，$s>t$ 的格子是 `torch.finfo(dtype).min`，其余是 0，与 HF `create_causal_mask` 相同 |
+| `zeros`、`ones`、`eye`、`zeros_like` | `g.zeros('H', 'dk', 'dv')`、`g.eye('C')`、`g.zeros_like(a)` | 与 torch 同名函数相同，dtype 默认 fp32，`zeros_like` 取 `a` 的形状和 dtype；没有梯度 |
 | `linear` | `g.linear(x, W)`、`g.linear(x, W, b)` | 组合运算，展开成 `x @ W.T`，给了 `b` 时再加 `b`，与 `F.linear` 相同 |
 | `matmul` | `g.matmul(a, b)` | 2 维乘 2 维，以及 1 维与 2 维的组合；任一边超过 2 维时与 `torch.matmul` 相同，最后两维做矩阵乘，前面的 batch 维按广播规则对齐，例如 `(N, C, d)` 乘 `(N, d, C)` 得到 `(N, C, C)` |
 | `transpose` | `g.transpose(a, dim0, dim1)` | 二维节点也可以写 `W.T` |
@@ -359,6 +360,7 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `nonzero_static` | `g.nonzero_static(m, 6)`、`g.nonzero_static(m, { size: 'TK' })` | 与 `torch.nonzero_static` 相同：按行优先顺序列出非零元素的下标，输出 shape 为 `(size, m 的维数)`，`int64`，没有梯度；非零元素不到 `size` 个时用 `fill_value`（默认 -1）补齐，超过时截掉；`size` 可以是维度名 |
 | `index` | `g.index(a, [i, j])` | torch 的整数下标取值 `a[i, j]`：下标是形状相同的整数节点，个数不超过 `a` 的维数，输出 shape 为 `[...下标的形状, ...a 余下的维]`，一维下标时是 `[N, ...]`；下标可以为负数；下标不求梯度 |
 | `index_put` | `g.index_put(a, mask, values)` | torch 的布尔下标赋值 `a[mask] = values`，不改写 `a`：`mask` 的形状等于 `a` 的前几维，选中的位置按行优先顺序换成 `values` 的各行；`values` 可以只有余下的维，广播到每个选中的位置。DSL 里写 `index_put(e, eq(types, 0), image_start)` |
+| `select_scatter`、`slice_scatter` | `g.select_scatter(a, src, 1, i)`、`g.slice_scatter(a, src, -1, 0, i)` | 与 torch 同名函数相同，返回改写了一个位置或一段切片的副本；YAML 里循环中的 `x[:, i]: 表达式` 编译成它们 |
 | `scatter` | `g.scatter(a, dim, index, src)`、`g.scatter(a, dim, index, 1)` | 与 `torch.scatter` 的两种写法相同，不改写 `a`：第四个参数是节点 `src` 时，把 `src` 的值按 `index` 写到 `a` 在 `dim` 上的位置；是数时写的都是这个数。`index` 不求梯度，`a` 在被写的位置梯度是 0 |
 | `sort` | `g.sort(a, dim)` | `torch.sort(a, dim).values`，从小到大，值相同时保持原来的顺序；`dim` 默认 -1 |
 | `index_add` | `g.index_add(a, dim, index, source)` | 与 `torch.index_add` 相同，不改写 `a`：输出等于 `a` 再把 `source` 沿 `dim` 的第 $r$ 个切片加到第 `index[r]` 个切片上；`index` 是一维整数节点，不求梯度 |
@@ -368,6 +370,7 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `unsqueeze` | `g.unsqueeze(a, dim)` | 与 `torch.unsqueeze` 相同，在 `dim` 处插入大小为 1 的维度；`dim` 可以为负数；int64 的精确值原样保留 |
 | `pad` | `g.pad(a, [0, 0, 0, p])`、`g.pad(a, 0, 0, 0, p)`、`g.pad(a, [0, 1], { value: -Infinity })` | 与 `F.pad` 的常数补位相同，补的值是 `value`（默认 0）：每两个数是一维的（前面补几个, 后面补几个），从最后一维往前数；数可以是维度名。DSL 里写 `pad(x, 0, 0, 0, P)` |
 | `triu` | `g.triu(a, diagonal)` | 与 `torch.triu` 相同，最后两维里列号减行号小于 `diagonal`（默认 0）的元素变成 0 |
+| `tril` | `g.tril(a, -1)` | 与 `torch.tril` 相同 |
 | `expand` | `g.expand(a, -1, G, n)` | 与 `Tensor.expand` 相同：长度为 1 的维复制成给出的长度，`-1` 保持原长度，前面可以多出新的维；反向把复制出的梯度加回来源元素；数可以是维度名 |
 | `reshape` | `g.reshape(a, -1, E)` | 与 `Tensor.reshape` 相同，数值和 `view` 一样按行优先排列；HF 写 reshape 的地方用它 |
 | `logical_not` | `g.logical_not(m)` | 与 `torch.logical_not` 相同，0 变成 true、非 0 变成 false，输出 `bool`，没有梯度。HF 对 bool 张量写的 `~m` 用它 |

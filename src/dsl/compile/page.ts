@@ -203,7 +203,11 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
       if (module === undefined) fail(at, `module '${raw}' is not imported`);
       value = { module };
     } else if (typeof raw === 'boolean') value = raw;
-    else return fail(at, `config '${name}' cannot be passed to arg '${name}' of ${root.name}`);
+    else if (typeof raw === 'string' && type === 'str') value = raw;
+    else if (Array.isArray(raw) && type === 'list') {
+      if (!raw.every((item) => typeof item === 'string' || typeof item === 'number' || typeof item === 'boolean')) fail(at, `config '${name}' must be a list of strings, numbers or booleans`);
+      value = raw.map((item) => (typeof item === 'number' ? num(item) : item));
+    } else return fail(at, `config '${name}' cannot be passed to arg '${name}' of ${root.name}`);
     rootArgs.set(name, { value, where: at });
   }
   const dtypeWhere = child(configWhere, config, 'dtype');
@@ -384,15 +388,12 @@ function checkShown(c: PageCompiler, sc: StepCompiler, forward: ForwardStep[]): 
     for (const [i, name] of unshown.entries()) {
       if (!call.results.includes(name as string)) fail(child(unshownWhere, unshown, i), `'${String(name)}' is not a forward result of ${def.name}`);
     }
-    const forwardWhere = child(def.where, def.decl, 'forward');
-    for (const name of call.results) {
+    for (const { name, value, where } of call.resultValues) {
       if (unshown.includes(name)) continue;
-      const value = call.values.get(name);
       const producer = value instanceof Result ? value.call : value instanceof Node ? c.producers.get(value) : undefined;
       if (value instanceof Node && drawnOn(value, (n) => shown.has(n) || inputsOfShown.has(n))) continue;
       if (producer !== undefined && producer !== call && sc.shownCalls.has(producer)) continue;
-      const index = (def.decl.forward as Record<string, unknown>[]).findIndex((item) => isRecord(item) && name in item);
-      fail(child(forwardWhere, def.decl.forward as unknown[], index), `'${name}' of ${def.name} is not shown by any step; show it, show the module call that computes it, or list it in unshown`);
+      fail(where, `'${name}' of ${def.name} is not shown by any step; show it, show the module call that computes it, or list it in unshown`);
     }
   }
 }

@@ -98,6 +98,9 @@ export class Call {
   readonly children: Call[] = [];
   readonly outputs = new Map<string, Node>();
   readonly results: string[] = [];
+  readonly resultValues: { name: string; value: Value; where: Where }[] = [];
+  finished = false;
+  readonly iterations = new Map<string, { variable: string; values: Value[]; before: Value | undefined }>();
   readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
   created: Node[] = [];
 

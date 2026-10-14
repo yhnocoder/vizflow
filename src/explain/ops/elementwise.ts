@@ -1,6 +1,6 @@
 import type { OpCtx, OpExplain } from '../../autograd';
 import { transposedTex } from '../../autograd/node';
-import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, powOperands, sigmoid, triuKeeps } from '../../autograd/ops/elementwise';
+import { type ClampAttrs, type PowAttrs, SOFTPLUS_THRESHOLD, type TriuAttrs, clampInside, copysignLocal, normalCdf, normalPdf, powOperands, sigmoid, trilKeeps, triuKeeps } from '../../autograd/ops/elementwise';
 import { type Tensor, broadcastIndex, formatNumber, normDim } from '../../tensor';
 
 function operand(ctx: OpCtx, arg: number, out: number[]): number {
@@ -230,6 +230,15 @@ export const triuExplain: OpExplain = {
   tex: {
     forward: (s) => `\\operatorname{triu}(${s.in[0]},${(s.attrs as TriuAttrs).diagonal})`,
     local: (s) => (triuKeeps(s.outIndex, s.attrs as TriuAttrs) ? '1' : '0'),
+  },
+};
+
+export const trilExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: (ctx, out) => (trilKeeps(out, ctx.attrs as TriuAttrs) ? 1 : 0),
+  tex: {
+    forward: (s) => `\\operatorname{tril}(${s.in[0]},${(s.attrs as TriuAttrs).diagonal})`,
+    local: (s) => (trilKeeps(s.outIndex, s.attrs as TriuAttrs) ? '1' : '0'),
   },
 };
 

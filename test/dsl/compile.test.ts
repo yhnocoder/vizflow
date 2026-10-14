@@ -383,3 +383,61 @@ describe('page data', () => {
     await expect(page(root({ config: '{ d: 2, e: 3 }', forward: '- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/config 'e' is not an arg of M/);
   });
 });
+
+describe('layers of different kinds and forward loops', () => {
+  it('passes each list item its own args through index and drops steps of absent members', async () => {
+    const MIXED = `
+module: Mixed
+args: { n: dim, kind: str }
+inputs:
+  x: { type: tensor, shape: [T, n], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: [T, n], dtype: dtype }
+init:
+  weights:
+    a: { shape: [n], init: ones, present: kind == 'a' }
+    b: { shape: [n], init: ones, present: kind == 'b' }
+forward:
+  - out: x * a if kind == 'a' else x + b
+steps:
+  - id: a
+  - id: b
+  - id: out
+`;
+    const p = await page(
+      root({
+        args: 'd: dim\nkinds: list',
+        config: '{ d: 2, kinds: [a, b] }',
+        init: "layers: { use: 'list[Mixed]', count: 2, index: i, args: [{ n: d }, { kind: 'kinds[i]' }] }",
+        extra: 'import: { Mixed: ./mixed.yaml }',
+        forward: '- y: layers(x)\n- l: y.mean()',
+        steps: '- id: layers\n  loop: layer = layers[i]\n- id: l',
+      }),
+      { 'mem:/pages/mixed.yaml': MIXED },
+    );
+    expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['layers[0].a', 'layers[1].b']);
+    expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([2, 3, 4, 5, 6, 7]);
+    expect(p.steps.forward.map((s) => s.title)).toContain('a');
+    expect(p.steps.forward.filter((s) => s.title === 'a' || s.title === 'b')).toHaveLength(2);
+  });
+
+  it('runs a loop, writes into a tensor by index and shows each iteration in a loop step', async () => {
+    const p = await page(
+      root({
+        forward: '- acc: zeros_like(x)\n- s: x[0] * 0\n- for: i in range(T)\n  do:\n    - s: s + x[i]\n    - acc[i, :]: s\n- l: acc.mean()',
+        steps: '- id: init\n  show: [acc, s]\n- id: scan\n  loop: i in range(T)\n  defaults: { show: [s, acc], title: "row {{ i }}" }\n- id: l',
+      }),
+    );
+    expect(Array.from(p.nodes.get('acc[2]')!.value.data)).toEqual([1, 2, 4, 6, 9, 12]);
+    expect(Array.from(p.nodes.get('acc')!.value.data)).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(p.steps.forward.map((s) => s.title).filter((t) => t.startsWith('row'))).toEqual(['row 0', 'row 1', 'row 2']);
+    expect(p.nodes.get('s[1]')!.tex).toContain('_{1}');
+  });
+
+  it('writes into a slice with select_scatter and slice_scatter and rejects a write outside a loop', async () => {
+    const yaml = (forward: string) => page(root({ forward, steps: '- id: y\n- id: w\n  loop: i in range(1, 2)\n  defaults: { show: y }\n- id: l' }));
+    const p = await yaml('- y: x * 1\n- for: i in range(1, 2)\n  do:\n    - y[i, :i]: x[i, :i] * 10\n- l: y.mean()');
+    expect(Array.from(p.nodes.get('y[1]')!.value.data)).toEqual([1, 2, 30, 4, 5, 6]);
+    await expect(yaml('- y: x * 1\n- y[0]: x[0]\n- l: y.mean()')).rejects.toThrow(/writes into a tensor, which forward does only inside a loop/);
+  });
+});

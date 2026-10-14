@@ -8,17 +8,19 @@ import { describe } from './expressions';
 import { notesOf } from './notes';
 import type { PageCompiler } from './page';
 import { type Call, type Env, Instance, InstanceList, Result, type Value } from './types';
-import { checkKeys, num, record } from './util';
+import { checkKeys, isNum, num, record } from './util';
 
 const EXPLANATION_KEYS = ['label', 'title', 'text', 'append'];
 const OPTION_KEYS: ReadonlySet<string> = new Set([...EXPLANATION_KEYS, 'show', 'subtitle', 'expand', 'flat', 'brace', 'formula', 'notes', 'fold', 'backward', 'edit']);
 const STEP_KEYS: ReadonlySet<string> = new Set([...OPTION_KEYS, 'id', 'steps']);
+const LOOP_DEFAULT_KEYS: ReadonlySet<string> = new Set([...OPTION_KEYS, 'steps']);
 const LOOP_KEYS: ReadonlySet<string> = new Set(['id', 'loop', 'defaults', 'rules']);
 const RULE_KEYS: ReadonlySet<string> = new Set([...OPTION_KEYS, 'at']);
 const BACKWARD_KEYS: ReadonlySet<string> = new Set(['label', 'title', 'text', 'append', 'notes']);
 const FOLD_KEYS: ReadonlySet<string> = new Set(['label', 'title', 'text', 'append', 'backward']);
 const INTRO_KEYS = ['label', 'notes', 'backward'];
 const LOOP = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*$/;
+const RANGE_LOOP = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\((.+)\)\s*$/;
 
 type Options = Record<string, unknown>;
 
@@ -98,6 +100,7 @@ export class StepCompiler {
   readonly allSteps = new Set<ForwardStep>();
   private readonly carried = new Map<Call, Node[]>();
   private readonly marks = new Map<Rec, string>();
+  private readonly absent = new WeakMap<Tree[], Set<string>>();
 
   constructor(private readonly c: PageCompiler) {}
 
@@ -115,6 +118,8 @@ export class StepCompiler {
     if (!Array.isArray(steps)) fail(where, 'steps must be a list of steps');
     const seen = new Set<string>();
     const out: Tree[] = [];
+    const absent = new Set<string>();
+    this.absent.set(out, absent);
     steps.forEach((spec, i) => {
       const at = child(where, steps, i);
       const step = record(spec, at, 'a step');
@@ -122,6 +127,10 @@ export class StepCompiler {
       if (seen.has(step.id)) fail(child(at, step, 'id'), `step id '${step.id}' is used twice`);
       seen.add(step.id);
       const stepEnv = { ...env, where: at };
+      if (step.loop === undefined && step.steps === undefined && this.isNone(step.show ?? step.id, this.field(stepEnv, step, step.show === undefined ? 'id' : 'show'))) {
+        absent.add(step.id);
+        return;
+      }
       if (step.loop !== undefined) out.push(...this.loop(step, stepEnv));
       else {
         checkKeys(step, STEP_KEYS, at);
@@ -135,18 +144,14 @@ export class StepCompiler {
     const at = env.where;
     checkKeys(step, LOOP_KEYS, at);
     const loopWhere = child(at, step, 'loop');
-    const match = typeof step.loop === 'string' ? LOOP.exec(step.loop) : null;
-    if (match === null) fail(loopWhere, "loop must look like 'layer = layers[i]'");
-    const [, variable, listText, index] = match;
-    const listValue = this.c.reference(listText, { ...env, where: loopWhere });
-    const items: Value[] = listValue instanceof InstanceList ? listValue.items : Array.isArray(listValue) ? listValue : this.c.fail({ ...env, where: loopWhere }, `'${listText}' is ${describe(listValue)}, not a list`);
+    const { variable, index, items } = this.loopItems(step.loop, { ...env, where: loopWhere });
     const defaults = record(step.defaults, child(at, step, 'defaults'), 'defaults');
-    checkKeys(defaults, OPTION_KEYS, child(at, step, 'defaults'));
+    checkKeys(defaults, LOOP_DEFAULT_KEYS, child(at, step, 'defaults'));
     const rulesWhere = child(at, step, 'rules');
     const rules = step.rules ?? [];
     if (!Array.isArray(rules)) fail(rulesWhere, 'rules must be a list');
     return items.map((item, i) => {
-      const locals = new Map<string, Value>([...env.locals, [index, num(i)], [variable, item]]);
+      const locals = new Map<string, Value>([...env.locals, ...(index === undefined ? [] : [[index, num(i)] as [string, Value]]), [variable, item]]);
       const matching = rules.filter((rule, k) => {
         const ruleWhere = child(rulesWhere, rules, k);
         const spec = record(rule, ruleWhere, 'a rule');
@@ -158,9 +163,33 @@ export class StepCompiler {
       });
       const options = merged([defaults, ...matching]);
       delete options.at;
-      if (options.show === undefined) options.show = variable;
-      return this.step(`${String(step.id)}[${i}]`, options, { ...env, locals, where: child(at, step, 'defaults') });
+      if (options.show === undefined && index !== undefined) options.show = variable;
+      return this.step(`${String(step.id)}[${index === undefined ? (item as { toy: number }).toy : i}]`, options, { ...env, locals, where: child(at, step, 'defaults') });
     });
+  }
+
+  private loopItems(loop: unknown, env: Env): { variable: string; index: string | undefined; items: Value[] } {
+    const text = typeof loop === 'string' ? loop : '';
+    const range = RANGE_LOOP.exec(text);
+    if (range !== null) {
+      const bounds = this.c.reference(`[${range[2]}]`, env);
+      const ints = Array.isArray(bounds) ? bounds.map((b) => (isNum(b) && Number.isInteger(b.toy) ? b.toy : undefined)) : [];
+      if (ints.length < 1 || ints.length > 2 || ints.some((b) => b === undefined)) this.c.fail(env, `range(${range[2]}) needs one or two integers`);
+      const [start, stop] = ints.length === 1 ? [0, ints[0] as number] : (ints as number[]);
+      return { variable: range[1], index: undefined, items: Array.from({ length: Math.max(0, stop - start) }, (_, k) => num(start + k)) };
+    }
+    const match = LOOP.exec(text);
+    if (match === null) fail(env.where, "loop must look like 'layer = layers[i]' or 'i in range(n)'");
+    const [, variable, listText, index] = match;
+    const listValue = this.c.reference(listText, env);
+    const items: Value[] = listValue instanceof InstanceList ? listValue.items : Array.isArray(listValue) ? listValue : this.c.fail(env, `'${listText}' is ${describe(listValue)}, not a list`);
+    return { variable, index, items };
+  }
+
+  private isNone(show: unknown, env: Env): boolean {
+    if (typeof show !== 'string') return false;
+    const ast = this.c.parse(show, env);
+    return (ast.k === 'name' || ast.k === 'member') && this.c.evaluate(ast, env, { k: 'ref' }, false) === null;
   }
 
   private field(env: Env, options: Options, key: string): Env {
@@ -396,6 +425,7 @@ export class StepCompiler {
 
   private patch(trees: Tree[], path: string, value: unknown, env: Env): void {
     const target = this.find(trees, path.split('.'), env.where, path);
+    if (target === undefined) return;
     const options = record(value, env.where, 'an edit');
     checkKeys(options, OPTION_KEYS, env.where);
     if (options.show !== undefined) fail(child(env.where, options, 'show'), 'edit cannot change what a step shows');
@@ -403,9 +433,10 @@ export class StepCompiler {
     else this.groupOptions(target, options, env);
   }
 
-  private find(trees: Tree[], parts: string[], where: Where, path: string): Tree {
+  private find(trees: Tree[], parts: string[], where: Where, path: string): Tree | undefined {
     const [head, ...rest] = parts;
     const found = trees.find((t) => t.id === head);
+    if (found === undefined && this.absent.get(trees)?.has(head)) return undefined;
     if (found === undefined) fail(where, `there is no step '${path}'; the steps here are ${trees.map((t) => t.id).join(', ') || '(none)'}`);
     if (rest.length === 0) return found;
     if (found.kind !== 'group') fail(where, `step '${head}' shows tensors, so it has no step '${rest.join('.')}'`);
@@ -551,6 +582,7 @@ export class StepCompiler {
       const all = path.endsWith('.*');
       const parts = (all ? path.slice(0, -2) : path).split('.');
       const target = this.find(scope, parts, env.where, path);
+      if (target === undefined) return [];
       if (target.kind === 'leaf') return [target.rec];
       if (!all) fail(env.where, `\\step{${path}}: '${path}' has steps; write \\step{${path}.*} for all of them`);
       return leaves(target.children);

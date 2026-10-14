@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { type PadAttrs, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, selectScatterTarget, sliceScatterSource, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
 import { broadcastIndex, formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -372,4 +372,38 @@ export const reshapeExplain: OpExplain = {
     forward: (s) => `\\operatorname{reshape}(${s.in[0]})`,
     local: () => '1',
   },
+};
+
+function selectScatterSource(ctx: OpCtx, out: number[]): { arg: number; index: number[] } {
+  const [input, src] = ctx.inputs;
+  const { dim, index } = selectScatterTarget(input.shape, src.shape, ctx.attrs as SelectAttrs);
+  if (out[dim] !== index) return { arg: 0, index: [...out] };
+  return { arg: 1, index: out.filter((_, d) => d !== dim) };
+}
+
+export const selectScatterExplain: OpExplain = {
+  pattern: 'select',
+  local: (ctx, out, arg) => (selectScatterSource(ctx, out).arg === arg ? 1 : 0),
+  tex: {
+    forward: (s) => {
+      const { dim, index } = s.attrs as SelectAttrs;
+      return `\\operatorname{select\\_scatter}(${s.in[0]},${s.in[1]},${dim},${index})`;
+    },
+    local: () => '1',
+  },
+  selected: (ctx, out) => [selectScatterSource(ctx, out)],
+};
+
+export const sliceScatterExplain: OpExplain = {
+  pattern: 'select',
+  local: (ctx, out, arg) => (sliceScatterSource(ctx.inputs[0].shape, ctx.inputs[1].shape, ctx.attrs as SliceScatterAttrs, out).arg === arg ? 1 : 0),
+  tex: {
+    forward: (s) => {
+      const { dim, start, end, step } = s.attrs as SliceScatterAttrs;
+      const range = `${start ?? ''}:${end ?? ''}${step === 1 ? '' : `:${step}`}`;
+      return `\\operatorname{slice\\_scatter}(${s.in[0]},${s.in[1]},${dim},${range})`;
+    },
+    local: () => '1',
+  },
+  selected: (ctx, out) => [sliceScatterSource(ctx.inputs[0].shape, ctx.inputs[1].shape, ctx.attrs as SliceScatterAttrs, out)],
 };

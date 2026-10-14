@@ -114,6 +114,32 @@ const cases: Case[] = [
   },
   { op: 'arange', build: (g) => ({ out: g.arange(1, 7, 2), inputs: [] }) },
   { op: 'causal_mask', build: (g) => ({ out: g.causal_mask(3, 'fp32'), inputs: [] }) },
+  { op: 'zeros', build: (g) => ({ out: g.zeros(2, 3), inputs: [] }) },
+  { op: 'ones', build: (g) => ({ out: g.ones(2, 3), inputs: [] }) },
+  { op: 'eye', build: (g) => ({ out: g.eye(3), inputs: [] }) },
+  {
+    op: 'zeros_like',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.add(g.zeros_like(x), x), inputs: [x] };
+    },
+  },
+  {
+    op: 'select_scatter',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      const s = g.input('s', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.select_scatter(x, s, 1, 2), inputs: [x, s] };
+    },
+  },
+  {
+    op: 'slice_scatter',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const s = g.input('s', [3, 2], randomValues(r, [3, 2]));
+      return { out: g.slice_scatter(x, s, -1, 1, 3), inputs: [x, s] };
+    },
+  },
   {
     op: 'pow',
     build: (g, r) => {
@@ -413,6 +439,13 @@ const cases: Case[] = [
     build: (g, r) => {
       const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
       return { out: g.triu(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'tril',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.tril(x, -1), inputs: [x] };
     },
   },
   {

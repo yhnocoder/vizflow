@@ -33,6 +33,7 @@ import {
   greaterOp,
   maskedFillOp,
   triuOp,
+  trilOp,
   remainderOp,
   floorDivideOp,
   bitwiseXorOp,
@@ -74,10 +75,12 @@ import {
   viewOp,
   sortOp,
   indexPutOp,
+  selectScatterOp,
+  sliceScatterOp,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { groupedLinearOp, linearComposite, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
-import { arangeOp, causalMaskOp } from './creation';
+import { arangeOp, causalMaskOp, eyeOp, onesOp, zerosLikeOp, zerosOp } from './creation';
 import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp, rrmsOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
@@ -147,6 +150,10 @@ export interface BuiltinOps {
   arange(end: number | string, options?: OpOptions): Node;
   arange(start: number, end: number | string, step?: number, options?: OpOptions): Node;
   causal_mask(size: number | string, dtype: Dtype, options?: OpOptions): Node;
+  zeros(...args: [...(number | string)[], OpOptions | number | string]): Node;
+  ones(...args: [...(number | string)[], OpOptions | number | string]): Node;
+  eye(n: number | string, options?: OpOptions): Node;
+  zeros_like(input: Node, options?: OpOptions): Node;
   linear(input: Node, weight: Node, bias?: Node | null, options?: OpOptions): Node;
   rrms(input: Node, eps: number, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
@@ -213,6 +220,7 @@ export interface BuiltinOps {
   pad(input: Node, pad: (number | string)[], options?: PadOptions): Node;
   pad(input: Node, ...pad: (number | string)[]): Node;
   triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
+  tril(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
   masked_fill(input: Node, mask: Node, value: number, options?: OpOptions): Node;
   expand(input: Node, sizes: (number | string)[], options?: OpOptions): Node;
   expand(input: Node, ...sizes: (number | string)[]): Node;
@@ -226,6 +234,8 @@ export interface BuiltinOps {
   sort(input: Node, dim?: number, options?: OpOptions): Node;
   scatter(input: Node, dim: number, index: Node, src: Node | number, options?: OpOptions): Node;
   index_put(input: Node, mask: Node, values: Node, options?: OpOptions): Node;
+  select_scatter(input: Node, src: Node, dim: number, index: number, options?: OpOptions): Node;
+  slice_scatter(input: Node, src: Node, dim?: number, start?: number | null, end?: number | null, step?: number, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -312,6 +322,13 @@ export const builtinOps: readonly AnyOpDef[] = [
   contiguousOp,
   arangeOp,
   causalMaskOp,
+  zerosOp,
+  onesOp,
+  eyeOp,
+  zerosLikeOp,
+  trilOp,
+  selectScatterOp,
+  sliceScatterOp,
 ];
 
 export const builtinComposites: readonly CompositeDef[] = [linearComposite];
