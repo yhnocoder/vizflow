@@ -165,6 +165,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   title.setData('node', node.name);
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
+  title.setFlag('vf-idle', c.options.steps !== undefined && !active);
   texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
   if (renderable.bars !== undefined) {
     title.pos = [block.title.x, block.title.y, block.title.z];

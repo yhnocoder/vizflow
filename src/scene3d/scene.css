@@ -203,6 +203,10 @@
   color: var(--muted);
 }
 
+.vf-lb.vf-ttl.vf-idle {
+  color: var(--muted);
+}
+
 .vf-lb.vf-off {
   opacity: 0;
   pointer-events: none !important;
