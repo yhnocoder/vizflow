@@ -5,7 +5,9 @@ import {
   clampExplain,
   divExplain,
   erfExplain,
+  cosExplain,
   expExplain,
+  sinExplain,
   logExplain,
   mulExplain,
   negExplain,
@@ -21,6 +23,7 @@ import {
   softplusExplain,
   sqrtExplain,
   subExplain,
+  rsubExplain,
   transposeExplain,
   whereExplain,
   greaterExplain,
@@ -56,6 +59,8 @@ import {
   permuteExplain,
   repeatExplain,
   repeatInterleaveExplain,
+  repeatKvExplain,
+  contiguousExplain,
   reshapeExplain,
   scatterExplain,
   selectExplain,
@@ -66,21 +71,28 @@ import {
   sortExplain,
   indexPutExplain,
 } from './index_ops';
+import { arangeExplain, causalMaskExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
-import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
+import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain, rrmsExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   add: addExplain,
   sub: subExplain,
+  rsub: rsubExplain,
+  arange: arangeExplain,
+  causal_mask: causalMaskExplain,
   mul: mulExplain,
   div: divExplain,
   neg: negExplain,
   exp: expExplain,
+  cos: cosExplain,
+  sin: sinExplain,
   log: logExplain,
   pow: powExplain,
   rsqrt: rsqrtExplain,
+  rrms: rrmsExplain,
   sqrt: sqrtExplain,
   reciprocal: reciprocalExplain,
   erf: erfExplain,
@@ -90,6 +102,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   relu: reluExplain,
   gelu: geluExplain,
   identity: identityExplain,
+  alias: identityExplain,
   rotate_half: rotateHalfExplain,
   clamp: clampExplain,
   transpose: transposeExplain,
@@ -146,6 +159,8 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   index_put: indexPutExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
+  repeat_kv: repeatKvExplain,
+  contiguous: contiguousExplain,
 };
 
 for (const [name, def] of Object.entries(builtinExplains)) registerExplain(name, def);

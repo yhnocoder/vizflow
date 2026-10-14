@@ -288,12 +288,12 @@ describe('stack layout', () => {
     expect(blockOf(blocks, 'LSE').elements[0]).toMatchObject({ x: 4, y: 1, z: 2 });
   });
 
-  it('lays a rank-3 tensor out as rows by side-by-side boards', () => {
+  it('lays a rank-3 leaf out as side-by-side boards along its first dimension', () => {
     const g = graph();
     const x = g.input('x', [2, 2, 3], Array.from({ length: 12 }, (_, i) => i));
     const ctx = { visible: g.nodes, aligned: new Map(), targetOf: targetColumn, focus: 0 };
     const { blocks } = resolveLayout([stack(x)], ctx);
-    expect(blocks[0].elements.map((e) => [e.row, e.col])).toEqual(Array.from({ length: 12 }, (_, i) => [Math.floor(i / 6), i % 6]));
+    expect(blocks[0].elements.map((e) => [e.row, e.col])).toEqual(Array.from({ length: 12 }, (_, i) => [Math.floor(i / 3) % 2, Math.floor(i / 6) * 3 + (i % 3)]));
   });
 
   it('rejects tensors with more than three dimensions', () => {

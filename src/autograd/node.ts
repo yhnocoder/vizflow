@@ -1,6 +1,6 @@
 import type { Nested, Tensor } from '../tensor';
 import type { Dtype } from './dtype';
-import type { Graph } from './graph';
+import type { Graph, Size } from './graph';
 
 export type NodeKind = 'input' | 'param' | 'label' | 'buffer' | 'op';
 
@@ -26,7 +26,7 @@ export interface NodeInternals {
 
 export interface NodeCopies {
   drawn: number;
-  real: readonly (number | string)[];
+  real: readonly Size[];
 }
 
 export interface NodeInit {

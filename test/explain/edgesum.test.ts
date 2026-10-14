@@ -27,6 +27,13 @@ interface Case {
 }
 
 const cases: Case[] = [
+  ...[[4], [2, 3], [2, 3, 4]].map((shape): Case => ({
+    op: 'rrms',
+    build: (g, r) => {
+      const x = g.input('x', shape, randomValues(r, shape));
+      return { out: g.rrms(x, 1e-6), inputs: [x] };
+    },
+  })),
   { op: 'add', build: (g, r) => binary(g, r, 'add', [2, 3], [2, 3]) },
   { op: 'sub', build: (g, r) => binary(g, r, 'sub', [1, 5], [1, 1]) },
   { op: 'sub', build: (g, r) => binary(g, r, 'sub', [3], [2, 3]) },
@@ -34,6 +41,8 @@ const cases: Case[] = [
   { op: 'div', build: (g, r) => binary(g, r, 'div', [3, 5], [3, 1], true) },
   { op: 'neg', build: (g, r) => unary(g, r, 'neg', [2, 3]) },
   { op: 'exp', build: (g, r) => unary(g, r, 'exp', [2, 3]) },
+  { op: 'cos', build: (g, r) => unary(g, r, 'cos', [2, 3]) },
+  { op: 'sin', build: (g, r) => unary(g, r, 'sin', [2, 3]) },
   { op: 'log', build: (g, r) => unary(g, r, 'log', [2, 3], true) },
   {
     op: 'transpose',
@@ -86,6 +95,25 @@ const cases: Case[] = [
   { op: 'sub', build: (g, r) => scalar(g, r, 'sub', -1.5) },
   { op: 'mul', build: (g, r) => scalar(g, r, 'mul', -0.7) },
   { op: 'div', build: (g, r) => scalar(g, r, 'div', 4) },
+  { op: 'rsub', build: (g, r) => binary(g, r, 'rsub', [2, 3], [3]) },
+  { op: 'rsub', build: (g, r) => scalar(g, r, 'rsub', 1) },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.pow(10, x), inputs: [x] };
+    },
+  },
+  {
+    op: 'pow',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3], true));
+      const y = g.input('y', [3], randomValues(r, [3]));
+      return { out: g.pow(x, y), inputs: [x, y] };
+    },
+  },
+  { op: 'arange', build: (g) => ({ out: g.arange(1, 7, 2), inputs: [] }) },
+  { op: 'causal_mask', build: (g) => ({ out: g.causal_mask(3, 'fp32'), inputs: [] }) },
   {
     op: 'pow',
     build: (g, r) => {
@@ -116,6 +144,7 @@ const cases: Case[] = [
   { op: 'relu', build: (g, r) => unary(g, r, 'relu', [2, 3]) },
   { op: 'gelu', build: (g, r) => unary(g, r, 'gelu', [2, 3]) },
   { op: 'identity', build: (g, r) => unary(g, r, 'identity', [2, 3]) },
+  { op: 'alias', build: (g, r) => unary(g, r, 'alias', [2, 3]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 4]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [6]) },
   { op: 'rotate_half', build: (g, r) => unary(g, r, 'rotate_half', [3, 2, 4]) },
@@ -209,6 +238,21 @@ const cases: Case[] = [
       return { out: g.repeat_interleave(x, 3, 1), inputs: [x] };
     },
   },
+  {
+    op: 'repeat_kv',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.repeat_kv(x, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'contiguous',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      return { out: g.contiguous(g.transpose(x, 0, 1)), inputs: [x] };
+    },
+  },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [1, 3, 4], [2, 4, 3]) },
   { op: 'logical_not', build: (g, r) => unary(g, r, 'logical_not', [2, 3]) },
   {
     op: 'scatter',

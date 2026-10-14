@@ -1,0 +1,18 @@
+module: Linear
+args:
+  in_features: dim
+  out_features: dim
+  bias: { type: bool, default: True }
+inputs:
+  x: ['...', in_features]
+outputs:
+  y: ['...', out_features]
+init:
+  weights:
+    weight: { shape: [out_features, in_features], init: uniform }
+    bias: { shape: [out_features], init: uniform, present: bias }
+forward:
+  - y: linear(x, weight, bias)
+tex:
+  weight: W
+  bias: '\mathbf{b}'

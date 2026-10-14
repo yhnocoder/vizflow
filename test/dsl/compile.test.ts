@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { type CompiledPage, type PageFile, compilePage, loadPage, parseYaml } from '../../src/dsl';
-import type { Node } from '../../src/core';
-import type { LayoutEntry, LayoutTree } from '../../src/scene3d/auto';
+import { describe, expect, it } from 'vitest';
+import { type CompiledPage, loadPage, parseYaml } from '../../src/dsl';
+import { runProgram } from '../../src/core';
+import { levelPlan } from '../../src/scene3d/levels';
+import { createSteps } from '../../src/steps';
+import { decodeProgram } from '../../src/ui/figure-spec';
 
 const BASE = 'mem:/pages/page.yaml';
 
@@ -17,1239 +19,367 @@ function page(yaml: string, files: Record<string, string> = {}): Promise<Compile
   return loadPage(BASE, { read: memory({ [BASE]: yaml, ...files }) });
 }
 
-const NORM = `
-module: Norm
-params:
-  eps: { type: float, default: 1e-6 }
-inputs:
-  x: { shape: [T, n] }
-outputs: [out]
-weights:
-  W: { shape: [n], init: ones }
-body:
-  - ms: 'mean(x ** 2, -1, keepdim=true)'
-  - out: x * rsqrt(ms + eps) * W
-steps:
-  - { id: rms, show: ms, title: 'rms of $\\of{x}$' }
-  - { id: scale, show: [W, out], title: scale, text: 'out = {{ out | matrix:2 }}' }
-`;
-
-function names(entries: LayoutEntry[]): unknown[] {
-  return entries.map((entry) => {
-    if (entry.kind === 'node') return entry.node.name;
-    if (entry.kind === 'parallel') return { parallel: entry.branches.map((b) => ({ title: b.title, children: names(b.children) })) };
-    return { title: (entry as LayoutTree).title, children: names(entry.children) };
-  });
+function indent(text: string, spaces: number): string {
+  return text
+    .trim()
+    .split('\n')
+    .map((line) => ' '.repeat(spaces) + line)
+    .join('\n');
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
+interface Root {
+  args?: string;
+  inputs?: string;
+  outputs?: string;
+  init?: string;
+  forward: string;
+  tex?: string;
+  steps: string;
+  unshown?: string;
+  config?: string;
+  data?: string;
+  extra?: string;
+  layout?: string;
+}
 
-describe('parseYaml', () => {
-  it('keeps numbers, strings and the YAML 1.2 meaning of on', () => {
-    expect(parseYaml('a: 1e-6\nb: on\nc: [x, "y"]\n', 'f.yaml')).toEqual({ a: 1e-6, b: 'on', c: ['x', 'y'] });
-  });
-
-  it('reports syntax errors with file, line and column', () => {
-    expect(() => parseYaml('a: 1\n  b: [\n', 'bad.yaml')).toThrow(/^bad\.yaml:\d+:\d+: /);
-  });
-});
-
-describe('expressions', () => {
-  it('evaluates precedence, scalars, transposes, ranges and integer division', async () => {
-    const result = await page(`
-title: t
-dims: { T: 2, n: 4, H: 2 }
-inputs:
-  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-weights:
-  W: { shape: [n, n], init: ones }
-body:
-  - a: x @ W.T * 2 + 1
-  - b: a ** 2 - 1e-1
-  - c: -b
-  - for: h
-    in: 1..H
-    body:
-      - p[h]: narrow(a, 1, (h-1)*(n//H), n//H)
-  - d: 'cat(p[1..H], dim=1)'
-  - e: 'sum(d, -1, keepdim=true) / 4'
-`);
-    const a = result.nodes.get('a')!;
-    expect([...a.value.data]).toEqual([21, 21, 21, 21, 53, 53, 53, 53]);
-    expect(result.nodes.get('b')!.value.data[0]).toBeCloseTo(440.9, 12);
-    expect(result.nodes.get('c')!.value.data[0]).toBeCloseTo(-440.9, 12);
-    expect(result.nodes.get('p[2]')!.shape).toEqual([2, 2]);
-    expect([...result.nodes.get('d')!.value.data]).toEqual([...a.value.data]);
-    expect([...result.nodes.get('e')!.value.data]).toEqual([21, 53]);
-    expect(result.nodes.get('a/1')!.op).toBe('matmul');
-    expect(result.nodes.get('a/2')!.op).toBe('mul');
-    expect(result.nodes.get('a')!.op).toBe('add');
-    expect(result.nodes.get('c')!.op).toBe('mul');
-  });
-
-  it('reports parse errors and unknown names with line and column', async () => {
-    await expect(page('title: t\ndims: { T: 2 }\ninputs: {}\nbody:\n  - a: x +* 2\n')).rejects.toThrow(/^mem:\/pages\/page\.yaml:5:11 body\[0\]\.a: unexpected '\*'/);
-    await expect(page('title: t\ndims: { T: 2 }\ninputs:\n  x: { value: [1, 2] }\nbody:\n  - a: x + zz\n')).rejects.toThrow(/page\.yaml:6:12 body\[0\]\.a: name 'zz' is not defined in the page/);
-  });
-
-  it('rejects an item that only refers to an existing node', async () => {
-    await expect(page('title: t\ndims: {}\ninputs:\n  x: { value: [1, 2] }\nbody:\n  - a: x\n')).rejects.toThrow(/'a' must compute a new node/);
-  });
-});
-
-describe('modules', () => {
-  const files = { 'mem:/pages/norm.yaml': NORM };
-
-  it('binds dimensions by matching input shapes and checks repeated names', async () => {
-    const mismatch = `
-module: Same
-inputs:
-  a: { shape: [T, n] }
-  b: { shape: [T, n] }
-outputs: [c]
-body:
-  - c: a + b
-`;
-    await expect(page(`
-title: t
-import: { Same: ./same.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-  y: { value: [[1, 2, 3], [4, 5, 6]] }
-body:
-  - s: { use: Same, inputs: { a: x, b: y }, outputs: { c: z } }
-`, { 'mem:/pages/same.yaml': mismatch })).rejects.toThrow(/inputs\.b: input has shape \(2, 3\), but dimension 1 of Same's pattern \(T, n\) is 2/);
-  });
-
-  it('keeps scopes closed', async () => {
-    const leaky = `
-module: Leaky
-inputs:
-  x: { shape: [T] }
-outputs: [out]
-body:
-  - out: x + secret
-`;
-    await expect(page(`
-title: t
-import: { Leaky: ./leaky.yaml }
-dims: {}
-inputs:
-  secret: { value: [1, 2] }
-  x: { value: [3, 4] }
-body:
-  - l: { use: Leaky, inputs: { x: x }, outputs: { out: y } }
-`, { 'mem:/pages/leaky.yaml': leaky })).rejects.toThrow(/^mem:\/pages\/leaky\.yaml:7:14 body\[0\]\.out: name 'secret' is not defined in 'l' \(Leaky\)/);
-  });
-
-  it('checks parameter types and defaults', async () => {
-    const scaled = `
-module: Scaled
-params:
-  k: { type: int }
-  act: { type: op, values: [relu, gelu], default: relu }
-inputs:
-  x: { shape: [n] }
-outputs: [out]
-body:
-  - out: act(x * k)
-`;
-    const files = { 'mem:/pages/scaled.yaml': scaled };
-    const use = (params: string) => page(`
-title: t
-import: { Scaled: ./scaled.yaml }
-dims: {}
-inputs:
-  x: { value: [-1, 2] }
-body:
-  - s: { use: Scaled, ${params}inputs: { x: x }, outputs: { out: y } }
-`, files);
-    await expect(use('')).rejects.toThrow(/parameter 'k' has no value and no default/);
-    await expect(use('params: { k: 1.5 }, ')).rejects.toThrow(/parameter 'k' must be an integer, got 1.5/);
-    await expect(use('params: { k: 2, act: silu }, ')).rejects.toThrow(/parameter 'act' must be one of relu, gelu, got 'silu'/);
-    await expect(use('params: { k: 2, q: 1 }, ')).rejects.toThrow(/module Scaled has no parameter 'q'/);
-    const ok = await use('params: { k: 2, act: gelu }, ');
-    expect(ok.nodes.get('s.out')!.op).toBe('gelu');
-    expect(ok.nodes.get('y')).toBe(ok.nodes.get('s.out'));
-  });
-
-  it('instantiates the module a module parameter names, from the namespace of the declaring module', async () => {
-    const gated = `
-module: Gated
-import:
-  SiLU: vizflow/nn/silu
-  ReLU: vizflow/nn/relu
-params:
-  act: { type: module, values: [SiLU, ReLU], default: SiLU }
-inputs:
-  x: { shape: [n] }
-outputs: [out]
-body:
-  - act_fn: { use: act, inputs: { x: x }, outputs: { out: out } }
-`;
-    const files = { 'mem:/pages/gated.yaml': gated };
-    const use = (params: string) => page(`
-title: t
-import: { Gated: ./gated.yaml }
-dims: {}
-inputs:
-  x: { value: [-1, 2] }
-body:
-  - g: { use: Gated, ${params}inputs: { x: x }, outputs: { out: y } }
-`, files);
-    const silu = await use('');
-    expect(silu.modules.map((m) => m.id)).toEqual(['g', 'g.act_fn', 'g.act_fn.sigmoid']);
-    expect(Array.from(silu.nodes.get('y')!.value.data)).toEqual([-1 / (1 + Math.E), 2 / (1 + Math.exp(-2))]);
-    const relu = await use('params: { act: ReLU }, ');
-    expect(relu.nodes.get('y')!.op).toBe('relu');
-    await expect(use('params: { act: GELU }, ')).rejects.toThrow(/parameter 'act' must be one of SiLU, ReLU, got 'GELU'/);
-    await expect(page(`
-title: t
+function root(spec: Root): string {
+  return `title: t
+model: M
+config: ${spec.config ?? '{ d: 2 }'}
+data:
+${indent(spec.data ?? 'x: [[1, 2], [3, 4], [5, 6]]', 2)}
+${spec.extra ?? ''}
 modules:
   M:
-    params: { act: { type: module, default: Nope } }
-    inputs: { x: { shape: [n] } }
-    outputs: [x]
-    body: []
-dims: {}
-inputs:
-  x: { value: [1] }
-body:
-  - m: { use: M, inputs: { x: x } }
-`)).rejects.toThrow(/parameter 'act': module 'Nope' is not imported by M/);
-  });
-
-  it('defaults a default_key text parameter to the instance key', async () => {
-    const named = (decl: string) => `
-module: Named
-params:
-  ${decl}
-inputs:
-  x: { shape: [n] }
-outputs: [out]
-body:
-  - out: x * 2
-steps:
-  - { id: double, show: out, title: '\\of{name}：翻倍' }
+    args:
+${indent(spec.args ?? 'd: dim', 6)}
+    inputs:
+${indent(spec.inputs ?? 'x: { type: tensor, shape: [T, d], dtype: fp32 }', 6)}
+    outputs:
+${indent(spec.outputs ?? 'l: { type: tensor, shape: [], dtype: fp32 }', 6)}
+${spec.init === undefined ? '' : `    init:\n${indent(spec.init, 6)}`}
+    forward:
+${indent(spec.forward, 6)}
+${spec.tex === undefined ? '' : `    tex:\n${indent(spec.tex, 6)}`}
+${spec.unshown === undefined ? '' : `    unshown: ${spec.unshown}`}
+${spec.layout === undefined ? '' : `    layout:\n${indent(spec.layout, 6)}`}
+    steps:
+${indent(spec.steps, 6)}
 `;
-    const use = (decl: string, params: string) => page(`
-title: t
-import: { Named: ./named.yaml }
-dims: {}
-inputs:
-  x: { value: [1, 2] }
-body:
-  - first: { use: Named, ${params}inputs: { x: x }, outputs: { out: y } }
-`, { 'mem:/pages/named.yaml': named(decl) });
-    const keyed = await use('name: { type: text, default_key: true }', '');
-    expect(keyed.steps.forward.map((s) => s.title)).toEqual(['first：翻倍']);
-    const given = await use('name: { type: text, default_key: true }', 'params: { name: other }, ');
-    expect(given.steps.forward.map((s) => s.title)).toEqual(['other：翻倍']);
-    await expect(use('name: { type: int, default_key: true }', '')).rejects.toThrow(/default_key must be true and needs type text/);
-  });
+}
 
-  it('shares weights through bindings and creates its own otherwise', async () => {
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: { T: 2, n: 3 }
+const SCALE = `
+module: Scale
+args:
+  n: dim
+  factor: { type: float, default: 2 }
 inputs:
-  x: { value: [[1, 2, 3], [4, 5, 6]] }
-weights:
-  G: { shape: [n], init: ones }
-body:
-  - a: { use: Norm, inputs: { x: x }, weights: { W: G }, outputs: { out: y1 } }
-  - b: { use: Norm, inputs: { x: y1 }, weights: { W: G }, outputs: { out: y2 } }
-  - c: { use: Norm, inputs: { x: y2 }, outputs: { out: y3 } }
-`, files);
-    expect(result.nodes.get('a.W')).toBe(result.nodes.get('G'));
-    expect(result.nodes.get('b.W')).toBe(result.nodes.get('G'));
-    expect(result.nodes.get('c.W')).not.toBe(result.nodes.get('G'));
-    expect(result.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['G', 'c.W']);
-    await expect(page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2, 3]] }
-weights:
-  G: { shape: [2], init: ones }
-body:
-  - a: { use: Norm, inputs: { x: x }, weights: { W: G }, outputs: { out: y } }
-`, files)).rejects.toThrow(/weight 'W' of Norm has shape \(3\), but 'G' has shape \(2\)/);
-  });
+  x: { type: tensor, shape: ['...', n], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: ['...', n], dtype: dtype }
+init:
+  weights:
+    weight: { shape: [n], init: ones }
+forward:
+  - h: x * factor
+  - out: h * weight
+tex:
+  h: '\\viz{x}\\cdot 2'
+  weight: 'w'
+formula: '\\step{mul}{\\viz{out}=\\viz{weight}\\odot}\\step{double}{2\\viz{x}}'
+steps:
+  - id: double
+    show: h
+    title: double
+    text: 'h = {{ h | matrix:1 }}'
+  - id: mul
+    show: [weight, out]
+    title: multiply
+`;
 
-  it('shares buffers between instances with the same parameters and dimensions', async () => {
-    const rope = await page(`
-title: t
-import: { RoPE: vizflow/nn/rope }
-dims: {}
-inputs:
-  a: { value: [[[1, 2, 3, 4], [9, 9, 9, 9]], [[5, 6, 7, 8], [1, 1, 1, 1]]] }
-  b: { value: [[[1, 0, 1, 0]], [[0, 1, 0, 1]]] }
-  c: { value: [[[1, 2]], [[3, 4]]] }
-body:
-  - ra: { use: RoPE, inputs: { q: a, k: b }, outputs: { q_embed: a2, k_embed: b2 } }
-  - rb: { use: RoPE, inputs: { q: b, k: a }, outputs: { q_embed: b3, k_embed: a3 } }
-  - rc: { use: RoPE, params: { theta: 100 }, inputs: { q: b, k: b }, outputs: { q_embed: b4, k_embed: b5 } }
-  - rd: { use: RoPE, inputs: { q: c, k: c }, outputs: { q_embed: c2, k_embed: c3 } }
-`);
-    const buffers = rope.graph.nodes.filter((n) => n.kind === 'buffer').map((n) => n.name);
-    expect(buffers).toEqual(['ra.cos', 'ra.sin', 'rc.cos', 'rc.sin', 'rd.cos', 'rd.sin']);
-    expect(rope.nodes.get('rb.cos')).toBe(rope.nodes.get('ra.cos'));
-    const cos = rope.nodes.get('ra.cos')!;
-    expect(cos.shape).toEqual([2, 1, 4]);
-    expect(cos.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 100), 15);
-    expect(rope.nodes.get('rc.cos')!.value.get([1, 0, 1])).toBeCloseTo(Math.cos(1 / 10), 15);
-    const a2 = rope.nodes.get('a2')!.value;
-    const c1 = Math.cos(1);
-    const s1 = Math.sin(1);
-    expect(a2.get([1, 0, 0])).toBeCloseTo(5 * c1 - 7 * s1, 12);
-    expect(a2.get([1, 1, 2])).toBeCloseTo(c1 + s1, 12);
-    await expect(page(`
-title: t
-import: { RoPE: vizflow/nn/rope }
-dims: {}
-inputs:
-  a: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-body:
-  - r: { use: RoPE, inputs: { q: a, k: a } }
-`)).rejects.toThrow(/input has shape \(2, 4\), but RoPE expects \(T, Hq, dh\)/);
-  });
+const SCALE_FILE = 'mem:/pages/scale.yaml';
 
-  it('detects circular imports', async () => {
-    await expect(page('title: t\nimport: { A: ./a.yaml }\ndims: {}\ninputs: {}\nbody: []\n', {
-      'mem:/pages/a.yaml': 'module: A\nimport: { B: ./b.yaml }\ninputs: {}\noutputs: []\nbody: []\n',
-      'mem:/pages/b.yaml': 'module: B\nimport: { A: ./a.yaml }\ninputs: {}\noutputs: []\nbody: []\n',
-    })).rejects.toThrow(/circular import: mem:\/pages\/page\.yaml -> mem:\/pages\/a\.yaml -> mem:\/pages\/b\.yaml -> mem:\/pages\/a\.yaml/);
+describe('parseYaml', () => {
+  it('reports syntax errors with file, line and column', () => {
+    expect(() => parseYaml('a: [1, 2\n', 'page.yaml')).toThrow(/page\.yaml:\d+:\d+/);
   });
 });
 
-describe('tex', () => {
-  it('derives tex from names, adds instance subscripts and warns on duplicates', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: { T: 2, n: 2, H: 2 }
-inputs:
-  x0: { value: [[1, 2], [3, 4]] }
-weights:
-  Wq: { shape: [n, n], init: ones }
-  W_q: { shape: [n, n], init: ones }
-body:
-  - q: x0 @ Wq.T
-  - gate: q * 2
-  - LSE: 'logsumexp(gate, -1, keepdim=true)'
-  - n1: { use: Norm, inputs: { x: q }, outputs: { out: h } }
-  - n2: { use: Norm, inputs: { x: h }, outputs: { out: h2 } }
-  - for: i
-    in: 1..H
-    body:
-      - k[i]: q * i
-      - nk[i]: { use: Norm, inputs: { x: 'k[i]' } }
-  - one: { use: Norm, inputs: { x: q }, suffix: '^{s}', tex: { ms: '\\mu' } }
-`, { 'mem:/pages/norm.yaml': NORM });
-    const tex = (path: string) => result.nodes.get(path)!.tex;
-    expect(tex('x0')).toBe('\\mathbf{x}_{0}');
-    expect(tex('Wq')).toBe('W_{q}');
-    expect(tex('W_q')).toBe('W_{q}');
-    expect(tex('q')).toBe('\\mathbf{q}');
-    expect(tex('gate')).toBe('\\mathbf{gate}');
-    expect(tex('LSE')).toBe('\\mathrm{LSE}');
-    expect(tex('k[2]')).toBe('\\mathbf{k}^{(2)}');
-    expect(tex('n1.ms')).toBe('\\mathbf{ms}_{1}');
-    expect(tex('n1.W')).toBe('W_{1}');
-    expect(tex('n2.ms')).toBe('\\mathbf{ms}_{2}');
-    expect(tex('h')).toBe('\\mathbf{h}');
-    expect(tex('nk[2].ms')).toBe('\\mathbf{ms}_{2}');
-    expect(tex('one.ms')).toBe('\\mu');
-    expect(tex('one.W')).toBe('W^{s}');
-    expect(result.nodes.get('n1.ms')!.elem).toBe('\\mathrm{ms}_{1}');
-    expect(result.nodes.get('n1.out')!.tex).toBe('\\mathbf{h}');
-    expect(result.nodes.get('n1.out/1')!.tex).toBe('\\mathbf{ms}_{1}+10^{-6}');
-    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/'n1\.ms', 'nk\[1\]\.ms' share the tex '\\mathbf\{ms\}_\{1\}'/));
+describe('args and inputs', () => {
+  it('passes args as a dict or a list, takes defaults and binds T from the data', async () => {
+    const yaml = root({
+      init: `
+a: { use: Scale, args: { n: d, factor: 3 } }
+b: { use: Scale, args: [{ n: d }] }
+c: { use: Scale, args: [n] }`,
+      args: 'd: dim\nn: dim',
+      config: '{ d: 2, n: 2 }',
+      extra: 'import: { Scale: ./scale.yaml }',
+      forward: '- y: a(x)\n- z: b(y)\n- w: c(z)\n- l: w.mean()',
+      steps: '- id: a\n- id: b\n- id: c\n- id: l',
+    });
+    const p = await page(yaml, { [SCALE_FILE]: SCALE });
+    expect(Array.from(p.nodes.get('w')!.value.data)).toEqual([12, 24, 36, 48, 60, 72]);
+    expect(p.nodes.get('a.weight')!.shape).toEqual([2]);
+    expect(p.graph.dims.T).toBe(3);
   });
 
-  it('merges subscripts, substitutes \\of and leaves tex with \\of alone', async () => {
-    const files = { 'mem:/pages/norm.yaml': NORM, 'mem:/pages/act.yaml': `
-module: Act
-params:
-  act: { type: op, default: silu }
-  eps: { type: float, default: 2e-5 }
+  it('rejects unknown and missing args and a misspelled list name', async () => {
+    const make = (init: string) => page(root({ init, forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l', extra: 'import: { Scale: ./scale.yaml }' }), { [SCALE_FILE]: SCALE });
+    await expect(make('a: { use: Scale, args: { n: d, size: 2 } }')).rejects.toThrow(/page\.yaml:\d+:\d+ .*module Scale has no arg 'size'/);
+    await expect(make('a: { use: Scale }')).rejects.toThrow(/module Scale needs arg 'n'/);
+    await expect(make('a: { use: Scale, args: [dd] }')).rejects.toThrow(/name 'dd' is not defined/);
+  });
+
+  it('creates an optional weight only when its present arg is true', async () => {
+    const make = (args: string) => page(root({ init: `a: { use: Linear, args: ${args} }`, forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l' }));
+    const params = (p: CompiledPage) => p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name);
+    const biased = await make('{ in_features: d, out_features: d }');
+    expect(params(biased)).toEqual(['a.weight', 'a.bias']);
+    biased.nodes.get('a.weight')!.set([[1, 0], [0, 1]]);
+    biased.nodes.get('a.bias')!.set([10, 20]);
+    expect(Array.from(biased.nodes.get('y')!.value.data)).toEqual([11, 22, 13, 24, 15, 26]);
+    expect(params(await make('{ in_features: d, out_features: d, bias: False }'))).toEqual(['a.weight']);
+  });
+
+  it('rejects a shape or dtype name that binds from an input but is used nowhere else', async () => {
+    const typo = SCALE.replace("x: { type: tensor, shape: ['...', n]", "x: { type: tensor, shape: ['...', nn]");
+    const yaml = root({ init: 'a: { use: Scale, args: { n: d } }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: a(x)\n- l: y.mean()', steps: '- id: a\n- id: l' });
+    await expect(page(yaml, { [SCALE_FILE]: typo })).rejects.toThrow(/'nn' takes its value from this input but is used nowhere else in Scale; if it should be an arg, check the spelling/);
+    const prose = typo.replace("text: 'h = {{ h | matrix:1 }}'", "text: 'nn rows: {{ h | matrix:1 }}'");
+    await expect(page(yaml, { [SCALE_FILE]: prose })).rejects.toThrow(/'nn' takes its value/);
+    const shown = typo.replace("text: 'h = {{ h | matrix:1 }}'", "text: '{{ nn }} rows: {{ h | matrix:1 }}'");
+    expect((await page(yaml, { [SCALE_FILE]: shown })).nodes.get('y')!.shape).toEqual([3, 2]);
+    const anonymous = SCALE.replace("x: { type: tensor, shape: ['...', n]", "x: { type: tensor, shape: ['...', _]");
+    expect((await page(yaml, { [SCALE_FILE]: anonymous })).nodes.get('y')!.shape).toEqual([3, 2]);
+  });
+
+  it('checks input shapes and keeps init to the args', async () => {
+    const yaml = (inputs: string, init = '') => page(root({ inputs, init: init || undefined, forward: '- l: x.mean()', steps: '- id: l' }));
+    await expect(yaml('x: { type: tensor, shape: [T, 3], dtype: fp32 }')).rejects.toThrow(/page\.yaml:5:6 data\.x: node 'x': expected shape \(3, 3\)/);
+    await expect(yaml('x: { type: tensor, shape: [T, d], dtype: fp32 }', 'weights: { w: { shape: [T], init: ones } }')).rejects.toThrow(/name 'T' is not defined/);
+  });
+});
+
+describe('forward', () => {
+  it('names results by path, shares weights between calls and keeps each call apart', async () => {
+    const p = await page(
+      root({
+        init: 's: { use: Scale, args: [{ n: d }] }',
+        extra: 'import: { Scale: ./scale.yaml }',
+        forward: '- y: s(x)\n- z: s(y)\n- l: z.mean()',
+        steps: '- id: y\n- id: z\n- id: l',
+      }),
+      { [SCALE_FILE]: SCALE },
+    );
+    expect(['s.h', 'y', 's#2.h', 'z'].map((n) => p.nodes.get(n)?.name)).toEqual(['s.h', 'y', 's#2.h', 'z']);
+    expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['s.weight']);
+    expect(p.modules.map((m) => m.id)).toEqual(['s', 's#2']);
+  });
+
+  it('chains the first input through a module list and passes keywords to every layer', async () => {
+    const LAYER = `
+module: Layer
+args: { n: dim }
 inputs:
-  x: { shape: [n] }
-outputs: [y]
-weights:
-  W_q: { shape: [n], init: ones }
-body:
-  - y: { op: act(x * W_q), tex: '\\of{act}(\\of{x})' }
+  x: { type: tensor, shape: [T, n], dtype: dtype }
+  bias: { type: tensor, shape: [T, n], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: [T, n], dtype: dtype }
+init:
+  weights:
+    weight: { shape: [n], init: ones }
+forward:
+  - out: x * weight + bias
+tex:
+  out: 'o'
 steps:
-  - { id: s, show: y, title: '$\\of{act.def}$ and $\\of{eps}$' }
-` };
-    const result = await page(`
-title: t
-import: { Act: ./act.yaml }
-dims: {}
-inputs:
-  v: { value: [1, 2] }
-body:
-  - a1: { use: Act, inputs: { x: v } }
-  - a2: { use: Act, inputs: { x: v } }
-`, files);
-    expect(result.nodes.get('a1.W_q')!.tex).toBe('W_{q,1}');
-    expect(result.nodes.get('a2.y')!.tex).toBe('\\mathrm{SiLU}(\\mathbf{v})');
-    expect(result.steps.forward[0].title).toBe('$\\mathrm{SiLU}(v)=v\\,\\sigma(v)$ and $2\\times 10^{-5}$');
+  - id: out
+`;
+    const p = await page(
+      root({
+        init: "layers: { use: 'list[Layer]', count: 3, args: [{ n: d }] }",
+        extra: 'import: { Layer: ./layer.yaml }',
+        forward: '- y: layers(x, bias=x)\n- l: y.mean()',
+        steps: '- id: layers\n  loop: layer = layers[i]\n  defaults: { subtitle: "layer {{ i + 1 }}" }\n  rules:\n    - { at: -1, subtitle: last }\n- id: l',
+      }),
+      { 'mem:/pages/layer.yaml': LAYER },
+    );
+    expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([4, 8, 12, 16, 20, 24]);
+    expect(p.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name)).toEqual(['layers[0].weight', 'layers[1].weight', 'layers[2].weight']);
+    expect(p.nodes.get('layers[1].out')!.tex).toBe('o^{[1]}');
+    expect(p.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
+  });
+
+  it('returns named results and rejects a name defined twice', async () => {
+    const yaml = (forward: string) => page(root({ init: 'nll: NLLLoss', extra: 'import: { NLLLoss: vizflow/nn/nll-loss }', data: 'x: [[-1, -2], [-3, -4]]\ny: [0, 1]', inputs: 'x: { type: tensor, shape: [T, d], dtype: fp32 }\ny: { type: tensor, shape: [T], dtype: int64 }', forward, steps: '- id: nll' }));
+    const p = await yaml('- result: nll(logp=x, y=y)\n- l: result.loss\n- lt: result.lt');
+    expect(p.nodes.get('l')!.value.data[0]).toBe(2.5);
+    expect(p.nodes.get('lt')!.tex).toBe('\\mathbf{lt}');
+    await expect(yaml('- result: nll(logp=x, y=y)\n- l: result.loss\n- l: result.lt')).rejects.toThrow(/name 'l' is already defined in M/);
+  });
+});
+
+describe('coverage of forward results', () => {
+  it('reports a result no step shows and accepts unshown and layout views of shown tensors', async () => {
+    const yaml = (forward: string, steps: string, unshown?: string) => page(root({ forward, steps, unshown }));
+    await expect(yaml('- y: x * 2\n- l: y.mean()', '- id: l')).rejects.toThrow(/'y' of M is not shown by any step/);
+    await expect(yaml('- y: x * 2\n- l: y.mean()', '- id: l', '[y]')).resolves.toBeDefined();
+    await expect(yaml('- y: x * 2\n- yt: y.transpose(0, 1)\n- l: yt.mean()', '- id: y\n- id: l')).resolves.toBeDefined();
   });
 });
 
 describe('steps', () => {
-  const files = { 'mem:/pages/norm.yaml': NORM };
-
-  it('inserts module steps at the instance and generates steps for uncovered nodes', async () => {
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-weights:
-  W: { shape: [2, 2], init: ones }
-body:
-  - a: x @ W.T
-  - n: { use: Norm, inputs: { x: a }, outputs: { out: h }, steps: { rms: { append: 'from $\\of{a}$' }, scale: { title: new } } }
-  - b: h + 1
-  - c: b * 2
-steps:
-  - { id: last, show: c, title: last }
-`, files);
-    const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['a', 'rms of $\\mathbf{a}$', 'new', 'b', 'last']);
-    expect((forward[0].show as Node[]).map((n) => n.name)).toEqual(['W', 'W.T', 'a']);
-    expect(forward[1].text).toBe('from $\\mathbf{a}$');
-    expect((forward[1].show as Node[]).map((n) => n.name)).toEqual(['n.ms/1', 'n.ms']);
-    expect(forward[2].text).toBe('out = \\begin{pmatrix} {{n.out[0, 0]:2}} & {{n.out[0, 1]:2}} \\\\ {{n.out[1, 0]:2}} & {{n.out[1, 1]:2}} \\end{pmatrix}');
-  });
-
-  it('places a step after the first node it shows, even inside a loop', async () => {
-    const result = await page(`
-title: t
-dims: { H: 2 }
-inputs:
-  x: { value: [1, 2] }
-body:
-  - for: h
-    in: 1..H
-    body:
-      - p[h]: x * h
-      - q[h]: p[h] + 1
-steps:
-  - { id: split, show: 'p[1..H]', title: split }
-`);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['split', 'q[1]']);
-    expect((result.steps.forward[1].show as Node[]).map((n) => n.name)).toEqual(['q[1]', 'q[2]']);
-  });
-
-  it('merges the steps that the iterations of a loop share, including the steps of instances', async () => {
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: { H: 3 }
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - for: h
-    in: 1..H
-    body:
-      - p[h]: x * h
-      - n[h]:
-          use: Norm
-          inputs: { x: 'p[h]' }
-          steps: { rms: { append: 'iteration \\of{h}' } }
-      - g[h]:
-          body:
-            - r[h]: n[h].out + 1
-          steps:
-            - { id: plus, show: 'r[h]', active: 'n[h].out', title: 'plus \\of{h}' }
-  - y: 'cat(r[1..H], dim=1)'
-`, { 'mem:/pages/norm.yaml': NORM });
-    const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['p[1]', 'rms of $\\mathbf{p}^{(1)}$', 'scale', 'plus 1', 'y']);
-    const shown = (i: number) => (forward[i].show as Node[]).map((n) => n.name);
-    expect(shown(0)).toEqual(['p[1]', 'p[2]', 'p[3]']);
-    expect(shown(1)).toEqual(['n[1].ms/1', 'n[1].ms', 'n[2].ms/1', 'n[2].ms', 'n[3].ms/1', 'n[3].ms']);
-    expect(forward[1].text).toBe('iteration 1');
-    expect(shown(3)).toEqual(['r[1]', 'r[2]', 'r[3]']);
-    expect((forward[3].active as Node[]).map((n) => n.name)).toEqual(['n[1].out', 'n[2].out', 'n[3].out']);
-  });
-
-  it('keeps the iterations of a sequential loop as separate steps stacked on the main column', async () => {
-    const result = await page(`
-title: t
-dims: { T: 3 }
-inputs:
-  x: { value: [[1, 2], [3, 4], [5, 6]] }
-buffers:
-  'S[0]': { value: 'zeros(2)' }
-body:
-  - for: t
-    in: 1..T
-    sequential: true
-    body:
-      - g[t]:
-          body:
-            - S[t]: 'S[t-1] + select(x, 0, t-1)'
-          steps:
-            - { id: add, show: 'S[t]', title: 'add \\of{t}' }
-  - y: 'cat([S[1], S[3]], dim=0)'
-`);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['add 1', 'add 2', 'add 3', 'y']);
-    expect([...result.graph.nodes.find((n) => n.name === 'y')!.value.data]).toEqual([1, 2, 9, 12]);
-    const iteration = (children: string[]) => ({ title: undefined, children: [{ title: 'g', children }] });
-    expect(names(result.tree.children)).toEqual(['x', iteration(['S[1]/1', 'S[0]', 'S[1]']), iteration(['S[2]/1', 'S[2]']), iteration(['S[3]/1', 'S[3]']), 'y']);
-  });
-
-  it('applies a patch for a later iteration to the merged step', async () => {
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: { H: 2 }
-modules:
-  Two:
-    params: { H: { type: dim } }
-    inputs: { x: { shape: [T, n] } }
-    outputs: [o]
-    body:
-      - for: h
-        in: 1..H
-        body:
-          - n[h]: { use: Norm, inputs: { x: x } }
-      - o: n[1].out + n[2].out
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - two: { use: Two, params: { H: H }, inputs: { x: x }, steps: { 'n[2].scale': { title: second } } }
-`, { 'mem:/pages/norm.yaml': NORM });
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['rms of $\\mathbf{x}$', 'second', 'o']);
-  });
-
-  it('rejects patches for steps that do not exist', async () => {
-    await expect(page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - n: { use: Norm, inputs: { x: x }, steps: { nope: { title: x } } }
-`, files)).rejects.toThrow(/page\.yaml:8:\d+ body\[0\]\.n\.steps\.nope: step 'nope' does not exist in 'n'/);
-  });
-
-  it('rewrites template names to graph names and attaches backward text', async () => {
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-vocab: [a, b, c]
-inputs:
-  ids: { tokens: [a, c] }
-weights:
-  E: { shape: [3, 2], init: ones }
-body:
-  - e: 'embedding(ids, E)'
-  - n: { use: Norm, inputs: { x: e }, outputs: { out: h } }
-  - l: mean(h)
-steps:
-  - { id: s, show: l, title: s, text: '{{n.ms[0]:3}} {{ h[b, 1] }} {{ids[b]:token}} {{ h.grad[0, 0] }} {{l}}' }
-backward:
-  h:
-    title: back to h
-    text: '{{ h.grad | matrix:2 }}'
-panels:
-  - loss: { sgd: { params: all, lr: 0.1 }, text: '{{ids[b]:token}}' }
-  - { tokens: ids, columns: [h, { node: e, grad: true }] }
-  - { matrix: E.T, highlight: ids }
-`, files);
-    expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('{{n.ms[0]:3}} {{ n.out[b, 1] }} {{ids[b]:token}} {{ n.out.grad[0, 0] }} {{l}}');
-    expect(result.steps.backward).toBe('reverse');
-    const h = result.nodes.get('h')!;
-    const entry = result.steps.forward.find((s) => (Array.isArray(s.show) ? s.show : [s.show]).includes(h))!.backward!;
-    expect(entry.title).toBe('back to h');
-    expect(entry.text).toContain('{{n.out.grad[1, 1]:2}}');
-    const [loss, tokens, matrix] = result.panels as [{ loss: { sgd: { params: unknown[] } } }, { tokens: unknown; columns: unknown[] }, { matrix: unknown; highlight: unknown }];
-    expect(loss.loss.sgd.params).toEqual([result.nodes.get('E'), result.nodes.get('n.W')]);
-    expect(tokens.tokens).toBe(result.nodes.get('ids'));
-    expect(tokens.columns).toEqual([result.nodes.get('h'), { node: result.nodes.get('e'), grad: true }]);
-    expect(matrix.matrix).toBe(result.nodes.get('E')!.T);
-  });
-});
-
-describe('panels and sections', () => {
-  it('resolves nodes in the new panel fields and in sections', async () => {
-    const result = await page(`
-title: t
-dims: { T: 2, d: 4 }
-vocab: [a, b, c]
-inputs:
-  ids: { tokens: [a, c] }
-weights:
-  q: { shape: [T, d], init: ones }
-  k: { shape: [T, d], init: ones }
-  W: { shape: [3, d], init: ones }
-body:
-  - S: q @ k.T
-  - z: q @ W.T
-  - l: mean(z)
-panels:
-  - loss: { parts: S, hint: 走几步 }
-  - { sequence: true, labels: [x1, x2], sgd: { params: all, lr: 0.5 }, random: true }
-  - { attention: [S, S], ids: ids, title: P }
-  - title: W
-    matrices:
-      - { matrix: W.T, caption: 'Wᵀ $d$', limit: 1.2 }
-      - { matrix: W.T, grad: true, limit: 0.3 }
-    highlight: { node: ids, all: true }
-    rows: h
-sections:
-  - title: RoPE
-    rope: { q: q, k: k, theta: 10, dh: d }
-    rows:
-      - columns: [300, 1fr]
-        cells:
-          - [rope_dial]
-          - [{ lead: 开头 }, { text: '### 标题' }]
-      - [rope_curve, { buttons: [{ label: 去, go: S }] }, { rope_compare: { scores: [S], weights: S, ids: ids } }]
-`);
-    const [loss, sequence, attention, matrices] = result.panels as unknown as Record<string, any>[];
-    expect(loss.loss.parts).toBe(result.nodes.get('S'));
-    expect(loss.loss.hint).toBe('走几步');
-    expect(sequence.sequence).toBe(true);
-    expect(sequence.sgd.params).toEqual([result.nodes.get('q'), result.nodes.get('k'), result.nodes.get('W')]);
-    expect(attention.attention).toEqual([result.nodes.get('S'), result.nodes.get('S')]);
-    expect(attention.ids).toBe(result.nodes.get('ids'));
-    expect(matrices.matrices[0].matrix).toBe(result.nodes.get('W')!.T);
-    expect(matrices.matrices[1]).toMatchObject({ grad: true, limit: 0.3 });
-    expect(matrices.highlight).toEqual({ node: result.nodes.get('ids'), all: true });
-    const [section] = result.sections;
-    expect(section.rope).toEqual({ q: [result.nodes.get('q')], k: [result.nodes.get('k')], rows: [-1, 1], head: 1, theta: 10, dh: 4, positions: 24 });
-    expect(section.rows[0]).toEqual({ columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头' }, { text: '### 标题' }]] });
-    expect(section.rows[1].cells[0][1]).toEqual({ buttons: [{ label: '去', go: result.nodes.get('S') }] });
-    expect(section.rows[1].cells[0][2]).toEqual({ rope_compare: { scores: [result.nodes.get('S')], weights: [result.nodes.get('S')], ids: result.nodes.get('ids') } });
-  });
-
-  it('reports unknown section blocks and an odd head size with their location', async () => {
-    const base = `
-title: t
-dims: { T: 2, d: 3 }
-inputs: {}
-weights:
-  q: { shape: [T, d], init: ones }
-body:
-  - l: mean(q)
-sections:
-`;
-    await expect(page(`${base}  - rows: [[{ chart: q }]]\n`)).rejects.toThrow(/sections\[0\]\.rows\[0\]\[0\]\.chart: unknown block 'chart'/);
-    await expect(page(`${base}  - { rope: { q: q, k: q, theta: 10, dh: d }, rows: [] }\n`)).rejects.toThrow(/sections\[0\]\.rope\.dh: dh must be an even integer/);
-  });
-
-  const MD_PAGE = `
-title: t
-dims: { T: 2, d: 4 }
-inputs: {}
-weights:
-  q: { shape: [T, d], init: ones }
-  k: { shape: [T, d], init: ones }
-body:
-  - S: q @ k.T
-  - l: mean(S)
-sections:
-  - { title: RoPE, src: text/rope.md, rope: { q: q, k: k, theta: 10, dh: d } }
-`;
-  const MD = [
-    ':::: columns 300 1fr',
-    '::: column',
-    '::: rope_dial',
-    ':::',
-    ':::',
-    '',
-    '::: column',
-    '::: lead',
-    '开头 $x$',
-    ':::',
-    '',
-    '### 一',
-    '',
-    '正文 $d = {{d}}$',
-    ':::',
-    '::::',
-    '',
-    '第二行',
-    '',
-    '```',
-    '::: not_a_block',
-    '```',
-    '',
-    '---',
-    '',
-    '::: buttons',
-    '- { label: 去, go: S }',
-    ':::',
-    '',
-    '::: rope_compare',
-    'scores: [S]',
-    'weights: S',
-    'ids: q',
-    ':::',
-    '',
-  ].join('\n');
-
-  it('loads a section from a Markdown file next to the page', async () => {
-    const result = await page(MD_PAGE, { 'mem:/pages/text/rope.md': MD });
-    const S = result.nodes.get('S');
-    const [section] = result.sections;
-    expect(section.title).toBe('RoPE');
-    expect(section.rows).toEqual([
-      { columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头 $x$' }, { text: '### 一\n\n正文 $d = {{d}}$' }]] },
-      { cells: [[{ text: '第二行\n\n```\n::: not_a_block\n```' }]] },
-      { cells: [[{ buttons: [{ label: '去', go: S }] }, { rope_compare: { scores: [S], weights: [S], ids: result.nodes.get('q') } }]] },
-    ]);
-  });
-
-  it('reports Markdown section errors at their line in the Markdown file', async () => {
-    const at = (md: string) => page(MD_PAGE, { 'mem:/pages/text/rope.md': md });
-    await expect(at('::: buttons\n- { label: 去, go: nope }\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:2:.*nope/);
-    await expect(at('文字\n\n::: chart\n- 1\n:::\n')).rejects.toThrow(/^mem:\/pages\/text\/rope\.md:4:1 rows\[0\]\[1\]\.chart: unknown block 'chart'/);
-    await expect(at('::: lead\n开头\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: '::: lead' is not closed");
-    await expect(at(':::\n')).rejects.toThrow("mem:/pages/text/rope.md:1:1: ':::' closes nothing");
-    await expect(at('::: column\n:::\n')).rejects.toThrow("'::: column' can only be used inside '::: columns'");
-    await expect(at(':::: columns 1fr\n文字\n::::\n')).rejects.toThrow("mem:/pages/text/rope.md:2:1: only '::: column' blocks can go inside '::: columns'");
-    await expect(at('::: rope_dial big\n:::\n')).rejects.toThrow("'::: rope_dial' takes no arguments");
-    await expect(page(MD_PAGE, {})).rejects.toThrow('no file mem:/pages/text/rope.md');
-    await expect(page(MD_PAGE.replace('src: text/rope.md', 'src: text/rope.md, rows: []'), { 'mem:/pages/text/rope.md': MD })).rejects.toThrow('a section takes either src or rows');
-  });
-});
-
-describe('figure filters in step text', () => {
-  const base = (text: string) => `
-title: t
-dims: { T: 3, d: 4 }
-inputs: {}
-buffers:
-  cos: { value: 'rope_cos(T, d, 10)' }
-weights:
-  x: { shape: [T, d], init: ones }
-body:
-  - y: x * cos
-  - l: mean(y)
-steps:
-  - { id: s, show: y, title: s, text: '${text}' }
-`;
-
-  it('expands a figure filter into a vf-figure tag with the graph name', async () => {
-    const result = await page(base('a {{ cos | rope_wave:cos:12 }} b'));
-    expect(result.steps.forward.find((s) => s.title === 's')!.text).toBe('a <vf-figure name="rope_wave" node="cos" args="cos:12"></vf-figure> b');
-  });
-
-  it('reports a bad figure argument where it is written', async () => {
-    await expect(page(base('{{ cos | rope_wave:tan }}'))).rejects.toThrow(/rope_wave needs cos or sin as its first argument, got 'tan' in '\{\{ cos \| rope_wave:tan \}\}'/);
-    await expect(page(base('{{ cos | chart }}'))).rejects.toThrow(/unknown template filter 'chart'/);
-  });
-});
-
-describe('page structure', () => {
-  it('builds the layout tree, modules and real dimensions', async () => {
-    const files = { 'mem:/pages/norm.yaml': NORM };
-    const result = await page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: { T: 2, d: 2, H: 2 }
-real: { name: Big, d: 64 }
-inputs: {}
-weights:
-  x: { shape: [T, d], init: ones }
-  Wq: { shape: ['H*d', d], init: ones }
-body:
-  - q: x @ Wq.T
-  - for: h
-    in: 1..H
-    brace: head $\\of{h}$
-    body:
-      - p[h]: narrow(q, 1, (h-1)*d, d)
-      - n[h]: { use: Norm, inputs: { x: 'p[h]' } }
-  - g:
-      subtitle: grouped
-      body:
-        - s: 'cat(p[1..H], dim=1)'
-`, files);
-    expect(names(result.tree.children)).toEqual([
-      'x',
-      'Wq',
-      'q',
-      {
-        parallel: [
-          { title: 'head $1$', children: ['p[1]', { title: 'n', children: ['n[1].ms/1', 'n[1].ms', 'n[1].out/1', 'n[1].out/2', 'n[1].out/3', 'n[1].W', 'n[1].out'] }] },
-          { title: 'head $2$', children: ['p[2]', { title: 'n', children: ['n[2].ms/1', 'n[2].ms', 'n[2].out/1', 'n[2].out/2', 'n[2].out/3', 'n[2].W', 'n[2].out'] }] },
-        ],
-      },
-      { title: 'g', children: ['s'] },
-    ]);
-    expect(result.modules.map((m) => [m.title, m.subtitle, m.nodes.length])).toEqual([
-      ['head $1$', '', 7],
-      ['n', '', 6],
-      ['head $2$', '', 7],
-      ['n', '', 6],
-      ['g', 'grouped', 1],
-    ]);
-    expect(result.modules.map((m) => [m.id, m.parent])).toEqual([['h[1]', null], ['n[1]', 'h[1]'], ['h[2]', null], ['n[2]', 'h[2]'], ['g', null]]);
-    expect(result.modules[1].inputs.map((n) => n.name)).toEqual(['p[1]']);
-    expect(result.modules[1].outputs.map((n) => n.name)).toEqual(['n[1].out']);
-    expect(result.modules[1].params.map((n) => n.name)).toEqual(['n[1].W']);
-    expect(result.nodes.get('Wq')!.realShape).toEqual([128, 64]);
-    expect(result.nodes.get('n[1].W')!.realShape).toEqual([64]);
-    expect(result.graph.dims['4:128']).toBe(4);
-    expect(result.page.title).toBe('t');
-  });
-
-  it('compiles a JS object with a base URL and package modules', async () => {
-    const spec: PageFile = {
-      title: 'js',
-      import: { RMSNorm: 'vizflow/nn/rmsnorm' },
-      dims: { T: 1, d: 2 },
-      inputs: { x: { value: [[3, 4]] } },
-      body: [{ n: { use: 'RMSNorm', inputs: { x: 'x' }, outputs: { out: 'y' } } }],
-    };
-    const result = await compilePage(spec);
-    const r = 1 / Math.sqrt(12.5 + 1e-6);
-    expect([...result.nodes.get('y')!.value.data]).toEqual([3 * r, 4 * r]);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(['n：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}$']);
-    await expect(compilePage({ ...spec, import: { A: './a.yaml' } })).rejects.toThrow(/cannot resolve '\.\/a\.yaml': the page has no base URL/);
-  });
-});
-
-describe('beside', () => {
-  const files = { 'mem:/pages/norm.yaml': NORM };
-  const head = `
-title: t
-import: { Norm: ./norm.yaml }
-dims: { T: 2, d: 2, H: 2 }
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-  y: { value: [[5, 6], [7, 8]] }
-body:
-`;
-  const lanes = (grpBeside: string, forBeside: string) => `${head}  - na: { use: Norm, inputs: { x: x }, outputs: { out: a } }
-  - grp:
-      ${grpBeside}
-      body:
-        - s: exp(y)
-  - for: h
-    in: 1..H
-    name: heads
-    ${forBeside}
-    body:
-      - p[h]: y * h
-      - for: j
-        in: 1..h
-        body:
-          - 'r[h][j]': p[h] * j
-  - z: a + s
-`;
-
-  it('turns an item and the items beside it into one parallel entry with a lane each', async () => {
-    const result = await page(lanes('beside: na', 'beside: grp'), files);
-    const norm = ['na.ms/1', 'na.ms', 'na.out/1', 'na.out/2', 'na.out/3', 'na.W', 'na.out'];
-    const heads = {
-      children: [
-        {
-          parallel: [
-            { children: ['p[1]', { parallel: [{ children: ['r[1][1]'] }] }] },
-            { children: ['p[2]', { parallel: [{ children: ['r[2][1]'] }, { children: ['r[2][2]'] }] }] },
-          ],
-        },
-      ],
-    };
-    expect(names(result.tree.children)).toEqual(['x', 'y', { parallel: [{ title: 'na', children: norm }, { title: 'grp', children: ['s'] }, heads] }, 'z']);
-    const plain = await page(lanes('subtitle: grouped', 'brace: head'), files);
-    expect(plain.tree.children.map((entry) => entry.kind)).toEqual(['node', 'node', 'module', 'module', 'parallel', 'node']);
-    expect(result.steps.forward.map((s) => s.title)).toEqual(plain.steps.forward.map((s) => s.title));
-    expect(result.graph.findLoss()).toBe(plain.graph.findLoss());
-  });
-
-  it('accepts any member of the group before it as the target', async () => {
-    const result = await page(lanes('beside: na', 'beside: na'), files);
-    expect(result.tree.children[2]).toMatchObject({ kind: 'parallel' });
-    expect((result.tree.children[2] as { branches: unknown[] }).branches).toHaveLength(3);
-  });
-
-  it('rejects a target that is unknown or not right before the item', async () => {
-    await expect(page(lanes('beside: nope', 'brace: head'), files)).rejects.toThrow(
-      /page\.yaml:11:15 body\[1\]\.grp\.beside: beside 'nope': no instance, group or named for item 'nope' comes before this one in the same body/,
+  it('patches nested module steps by path and appends text', async () => {
+    const p = await page(
+      root({
+        init: 's: { use: Scale, args: [{ n: d }] }',
+        extra: 'import: { Scale: ./scale.yaml }',
+        forward: '- y: s(x)\n- l: y.mean()',
+        steps: '- id: s\n  title: outer\n  edit:\n    double: { append: more, title: twice }\n- id: l',
+      }),
+      { [SCALE_FILE]: SCALE },
     );
-    const gap = `${head}  - na: { use: Norm, inputs: { x: x } }
-  - b: exp(x)
-  - nb: { use: Norm, inputs: { x: y }, beside: na }
-`;
-    await expect(page(gap, files)).rejects.toThrow(/page\.yaml:11:\d+ body\[2\]\.nb\.beside: beside 'na': 'na' is not the item right before this one/);
-    await expect(page(`${head}  - na: { use: Norm, inputs: { x: x } }\n  - b: { op: exp(x), beside: na }\n`, files)).rejects.toThrow(
-      /body\[1\]\.b\.beside: beside applies to an instance, a group or a for item, not to a single node/,
+    const titles = p.steps.forward.map((s) => s.title);
+    expect(titles).toEqual(['twice', 'multiply', 'l']);
+    expect(p.steps.forward[0].text).toMatch(/^h = \\begin\{pmatrix\} \{\{s\.h\[0, 0\]:1\}\} .*\\end\{pmatrix\}\nmore$/);
+    expect(p.modules[0].title).toBe('outer');
+    await expect(
+      page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n  edit:\n    nope: { text: x }\n- id: l' }), { [SCALE_FILE]: SCALE }),
+    ).rejects.toThrow(/there is no step 'nope'; the steps here are double, mul/);
+  });
+
+  it('marks the formula of a module call with the steps it names', async () => {
+    const p = await page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n- id: l' }), { [SCALE_FILE]: SCALE });
+    expect(p.steps.forward[0].formula?.tex).toBe('\\htmlData{vf-step=s0}{\\mathbf{y}=w\\odot}\\htmlData{vf-step=s1}{2\\mathbf{x}}');
+    expect(p.steps.forward.map((s) => s.marks)).toEqual([['s1'], ['s0'], undefined]);
+  });
+
+  it('builds the overview and the inputs step and runs forward and backward', async () => {
+    const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- { id: overview, show: all(), title: all, text: "T is {{ T }}" }\n- { id: in, show: inputs() + parameters(), title: inputs }\n- id: y\n- id: l' }));
+    expect(p.steps.forward[0]).toMatchObject({ title: 'all', text: 'T is 3' });
+    const steps = createSteps(p.graph, p.steps);
+    expect(steps.list.slice(0, 2).map((s) => s.kind)).toEqual(['overview', 'inputs']);
+    expect(steps.list.filter((s) => s.dir === 'backward').length).toBeGreaterThan(0);
+    steps.dispose();
+  });
+});
+
+describe('layout', () => {
+  it('places a tensor that several steps show once', async () => {
+    const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- { id: again, show: [y, l] }' }));
+    const { blocks } = levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
+    expect(blocks.filter((b) => b.node === p.nodes.get('y')).length).toBe(1);
+  });
+
+  it('places a weight on the level of the tensor that place names', async () => {
+    const init = 'weights:\n  g: { shape: [d], init: ones }';
+    const forward = '- y: x * g\n- z: y * 2\n- l: z.mean()';
+    const p = await page(root({ init, forward, layout: 'place:\n  g: { right: z }', steps: '- id: y\n- id: z\n- id: l' }));
+    const { blocks } = levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
+    const at = (name: string) => blocks.find((b) => b.node === p.nodes.get(name))!;
+    expect(at('g').elements[0].y).toBeCloseTo(at('z').elements[0].y);
+    expect(Math.min(...at('g').elements.map((e) => e.x))).toBeGreaterThan(Math.max(...at('z').elements.map((e) => e.x)));
+    await expect(page(root({ init, forward, layout: 'place:\n  g: { after: z }', steps: '- id: y\n- id: z\n- id: l' }))).rejects.toThrow(/with, left or right/);
+  });
+});
+
+describe('expressions', () => {
+  it('follows Python semantics for lists, reflected operators and new axes', async () => {
+    const forward = ['c: cat([x, x], dim=0)', 'p: x.permute([1, 0])', 'r: x.reshape([d, T])', 'v: x.view([T * d])', 'a: 1 - x', 'b: 1 / x', 'u: x[:, None]', 's: x[1, :]', 'l: c.mean() + p.mean() + r.mean() + v.mean() + a.mean() + b.mean() + u.mean() + s.mean()'];
+    const p = await page(root({ forward: forward.map((line) => `- ${line}`).join('\n'), unshown: '[c, p, r, v, a, b, u, s]', steps: '- id: l' }));
+    const value = (name: string) => p.nodes.get(name)!.value;
+    expect(value('c').shape).toEqual([6, 2]);
+    expect([value('p').shape, value('r').shape, value('v').shape, value('u').shape]).toEqual([[2, 3], [2, 3], [6], [3, 1, 2]]);
+    expect(Array.from(value('a').data)).toEqual([0, -1, -2, -3, -4, -5]);
+    expect(Array.from(value('b').data)).toEqual([1, 1 / 2, 1 / 3, 1 / 4, 1 / 5, 1 / 6]);
+    expect(Array.from(value('s').data)).toEqual([3, 4]);
+    expect(p.graph.nodes.filter((n) => n.name.startsWith('s')).map((n) => n.name)).toEqual(['s']);
+  });
+
+  it('rejects arange with a zero step', async () => {
+    await expect(page(root({ forward: '- t: arange(0, 4, 0)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/arange: step must be nonzero/);
+  });
+});
+
+describe('templates and tex', () => {
+  it('interpolates scalars and formatted tensors and rejects a tensor without a format', async () => {
+    const yaml = (text: string) => page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: '${text}'\n- id: l` }));
+    expect((await yaml('d={{ d }}, {{ y[0] | join: ", " }}')).steps.forward[0].text).toBe('d=2, {{y[0, 0]}}, {{y[0, 1]}}');
+    expect((await yaml('$$\\viz{y}={{ y[:1] | matrix:2 }}$$')).steps.forward[0].text).toBe('$$\\mathbf{y}=\\begin{pmatrix} {{y[0, 0]:2}} & {{y[0, 1]:2}} \\end{pmatrix}$$');
+    await expect(yaml('{{ y }}')).rejects.toThrow(/is not a single number; add a format/);
+  });
+
+  it('reads real sizes in root templates and prints integers as digits', async () => {
+    const yaml = (text: string) => page(root({ config: '{ d: 2, real: { big: { name: Big, d: 4096, V: 151936 } } }', forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: "${text}"\n- id: l` }));
+    expect((await yaml("{{ real['big'].name }}: {{ real['big'].V }}, {{ real['big'].d // d }}, {{ 0.00001 }}")).steps.forward[0].text).toBe('Big: 151936, 2048, 10^{-5}');
+    await expect(yaml("{{ real['small'].d }}")).rejects.toThrow("real has no 'small'; it has big");
+    await expect(yaml("{{ real['big'].T }}")).rejects.toThrow("real size 'big' has no 'T'; it has name, d, V");
+  });
+
+  it('wraps the blocks of a matrix to at most eight columns per line', async () => {
+    const block = JSON.stringify([[1, 2, 3, 4]]);
+    const yaml = (count: number) =>
+      page(root({ config: '{ d: 4 }', inputs: 'x: { type: tensor, shape: [T, 1, d], dtype: fp32 }', data: `x: [${Array(count).fill(block).join(', ')}]`, forward: '- l: x.mean()', steps: "- id: l\n  text: '{{ x | matrix:0 }}'" }));
+    const lines = (text: string) => /\\begin\{array\}\{l\}(.*)\\end\{array\}/.exec(text)?.[1].split('\\\\[1ex]').map((line) => (line.match(/\\begin\{pmatrix\}/g) ?? []).length);
+    expect(lines((await yaml(3)).steps.forward[0].text ?? '')).toEqual([2, 1]);
+    expect((await yaml(2)).steps.forward[0].text).not.toContain('array');
+  });
+
+  it('computes figure data from a template expression outside the graph', async () => {
+    const yaml = (text: string) => page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: `- id: y\n  text: '${text}'\n- id: l` }));
+    const p = await yaml('{{ cos(arange(5)[:, None] * y[0]) | lines:shade=T }}');
+    const tag = /^<vf-figure name="lines" program="([^"]+)" args="shade=3"><\/vf-figure>$/.exec(p.steps.forward[0].text ?? '');
+    expect(tag).not.toBeNull();
+    const value = runProgram(decodeProgram(tag![1]), (name) => p.nodes.get(name)!.value);
+    expect(value.shape).toEqual([5, 2]);
+    expect(value.get([4, 1])).toBeCloseTo(Math.cos(16), 12);
+    expect(p.graph.nodes.map((n) => n.name)).toEqual(['x', 'y', 'l']);
+    await expect(yaml('{{ y | lines:shade=T + 1 }}')).rejects.toThrow("lines shade must be an integer from 0 to 3, got 4 in '{{ y | lines:shade=T + 1 }}'");
+    await expect(yaml('{{ y[0] | lines }}')).rejects.toThrow('lines needs a (N, K) tensor with at least 2 rows, got shape (2)');
+    await expect(yaml('{{ tan(y) | lines }}')).rejects.toThrow("unknown function 'tan'");
+  });
+
+  it('evaluates buffer values with ops and broadcasting', async () => {
+    const p = await page(root({ init: "buffers:\n  b: { shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
+    expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
+  });
+
+  it('expands preamble macros and takes tex of a child result from the outer module', async () => {
+    const p = await page(
+      root({
+        init: 's: { use: Scale, args: [{ n: d }] }',
+        extra: 'import: { Scale: ./scale.yaml }\npreamble: ./macros.sty',
+        forward: '- y: s(x)\n- l: y.mean()',
+        tex: "s.h: 'H'\ny: '\\pd{y}'",
+        steps: '- id: s\n- id: l',
+      }),
+      { [SCALE_FILE]: SCALE, 'mem:/pages/macros.sty': '\\newcommand{\\pd}[1]{\\partial #1}' },
     );
+    expect(p.nodes.get('s.h')!.tex).toBe('H');
+    expect(p.nodes.get('y')!.tex).toBe('{\\partial y}');
   });
+});
 
-  it('rejects an item that uses a result of an item in the same beside group', async () => {
-    const uses = `${head}  - na: { use: Norm, inputs: { x: x }, outputs: { out: a } }
-  - grp:
-      body:
-        - s: exp(y)
-  - nb: { use: Norm, inputs: { x: a }, beside: grp }
-`;
-    await expect(page(uses.replace('      body:', '      beside: na\n      body:'), files)).rejects.toThrow(
-      /page\.yaml:14:48 body\[2\]\.nb\.beside: 'nb' is beside 'grp' but uses 'na\.out', which 'na' in the same beside group computes; .* Put it after the beside group/,
+describe('page data', () => {
+  it('computes data with tokens_to_ids and slices and re-evaluates it when the sequence changes', async () => {
+    const p = await page(
+      root({
+        config: '{ d: 2, tokenizer: { vocab: [a, b, c] } }',
+        data: "tokens: [a, b, c, a]\nids: { expr: 'tokens_to_ids(tokens[:-1])' }",
+        inputs: 'tokens: { type: list, dtype: str }\nids: { type: tensor, shape: [T], dtype: int64 }',
+        init: 'emb: { use: Embedding, args: { num_embeddings: 3, embedding_dim: d } }',
+        forward: '- e: emb(ids)\n- l: e.mean()',
+        steps: '- id: emb\n- id: l',
+        extra: 'panels:\n  - { sequence: true, tokens: tokens, input: ids, label: ids }',
+      }),
     );
-  });
-});
-
-describe('heads', () => {
-  const values = (shape: number[], seed: number): unknown => {
-    let i = 0;
-    const nest = (dims: number[]): unknown => (dims.length === 0 ? Math.round(Math.sin(seed + i++ * 1.3) * 100) / 100 : Array.from({ length: dims[0] }, () => nest(dims.slice(1))));
-    return nest(shape);
-  };
-
-  function attention(q: number[][][], k: number[][][], v: number[][][]): number[][] {
-    const [T, H, dh] = [q.length, q[0].length, q[0][0].length];
-    const group = H / k[0].length;
-    return Array.from({ length: T }, (_, t) => Array.from({ length: H }, (_, h) => {
-      const kv = Math.floor(h / group);
-      const scores = Array.from({ length: t + 1 }, (_, s) => q[t][h].reduce((a, x, c) => a + x * k[s][kv][c], 0) / Math.sqrt(dh));
-      const z = scores.reduce((a, x) => a + Math.exp(x), 0);
-      return Array.from({ length: dh }, (_, c) => scores.reduce((a, x, s) => a + (Math.exp(x) / z) * v[s][kv][c], 0));
-    }).flat());
-  }
-
-  it('reshapes with view, matches a leading ... pattern and merges the steps of beside instances', async () => {
-    const result = await page(`
-title: t
-import: { RMSNorm: vizflow/nn/rmsnorm }
-dims: { T: 2, H: 2, dh: 2 }
-inputs:
-  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-body:
-  - q: 'view(x, T, H, dh)'
-  - f: 'view(q * 2, T, -1)'
-  - norms:
-      body:
-        - qa:
-            use: RMSNorm
-            inline: true
-            suffix: a
-            inputs: { x: q }
-            outputs: { out: na }
-            steps: { rms: { text: '$$r={{ qb.r | matrix:3 }}$$' } }
-        - qb: { use: RMSNorm, inline: true, suffix: b, beside: qa, inputs: { x: f }, outputs: { out: nb } }
-`);
-    expect(result.nodes.get('q')!.shape).toEqual([2, 2, 2]);
-    expect(Array.from(result.nodes.get('q')!.value.data)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(result.nodes.get('f')!.shape).toEqual([2, 4]);
-    expect(result.nodes.get('qa.r')!.shape).toEqual([2, 2, 1]);
-    expect(result.nodes.get('qb.r')!.shape).toEqual([2, 1]);
-    expect(result.modules.map((m) => m.id)).toEqual(['norms']);
-    const lanes = names(result.tree.children).slice(-1)[0] as { title: string; children: { parallel: { title: unknown; children: string[] }[] }[] };
-    expect(lanes.title).toBe('norms');
-    expect(lanes.children[0].parallel.map((lane) => lane.title)).toEqual([undefined, undefined]);
-    expect(lanes.children[0].parallel.map((lane) => lane.children.slice(-1))).toEqual([['qa.out'], ['qb.out']]);
-    const forward = result.steps.forward;
-    expect(forward.map((s) => s.title)).toEqual(['q', 'f', 'qa：逐元素平方', '平方的平均', '加上 $\\epsilon$', '平方根的倒数', '归一化', '乘上权重 $\\boldsymbol{\\gamma}_{a}$']);
-    const rms = forward[5];
-    expect(rms.label).toBe('$r_{a},\\ r_{b}$');
-    expect(rms.backward?.label).toBe('$\\partial(\\mathrm{ms}+\\epsilon)_{a},\\ \\partial(\\mathrm{ms}+\\epsilon)_{b}$');
-    expect([rms.show].flat().map((n) => n.name)).toEqual(['qa.r', 'qb.r']);
-    expect(rms.text).toContain('{{qb.r[0]:3}}');
-    expect(rms.text).toContain('{{qb.r[1]:3}}');
-    await expect(page(`
-title: t
-import: { RMSNorm: vizflow/nn/rmsnorm }
-dims: {}
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - n: { use: RMSNorm, inline: true, title: norm, inputs: { x: x } }
-`)).rejects.toThrow(/body\[0\]\.n\.title: an inline instance has no box of its own, so it cannot have 'title'/);
+    expect(Array.from(p.nodes.get('ids')!.value.data)).toEqual([0, 1, 2]);
+    p.sequence!.set([2, 2, 1, 0]);
+    expect(Array.from(p.nodes.get('ids')!.value.data)).toEqual([2, 2, 1]);
   });
 
-  it('writes a rank-3 matrix as one matrix per head, side by side', async () => {
-    const result = await page(`
-title: t
-dims: { T: 2, H: 2, dh: 2 }
-inputs:
-  x: { value: [[1, 2, 3, 4], [5, 6, 7, 8]] }
-body:
-  - q: 'view(x, T, H, dh)'
-  - k: 'view(x, T, 4, 1)'
-  - c: 'view(x, T, 1, 4)'
-steps:
-  - { id: s, show: [q, k, c], title: s, text: 'q={{ q | matrix:2 }} c={{ c | matrix }}' }
-`);
-    const cell = (i: string) => ` {{q[${i}]:2}} `;
-    const head = (h: number) => `\\begin{pmatrix}${cell(`0, ${h}, 0`)}&${cell(`0, ${h}, 1`)}\\\\${cell(`1, ${h}, 0`)}&${cell(`1, ${h}, 1`)}\\end{pmatrix}_{h=${h + 1}}`;
-    expect(result.steps.forward[0].text).toContain(`q=\\left[\\,${head(0)}\\;\\;${head(1)}\\,\\right]`);
-    expect(result.steps.forward[0].text).toContain('c=\\begin{pmatrix} {{c[0, 0, 0]}} & {{c[0, 0, 1]}} & {{c[0, 0, 2]}} & {{c[0, 0, 3]}} \\\\ {{c[1, 0, 0]}} ');
-  });
-
-  it.each([
-    [2, 1],
-    [2, 2],
-    [4, 2],
-  ])('computes grouped-query attention with %i query heads and %i kv heads', async (H, Hkv) => {
-    const q = values([3, H, 2], 1);
-    const k = values([3, Hkv, 2], 2);
-    const v = values([3, Hkv, 2], 3);
-    const result = await page(`
-title: t
-import: { GQA: vizflow/nn/gqa }
-dims: { T: 3 }
-inputs:
-  q: { value: ${JSON.stringify(q)} }
-  k: { value: ${JSON.stringify(k)} }
-  v: { value: ${JSON.stringify(v)} }
-buffers:
-  M: { value: causal_mask(T) }
-body:
-  - attn: { use: GQA, inputs: { q: q, k: k, v: v, mask: M }, outputs: { o: o } }
-`);
-    const o = result.nodes.get('o')!;
-    expect(o.shape).toEqual([3, H * 2]);
-    const want = attention(q as number[][][], k as number[][][], v as number[][][]).flat();
-    want.forEach((x, i) => expect(o.value.data[i]).toBeCloseTo(x, 12));
-    expect(result.nodes.get(`attn.S[${H}]`)!.shape).toEqual([3, 3]);
-    expect(result.nodes.get(`attn.S[${H + 1}]`)).toBeUndefined();
-    expect(result.steps.forward.map((s) => s.title)).toEqual([
-      'repeat_kv：复制 k', 'repeat_kv：复制 v', '转置', '打分：$\\mathbf{q}\\mathbf{k}^{\\top}$', '缩放', 'causal mask', 'softmax：取 exp', '按行求和', '注意力权重', 'P v', `拼回 $T\\times${H * 2}$`,
-    ]);
-    expect(result.modules.map((m) => m.id)).toEqual(['attn']);
-  });
-
-  it('resolves step notes to tensors, elements and module instances, and rejects bad targets', async () => {
-    const head = 'title: t\ndims: { T: 2, n: 3 }\ninputs:\n  x: { value: [[1, 2, 3], [4, 5, 6]] }\nimport: { Norm: ./norm.yaml }\nbody:\n  - norm: { use: Norm, inputs: { x: x }, outputs: { out: y } }\n  - z: y * 2\nsteps:\n  - id: s\n    show: z\n    notes:\n';
-    const files = { 'mem:/pages/norm.yaml': NORM };
-    const result = await page(`${head}      - { at: z, text: '整个 $z$', side: left }\n      - { at: 'z[1,2]', text: one }\n      - { at: norm, text: module }\n`, files);
-    const notes = result.steps.forward.find((s) => s.title === 's')!.notes!;
-    expect(notes.slice(0, 2).map((n) => [n.nodes.map((x) => x.name), n.index, n.side, n.text])).toEqual([
-      [['z'], undefined, 'left', '整个 $z$'],
-      [['z'], [1, 2], undefined, 'one'],
-    ]);
-    expect(notes[2].nodes.map((x) => x.name)).toContain('norm.ms');
-    await expect(page(`${head}      - { at: 'z[2,0]', text: x }\n`, files)).rejects.toThrow(/index 2 is outside 0\.\.1 on axis 0/);
-    await expect(page(`${head}      - { at: z, text: x, side: up }\n`, files)).rejects.toThrow(/side must be one of left, right, above, below/);
-    await expect(page(`${head}      - { at: w, text: x }\n`, files)).rejects.toThrow(/name 'w' is not defined/);
-    await expect(page(`${head}      - { at: z }\n`, files)).rejects.toThrow(/a note needs a non-empty text/);
-  });
-});
-
-describe('module formula', () => {
-  const formulaPage = (formula: string) => `
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-body:
-  - n: { use: Norm, inputs: { x: x }, outputs: { out: y }, formula: '${formula}' }
-`;
-  const files = { 'mem:/pages/norm.yaml': NORM };
-
-  it('marks each part with the forward step that reveals it', async () => {
-    const result = await page(formulaPage('\\step{scale}{\\of{y}=\\of{n.W}\\odot}\\frac{\\of{x}}{\\step{rms, scale}{\\sqrt{\\step{rms}{\\mathrm{ms}}}}}'), files);
-    const markOf = (title: string) => result.steps.forward.find((s) => s.title.startsWith(title))?.marks?.[0];
-    const rms = markOf('rms');
-    const scale = markOf('scale');
-    const formula = result.modules.find((m) => m.id === 'n')?.formula;
-    expect(formula).toBe(`\\htmlData{vf-step=${scale}}{\\mathbf{y}=W\\odot}\\frac{\\mathbf{x}}{\\htmlData{vf-step=${rms}.${scale}}{\\sqrt{\\htmlData{vf-step=${rms}}{\\mathrm{ms}}}}}`);
-  });
-
-  it('rejects a step id the module does not have', async () => {
-    await expect(page(formulaPage('\\step{square}{x}'), files)).rejects.toThrow(/formula: \\step\{square\}: 'n' has no step 'square'; its steps are rms, scale/);
-  });
-});
-
-describe('when', () => {
-  const gated = `
-module: Gated
-import: { Norm: ./norm.yaml }
-params:
-  gate:  { type: bool, default: false }
-  extra: { type: dim }
-inputs:
-  x: { shape: [T, n] }
-outputs: [out]
-body:
-  - base: x * 2
-  - g: { op: base * extra, when: gate }
-  - gn: { use: Norm, when: gate, inputs: { x: g }, outputs: { out: h } }
-  - out: { op: 'h + 1 if gate else base + 1' }
-steps:
-  - { id: plain, show: out, title: plain, when: not gate }
-  - { id: plain, show: out, title: gated, when: gate }
-`;
-  const files = { 'mem:/pages/gated.yaml': gated, 'mem:/pages/norm.yaml': NORM };
-  const use = (params: string, extra = '') => page(`
-title: t
-import: { Gated: ./gated.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-body:
-  - m: { use: Gated, params: ${params}, inputs: { x: x }, outputs: { out: y }${extra} }
-`, files);
-
-  it('leaves out the items and steps whose condition is false, and needs their parameters only when they are built', async () => {
-    const plain = await use('{}');
-    expect(plain.graph.nodes.map((n) => n.name)).toEqual(['x', 'm.base', 'm.out']);
-    expect(plain.steps.forward.map((s) => s.title)).toContain('plain');
-    expect(plain.nodes.get('y')!.value.toNested()).toEqual([[3, 5], [7, 9]]);
-    const gatedPage = await use('{ gate: true, extra: 3 }');
-    expect(gatedPage.nodes.get('m.gn.out')).toBe(gatedPage.nodes.get('m.h'));
-    expect(gatedPage.nodes.get('m.out')!.inputs[0]).toBe(gatedPage.nodes.get('m.h'));
-    expect(gatedPage.steps.forward.map((s) => s.title)).toEqual(expect.arrayContaining(['gated', 'rms of $\\mathbf{g}$']));
-    expect(gatedPage.steps.forward.map((s) => s.title)).not.toContain('plain');
-    await expect(use('{ gate: true }')).rejects.toThrow(/parameter 'extra' has no value and no default, and module Gated uses it/);
-  });
-
-  it('reads folded, fixed and split as conditions written with the parameters in scope', async () => {
-    const outer = `
-module: Outer
-import: { Norm: ./norm.yaml }
-params:
-  detail: { type: bool, default: true }
-inputs:
-  x: { shape: [T, n] }
-outputs: [out]
-body:
-  - norm: { use: Norm, folded: not detail, inputs: { x: x }, outputs: { out: out } }
-`;
-    const build = (params: string) => page(`
-title: t
-import: { Outer: ./outer.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-body:
-  - a: { use: Outer, params: ${params}, inputs: { x: x }, outputs: { out: y } }
-`, { 'mem:/pages/outer.yaml': outer, 'mem:/pages/norm.yaml': NORM });
-    const folded = async (params: string) => (await build(params)).modules.find((m) => m.id === 'a.norm')!.folded;
-    expect(await folded('{}')).toBe(false);
-    expect(await folded('{ detail: false }')).toBe(true);
-    await expect(page(`
-title: t
-import: { Norm: ./norm.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - n: { use: Norm, folded: '2', inputs: { x: x }, outputs: { out: y } }
-`, { 'mem:/pages/norm.yaml': NORM })).rejects.toThrow(/folded must be true or false/);
-  });
-
-  it('declares an output with a condition and skips its binding when the condition is false', async () => {
-    const tapped = gated.replace('outputs: [out]', 'outputs: [out, { name: g, when: gate }]');
-    const tap = (params: string) => page(`
-title: t
-import: { Gated: ./gated.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2], [3, 4]] }
-body:
-  - m: { use: Gated, params: ${params}, inputs: { x: x }, outputs: { out: y, g: tapped } }
-`, { ...files, 'mem:/pages/gated.yaml': tapped });
-    expect((await tap('{ gate: true, extra: 3 }')).nodes.get('tapped')!.value.toNested()).toEqual([[6, 12], [18, 24]]);
-    const off = await tap('{}');
-    expect(off.nodes.get('y')!.value.toNested()).toEqual([[3, 5], [7, 9]]);
-    expect(off.nodes.has('tapped')).toBe(false);
-    await expect(page(`
-title: t
-import: { Gated: ./gated.yaml }
-dims: {}
-inputs:
-  x: { value: [[1, 2]] }
-body:
-  - m: { use: Gated, inputs: { x: x }, outputs: { out: y } }
-`, { ...files, 'mem:/pages/gated.yaml': gated.replace('outputs: [out]', 'outputs: [out, { name: g, when: gate, shape: 1 }]') })).rejects.toThrow(/unknown key 'shape'/);
-  });
-
-  it('places a step that shows only buffers in the module that uses them', async () => {
-    const shift = `
-module: Shift
-inputs:
-  x: { shape: [n] }
-outputs: [y]
-buffers:
-  b: { value: 'arange(n)', tex: '\\mathbf{b}' }
-body:
-  - y: x + b
-steps:
-  - { id: table, show: b, title: table }
-  - { id: add, show: y, title: add }
-`;
-    const result = await page(`
-title: t
-import: { Shift: ./shift.yaml }
-dims: {}
-inputs:
-  x: { value: [1, 2, 3] }
-body:
-  - s: { use: Shift, title: shift, inputs: { x: x }, outputs: { y: y } }
-  - t: { use: Shift, title: again, inputs: { x: y }, outputs: { y: z } }
-`, { 'mem:/pages/shift.yaml': shift });
-    expect(result.nodes.get('s.b')).toBe(result.nodes.get('t.b'));
-    expect(result.steps.forward.map((s) => [s.title, s.module, s.segment])).toEqual([
-      ['table', 's', 'shift'],
-      ['add', 's', 'shift'],
-      ['table', 't', 'again'],
-      ['add', 't', 'again'],
-    ]);
-  });
-
-  it('applies a step patch only when its condition, read where the patch is written, holds', async () => {
-    const patch = (when: string) => `, steps: { 'gn.rms': { when: ${when}, title: patched } }`;
-    expect((await use('{ gate: true, extra: 3 }', patch('true'))).steps.forward.map((s) => s.title)).toContain('patched');
-    expect((await use('{}', patch('false'))).steps.forward.map((s) => s.title)).not.toContain('patched');
-    await expect(use('{}', patch('true'))).rejects.toThrow(/step 'gn.rms' does not exist/);
-    await expect(use('{}', patch('gate'))).rejects.toThrow(/name 'gate' is not defined in the page/);
-  });
-
-  it('rejects conditions that are not booleans', async () => {
-    await expect(use('{ gate: 1, extra: 3 }')).rejects.toThrow(/parameter 'gate' must be true or false/);
-    await expect(page(`
-title: t
-dims: {}
-inputs:
-  x: { value: [1, 2] }
-body:
-  - a: { op: x * 2, when: 3 }
-`)).rejects.toThrow(/when must be true or false, got 3/);
-    await expect(page(`
-title: t
-dims: {}
-inputs:
-  x: { value: [1, 2] }
-body:
-  - a: 'x * 2 if 1 else x'
-`)).rejects.toThrow(/a condition must be true or false/);
-  });
-
-  it('takes the smaller or larger of two numbers with min and max', async () => {
-    const result = await page(`
-title: t
-dims: { n: 3 }
-inputs:
-  x: { value: [3, 1, 2] }
-body:
-  - m: 'topk_mask(x, min(n, 2), -1)'
-  - v: 'view(x, max(n, 1), 1)'
-`);
-    expect(result.nodes.get('m')!.value.toNested()).toEqual([1, 0, 1]);
-    expect(result.nodes.get('v')!.shape).toEqual([3, 1]);
+  it('rejects config that is not an arg of the model', async () => {
+    await expect(page(root({ config: '{ d: 2, e: 3 }', forward: '- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/config 'e' is not an arg of M/);
   });
 });

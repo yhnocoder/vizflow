@@ -7,12 +7,13 @@ import { type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { PlateMesh } from './blocks';
 import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
 import { FOLLOW_RATE, CameraRig } from './camera';
-import { type OverviewNav, buildChrome, buildTools, updateNav } from './chrome';
+import { buildChrome, buildTools } from './chrome';
 import { TokenChips } from './chips';
 import { FoldBoxes } from './boxes';
 import { type EditHost, mountEditor } from './edit';
 import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
+import type { Box } from './avoid';
 import { LabelLayer } from './labels';
 import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
@@ -49,7 +50,6 @@ export class SceneController implements EditHost {
   readonly moduleBraces: ModuleBraces;
   readonly boxes: FoldBoxes;
   readonly chips: TokenChips;
-  private readonly nav: OverviewNav | undefined;
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
@@ -113,8 +113,8 @@ export class SceneController implements EditHost {
     const modules = options.modules ?? [];
     checkModules(modules, this.renderables.map((r) => r.block.node));
     this.moduleBraces.mountLabels(modules);
-    this.nav = buildTools(this);
-    this.formula = this.nav === undefined ? undefined : new FormulaPanel(this);
+    buildTools(this);
+    this.formula = this.follow && options.steps !== undefined ? new FormulaPanel(this) : undefined;
     this.notes = new SceneNotes(this);
     this.refresh();
     this.resize();
@@ -243,7 +243,7 @@ export class SceneController implements EditHost {
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
-    const overview = dir === 'forward' && this.state.index === 0;
+    const overview = this.state.kind === 'overview';
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     markFar(this);
@@ -257,7 +257,6 @@ export class SceneController implements EditHost {
     this.boxes.update();
     this.chips.update();
     this.edgeLines.edges = buildEdges(this);
-    if (this.nav !== undefined) updateNav(this, this.nav);
     this.formula?.update();
     this.notes.update(info?.notes ?? [], info?.id ?? 'all');
     this.geometryDirty = true;
@@ -270,6 +269,10 @@ export class SceneController implements EditHost {
       if (this.edgeLines.hover === undefined) this.popups.hideUnpinned();
     }
     this.requestFrame();
+  }
+
+  private overlays(): Box[] {
+    return [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-formula, .vf-key, .vf-hint')].flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
   }
 
   private updateGeometry(): void {
@@ -311,7 +314,7 @@ export class SceneController implements EditHost {
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
-      this.labels.project(this.camera, this.width, this.height, !this.follow);
+      this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
       this.notes.place();
       this.labelsDirty = false;
       this.screenVersion++;

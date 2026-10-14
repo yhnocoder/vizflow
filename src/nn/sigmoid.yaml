@@ -1,76 +1,78 @@
 module: Sigmoid
-subtitle: sigmoid
-formula: '\step{recip}{\of{out}=\frac{1}{\step{add}{1+}\step{exp}{e^{\step{neg}{-\of{x}}}}}}'
-params:
-  name: { type: text, default_key: true }
 inputs:
-  x: { shape: [...] }
-outputs: [out]
+  x: { type: tensor, shape: ['...'], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: ['...'], dtype: dtype }
+forward:
+  - n: -x
+  - e: n.exp()
+  - d: e + 1
+  - out: d.reciprocal()
+tex:
+  n: '-\viz{x}'
+  e: 'e^{-\viz{x}}'
+  d: '1+e^{-\viz{x}}'
+  out: '\sigma(\viz{x})'
+formula: '\step{recip}{\viz{out}=\frac{1}{\step{add}{1+}\step{exp}{e^{\step{neg}{-\viz{x}}}}}}'
 fold:
-  label: '$\of{out}$'
-  title: \of{name}（已折叠）
+  label: '$\viz{out}$'
+  title: sigmoid
   text: |
-    取负、取 exp、加 1、取倒数收在盒子里，对应一次 <code>torch.sigmoid</code>。逐元素计算，每个输出只连到同一位置的输入。
-    $$\of{out}=\sigma(\of{x})={{ out | matrix:3 }}$$
+    $$\sigma(\viz{x})={{ out | matrix:3 }}$$
   backward:
-    label: '$\partial\of{x}$'
-    title: 穿过 \of{name}（已折叠）
+    label: '$\partial\viz{x}$'
+    title: '$\frac{\partial\ell}{\partial \viz{x}}$'
     text: |
-      四段局部导数相乘，合起来是 $\sigma(x)\big(1-\sigma(x)\big)$。
-      $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
-body:
-  - n:   { op: -x, tex: '-\of{x}' }
-  - e:   { op: exp(n), tex: 'e^{-\of{x}}' }
-  - d:   { op: e + 1, tex: '1+e^{-\of{x}}' }
-  - out: { op: reciprocal(d), tex: '\sigma(\of{x})' }
+      $$\frac{\partial\ell}{\partial \viz{x}}=\frac{\partial\ell}{\partial \viz{out}}\odot\sigma(\viz{x})\big(1-\sigma(\viz{x})\big)={{ x.grad | matrix:3 }}$$
+
 steps:
   - id: neg
     show: n
-    label: '$-\of{x}$'
-    title: \of{name}：取负
+    label: '$-\viz{x}$'
+    title: sigmoid：取负
     text: |
-      sigmoid 的定义是 $\sigma(x)=\dfrac{1}{1+e^{-x}}$。<code>torch.sigmoid</code> 是一个逐元素 kernel，这里按定义拆成四步：取负、取 exp、加 1、取倒数。第一步给每个元素取负号。
-      $$\of{n}={{ n | matrix:3 }}$$
+      $\sigma(x)=\dfrac{1}{1+e^{-x}}$，把实数压到 $(0,1)$，$\sigma(0)=\tfrac12$。按定义依次是取负、取 exp、加 1、取倒数。第一步取负。
+      $$\viz{n}={{ n | matrix:3 }}$$
     backward:
-      label: '$\partial\of{x}$'
-      title: \of{name}：穿过取负
+      label: '$\partial\viz{x}$'
+      title: '$\frac{\partial\ell}{\partial \viz{x}}$'
       text: |
-        取负的局部导数是 $-1$，梯度变号后交给 $\of{x}$。
-        $$\frac{\partial\ell}{\partial\of{x}}={{ x.grad | matrix:3 }}$$
+        局部导数是 $-1$。四步的局部导数相乘，结果是 $\sigma(x)(1-\sigma(x))$，最大值 $\tfrac14$ 在 $x=0$ 处取得。
+        $$\frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
   - id: exp
     show: e
-    label: '$\of{e}$'
-    title: \of{name}：取 exp
+    label: '$\viz{e}$'
+    title: sigmoid：取 exp
     text: |
-      $$\of{e}={{ e | matrix:3 }}$$
+      $$\viz{e}=e^{-\viz{x}}={{ e | matrix:3 }}$$
     backward:
-      label: '$\partial(\of{n})$'
-      title: \of{name}：穿过 exp
+      label: '$\partial\viz{n}$'
+      title: '$\frac{\partial\ell}{\partial \viz{n}}$'
       text: |
-        exp 的导数是它自己，局部导数就是这一格的 $e^{-x}$。
-        $$\frac{\partial\ell}{\partial\of{n}}={{ n.grad | matrix:3 }}$$
+        exp 的导数是它自己，局部导数是这一格的 $e^{-x}$。
+        $$\frac{\partial\ell}{\partial \viz{n}}={{ n.grad | matrix:3 }}$$
   - id: add
     show: d
-    label: '$\of{d}$'
-    title: \of{name}：加 1
+    label: '$\viz{d}$'
+    title: sigmoid：加 1
     text: |
-      $$\of{d}={{ d | matrix:3 }}$$
+      $$\viz{d}=1+e^{-\viz{x}}={{ d | matrix:3 }}$$
     backward:
-      label: '$\partial\of{e}$'
-      title: \of{name}：穿过加 1
+      label: '$\partial\viz{e}$'
+      title: '$\frac{\partial\ell}{\partial \viz{e}}$'
       text: |
-        加常数的局部导数是 1，梯度原样传下去。
-        $$\frac{\partial\ell}{\partial\of{e}}={{ e.grad | matrix:3 }}$$
+        加常数的局部导数是 1。
+        $$\frac{\partial\ell}{\partial \viz{e}}={{ e.grad | matrix:3 }}$$
   - id: recip
     show: out
-    label: '$\of{out}$'
-    title: \of{name}：取倒数
+    label: '$\viz{out}$'
+    title: sigmoid：取倒数
     text: |
-      取倒数得到 $\sigma(x)$，每个值都在 0 和 1 之间。
-      $$\of{out}=\frac{1}{\of{d}}={{ out | matrix:3 }}$$
+      分母大于 1，所以取倒数后每个值在 0 和 1 之间。
+      $$\sigma(\viz{x})=\frac{1}{\viz{d}}={{ out | matrix:3 }}$$
     backward:
-      label: '$\partial(\of{d})$'
-      title: \of{name}：穿过取倒数
+      label: '$\partial\viz{d}$'
+      title: '$\frac{\partial\ell}{\partial \viz{d}}$'
       text: |
-        $\frac{d}{dv}\frac{1}{v}=-\frac{1}{v^{2}}$，所以局部导数是 $-\of{out}^{2}$。
-        $$\frac{\partial\ell}{\partial\of{d}}={{ d.grad | matrix:3 }}$$
+        $\frac{d}{dv}v^{-1}=-v^{-2}$，局部导数是 $-\sigma^{2}$。
+        $$\frac{\partial\ell}{\partial \viz{d}}={{ d.grad | matrix:3 }}$$

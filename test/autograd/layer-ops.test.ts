@@ -66,8 +66,8 @@ describe('scalar operands', () => {
   it('still needs a node as the first argument', () => {
     const g = graph();
     const x = g.input('x', [1], [1]);
-    expect(() => g.add(2 as unknown as Node, x)).toThrow("add: argument 'input' must be a node");
-    expect(() => g.matmul(x, 2 as unknown as Node)).toThrow("matmul: argument 'other' must be a node");
+    expect(() => g.add(2 as unknown as Node, x)).toThrow("add: argument 'input' must be a tensor");
+    expect(() => g.matmul(x, 2 as unknown as Node)).toThrow("matmul: argument 'other' must be a tensor");
   });
 });
 
@@ -158,8 +158,8 @@ describe('narrow, split and cat', () => {
     const g = graph();
     const a = g.input('a', [2, 1], [[1], [2]]);
     const b = g.input('b', [3, 1], [[1], [2], [3]]);
-    expect(() => g.cat([])).toThrow("cat: argument 'tensors' must be a non-empty array of nodes");
-    expect(() => g.cat(a as unknown as Node[])).toThrow("cat: argument 'tensors' must be a non-empty array of nodes");
+    expect(() => g.cat([])).toThrow("cat: argument 'tensors' must be a non-empty list of tensors");
+    expect(() => g.cat(a as unknown as Node[])).toThrow("cat: argument 'tensors' must be a non-empty list of tensors");
     expect(() => g.cat([a, b], 1)).toThrow('cat: tensors (2, 1) and (3, 1) differ outside dim 1');
     const other = graph().input('o', [2, 1], [[1], [2]]);
     expect(() => g.cat([a, other])).toThrow("cat: node 'o' belongs to another graph");
@@ -256,5 +256,28 @@ describe('defineOp fields for lists, scalars and sizes', () => {
     const a = g.input('a', [2], [1, 2]);
     const call = (g as unknown as { bad_concat_sum(t: Node[], o?: object): Node }).bad_concat_sum;
     expect(() => call([a, a], { name: 'u' })).toThrow(/^gradient check failed: op 'bad_concat_sum' \(node 'u'\), input 1 'tensors\[1\]' at \[0\]/);
+  });
+});
+
+describe('creation ops and the linear composite', () => {
+  it('arange rejects a zero step and causal_mask fills with the dtype minimum', () => {
+    const g = graph();
+    expect(() => g.arange(0, 4, 0)).toThrow('arange: step must be nonzero');
+    const mask = g.causal_mask(2, 'bf16');
+    expect(mask.dtype).toBe('bf16');
+    expect(Array.from(mask.value.data)).toEqual([0, -3.3895313892515355e38, 0, 0]);
+    expect(mask.grad).toBeNull();
+  });
+
+  it('linear transposes the weight and adds the bias only when one is given', () => {
+    const g = graph({ check: true });
+    const x = g.input('x', [1, 2], [[1, 2]]);
+    const w = g.param('w', [3, 2], [[1, 0], [0, 1], [1, 1]]);
+    const b = g.param('b', [3], [0.5, 0.5, 0.5]);
+    close(g.linear(x, w).value, [1, 2, 3]);
+    const y = g.linear(x, w, b, { name: 'y' });
+    expect([y.name, y.op, y.inputs[0].op]).toEqual(['y', 'add', 'matmul']);
+    close(y.value, [1.5, 2.5, 3.5]);
+    expect(() => g.linear(x, w, 2 as unknown as Node)).toThrow("linear: argument 'bias' must be a tensor or None");
   });
 });

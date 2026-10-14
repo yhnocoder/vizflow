@@ -58,12 +58,17 @@ function realRow(g: Graph, node: Node): CardRow[] {
   return [{ label: '真实模型', value: name === undefined ? shape : `${name}：${shape}` }];
 }
 
-function forwardTex(node: Node): string[] {
-  if (node.kind !== 'op') return [node.tex];
+function rightTex(node: Node, drawnFrom?: Node): string | undefined {
+  if (node.kind !== 'op') return undefined;
   const def = explainOf(node.op as string);
-  if (def === undefined) return [node.tex];
-  const right = def.tex.forward({ out: node.tex, in: node.inputs.map((n) => n.tex), attrs: node.attrs });
-  return [`${node.tex}=${right}`];
+  if (def === undefined) return undefined;
+  const inner = drawnFrom === undefined || node.inputs[0] !== drawnFrom ? undefined : rightTex(drawnFrom);
+  return def.tex.forward({ out: node.tex, in: node.inputs.map((n, i) => (i === 0 && inner !== undefined ? inner : n.tex)), attrs: node.attrs });
+}
+
+function forwardTex(node: Node, drawnFrom?: Node): string[] {
+  const right = rightTex(node, drawnFrom);
+  return right === undefined ? [node.tex] : [`${node.tex}=${right}`];
 }
 
 function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
@@ -76,13 +81,13 @@ function chainTex(g: Graph, node: Node, consumers: Node[]): string[] {
   return [`${left}=${terms.join('+')}`];
 }
 
-export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', reachesLoss: (node: Node) => boolean): NodeCard {
+export function nodeCardOf(g: Graph, node: Node, dir: 'forward' | 'backward', reachesLoss: (node: Node) => boolean, drawnFrom?: Node): NodeCard {
   const override = node.card?.[dir] ?? {};
   const rows: CardRow[] = [{ label: 'shape', value: formatShape(node.shape) }, ...realRow(g, node), { label: 'dtype', value: node.dtype }];
   let card: NodeCard;
   if (dir === 'forward') {
     rows.push({ label: '当前值', kind: 'value', value: valueText(node.value, isIntegerDtype(node.dtype)) });
-    card = { title: `$${node.tex}$`, tex: forwardTex(node), rows };
+    card = { title: `$${node.tex}$`, tex: forwardTex(node, drawnFrom), rows };
   } else {
     const consumers = consumersOf(g, node, reachesLoss);
     for (const y of consumers) {

@@ -535,6 +535,7 @@ def transformer_op_fixtures():
     cases += pointwise_cases("relu", F.relu, randn)
     cases += pointwise_cases("gelu", F.gelu, lambda *shape: randn(*shape) * 3)
     cases += pointwise_cases("identity", lambda x: x.clone(), randn)
+    cases += pointwise_cases("alias", lambda x: x.clone(), randn)
     cases += rotate_half_cases()
     cases += head_cases()
     cases += linear_attention_cases()
@@ -840,11 +841,73 @@ def floor_divide_cases():
     ]
 
 
+def attention_layout_cases():
+    cases = []
+    for shape, n_rep in [((2, 3, 4), 2), ((2, 2, 3, 2), 3)]:
+        dim = len(shape) - 3
+        cases.append(op_case("repeat_kv", f"{shape} n_rep {n_rep}", lambda x, n_rep=n_rep, dim=dim: torch.repeat_interleave(x, n_rep, dim), [("input", randn(*shape))], [tensor_arg(0), n_rep]))
+    cases.append(op_case("contiguous", "(2, 3, 4)", lambda x: x.contiguous(), [("input", randn(2, 3, 4))], [tensor_arg(0)]))
+    return cases
+
+
+def trigonometric_cases():
+    return unary_cases("cos", torch.cos) + unary_cases("sin", torch.sin)
+
+
+def creation_and_reverse_cases():
+    cases = binary_cases("rsub", torch.rsub) + scalar_operand_cases("rsub", torch.rsub)
+    cases.append(op_case("pow", "scalar base 10.0 with exponent (2, 3)", lambda x: torch.pow(10.0, x), [("input", randn(2, 3))], [10.0, tensor_arg(0)]))
+    cases.append(op_case("pow", "base (2, 3) with exponent (3,)", torch.pow, [("input", positive(2, 3)), ("input", randn(3))], [tensor_arg(0), tensor_arg(1)]))
+    for args in [(5,), (2, 7), (1, 8, 3), (0.5, 2.5, 0.5), (6, 0, -2)]:
+        cases.append(op_case("arange", f"arange{args}", lambda args=args: torch.arange(*args), [], list(args)))
+    for size, dtype, name in [(4, torch.float32, "fp32"), (3, torch.bfloat16, "bf16")]:
+        cases.append(op_case("causal_mask", f"size {size} {name}", lambda size=size, dtype=dtype: torch.full((size, size), torch.finfo(dtype).min, dtype=dtype).triu(1), [], [size, name]))
+    return cases
+
+
+DTYPE_NAMES = {torch.bool: "bool", torch.int32: "int32", torch.int64: "int64", torch.bfloat16: "bf16", torch.float32: "fp32"}
+
+
+def dtype_case(op, fn, dtypes, args=()):
+    inputs = [torch.tensor([1, 2]).to(dtype) for dtype in dtypes]
+    return {"op": op, "inputs": [DTYPE_NAMES[d] for d in dtypes], "args": list(args), "output": DTYPE_NAMES[fn(*inputs, *args).dtype]}
+
+
+def promotion_cases():
+    previous = torch.get_default_dtype()
+    torch.set_default_dtype(torch.float32)
+    floating = {
+        "exp": torch.exp, "log": torch.log, "cos": torch.cos, "sin": torch.sin, "sqrt": torch.sqrt, "rsqrt": torch.rsqrt,
+        "reciprocal": torch.reciprocal, "sigmoid": torch.sigmoid, "erf": torch.erf, "logsumexp": torch.logsumexp,
+    }
+    cases = []
+    for op, fn in floating.items():
+        args = (-1,) if op == "logsumexp" else ()
+        for dtype in [torch.bool, torch.int32, torch.int64, torch.bfloat16]:
+            cases.append(dtype_case(op, fn, [dtype], args))
+    for pair in [(torch.int64, torch.int64), (torch.bool, torch.bool), (torch.int32, torch.int64), (torch.int64, torch.bfloat16)]:
+        cases.append(dtype_case("div", torch.div, list(pair)))
+    for op, fn in {"neg": torch.neg, "abs": torch.abs, "relu": torch.relu}.items():
+        cases.append(dtype_case(op, fn, [torch.int64]))
+    for op, fn in {"add": torch.add, "mul": torch.mul}.items():
+        cases.append(dtype_case(op, fn, [torch.int32, torch.int64]))
+    torch.set_default_dtype(previous)
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
     path.write_text(json.dumps(payload, indent=1) + "\n")
     print(f"{path.relative_to(OUT_DIR.parent.parent.parent)}: {len(cases)} cases")
+
+
+def rrms_cases():
+    cases = []
+    for shape in [(4,), (2, 3), (2, 3, 4)]:
+        x = torch.arange(math.prod(shape), dtype=torch.float64).reshape(shape) / 7 - 1
+        cases.append(op_case("rrms", f"last axis {shape}", lambda x: torch.rsqrt(x.square().mean(-1, keepdim=True) + 1e-6), [("input", x)], [tensor_arg(0), 1e-6]))
+    return cases
 
 
 def main():
@@ -855,8 +918,10 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
     write("pages.json", pages + stable_pages)
+    write("dtypes.json", promotion_cases())
+    write("rrms.json", rrms_cases())
 
 
 if __name__ == "__main__":

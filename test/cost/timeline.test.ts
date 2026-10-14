@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import { builtinOps, graph, opDef } from '../../src/core';
+import { builtinOps, graph, opDef, realSizeOf } from '../../src/core';
 import { FLOP_RULES, type MemoryKind, type StepCost, costTimeline, createSteps } from '../../src/steps';
 import { loadExample } from '../dsl/load';
 
@@ -59,6 +59,9 @@ describe('op costs', () => {
       return [product(forward), ...backward.map(product)];
     };
     expect(flops('matmul', [[2, 3], [3, 5]], [2, 5])).toEqual([60, 60, 60]);
+    expect(flops('matmul', [[2, 3, 4], [2, 4, 5]], [2, 3, 5])).toEqual([240, 240, 240]);
+    expect(flops('repeat_kv', [[1, 3, 4]], [2, 3, 4])).toEqual([0, 24]);
+    for (const name of ['view', 'reshape', 'transpose', 'unsqueeze', 'contiguous']) expect(flops(name, [[2, 3, 4]], [2, 3, 4]), name).toEqual([0, 0]);
     expect(flops('add', [[2, 3], [3]], [2, 3])).toEqual([6, 0, 6]);
     expect(flops('sub', [[2, 3], [2, 3]], [2, 3])).toEqual([6, 0, 6]);
     expect(flops('div', [[2, 3], [2, 3]], [2, 3])).toEqual([6, 6, 18]);
@@ -105,7 +108,7 @@ describe('costTimeline on the MoE pages', () => {
   it('counts every parameter of Qwen3-30B-A3B once the 47 placeholder layers are repeated', async () => {
     const page = await loadExample('qwen3_moe-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const t = costTimeline(page.graph, steps.list, { real: true });
     const QWEN3_30B_A3B_PARAMS = 30_532_122_624;
     expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_30B_A3B_PARAMS * 2);
   });
@@ -115,7 +118,8 @@ describe('costTimeline on the MoE pages', () => {
     const node = page.graph.node('linear_layer.linear_attn.chunk_gated_delta_rule.S[1][1]')!;
     const realCount = (dims: Record<string, number>) => {
       const sizes = page.graph.realSizes(dims);
-      return node.copies.real.map((d) => (typeof d === 'number' ? d : sizes[d])).reduce((p, v) => p * v, 1);
+      const shapes = page.graph.realShapes(dims);
+      return node.copies.real.map((d) => realSizeOf(d, sizes, shapes) as number).reduce((p, v) => p * v, 1);
     };
     const heads = page.graph.realSizes().Hv;
     expect(realCount({})).toBe(heads * 64);
@@ -126,7 +130,7 @@ describe('costTimeline on the MoE pages', () => {
     const page = await loadExample(file);
     const steps = createSteps(page.graph, page.steps);
     const start = performance.now();
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules, dims: { T: 2048 } });
+    const t = costTimeline(page.graph, steps.list, { real: true, dims: { T: 2048 } });
     expect(performance.now() - start).toBeLessThan(5000);
     expect(t.forward).toBeGreaterThan(0);
     expect(t.uncounted).toEqual([]);
@@ -135,9 +139,9 @@ describe('costTimeline on the MoE pages', () => {
 
 describe('costTimeline on the Qwen3 page', () => {
   it('counts every parameter of Qwen3-8B once the placeholder layers are repeated', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
-    const t = costTimeline(page.graph, steps.list, { real: true, modules: steps.modules });
+    const t = costTimeline(page.graph, steps.list, { real: true });
     const QWEN3_8B_PARAMS = 8_190_735_360;
     expect(bytesOf(t.steps[1], 'param')).toBe(QWEN3_8B_PARAMS * 2);
     const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;
@@ -145,13 +149,13 @@ describe('costTimeline on the Qwen3 page', () => {
   });
 
   it('ends backward with one gradient per parameter and nothing else alive', async () => {
-    const page = await loadExample('qwen3-dsl.yaml');
+    const page = await loadExample('qwen3/qwen3-dsl.yaml');
     const steps = createSteps(page.graph, page.steps);
     const t = costTimeline(page.graph, steps.list, { real: true });
     const last = t.steps.filter((_, i) => steps.list[i].dir === 'backward' && steps.list[i].kind !== 'overview').at(-1)!;
     expect(bytesOf(last, 'param_grad')).toBe(bytesOf(last, 'param'));
     expect(bytesOf(last, 'saved') + bytesOf(last, 'grad') + bytesOf(last, 'temp')).toBe(0);
-    expect([steps.list[t.peakStep].dir, steps.list[t.peakStep].title]).toEqual(['backward', 'log_softmax：穿过求和']);
+    expect([steps.list[t.peakStep].dir, steps.list[t.peakStep].title]).toEqual(['backward', '$\\frac{\\partial\\ell}{\\partial e^{\\mathbf{z}_{\\mathrm{fp32}}}}$']);
     expect(t.backward / t.forward).toBeCloseTo(2, 1);
   });
 });

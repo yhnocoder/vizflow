@@ -235,8 +235,8 @@ export class PlateMesh {
     readonly block: Block,
     theme: ThemeColors,
   ) {
-    const plates = block.slabs?.map((slab) => slab.plate) ?? [block.plate!];
-    this.faded = block.slabs?.map((slab) => !slab.used) ?? [false];
+    const plates = block.slabs?.map((slab) => slab.plate) ?? block.chunks ?? [block.plate!];
+    this.faded = block.slabs?.map((slab) => !slab.used) ?? plates.map(() => false);
     this.material = new MeshLambertMaterial({ color: new Color(...theme.line) });
     for (const plate of plates) {
       const geometry = new BoxGeometry(plate.w, PLATE_THICKNESS, plate.d);

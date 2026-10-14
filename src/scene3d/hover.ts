@@ -69,6 +69,8 @@ function opTokenAxis(node: Node, axes: Map<Node, number>): number | undefined {
       return first !== dim && inputs.every((n) => axes.get(n) === first) ? first : undefined;
     }
     case 'view':
+    case 'reshape':
+    case 'unsqueeze':
       return first === undefined ? undefined : viewAxis(inputs[0].shape, shape, first);
     case 'nll_loss':
       return attrs.reduction === 'none' && first === 0 ? 0 : undefined;
@@ -106,7 +108,10 @@ export function sameToken(block: Block, element: Element, axis: number): Element
 }
 
 export function tokenRect(block: Block, element: Element, axis: number): TokenRect {
-  const members = sameToken(block, element, axis);
+  return elementsRect(block, sameToken(block, element, axis));
+}
+
+export function elementsRect(block: Block, members: readonly Element[]): TokenRect {
   const [fw, fd] = block.footprint;
   const xs = members.map((e) => e.x);
   const zs = members.map((e) => e.z);
@@ -114,7 +119,7 @@ export function tokenRect(block: Block, element: Element, axis: number): TokenRe
   const x1 = Math.max(...xs) + fw / 2 + TOKEN_FRAME_MARGIN;
   const z0 = Math.min(...zs) - fd / 2 - TOKEN_FRAME_MARGIN;
   const z1 = Math.max(...zs) + fd / 2 + TOKEN_FRAME_MARGIN;
-  return { x: (x0 + x1) / 2, y: element.y + TOKEN_FRAME_LIFT, z: (z0 + z1) / 2, w: x1 - x0, d: z1 - z0 };
+  return { x: (x0 + x1) / 2, y: members[0].y + TOKEN_FRAME_LIFT, z: (z0 + z1) / 2, w: x1 - x0, d: z1 - z0 };
 }
 
 export function relatedOpacity(opacity: number, related: boolean): number {

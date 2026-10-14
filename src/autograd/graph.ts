@@ -1,11 +1,11 @@
 import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor';
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
-import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, isIntegerDtype, promoteDtypes } from './dtype';
+import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, isIntegerDtype } from './dtype';
 import { Node, type NodeCopies, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
-import type { AnyOpDef } from './op';
+import type { AnyOpDef, CompositeDef } from './op';
 import type { BuiltinOps } from './ops';
-import { inputDifferentiable, opDef } from './registry';
+import { bindComposite, bindOp, compositeDef, inputDifferentiable, opDef, outputDtype } from './registry';
 
 export interface GraphOptions {
   dims?: Record<string, number>;
@@ -21,7 +21,7 @@ export interface OpOptions extends NodeOptions {
 export interface LabelOptions extends NodeOptions {
   tokens?: string[];
   classes?: number;
-  shape?: (number | string)[];
+  shape?: Size[];
 }
 
 export interface SplitOptions {
@@ -36,17 +36,17 @@ export interface Graph extends BuiltinOps {
   readonly dtype: Dtype;
   readonly nodes: readonly Node[];
   readonly version: number;
-  input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
-  param(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
+  input(name: string, shape: Size[], values: Nested, options?: NodeOptions): Node;
+  param(name: string, shape: Size[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: LabelOptions): Node;
-  buffer(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
+  buffer(name: string, shape: Size[], values: Nested, options?: NodeOptions): Node;
   split(tensor: Node, split_size: number | string, dim?: number | SplitOptions, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
-  addDim(name: string, value: number, real?: number, derive?: RealSize): void;
+  addDim(name: string, value: number, real?: number): void;
   realSizes(dims?: Record<string, number>): Readonly<Record<string, number>>;
   realShapes(dims?: Record<string, number>): number[][];
-  realCopies<T>(drawn: number, real: number | string, fn: () => T): T;
+  realCopies<T>(drawn: number, real: Size, fn: () => T): T;
   node(name: string): Node | undefined;
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
@@ -56,7 +56,29 @@ export interface Graph extends BuiltinOps {
 
 type RealDerivation = (table: Readonly<Record<string, number>>, shapes: readonly number[][]) => number[];
 
-export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
+export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly (readonly number[])[]) => number;
+
+export interface DerivedSize {
+  toy: number;
+  real: number;
+  derive: RealSize;
+}
+
+export type Size = number | string | DerivedSize;
+
+type SizeOf = (size: Size) => number | undefined;
+
+function toySize(dims: Readonly<Record<string, number>>): SizeOf {
+  return (d) => (typeof d === 'number' ? d : typeof d === 'string' ? dims[d] : d.toy);
+}
+
+function createdRealSize(dims: Readonly<Record<string, number>>): SizeOf {
+  return (d) => (typeof d === 'number' ? d : typeof d === 'string' ? dims[d] : d.real);
+}
+
+export function realSizeOf(size: Size, sizes: Readonly<Record<string, number>>, shapes: readonly (readonly number[])[]): number | undefined {
+  return typeof size === 'number' ? size : typeof size === 'string' ? sizes[size] : size.derive(sizes, shapes);
+}
 
 interface NodeState {
   value: Tensor;
@@ -73,26 +95,48 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Node);
 }
 
-function resolveShape(spec: readonly (number | string)[], table: Readonly<Record<string, number>>, name: string): number[] {
+function isNode(value: unknown): value is Node {
+  return value instanceof Node;
+}
+
+function splitOptions(args: readonly unknown[]): { positional: unknown[]; options: Record<string, unknown> } {
+  const positional = [...args];
+  const last = positional[positional.length - 1];
+  return { positional, options: isPlainObject(last) && !isDerivedSize(last) ? (positional.pop() as Record<string, unknown>) : {} };
+}
+
+function nodeOptions(op: string, rest: Record<string, unknown>): OpOptions {
+  for (const key of Object.keys(rest)) if (!NODE_OPTION_KEYS.has(key)) throw new Error(`${op}: unknown option '${key}'`);
+  return rest as OpOptions;
+}
+
+function isDerivedSize(value: unknown): value is DerivedSize {
+  return isPlainObject(value) && typeof value.derive === 'function';
+}
+
+function resolveShape(spec: readonly Size[], sizeOf: SizeOf, name: string): number[] {
   return spec.map((d) => {
-    const size = typeof d === 'string' ? table[d] : d;
-    if (typeof d === 'string' && size === undefined) {
-      throw new Error(`node '${name}': dimension '${d}' is not defined`);
-    }
+    const size = sizeOf(d);
+    if (size === undefined) throw new Error(`node '${name}': dimension '${String(d)}' is not defined`);
     if (!Number.isInteger(size) || size < 0) {
-      throw new Error(`node '${name}': dimension ${JSON.stringify(d)} is not a non-negative integer`);
+      throw new Error(`node '${name}': dimension ${typeof d === 'object' ? size : JSON.stringify(d)} is not a non-negative integer`);
     }
     return size;
   });
 }
 
-function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, table: Readonly<Record<string, number>>): Record<string, unknown> {
+function isNamedOrDerived(value: unknown): value is string | DerivedSize {
+  return typeof value === 'string' || isDerivedSize(value);
+}
+
+function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, sizeOf: SizeOf): Record<string, unknown> {
   const resolved = { ...attrs };
   for (const key of def.sizes ?? []) {
     const lookup = (value: unknown) => {
-      if (typeof value !== 'string') return value;
-      if (table[value] === undefined) throw new Error(`${def.name}: dimension '${value}' is not defined`);
-      return table[value];
+      if (!isNamedOrDerived(value)) return value;
+      const size = sizeOf(value);
+      if (size === undefined) throw new Error(`${def.name}: dimension '${String(value)}' is not defined`);
+      return size;
     };
     const value = attrs[key];
     resolved[key] = Array.isArray(value) ? value.map(lookup) : lookup(value);
@@ -129,7 +173,6 @@ class GraphImpl {
   private detached = new Set<number>();
   private readonly realDerivations: RealDerivation[] = [];
   private copies: NodeCopies = { drawn: 1, real: [] };
-  private readonly derivedSizes = new Map<string, RealSize>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -145,14 +188,13 @@ class GraphImpl {
     }
   }
 
-  addDim(name: string, value: number, real = value, derive?: RealSize): void {
+  addDim(name: string, value: number, real = value): void {
     const known = this.dims[name];
     if (known !== undefined) {
       if (known !== value || (this.realDims?.[name] ?? known) !== real) throw new Error(`addDim: dimension '${name}' is already defined`);
       return;
     }
     this.dims = Object.freeze({ ...this.dims, [name]: value });
-    if (derive !== undefined) this.derivedSizes.set(name, derive);
     if (this.real !== undefined && this.realDims !== undefined) {
       this.real = Object.freeze({ ...this.real, [name]: real });
       this.realDims = Object.freeze({ ...this.realDims, [name]: real });
@@ -173,18 +215,15 @@ class GraphImpl {
       if (!(name in this.realDims)) throw new Error(`realSizes: dimension '${name}' is not defined`);
       if (!Number.isInteger(value) || value < 1) throw new Error(`realSizes: dimension '${name}' needs a positive integer, got ${value}`);
     }
-    const sizes: Record<string, number> = { ...this.realDims, ...dims };
+    const sizes = Object.freeze({ ...this.realDims, ...dims });
     const shapes: number[][] = [];
-    for (const [name, derive] of this.derivedSizes) {
-      if (!(name in dims)) Object.defineProperty(sizes, name, { enumerable: true, get: () => derive(sizes, shapes) });
-    }
     this.realDerivations.forEach((derivation) => shapes.push(derivation(sizes, shapes)));
-    return { sizes: Object.freeze(sizes), shapes };
+    return { sizes, shapes };
   }
 
-  realCopies<T>(drawn: number, real: number | string, fn: () => T): T {
+  realCopies<T>(drawn: number, real: Size, fn: () => T): T {
     if (!Number.isInteger(drawn) || drawn < 1) throw new Error(`realCopies: ${drawn} drawn copies need a positive integer`);
-    resolveShape([real], this.realDims ?? this.dims, 'realCopies');
+    resolveShape([real], createdRealSize(this.realDims ?? this.dims), 'realCopies');
     const outer = this.copies;
     this.copies = Object.freeze({ drawn: outer.drawn * drawn, real: Object.freeze([...outer.real, real]) });
     try {
@@ -194,11 +233,11 @@ class GraphImpl {
     }
   }
 
-  input(name: string, shape: (number | string)[], values: Nested, options: NodeOptions = {}): Node {
+  input(name: string, shape: Size[], values: Nested, options: NodeOptions = {}): Node {
     return this.leaf('input', name, shape, values, options, undefined);
   }
 
-  param(name: string, shape: (number | string)[], values: Nested, options: NodeOptions = {}): Node {
+  param(name: string, shape: Size[], values: Nested, options: NodeOptions = {}): Node {
     return this.leaf('param', name, shape, values, options, undefined);
   }
 
@@ -209,7 +248,7 @@ class GraphImpl {
     return this.leaf('label', name, shape, values, options, options.tokens, attrs);
   }
 
-  buffer(name: string, shape: (number | string)[], values: Nested, options: NodeOptions = {}): Node {
+  buffer(name: string, shape: Size[], values: Nested, options: NodeOptions = {}): Node {
     return this.leaf('buffer', name, shape, values, options, undefined);
   }
 
@@ -307,87 +346,55 @@ class GraphImpl {
   }
 
   apply(def: AnyOpDef, args: unknown[]): Node {
-    const positional = [...args];
-    const last = positional[positional.length - 1];
-    const options: Record<string, unknown> = isPlainObject(last) ? (positional.pop() as Record<string, unknown>) : {};
-    const restAt = def.rest === undefined ? -1 : def.args.indexOf(def.rest);
-    if (restAt >= 0 && positional.length > restAt && !(positional.length === restAt + 1 && Array.isArray(positional[restAt]))) {
-      positional.splice(restAt, positional.length - restAt, positional.slice(restAt));
-    }
-    if (positional.length > def.args.length) {
-      throw new Error(`${def.name}: takes at most ${def.args.length} positional arguments, got ${positional.length}`);
-    }
-    const attrs: Record<string, unknown> = { ...(def.defaults ?? {}) };
-    const keywords = new Set(Object.keys(options).filter((key) => def.args.includes(key) && !def.tensors.includes(key) && key !== def.rest));
-    for (const key of keywords) {
-      if (positional[def.args.indexOf(key)] !== undefined) throw new Error(`${def.name}: argument '${key}' is given both by position and by keyword`);
-      attrs[key] = options[key];
-    }
-    const inputs: Node[] = [];
-    def.args.forEach((argName, i) => {
-      const given = positional[i];
-      if (argName === def.list) {
-        if (!Array.isArray(given) || given.length === 0 || !given.every((n) => n instanceof Node)) {
-          throw new Error(`${def.name}: argument '${argName}' must be a non-empty array of nodes`);
-        }
-        for (const n of given as Node[]) this.ownNode(n, def.name);
-        inputs.push(...(given as Node[]));
-      } else if (def.tensors.includes(argName)) {
-        const scalar = def.scalars?.includes(argName) ?? false;
-        if (scalar && typeof given === 'number') {
-          attrs[argName] = given;
-          return;
-        }
-        if (!(given instanceof Node)) throw new Error(`${def.name}: argument '${argName}' must be a node${scalar ? ' or a number' : ''}`);
-        this.ownNode(given, def.name);
-        inputs.push(given);
-      } else if (given !== undefined) {
-        attrs[argName] = given;
-      } else if (!(argName in attrs)) {
-        throw new Error(`${def.name}: missing argument '${argName}'`);
-      }
-    });
-    const nodeOptions: OpOptions = {};
-    for (const [key, value] of Object.entries(options)) {
-      if (keywords.has(key)) continue;
-      if (NODE_OPTION_KEYS.has(key)) (nodeOptions as Record<string, unknown>)[key] = value;
-      else if (def.defaults !== undefined && key in def.defaults) attrs[key] = value;
-      else throw new Error(`${def.name}: unknown option '${key}'`);
-    }
-    return this.createOp(def, inputs, attrs, nodeOptions);
+    const { positional, options } = splitOptions(args);
+    const { inputs, attrs, rest } = bindOp(def, positional, options, isNode);
+    for (const n of inputs) this.ownNode(n, def.name);
+    return this.createOp(def, inputs, attrs, nodeOptions(def.name, rest));
+  }
+
+  compose(name: string, args: unknown[]): Node {
+    const def = compositeDef(name) as CompositeDef;
+    const { positional, options } = splitOptions(args);
+    const { inputs, rest } = bindComposite(def, positional, options, isNode);
+    for (const n of inputs) if (n !== null) this.ownNode(n, def.name);
+    const last = nodeOptions(def.name, rest);
+    const ops = this.self as unknown as Record<string, (...a: unknown[]) => Node>;
+    return def.compose<Node>((op, opArgs, final) => ops[op](...opArgs, final ? last : {}), inputs);
   }
 
   private leaf(
     kind: NodeKind,
     name: string,
-    shapeSpec: readonly (number | string)[],
+    shapeSpec: readonly Size[],
     values: Nested,
     options: NodeOptions,
     tokens: string[] | undefined,
     attrs: Record<string, unknown> = {},
   ): Node {
-    const shape = resolveShape(shapeSpec, this.dims, name);
-    const realShape = this.realDims === undefined ? shape : resolveShape(shapeSpec, this.realDims, name);
+    const shape = resolveShape(shapeSpec, toySize(this.dims), name);
+    const realShape = this.realDims === undefined ? shape : resolveShape(shapeSpec, createdRealSize(this.realDims), name);
     const dtype = options.dtype === undefined ? (kind === 'label' ? LABEL_DTYPE : this.dtype) : checkDtype(options.dtype, `node '${name}'`);
     const value = this.tensorFor(name, shape, values, options.dtype === 'int64');
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: value.clone(), transposed: undefined };
-    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state, (table) => resolveShape(shapeSpec, table, name));
+    return this.addNode(kind, name, undefined, [], attrs, shape, realShape, options, dtype, tokens, state, (table, shapes) =>
+      resolveShape(shapeSpec, (d) => realSizeOf(d, table, shapes), name),
+    );
   }
 
   private createOp(def: AnyOpDef, inputs: Node[], given: Record<string, unknown>, options: OpOptions): Node {
-    const attrs = resolveSizes(def, given, this.dims);
+    const attrs = resolveSizes(def, given, toySize(this.dims));
     const shape = def.shape(inputs.map((n) => [...n.shape]), attrs);
     const realShape =
-      this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, this.realDims));
+      this.realDims === undefined ? shape : def.shape(inputs.map((n) => [...n.realShape]), resolveSizes(def, given, createdRealSize(this.realDims)));
     const name = options.name ?? this.autoName(def.name);
-    const dtype =
-      options.dtype !== undefined ? checkDtype(options.dtype, `node '${name}'`) : (def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), this.dtype, `${def.name} '${name}'`));
+    const explicit = options.dtype === undefined ? undefined : checkDtype(options.dtype, `node '${name}'`);
+    const dtype = outputDtype(def, inputs, attrs, this.dtype, `${def.name} '${name}'`, explicit);
     checkExact(def, inputs, name);
     if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
     const value = def.forward(inputs.map((n) => n.value), attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state, (table, shapes) =>
-      def.shape(inputs.map((n) => [...shapes[n.id]]), resolveSizes(def, given, table)),
+      def.shape(inputs.map((n) => [...shapes[n.id]]), resolveSizes(def, given, (d) => realSizeOf(d, table, shapes))),
     );
   }
 
@@ -648,11 +655,12 @@ export function graph(options: GraphOptions = {}): Graph {
       if (typeof prop === 'string' && !(prop in target)) {
         const def = opDef(prop);
         if (def !== undefined) return (...args: unknown[]) => target.apply(def, args);
+        if (compositeDef(prop) !== undefined) return (...args: unknown[]) => target.compose(prop, args);
       }
       return Reflect.get(target, prop, receiver);
     },
     has(target, prop) {
-      return prop in target || (typeof prop === 'string' && opDef(prop) !== undefined);
+      return prop in target || (typeof prop === 'string' && (opDef(prop) !== undefined || compositeDef(prop) !== undefined));
     },
   }) as unknown as Graph;
   impl.self = proxy;

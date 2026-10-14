@@ -1,35 +1,29 @@
 import type { SectionBlock, SectionItem, SectionRow } from '../../ui';
 import { type Where, child, fail } from '../source';
-import type { Compiler } from './text';
+import type { PageCompiler } from './page';
 import type { Env } from './types';
-import { isRecord } from './util';
+import { checkKeys, isRecord, record } from './util';
 
 const ROPE_POSITIONS = 24;
 
 export type SectionSources = Map<object, { file: string; rows: unknown[] }>;
 
-export function compileSections(c: Compiler, env: Env, sectionSources: SectionSources): SectionItem[] {
+export function compileSections(c: PageCompiler, env: Env, sectionSources: SectionSources): SectionItem[] {
   const page = c.page;
   if (page.sections === undefined) return [];
   const where = child(c.pageWhere, page, 'sections');
   if (!Array.isArray(page.sections)) fail(where, 'sections must be a list');
   const sections = page.sections;
-  const nodesAt = (value: unknown, at: Where) =>
-    Array.isArray(value) ? value.flatMap((v, k) => c.nodeList(v, { ...env, where: child(at, value, k) })) : c.nodeList(value, { ...env, where: at });
-  const textAt = (value: unknown, at: Where) => {
-    if (typeof value !== 'string') fail(at, 'expected text');
-    return c.text(value, { ...env, where: at });
-  };
-  const numberAt = (value: unknown, at: Where) => {
-    if (typeof value === 'number') return value;
-    const found = typeof value === 'string' ? c.expression(value, { ...env, where: at }, undefined) : undefined;
-    if (typeof found !== 'object' || found === null || !('toy' in found)) return fail(at, 'expected a number or a dimension expression');
+  const textAt = (value: unknown, at: Where) => c.text(value, { ...env, where: at });
+  const nodeAt = (value: unknown, at: Where) => c.node(value, { ...env, where: at });
+  const intAt = (value: unknown, at: Where): number => {
+    const found = c.number(value, { ...env, where: at });
+    if (!Number.isInteger(found.toy)) fail(at, 'expected an integer');
     return found.toy;
   };
   const block = (value: unknown, at: Where): SectionBlock => {
     if (value === 'rope_dial' || value === 'rope_curve') return value;
-    if (!isRecord(value)) fail(at, "a block must be 'rope_dial', 'rope_curve' or a mapping");
-    if (Object.keys(value).length !== 1) fail(at, 'a block must have exactly one key');
+    if (!isRecord(value) || Object.keys(value).length !== 1) fail(at, "a block is 'rope_dial', 'rope_curve' or a mapping with one key");
     const key = Object.keys(value)[0];
     const keyAt = child(at, value, key);
     if (key === 'text') return { text: textAt(value.text, keyAt) };
@@ -40,67 +34,72 @@ export function compileSections(c: Compiler, env: Env, sectionSources: SectionSo
       return {
         buttons: buttons.map((b, k) => {
           const buttonAt = child(keyAt, buttons, k);
-          if (!isRecord(b)) fail(buttonAt, 'a button must be a mapping with label and go');
-          return { label: textAt(b.label, child(buttonAt, b, 'label')), go: c.node(b.go, { ...env, where: child(buttonAt, b, 'go') }) };
+          const spec = record(b, buttonAt, 'a button');
+          checkKeys(spec, new Set(['label', 'go']), buttonAt);
+          return { label: textAt(spec.label, child(buttonAt, spec, 'label')), go: nodeAt(spec.go, child(buttonAt, spec, 'go')) };
         }),
       };
     }
     if (key === 'rope_compare') {
-      const spec = value.rope_compare;
-      if (!isRecord(spec)) fail(keyAt, 'rope_compare must be a mapping');
-      const specAt = (k: string) => child(keyAt, spec, k);
-      return {
-        rope_compare: {
-          scores: nodesAt(spec.scores, specAt('scores')),
-          weights: nodesAt(spec.weights, specAt('weights')),
-          ids: c.node(spec.ids, { ...env, where: specAt('ids') }),
-        },
-      };
+      const spec = record(value.rope_compare, keyAt, 'rope_compare');
+      checkKeys(spec, new Set(['scores', 'weights', 'ids']), keyAt);
+      const scores = nodeAt(spec.scores, child(keyAt, spec, 'scores'));
+      const weights = nodeAt(spec.weights, child(keyAt, spec, 'weights'));
+      for (const [name, node] of [['scores', scores], ['weights', weights]] as const) {
+        if (node.shape.length !== 3) fail(child(keyAt, spec, name), `${name} must be a (heads, T, T) tensor, got shape (${node.shape.join(', ')})`);
+      }
+      return { rope_compare: { scores, weights, ids: nodeAt(spec.ids, child(keyAt, spec, 'ids')) } };
     }
     return fail(keyAt, `unknown block '${key}'`);
   };
   return sections.map((section, i): SectionItem => {
     const at = child(where, sections, i);
-    if (!isRecord(section)) fail(at, 'a section must be a mapping');
-    const field = (key: string) => child(at, section, key);
+    const spec = record(section, at, 'a section');
+    checkKeys(spec, new Set(['title', 'src', 'rope']), at);
+    const field = (key: string) => child(at, spec, key);
     const out: SectionItem = { rows: [] };
-    const source = sectionSources.get(section);
-    if (source !== undefined && section.rows !== undefined) fail(field('rows'), 'a section takes either src or rows');
-    if (section.title !== undefined) out.title = textAt(section.title, field('title'));
-    if (section.rope !== undefined) {
-      const rope = section.rope;
-      if (!isRecord(rope)) fail(field('rope'), 'rope must be a mapping');
+    if (spec.title !== undefined) out.title = textAt(spec.title, field('title'));
+    if (spec.rope !== undefined) {
+      const rope = record(spec.rope, field('rope'), 'rope');
       const ropeAt = (key: string) => child(field('rope'), rope, key);
-      const rows = rope.rows ?? [-1, 1];
+      checkKeys(rope, new Set(['q', 'k', 'rows', 'head', 'theta', 'd_head', 'positions']), field('rope'));
+      const rows = rope.rows ?? [-1, 0];
       if (!Array.isArray(rows) || rows.length !== 2) fail(ropeAt('rows'), 'rows must be [q row, k row]');
-      out.rope = {
-        q: nodesAt(rope.q, ropeAt('q')),
-        k: nodesAt(rope.k, ropeAt('k')),
-        rows: [numberAt(rows[0], ropeAt('rows')), numberAt(rows[1], ropeAt('rows'))],
-        head: rope.head === undefined ? 1 : numberAt(rope.head, ropeAt('head')),
-        theta: numberAt(rope.theta, ropeAt('theta')),
-        dh: numberAt(rope.dh, ropeAt('dh')),
-        positions: rope.positions === undefined ? ROPE_POSITIONS : numberAt(rope.positions, ropeAt('positions')),
+      const row = (k: number) => {
+        const value = intAt(rows[k], child(ropeAt('rows'), rows, k));
+        return value >= 0 ? value + 1 : value;
       };
-      if (!Number.isInteger(out.rope.dh) || out.rope.dh < 2 || out.rope.dh % 2 !== 0) fail(ropeAt('dh'), 'dh must be an even integer');
-      if (!Number.isInteger(out.rope.positions) || out.rope.positions < 2) fail(ropeAt('positions'), 'positions must be an integer of at least 2');
+      const dh = intAt(rope.d_head, ropeAt('d_head'));
+      if (dh < 2 || dh % 2 !== 0) fail(ropeAt('d_head'), 'd_head must be an even integer');
+      const positions = rope.positions === undefined ? ROPE_POSITIONS : intAt(rope.positions, ropeAt('positions'));
+      if (positions < 2) fail(ropeAt('positions'), 'positions must be at least 2');
+      out.rope = {
+        q: [nodeAt(rope.q, ropeAt('q'))],
+        k: [nodeAt(rope.k, ropeAt('k'))],
+        rows: [row(0), row(1)],
+        head: (rope.head === undefined ? 0 : intAt(rope.head, ropeAt('head'))) + 1,
+        theta: c.number(rope.theta, { ...env, where: ropeAt('theta') }).toy,
+        dh,
+        positions,
+      };
     }
-    const rows = source === undefined ? section.rows : source.rows;
-    const rowsField = source === undefined ? field('rows') : { file: source.file, path: 'rows', obj: undefined };
-    if (!Array.isArray(rows)) fail(rowsField, 'a section needs src or rows');
-    out.rows = rows.map((row, r): SectionRow => {
-      const rowAt = child(rowsField, rows, r);
-      if (Array.isArray(row)) return { cells: [row.map((b, k) => block(b, child(rowAt, row, k)))] };
-      if (!isRecord(row) || !Array.isArray(row.cells)) fail(rowAt, 'a row must be a list of blocks or a mapping with cells');
-      const cells = row.cells;
-      const columns = row.columns;
-      if (columns !== undefined && (!Array.isArray(columns) || columns.length !== cells.length)) fail(child(rowAt, row, 'columns'), 'columns must list one width per cell');
+    const source = sectionSources.get(section as object);
+    if (source === undefined) fail(field('src'), 'a section needs src, a Markdown file');
+    const rows = source.rows;
+    const rowsField: Where = { file: source.file, path: 'rows', obj: undefined };
+    out.rows = rows.map((r, n): SectionRow => {
+      const rowAt = child(rowsField, rows, n);
+      if (Array.isArray(r)) return { cells: [r.map((b, k) => block(b, child(rowAt, r, k)))] };
+      if (!isRecord(r) || !Array.isArray(r.cells)) fail(rowAt, 'a row must be a list of blocks or a mapping with cells');
+      const cells = r.cells;
+      const columns = r.columns;
+      if (columns !== undefined && (!Array.isArray(columns) || columns.length !== cells.length)) fail(child(rowAt, r, 'columns'), 'columns must list one width per cell');
       return {
         columns: columns as (number | string)[] | undefined,
         cells: cells.map((cell, k) => {
-          const cellAt = child(child(rowAt, row, 'cells'), cells, k);
+          const cellAt = child(child(rowAt, r, 'cells'), cells, k);
           if (!Array.isArray(cell)) fail(cellAt, 'a cell must be a list of blocks');
-          return cell.map((b, n) => block(b, child(cellAt, cell, n)));
+          return cell.map((b, m) => block(b, child(cellAt, cell, m)));
         }),
       };
     });

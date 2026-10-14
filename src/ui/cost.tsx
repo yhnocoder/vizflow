@@ -35,13 +35,6 @@ function copiesText(copies: { drawn: number; real: number }): string {
 function ScaleTags(props: { scale: Scale }) {
   return (
     <>
-      <Show when={props.scale.repeat}>
-        {(count) => (
-          <span class="vf-costtag vf-costrepeat" title={`占位盒子里的 ${count()} 层按画出的这一层推算`}>
-            ×{count()} 层
-          </span>
-        )}
-      </Show>
       <Show when={props.scale.copies}>
         {(copies) => (
           <span class="vf-costtag" title={`循环在图里画出 ${copies().drawn} 份，真实模型有 ${copies().real} 份，按 ${copies().real}/${copies().drawn} 倍计`}>
@@ -55,7 +48,6 @@ function ScaleTags(props: { scale: Scale }) {
 
 function scaleTex(scale: Scale): string[] {
   const factors: string[] = [];
-  if (scale.repeat !== undefined) factors.push(`${scale.repeat}`);
   if (scale.copies !== undefined) factors.push(scale.copies.real % scale.copies.drawn === 0 ? `${scale.copies.real / scale.copies.drawn}` : `\tfrac{${scale.copies.real}}{${scale.copies.drawn}}`);
   if (scale.batch !== 1) factors.push(`${scale.batch}`);
   return factors;
@@ -89,10 +81,10 @@ export function flopTex(entry: FlopEntry): string {
 
 const total = (memory: readonly MemoryEntry[]) => memory.reduce((sum, m) => sum + m.bytes, 0);
 
-function grouped(memory: readonly MemoryEntry[]): { kind: MemoryKind; bytes: number; repeated: number; entries: MemoryEntry[] }[] {
+function grouped(memory: readonly MemoryEntry[]): { kind: MemoryKind; bytes: number; entries: MemoryEntry[] }[] {
   return MEMORY_KINDS.map((kind) => {
     const entries = memory.filter((m) => m.kind === kind).sort((a, b) => b.bytes - a.bytes);
-    return { kind, bytes: total(entries), repeated: total(entries.filter((m) => m.scale.repeat !== undefined)), entries };
+    return { kind, bytes: total(entries), entries };
   }).filter((group) => group.entries.length > 0);
 }
 
@@ -191,7 +183,6 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
       real: real(),
       batch: batch(),
       ...(T === undefined ? {} : { dims: { T } }),
-      modules: props.steps?.modules ?? [],
     });
   });
   const current = () => {
@@ -217,7 +208,6 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
   };
   const tipGroup = () => groups().find((group) => group.kind === tip());
   const realName = () => (typeof g.real?.name === 'string' ? g.real.name : '真实模型');
-  const repeated = () => total((step()?.memory ?? []).filter((m) => m.scale.repeat !== undefined));
   return (
     <div class="vf-card vf-cost">
       <h2>
@@ -280,11 +270,6 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
           </span>
         </span>
       </div>
-      <Show when={repeated() > 0}>
-        <div class="vf-costpeak">
-          其中 {formatBytes(repeated())} <span class="vf-costtag vf-costrepeat">推算</span>：占位盒子里的层按画出的同类层推算
-        </div>
-      </Show>
       <div class="vf-costbarwrap">
         <div class="vf-costmeter" classList={{ 'vf-overview': step()?.overview === true }}>
           <For each={groups()}>
@@ -296,11 +281,7 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
                 style={{ width: `${peak() === 0 ? 0 : (group.bytes / peak()) * 100}%` }}
                 aria-label={`${KIND_NAMES[group.kind]} ${formatBytes(group.bytes)}`}
                 {...hover(group.kind)}
-              >
-                <Show when={group.repeated > 0}>
-                  <span class="vf-costhatch" style={{ width: `${(group.repeated / group.bytes) * 100}%` }} />
-                </Show>
-              </button>
+              />
             )}
           </For>
         </div>

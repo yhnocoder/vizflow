@@ -1,5 +1,5 @@
 import { Tensor, broadcastIndex, broadcastShapes, forEachIndex, formatShape, offsetOf } from '../../tensor';
-import type { OpCost, OpDef } from '../op';
+import type { CompositeDef, OpCost, OpDef } from '../op';
 import { numel } from './cost';
 
 const MULTIPLY_ADD = 2;
@@ -152,6 +152,7 @@ export const matmulOp: OpDef<NoAttrs> = {
   name: 'matmul',
   args: ['input', 'other'],
   tensors: ['input', 'other'],
+  sameDtype: ['input', 'other'],
   shape: ([a, b]) => matmulShape(a, b),
   forward: ([a, b]) => (isBatched(a.shape, b.shape) ? batchedForward(a, b) : multiply(a, b, matmulShape(a.shape, b.shape))),
   backward: (gradOut, [a, b]) => {
@@ -191,6 +192,7 @@ export const selectMatmulOp: OpDef<SelectMatmulAttrs> = {
   name: 'select_matmul',
   args: ['input', 'other', 'index'],
   tensors: ['input', 'other'],
+  sameDtype: ['input', 'other'],
   shape: ([a, b], { index }) => selectMatmulShape(a, b, index),
   forward: ([a, b], { index }) => multiply(slice(a, headIndex(a.shape, index)), b, selectMatmulShape(a.shape, b.shape, index)),
   backward: (gradOut, [a, b], _out, attrs) => {
@@ -222,6 +224,7 @@ export const groupedLinearOp: OpDef<NoAttrs> = {
   name: 'grouped_linear',
   args: ['input', 'weight', 'group'],
   tensors: ['input', 'weight', 'group'],
+  sameDtype: ['input', 'weight'],
   differentiable: [true, true, false],
   shape: ([input, weight, group]) => groupedLinearShape(input, weight, group),
   forward: ([input, weight, group]) => {
@@ -318,6 +321,7 @@ export const solveTriangularOp: OpDef<SolveTriangularAttrs> = {
   name: 'solve_triangular',
   args: ['A', 'B'],
   tensors: ['A', 'B'],
+  sameDtype: ['A', 'B'],
   defaults: { upper: null, unitriangular: false },
   shape: ([a, b], attrs) => triangularShape(a, b, attrs),
   forward: ([a, b], attrs) => solveTriangular(a, b, attrs),
@@ -345,5 +349,16 @@ export const solveTriangularOp: OpDef<SolveTriangularAttrs> = {
       const count = [numel(out), a[a.length - 1]];
       return { forward: count, backward: [count, count] };
     },
+  },
+};
+
+export const linearComposite: CompositeDef = {
+  name: 'linear',
+  args: ['input', 'weight', 'bias'],
+  tensors: ['input', 'weight', 'bias'],
+  optional: ['bias'],
+  compose(apply, [input, weight, bias]) {
+    const product = apply('matmul', [input, apply('transpose', [weight, 0, 1], false)], bias === null);
+    return bias === null ? product : apply('add', [product, bias], true);
   },
 };

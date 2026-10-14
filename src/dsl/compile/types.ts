@@ -1,10 +1,7 @@
-import type { Node } from '../../autograd';
-import type { BackwardOverride, ForwardStep } from '../../steps';
-import type { Nested } from '../../tensor';
+import type { Dtype, Node, ProgramBuilder, RealSize } from '../../autograd';
+import type { Tensor } from '../../tensor';
 import type { ModuleDef } from '../load';
 import type { Where } from '../source';
-
-export type RealSize = (sizes: Readonly<Record<string, number>>, shapes: readonly number[][]) => number;
 
 export interface Num {
   toy: number;
@@ -13,93 +10,128 @@ export interface Num {
   derive?: RealSize;
 }
 
-export interface OpValue {
-  op: string;
+export interface DtypeValue {
+  dtype: Dtype;
 }
 
-export interface ModuleValue {
-  module: string;
+export interface ModuleRef {
+  module: ModuleDef;
 }
 
-export interface BufferValue {
-  buffer: true;
-  shape: Num[];
-  values: Nested;
+export type ViewIndex = number | { start: number; stop: number };
+
+export interface TensorView {
+  node: Node;
+  grad: boolean;
+  index: ViewIndex[];
 }
 
-export type ParamType = 'int' | 'float' | 'dim' | 'bool' | 'op' | 'module' | 'tex' | 'text';
-export type Value = Node | Num | Node[] | Num[] | string | boolean | OpValue | ModuleValue | BufferValue;
-export type Resolved = Value | Scope;
+export type RealSizeValues = Readonly<Record<string, number | string>>;
 
-export interface Make {
-  path: string;
-  tex: string;
-  anon: Node[];
-  counter: number;
-  dtype?: string;
+export interface RealSizes {
+  realSizes: Readonly<Record<string, RealSizeValues>>;
 }
 
-export interface Env {
-  scope: Scope;
-  loops: Map<string, number>;
-  where: Where;
-  buffers?: boolean;
+export interface RealSizeEntry {
+  realSize: string;
+  values: RealSizeValues;
 }
 
-export interface ModuleRec {
-  id: string;
-  parent: string | null;
-  title: string;
-  subtitle: string;
-  formula?: string;
-  fixed: boolean;
-  folded: boolean;
-  split: boolean;
-  repeat: { like: string; count: number; where: Where }[];
-  nodes: Node[];
-  fold: { forward: BackwardOverride; backward: BackwardOverride };
-  decl: Record<string, unknown>;
-  env: Env;
-  defaults?: { decl: Record<string, unknown>; env: Env };
+export class Eager {
+  constructor(
+    readonly value: Tensor,
+    readonly dtype: Dtype,
+    readonly ref: number | undefined,
+    readonly tokens?: readonly string[],
+  ) {}
 }
 
-export interface FormulaRec {
-  owner: string;
-  tex: string;
-  env: Env;
-  target: { formula?: string };
+export class PageFunction {
+  constructor(
+    readonly name: string,
+    readonly run: (args: Value[], kwargs: ReadonlyMap<string, Value>, fail: (message: string) => never) => Value,
+  ) {}
 }
 
-export interface StepRec {
-  refs: { owner: string; id: string }[];
-  step: ForwardStep;
-}
+export type Value = Num | boolean | string | null | DtypeValue | ModuleRef | Node | Eager | PageFunction | Value[] | Instance | InstanceList | Result | TensorView | RealSizes | RealSizeEntry;
 
-export type Slot =
-  | { kind: 'node'; name: string; node: Node; created: Node[] }
-  | { kind: 'child'; def: ModuleDef; steps: StepRec[]; created: Node[]; merge?: Slot }
-  | { kind: 'loop'; iterations: Slot[][]; sequential: boolean }
-  | { kind: 'group'; decl: Record<string, unknown>; where: Where; loops: Map<string, number>; slots: Slot[] };
+export type Member = Instance | InstanceList | Node | null;
 
-export class Scope {
-  readonly entries = new Map<string, Node>();
-  readonly children = new Map<string, Scope>();
-  readonly params = new Map<string, { type: ParamType; value: Num | string | boolean | OpValue | ModuleValue }>();
-  readonly missing = new Map<string, Where>();
-  readonly dims = new Map<string, Num>();
-  readonly inputTex = new Map<string, string>();
-  readonly anon = new Map<Node, Node[]>();
-  readonly outputTex = new Map<string, string>();
-  readonly texOverride = new Map<string, string>();
-  readonly groups = new Set<string>();
+export type Mode = { k: 'graph'; make: Make } | { k: 'ref' } | { k: 'eager'; program: ProgramBuilder; reads: boolean };
+
+export class Instance {
+  readonly members = new Map<string, Member>();
+  readonly args = new Map<string, Value>();
+  readonly calls: Call[] = [];
 
   constructor(
     readonly def: ModuleDef,
     readonly path: string,
-    readonly marks: string[],
+    readonly name: string,
+    readonly parent: Instance | undefined,
+    readonly marks: readonly string[],
   ) {}
+}
 
-  local(key: string): Node | Scope | undefined {
-    return this.entries.get(key) ?? this.children.get(key);
-  }
+export class InstanceList {
+  readonly items: Instance[] = [];
+  readonly calls: ListCall[] = [];
+
+  constructor(
+    readonly path: string,
+    readonly name: string,
+    readonly count: Num,
+  ) {}
+}
+
+export interface Alias {
+  path: string;
+  tex: string;
+}
+
+export class Call {
+  readonly values = new Map<string, Value>();
+  readonly resultAliases = new Map<string, Map<string, Alias>>();
+  readonly bound = new Map<string, Num | DtypeValue>();
+  readonly inputs = new Map<string, Node>();
+  readonly anon = new Map<Node, Node[]>();
+  readonly children: Call[] = [];
+  readonly outputs = new Map<string, Node>();
+  readonly results: string[] = [];
+  readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
+  created: Node[] = [];
+
+  constructor(
+    readonly instance: Instance,
+    readonly prefix: string,
+    readonly parent: Call | undefined,
+    readonly aliases: ReadonlyMap<string, Alias>,
+  ) {}
+}
+
+export class ListCall {
+  readonly calls: Call[] = [];
+
+  constructor(readonly list: InstanceList) {}
+}
+
+export class Result {
+  constructor(
+    readonly call: Call,
+    readonly outputs: ReadonlyMap<string, Node>,
+  ) {}
+}
+
+export interface Env {
+  instance: Instance;
+  call: Call | undefined;
+  locals: ReadonlyMap<string, Value>;
+  where: Where;
+}
+
+export interface Make {
+  name: string;
+  path: string;
+  tex: string;
+  anon: Node[];
 }

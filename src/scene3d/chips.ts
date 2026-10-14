@@ -46,8 +46,9 @@ export class TokenChips {
       const rows = block.rows;
       let labels = this.chipLabels.get(block.key ?? block.node.name + chip.label.name);
       if (labels === undefined) {
+        const key = block.key ?? block.node.name + chip.label.name;
         labels = Array.from({ length: rows }, () => c.labels.add('tok'));
-        this.chipLabels.set(block.key ?? block.node.name + chip.label.name, labels);
+        this.chipLabels.set(key, labels);
       }
       const y = block.elements[0].y;
       const zs = Array.from({ length: rows }, (_, r) => block.elements.find((e) => e.row === r)!.z);
@@ -72,7 +73,7 @@ export class TokenChips {
         const length = zs[rows - 1] - zs[0] + ARROW_EXTRA;
         arrow.group.position.set(chip.x + ARROW_SIDE, y + ARROW_LIFT, z0);
         arrow.setLength(length);
-        const pointing = block.hidden !== true;
+        const pointing = !c.lod && !renderable.far && block.hidden !== true;
         arrow.group.visible = pointing;
         arrow.label.pos = [chip.x + ARROW_SIDE + ARROW_TEXT_OFFSET[0], y + CHIP_LIFT, z0 + ARROW_TEXT_OFFSET[1]];
         arrow.label.visible = pointing;

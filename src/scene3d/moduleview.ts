@@ -6,7 +6,7 @@ import type { Label } from './labels';
 import type { Vec3 } from './layout';
 import { BRACE_X } from './levels';
 import { LineBatch } from './lines';
-import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockSpan, braceOffset, bracePoints, braceTip, layoutBraces, levelBraces } from './modules';
+import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockSpan, braceOffset, braceScale, bracePoints, braceTip, layoutBraces, levelBraces } from './modules';
 
 export class ModuleBraces {
   private readonly ink: LineBatch;
@@ -24,8 +24,8 @@ export class ModuleBraces {
 
   private foldable(module: SceneModule): string | undefined {
     const steps = this.c.steps;
-    if (module.id === undefined || module.fixed === true || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
-    if (!steps.modules.some((m) => m.id === module.id)) return undefined;
+    if (module.id === undefined || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
+    if (steps.modules.find((m) => m.id === module.id)?.foldable !== true) return undefined;
     return module.id;
   }
 
@@ -75,8 +75,8 @@ export class ModuleBraces {
     const levels = c.levelLayout;
     if (levels !== undefined) {
       const xs = c.renderables.flatMap((r) => r.block.elements.map((e) => e.x));
-      const shown = modules.filter((m) => !(c.lod && m.inner === true));
-      this.braces = levelBraces(shown, levels.ranges, { xMin: Math.min(...xs), xMax: Math.max(...xs), ...levels.braces }, BRACE_X);
+      const shown = modules.filter((m) => !(c.lod && (m.depth ?? 0) > 0));
+      this.braces = levelBraces(shown, levels.ranges, { xMin: Math.min(...xs), xMax: Math.max(...xs), ...levels.braces }, c.lod ? { ...BRACE_X, outer: 0 } : BRACE_X);
     } else {
       const { min, max } = boundsOf(framingPoints(c.renderables));
       this.braces = layoutBraces(
@@ -100,13 +100,16 @@ export class ModuleBraces {
     const view = this.c.rig.viewDirection();
     const direction: Vec3 = [view.x, view.y, view.z];
     const modules = this.c.options.modules ?? [];
+    const scale = braceScale(this.c.camera.zoom);
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
-      this.labels[modules.indexOf(brace.module)].pos = braceTip(brace, offset);
-      const points = bracePoints(brace, offset);
+      const label = this.labels[modules.indexOf(brace.module)];
+      label.pos = braceTip(brace, offset, scale);
+      label.lane = brace.side;
+      const points = bracePoints(brace, offset, scale);
       const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];
-      return [line, { ...line, points: points.map((v, i) => (i % 3 === 0 ? v + BRACE_THICK_OFFSET : v)) }];
+      return [line, { ...line, points: points.map((v, i) => (i % 3 === 0 ? v + BRACE_THICK_OFFSET * scale : v)) }];
     });
     this.ink.setPolylines(polylines);
   }

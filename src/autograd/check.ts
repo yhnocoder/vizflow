@@ -19,10 +19,14 @@ function seededRandom(seed: number): () => number {
   };
 }
 
-function dot(a: Tensor, b: Tensor): number {
+function change(upstream: Tensor, from: Tensor, to: Tensor): number {
   let s = 0;
-  for (let i = 0; i < a.data.length; i++) s += a.data[i] * b.data[i];
+  for (let i = 0; i < upstream.data.length; i++) if (upstream.data[i] !== 0) s += upstream.data[i] * (to.data[i] - from.data[i]);
   return s;
+}
+
+function resolvable(value: number): boolean {
+  return Math.abs(value) * Number.EPSILON < CHECK_EPSILON;
 }
 
 export function checkOpNamed<A extends object>(
@@ -33,9 +37,8 @@ export function checkOpNamed<A extends object>(
 ): void {
   const out = def.forward(inputs, attrs);
   const random = seededRandom(CHECK_SEED);
-  const upstream = new Tensor(out.shape, Float64Array.from({ length: out.size }, () => random() * 2 - 1));
+  const upstream = new Tensor(out.shape, Float64Array.from(out.data, (v) => (resolvable(v) ? random() * 2 - 1 : 0)));
   const grads = def.backward(upstream, inputs, out, attrs);
-  const base = dot(upstream, out);
   const where = nodeName === undefined ? '' : ` (node '${nodeName}')`;
   inputs.forEach((input, arg) => {
     if (!inputDifferentiable(def, arg)) return;
@@ -52,14 +55,14 @@ export function checkOpNamed<A extends object>(
     for (let j = 0; j < input.size; j++) {
       const original = input.data[j];
       input.data[j] = original + CHECK_EPSILON;
-      const plus = dot(upstream, def.forward(inputs, attrs));
+      const plus = def.forward(inputs, attrs);
       input.data[j] = original - CHECK_EPSILON;
-      const minus = dot(upstream, def.forward(inputs, attrs));
+      const minus = def.forward(inputs, attrs);
       input.data[j] = original;
-      const numeric = (plus - minus) / (2 * CHECK_EPSILON);
+      const numeric = change(upstream, minus, plus) / (2 * CHECK_EPSILON);
       const tolerance = CHECK_ABS_TOLERANCE + CHECK_REL_TOLERANCE * Math.abs(numeric);
-      const rightSided = (plus - base) / CHECK_EPSILON;
-      const leftSided = (base - minus) / CHECK_EPSILON;
+      const rightSided = change(upstream, out, plus) / CHECK_EPSILON;
+      const leftSided = change(upstream, minus, out) / CHECK_EPSILON;
       if (!(Math.abs(rightSided - leftSided) <= CHECK_KINK_TOLERANCE * (1 + Math.abs(numeric)))) continue;
       const analytic = grad.data[j];
       if (!(Math.abs(analytic - numeric) <= tolerance)) {

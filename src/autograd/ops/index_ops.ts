@@ -339,6 +339,37 @@ export const repeatInterleaveOp: OpDef<RepeatInterleaveAttrs> = {
   cost: movement(true, [[]]),
 };
 
+export interface RepeatKvAttrs {
+  n_rep: number;
+}
+
+export function repeatKvAsInterleave(inputShape: readonly number[], attrs: RepeatKvAttrs): RepeatInterleaveAttrs {
+  if (inputShape.length < 3) throw new Error(`repeat_kv: input ${formatShape(inputShape)} must have a head dimension before (T, d)`);
+  return { repeats: attrs.n_rep, dim: inputShape.length - 3 };
+}
+
+export const repeatKvOp: OpDef<RepeatKvAttrs> = {
+  name: 'repeat_kv',
+  args: ['input', 'n_rep'],
+  tensors: ['input'],
+  sizes: ['n_rep'],
+  shape: ([input], attrs) => repeatInterleaveOp.shape([input], repeatKvAsInterleave(input, attrs)),
+  forward: ([input], attrs) => repeatInterleaveOp.forward([input], repeatKvAsInterleave(input.shape, attrs)),
+  backward: (gradOut, [input], out, attrs) => repeatInterleaveOp.backward(gradOut, [input], out, repeatKvAsInterleave(input.shape, attrs)),
+  cost: movement(true, [[]]),
+};
+
+export const contiguousOp: OpDef<Record<string, never>> = {
+  name: 'contiguous',
+  args: ['input'],
+  tensors: ['input'],
+  shape: ([input]) => [...input],
+  int64: true,
+  forward: ([input]) => input.clone(),
+  backward: (gradOut) => [gradOut.clone()],
+  cost: movement(false, [[]]),
+};
+
 function convShape(input: readonly number[], weight: readonly number[]): number[] {
   if (input.length !== 2 || weight.length !== 2 || input[1] !== weight[0]) {
     throw new Error(`causal_conv1d: input ${formatShape(input)} must be (T, C) and weight ${formatShape(weight)} must be (C, K)`);
@@ -368,6 +399,7 @@ export const causalConv1dOp: OpDef<ConvAttrs> = {
   name: 'causal_conv1d',
   args: ['input', 'weight'],
   tensors: ['input', 'weight'],
+  sameDtype: ['input', 'weight'],
   sizes: ['dilation'],
   defaults: { dilation: 1 },
   shape: ([input, weight], attrs) => {
@@ -688,6 +720,7 @@ export const indexAddOp: OpDef<IndexAddAttrs> = {
   name: 'index_add',
   args: ['input', 'dim', 'index', 'source'],
   tensors: ['input', 'index', 'source'],
+  sameDtype: ['input', 'source'],
   differentiable: [true, false, true],
   shape: ([input, index, source], attrs) => {
     indexAddLayout(input, index, source, attrs);
@@ -958,6 +991,7 @@ export const scatterOp: OpDef<ScatterAttrs> = {
   name: 'scatter',
   args: ['input', 'dim', 'index', 'src'],
   tensors: ['input', 'index', 'src'],
+  sameDtype: ['input', 'src'],
   scalars: ['src'],
   differentiable: [true, false, true],
   shape: ([input, index, src], attrs) => {
@@ -1002,6 +1036,7 @@ export const indexPutOp: OpDef<Record<string, never>> = {
   name: 'index_put',
   args: ['input', 'mask', 'values'],
   tensors: ['input', 'mask', 'values'],
+  sameDtype: ['input', 'values'],
   differentiable: [true, false, true],
   shape: ([input, mask, values]) => {
     indexPutLayout(input, mask, values);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type CompiledPage, compilePage, parseYaml, type PageFile } from '../../src/dsl';
+import { type CompiledPage, compilePage, parseYaml, type Page } from '../../src/dsl';
 
 const INPUTS = `
 inputs:
@@ -11,7 +11,7 @@ inputs:
   w:    { value: [[[0.2, -0.5], [0.7, 0.1]], [[-0.3, 0.4], [0.6, -0.8]], [[0.9, 0.3], [-0.2, 0.5]], [[0.1, -0.6], [0.4, 0.2]], [[-0.7, 0.8], [0.3, -0.4]]] }
 `;
 
-function spec(instance: string): PageFile {
+function spec(instance: string): Page {
   return parseYaml(`
 title: t
 import: { Chunk: vizflow/nn/gated-delta-rule-chunk, Recurrent: vizflow/nn/gated-delta-rule }
@@ -20,7 +20,7 @@ ${INPUTS}
 body:
   - rule: { ${instance}, inputs: { q: q, k: k, v: v, g: g, beta: beta }, outputs: { o: o } }
   - loss: sum(o * w)
-`, 'mem:/page.yaml') as PageFile;
+`, 'mem:/page.yaml') as Page;
 }
 
 async function run(instance: string): Promise<CompiledPage> {

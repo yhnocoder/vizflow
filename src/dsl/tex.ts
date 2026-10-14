@@ -1,16 +1,5 @@
 import { trailingSubscript } from '../explain';
 
-export const OP_TEX: Readonly<Record<string, { tex: string; def: string }>> = {
-  sigmoid: { tex: '\\sigma', def: '\\sigma(v)=\\frac{1}{1+e^{-v}}' },
-  relu: { tex: '\\mathrm{ReLU}', def: '\\mathrm{ReLU}(v)=\\max(0,v)' },
-  gelu: { tex: '\\mathrm{GELU}', def: '\\mathrm{GELU}(v)=v\\,\\Phi(v)' },
-  silu: { tex: '\\mathrm{SiLU}', def: '\\mathrm{SiLU}(v)=v\\,\\sigma(v)' },
-};
-
-export function opTex(op: string): string {
-  return OP_TEX[op]?.tex ?? `\\mathrm{${op.replace(/_/g, '\\_')}}`;
-}
-
 function bold(letters: string): string {
   return `\\mathbf{${letters}}`;
 }
@@ -41,8 +30,24 @@ export function addSubscript(tex: string, sub: string): string {
 export function addMark(tex: string, mark: string): string {
   if (mark.startsWith('_{') && mark.endsWith('}')) return addSubscript(tex, mark.slice(2, -1));
   if (/^_[^{]$/.test(mark)) return addSubscript(tex, mark.slice(1));
+  if (mark.startsWith('^{') && mark.endsWith('}')) return addSuperscript(tex, mark.slice(2, -1));
   if (/^[\^_]/.test(mark)) return `${tex}${mark}`;
   return addSubscript(tex, mark);
+}
+
+function addSuperscript(tex: string, sup: string): string {
+  if (tex.endsWith('}')) {
+    let depth = 0;
+    for (let i = tex.length - 1; i >= 0; i--) {
+      if (tex[i] === '}' && tex[i - 1] !== '\\') depth++;
+      else if (tex[i] === '{' && tex[i - 1] !== '\\' && --depth === 0) {
+        if (tex[i - 1] === '^') return `${tex.slice(0, i)}{${tex.slice(i + 1, -1)},${sup}}`;
+        break;
+      }
+    }
+  }
+  if (/\^(?:[^{}\\]|\\[A-Za-z]+)$/.test(tex)) return `{${tex}}^{${sup}}`;
+  return `${tex}^{${sup}}`;
 }
 
 function hasTopLevelSubscript(tex: string): boolean {
@@ -70,25 +75,6 @@ function bracedArgument(tex: string, open: number): number {
     else if (tex[i] === '}' && --depth === 0) return i;
   }
   throw new Error('\\step has an unclosed brace');
-}
-
-export function dropSteps(tex: string, dropped: (id: string) => boolean): string {
-  const pattern = /\\step(?![A-Za-z])\s*/g;
-  let out = '';
-  let from = 0;
-  for (let found = pattern.exec(tex); found !== null; found = pattern.exec(tex)) {
-    const idOpen = found.index + found[0].length;
-    const idClose = bracedArgument(tex, idOpen);
-    let bodyOpen = idClose + 1;
-    while (/\s/.test(tex[bodyOpen] ?? '')) bodyOpen++;
-    const bodyClose = bracedArgument(tex, bodyOpen);
-    const id = tex.slice(idOpen + 1, idClose).trim();
-    out += tex.slice(from, found.index);
-    if (!dropped(id)) out += `${tex.slice(found.index, bodyOpen + 1)}${dropSteps(tex.slice(bodyOpen + 1, bodyClose), dropped)}}`;
-    from = bodyClose + 1;
-    pattern.lastIndex = from;
-  }
-  return out + tex.slice(from);
 }
 
 export function markSteps(tex: string, mark: (id: string) => string): string {

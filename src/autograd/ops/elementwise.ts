@@ -168,15 +168,18 @@ const nonlinear = (saved: 0 | 'out') => pointwise(NONLINEAR_FORWARD, NONLINEAR_B
 
 export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([false, false]));
 export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
+export const rsubOp = binary('rsub', (x, y) => y - x, () => [-1, 1], additive([true, false]));
 export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]])), (x, y) => x * y);
 export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)], pointwise(1, 1, [[], [0, 1]])), floorModExact);
-export const divOp = binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
+export const divOp: OpDef = { ...binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
   saves: [[1], [0, 1]],
   flops: (inputs, out) => ({ forward: [numel(out)], backward: inputs.map((_, k) => (k === 0 ? [numel(out)] : [DIV_OTHER_BACKWARD, numel(out)])) }),
-});
+}), floating: true };
 export const negOp = unary('neg', (x) => -x, () => -1, pointwise(1, 1, [[]]));
-export const expOp = unary('exp', Math.exp, (_x, y) => y, nonlinear('out'));
-export const logOp = unary('log', Math.log, (x) => 1 / x, nonlinear(0));
+export const expOp: OpDef = { ...unary('exp', Math.exp, (_x, y) => y, nonlinear('out')), floating: true };
+export const logOp: OpDef = { ...unary('log', Math.log, (x) => 1 / x, nonlinear(0)), floating: true };
+export const cosOp: OpDef = { ...unary('cos', Math.cos, (x) => -Math.sin(x), nonlinear(0)), floating: true };
+export const sinOp: OpDef = { ...unary('sin', Math.sin, (x) => Math.cos(x), nonlinear(0)), floating: true };
 
 const COMPARISON_COST: OpCost = pointwise(1, 0, [[], []]);
 
@@ -276,20 +279,54 @@ export const floorDivideOp = withInt64(
   { ...binary('floor_divide', (x, y) => Math.floor(x / y), () => [0, 0], COMPARISON_COST), differentiable: [false, false], backward: () => [null, null] },
   floorDivExact,
 );
-export const powOp = unary<{ exponent: number }>(
-  'pow',
-  (x, { exponent }) => x ** exponent,
-  (x, _y, { exponent }) => exponent * x ** (exponent - 1),
-  nonlinear(0),
-  ['input', 'exponent'],
-);
+export interface PowAttrs {
+  input?: number;
+  exponent?: number;
+}
+
+export function powOperands<T>(inputs: readonly T[], attrs: PowAttrs): { base: T | number; exponent: T | number } {
+  let k = 0;
+  const base = attrs.input ?? inputs[k++];
+  const exponent = attrs.exponent ?? inputs[k++];
+  return { base, exponent };
+}
+
+const asTensor = (value: Tensor | number) => (typeof value === 'number' ? new Tensor([], [value]) : value);
+
+export const powOp: OpDef<PowAttrs> = {
+  name: 'pow',
+  args: ['input', 'exponent'],
+  tensors: ['input', 'exponent'],
+  scalars: ['input', 'exponent'],
+  cost: pointwise(NONLINEAR_FORWARD, NONLINEAR_BACKWARD, [[0, 1], [0, 1]]),
+  shape: (shapes, attrs) => {
+    const { base, exponent } = powOperands(shapes, attrs);
+    if (typeof base === 'number' && typeof exponent === 'number') throw new Error('pow: needs a tensor as the base or the exponent');
+    return typeof base === 'number' ? [...(exponent as number[])] : typeof exponent === 'number' ? [...base] : broadcastShapes(base, exponent);
+  },
+  forward: (inputs, attrs) => {
+    const { base, exponent } = powOperands(inputs, attrs);
+    return zipWith(asTensor(base), asTensor(exponent), (x, y) => x ** y);
+  },
+  backward: (gradOut, inputs, _out, attrs) => {
+    const { base, exponent } = powOperands(inputs, attrs);
+    const b = asTensor(base);
+    const e = asTensor(exponent);
+    const grads: Tensor[] = [];
+    const scaled = (local: Tensor, shape: readonly number[]) => unbroadcast(zipWith(local, gradOut, (l, g) => l * g), shape);
+    if (typeof base !== 'number') grads.push(scaled(zipWith(b, e, (x, y) => y * x ** (y - 1)), base.shape));
+    if (typeof exponent !== 'number') grads.push(scaled(zipWith(b, e, (x, y) => x ** y * Math.log(x)), exponent.shape));
+    return grads;
+  },
+};
 export const rsqrtOp: OpDef<{ eps: number }> = {
   ...unary<{ eps: number }>('rsqrt', (x, { eps }) => 1 / Math.sqrt(x + eps), (_x, y) => -0.5 * y ** 3, nonlinear('out')),
   defaults: { eps: 0 },
+  floating: true,
 };
-export const sqrtOp = unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y, nonlinear('out'));
-export const reciprocalOp = unary('reciprocal', (x) => 1 / x, (_x, y) => -y * y, nonlinear('out'));
-export const sigmoidOp = unary('sigmoid', sigmoid, (_x, y) => y * (1 - y), nonlinear('out'));
+export const sqrtOp: OpDef = { ...unary('sqrt', Math.sqrt, (_x, y) => 0.5 / y, nonlinear('out')), floating: true };
+export const reciprocalOp: OpDef = { ...unary('reciprocal', (x) => 1 / x, (_x, y) => -y * y, nonlinear('out')), floating: true };
+export const sigmoidOp: OpDef = { ...unary('sigmoid', sigmoid, (_x, y) => y * (1 - y), nonlinear('out')), floating: true };
 export const SOFTPLUS_THRESHOLD = 20;
 export const softplusOp = unary(
   'softplus',
@@ -315,9 +352,10 @@ export const normalCdf = (x: number) => 0.5 * (1 + erf(x / Math.SQRT2));
 export const normalPdf = (x: number) => Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 
 export const reluOp = unary('relu', (x) => (x > 0 ? x : 0), (x) => (x > 0 ? 1 : 0), nonlinear('out'));
-export const erfOp = unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x), nonlinear(0));
+export const erfOp: OpDef = { ...unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI)) * Math.exp(-x * x), nonlinear(0)), floating: true };
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
 export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
+export const aliasOp = unary('alias', (x) => x, () => 1, VIEW_COST);
 export const absOp = unary('abs', Math.abs, (x) => Math.sign(x), pointwise(1, 1, [[0]]));
 export const signOp = unary('sign', Math.sign, () => 0, pointwise(1, 0, [[]]));
 export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), pointwise(1, 1, [[0]]), ['input', 'min']);

@@ -59,11 +59,7 @@ export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
           }
         }
       }
-      if (found === undefined) {
-        result[i].hidden = true;
-        continue;
-      }
-      const [dx, dy] = found;
+      const [dx, dy] = found ?? [0, 0];
       result[i] = { dx, dy, hidden: false };
       placed.push({ box: shifted(item.box, dx, dy) });
     } else if (item.hideOnOverlap) {
@@ -74,4 +70,24 @@ export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
     }
   }
   return result;
+}
+
+export function spreadLane(boxes: Box[], top: number, bottom: number, gap: number): void {
+  const order = [...boxes].sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2));
+  let end = top - gap;
+  for (const box of order) {
+    box.y = Math.max(box.y, end + gap);
+    end = box.y + box.h;
+  }
+  let start = bottom + gap;
+  for (let k = order.length - 1; k >= 0; k--) {
+    const box = order[k];
+    box.y = Math.min(box.y, start - gap - box.h);
+    start = box.y;
+  }
+  end = top - gap;
+  for (const box of order) {
+    box.y = Math.max(box.y, end + gap);
+    end = box.y + box.h;
+  }
 }

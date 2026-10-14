@@ -27,11 +27,11 @@
   <li><a class="card" href="pages/dsl.html">
     <div class="pv">
       <div class="pv-line pv-cmd"><b>-</b><span class="pv-a">q_norm: { use: RMSNorm }</span></div>
-      <div class="pv-line pv-a pv-s2">k_norm: { beside: q_norm }</div>
+      <div class="pv-line pv-a pv-s2">show: zip(q_norm, k_norm)</div>
       <div class="pv-line pv-a pv-s3">o: cat(o[1..H], dim=1)</div>
       <div class="pv-line pv-a pv-s4">backward  <span class="pv-chip hot">reverse</span></div>
     </div>
-    <div class="card-body"><strong>vizflow 页面描述文件</strong><span>YAML 页面与模块文件的字段、表达式、作用域与维度、内置模块、步骤与折叠、序列输入、讲解段落和编译接口。</span>
+    <div class="card-body"><strong>vizflow 页面描述文件</strong><span>YAML 页面与模块文件的字段、表达式、作用域与维度、布局、步骤树与括号、内置模块和编译接口。</span>
     <div class="card-tags"><i>design</i><i>dsl</i><i>pages/dsl.html</i></div></div>
   </a></li>
 </ul>

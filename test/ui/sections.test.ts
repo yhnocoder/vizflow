@@ -34,6 +34,7 @@ function attentionGraph() {
   const logp = g.log_softmax(z, -1, { name: 'logp' });
   const lt = g.nll_loss(logp, y, { name: 'lt', reduction: 'none' });
   const loss = g.mean(lt, null, { name: 'loss' });
+  const heads = { S: g.unsqueeze(S, 0, { name: 'S_heads' }), P: g.unsqueeze(P, 0, { name: 'P_heads' }) };
   const steps = createSteps(g, {
     forward: [
       { show: [q, k], title: 'qk' },
@@ -41,7 +42,7 @@ function attentionGraph() {
       { show: [P, z, logp, lt, loss], title: 'rest' },
     ],
   });
-  return { g, ids, y, q, k, W, S, P, z, lt, loss, steps };
+  return { g, ids, y, q, k, W, S, P, z, lt, loss, heads, steps };
 }
 
 const mounted: Mounted[] = [];
@@ -177,14 +178,14 @@ describe('new panels', () => {
 });
 
 function sectionItem(fixture: ReturnType<typeof attentionGraph>): SectionItem {
-  const { q, k, S, P, ids } = fixture;
+  const { q, k, S, heads, ids } = fixture;
   return {
     title: 'RoPE',
     rope: { q: [q], k: [k], rows: [-1, 1], head: 1, theta: 10, dh: 4, positions: 24 },
     rows: [
       { columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头' }, { text: '### 一、问题\n\n正文 $x$' }]] },
       { columns: [340, '1fr'], cells: [['rope_curve'], [{ text: '### 四' }]] },
-      { cells: [[{ text: '### 七\n\n对比' }, { buttons: [{ label: '看打分', go: S }] }, { rope_compare: { scores: [S], weights: [P], ids } }]] },
+      { cells: [[{ text: '### 七\n\n对比' }, { buttons: [{ label: '看打分', go: S }] }, { rope_compare: { scores: heads.S, weights: heads.P, ids } }]] },
     ],
   };
 }

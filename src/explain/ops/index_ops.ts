@@ -1,5 +1,5 @@
 import type { OpCtx, OpExplain } from '../../autograd';
-import { type PadAttrs, type PermuteAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
 import { broadcastIndex, formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
 
 export const gatherExplain: OpExplain = {
@@ -113,6 +113,26 @@ export const repeatInterleaveExplain: OpExplain = {
     index[dim] = Math.floor(out[dim] / attrs.repeats);
     return [{ arg: 0, index }];
   },
+};
+
+export const repeatKvExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{repeat\\_kv}(${s.in[0]},${(s.attrs as RepeatKvAttrs).n_rep})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => [{ arg: 0, index: repeatSource(ctx.inputs[0].shape, repeatKvAsInterleave(ctx.inputs[0].shape, ctx.attrs as RepeatKvAttrs), out) }],
+};
+
+export const contiguousExplain: OpExplain = {
+  pattern: 'elementwise',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{contiguous}(${s.in[0]})`,
+    local: () => '1',
+  },
+  selected: (_ctx, out) => [{ arg: 0, index: [...out] }],
 };
 
 const dilationOf = (ctx: OpCtx) => (ctx.attrs as { dilation: number }).dilation;

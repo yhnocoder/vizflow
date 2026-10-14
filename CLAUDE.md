@@ -62,9 +62,9 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - Implement 和 Test 的具体规则见 `.claude/agents/implementer.md`。普通任务使用 implementer 默认的 opus 模型；复杂任务在调用时指定 `model: fable`；更复杂的任务可以让多个 fable 和 opus subagent 协作。
 - Review 的依据是本文件和 `.claude/agents/implementer.md`。改动涉及 `docs/design/` 时，主 agent 要看 `scripts/check_design.py` 生成的截图。退回时指出未通过的条目。
 
-### 小任务
+### 小任务、调研任务、尝试任务
 
-经用户明确同意，小任务可以跳过上面的流程，也可以把多个小任务合并到一个 PR。
+经用户明确同意，小任务、调研任务、尝试任务可以跳过上面的流程，也可以把多个任务合并到一个 PR。
 
 ## 代码地图
 
@@ -89,7 +89,7 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 
 - 迭代时运行 `npm run check:fast`：tsgo 类型检查，加上与未提交改动相关的单元测试。可以传一个 git 版本，例如 `sh scripts/check_fast.sh origin/main`，检查相对这个版本的全部改动。
 - 提交 PR 前运行一次 `scripts/test.sh`：注释检查、代码地图检查、tsc 和全部单元测试。
-- 调试 3D 场景时运行 `npm run shots -- examples/qwen3-dsl.html --steps 0,back+6 --hover 0.2,0.6 --edge 0.5,0.45`：自动启动 vite，截取指定步骤的画布，`--hover` 和 `--edge` 在给定的画布比例位置附近搜索并截取柱子悬停卡片与连线卡片；`--help` 列出全部选项，浏览器路径取自 `VIZFLOW_CHROMIUM`。
+- 调试 3D 场景时运行 `npm run shots -- examples/qwen3/qwen3-dsl.html --steps 0,back+6 --hover 0.2,0.6 --edge 0.5,0.45`：自动启动 vite，截取指定步骤的画布，`--hover` 和 `--edge` 在给定的画布比例位置附近搜索并截取柱子悬停卡片与连线卡片；`--help` 列出全部选项，浏览器路径取自 `VIZFLOW_CHROMIUM`。
 
 ## 代码规范
 

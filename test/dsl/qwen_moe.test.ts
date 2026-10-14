@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { type CompiledPage, compilePage, type PageFile, parseYaml } from '../../src/dsl';
+import { type CompiledPage, compilePage, type Page, parseYaml } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { loadExample } from './load';
@@ -70,7 +70,7 @@ inputs:
 body:
   - mlp: { use: SparseMoE, params: { E: 3, K: 2, mf: 2 }, inputs: { x: x }, outputs: { out: y } }
   - loss: sum(y)
-`, 'mem:/page.yaml') as PageFile);
+`, 'mem:/page.yaml') as Page);
     expect(page.nodes.get('mlp.rw')).toBeUndefined();
     expect(Array.from(page.nodes.get('mlp.topc')!.value.data)).toEqual(Array.from(page.nodes.get('mlp.top')!.value.data));
     const titles = createSteps(page.graph, page.steps).list.map((s) => s.title);

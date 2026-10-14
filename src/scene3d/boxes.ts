@@ -5,8 +5,6 @@ import type { Label } from './labels';
 import type { FoldBox } from './levels';
 
 export const BOX_FOLDED_TEXT = '已折叠';
-export const BOX_FIXED_TEXT = '占位';
-export const BOX_FIXED_NOTE = '数值按恒等';
 
 const BOX_MIN_HEIGHT = 0.01;
 const BOX_LABEL_OFFSET: [number, number] = [0.2, 0.15];
@@ -62,24 +60,19 @@ export class FoldBoxes {
     mesh.add(new LineSegments(this.edges, edgeMaterial));
     c.scene.add(mesh);
     const module = box.module;
-    const label = c.labels.add('boxlb', module.fixed ? 'vf-fixed' : '');
+    const label = c.labels.add('boxlb', '');
     label.anchor = 'above-right';
     label.setContent(module.title, () => {
       const fragment = document.createDocumentFragment();
       const title = document.createElement('span');
-      renderText(`${module.title} · ${module.fixed ? BOX_FIXED_TEXT : BOX_FOLDED_TEXT}`, title);
+      renderText(`${module.title} · ${BOX_FOLDED_TEXT}`, title);
       fragment.appendChild(title);
-      if (module.fixed) {
-        const small = document.createElement('small');
-        small.textContent = BOX_FIXED_NOTE;
-        fragment.appendChild(small);
-      }
       return fragment;
     });
     const entry: SceneBox = { box, mesh, material, edgeMaterial, label };
     label.el.addEventListener('pointerenter', () => c.popups.showBoxCard(entry));
     label.el.addEventListener('pointerleave', () => c.popups.hideNodeCard());
-    if (!module.fixed) label.el.addEventListener('click', () => c.steps?.setFolded(module.id, false));
+    label.el.addEventListener('click', () => c.steps?.setFolded(module.id, false));
     this.boxes.set(module.id, entry);
     return entry;
   }
