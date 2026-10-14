@@ -4,10 +4,10 @@ import type { FlowEdge } from '../explain';
 import type { ThemeColors } from '../theme';
 import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
-import { TokenFrame, relatedOpacity, tokenAxes, tokenRect } from './hover';
-import type { Vec3 } from './layout';
+import { TokenFrame, elementsRect, relatedOpacity, sameToken, tokenAxes, tokenRect } from './hover';
+import type { Element, Vec3 } from './layout';
 import { LineBatch } from './lines';
-import type { Renderable } from './renderable';
+import { type Renderable, elementOf, renderableOf } from './renderable';
 
 export const EDGE_HOVER_DISTANCE = 6;
 export const LONG_EDGE = 4.2;
@@ -23,7 +23,10 @@ const HIGHLIGHT_SIDES = 6;
 const tmpVector = new Vector3();
 
 export function controlPoints(a: Vec3, b: Vec3, flat: boolean, bow?: number): [Vec3, Vec3, Vec3, Vec3] {
-  if (flat) return [a, a.map((v, i) => v + (b[i] - v) / 3) as Vec3, a.map((v, i) => v + ((b[i] - v) * 2) / 3) as Vec3, b];
+  if (flat) {
+    const lift = (k: number): Vec3 => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k + (bow ?? 0), a[2] + (b[2] - a[2]) * k];
+    return [a, lift(1 / 3), lift(2 / 3), b];
+  }
   const d = b[1] - a[1];
   const z = bow ?? (d > LONG_EDGE ? EDGE_BOW : 0);
   if (z !== 0) return [a, [a[0], a[1] + d * BOW_TANGENT, a[2] + z], [b[0], b[1] - d * BOW_TANGENT, b[2] + z], b];
@@ -56,6 +59,7 @@ export class EdgeLines {
   private highlight: Mesh | undefined;
   private screenCached = -1;
   private readonly tokenFrame: TokenFrame;
+  private readonly sourceFrames: TokenFrame[] = [];
   private readonly tokenAxes: Map<Node, number>;
   edges: DrawnEdge[] = [];
   hover: DrawnEdge | undefined;
@@ -97,7 +101,32 @@ export class EdgeLines {
       this.edges.flatMap((d, i) => (d.backRow === true && !related[i] ? [] : [{ points: d.points, opacity: element === undefined ? d.style.opacity : relatedOpacity(d.style.opacity, related[i]), dashed: d.edge.op.op === 'alias' }])),
     );
     const axis = block === undefined ? undefined : this.tokenAxes.get(block.node);
-    this.tokenFrame.set(block !== undefined && element !== undefined && axis !== undefined ? tokenRect(block, element, axis) : undefined);
+    const token = block !== undefined && element !== undefined && axis !== undefined;
+    this.tokenFrame.set(token ? tokenRect(block, element, axis) : undefined);
+    this.setSourceFrames(token ? this.tableSources(block.node, sameToken(block, element, axis)) : []);
+  }
+
+  private tableSources(node: Node, members: readonly Element[]): { renderable: Renderable; elements: Element[] }[] {
+    const wanted = new Set(members.map((e) => e.index.join(',')));
+    const found = new Map<Renderable, Set<Element>>();
+    for (const d of this.edges) {
+      const { from, to } = d.edge;
+      if (!('index' in from) || !('index' in to) || to.node !== node || !wanted.has(to.index.join(','))) continue;
+      const source = renderableOf(this.c, from.node);
+      if (source === undefined || source.block.table === undefined) continue;
+      const set = found.get(source) ?? found.set(source, new Set()).get(source)!;
+      set.add(elementOf(source.block, from.node, from.index));
+    }
+    return [...found].map(([renderable, elements]) => ({ renderable, elements: [...elements] }));
+  }
+
+  private setSourceFrames(sources: { renderable: Renderable; elements: Element[] }[]): void {
+    while (this.sourceFrames.length < sources.length) {
+      const frame = new TokenFrame(this.c.theme);
+      this.c.scene.add(frame.group);
+      this.sourceFrames.push(frame);
+    }
+    this.sourceFrames.forEach((frame, i) => frame.set(i < sources.length ? elementsRect(sources[i].renderable.block, sources[i].elements) : undefined));
   }
 
   private updateHighlight(): void {
@@ -161,12 +190,14 @@ export class EdgeLines {
   setTheme(theme: ThemeColors): void {
     this.lines.setColor(theme.ink, theme.surface);
     this.tokenFrame.setTheme(theme);
+    for (const frame of this.sourceFrames) frame.setTheme(theme);
     this.highlightMaterial.color.setRGB(...theme.ink);
   }
 
   dispose(): void {
     this.lines.dispose();
     this.tokenFrame.dispose();
+    for (const frame of this.sourceFrames) frame.dispose();
     this.highlight?.geometry.dispose();
     this.highlightMaterial.dispose();
   }

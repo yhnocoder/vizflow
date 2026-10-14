@@ -48,7 +48,6 @@ export class TokenChips {
       if (labels === undefined) {
         const key = block.key ?? block.node.name + chip.label.name;
         labels = Array.from({ length: rows }, () => c.labels.add('tok'));
-        for (const label of labels) label.lane = `chips:${key}`;
         this.chipLabels.set(key, labels);
       }
       const y = block.elements[0].y;

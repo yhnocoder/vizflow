@@ -150,12 +150,16 @@
 .vf-lb.vf-tok {
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.1;
   color: var(--fg);
-  background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  padding: 0 7px;
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border-radius: 3px;
+  padding: 0 3px;
   white-space: nowrap;
+}
+
+.vf-lb.vf-tok .katex {
+  font-size: 0.95em;
 }
 
 .vf-lb.vf-tok small {

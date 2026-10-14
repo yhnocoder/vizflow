@@ -13,6 +13,7 @@ import { type EdgeStyle, edgeStyle } from './style';
 export const BOARD_BOW = -2.6;
 export const RESIDUAL_BOW = 1.8;
 export const SPLIT_JACOBIAN_BOW = 1.4;
+export const TABLE_ARC = 0.9;
 
 const SAME_LEVEL = 0.05;
 const JACOBIAN_EPSILON = 1e-12;
@@ -150,7 +151,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const y = toElement.y + LINE_HEIGHT;
       const a: Vec3 = [fromElement.x, y, fromElement.z + fromR.block.footprint[1] / 2];
       const b: Vec3 = [toElement.x, y, toElement.z - toR.block.footprint[1] / 2];
-      entry = { edge, fromNode: from.node, toNode: to.node, contract: false, endpoints: () => [a, b], flat: true };
+      entry = { edge, fromNode: from.node, toNode: to.node, contract: false, endpoints: () => [a, b], flat: true, bow: TABLE_ARC };
     } else {
       const long = toElement.y - fromElement.y > LONG_EDGE;
       const bow = toR.block.role === 'board-b' && long ? BOARD_BOW : to.node.kind === 'op' && to.node.op === 'add' && long ? RESIDUAL_BOW : undefined;
