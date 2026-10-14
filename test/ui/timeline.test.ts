@@ -132,6 +132,36 @@ describe('mountSteps timeline', () => {
     expect(steps.current).toBe(first);
   });
 
+  it('switches direction to the matching step of the other direction', () => {
+    const g = graph({ dims: { V: 3 } });
+    const x = g.param('x', ['V'], [1, 2, 3]);
+    const a = g.exp(x, { name: 'a' });
+    const b = g.log(a, { name: 'b' });
+    const loss = g.sum(b, -1, { name: 'loss' });
+    const steps = createSteps(g, {
+      backward: 'reverse',
+      forward: [
+        { show: [x, a, b, loss], title: '总览' },
+        { show: a, title: 'a', groups: ['blk'] },
+        { show: b, title: 'b', groups: ['blk'] },
+        { show: loss, title: 'loss' },
+      ],
+      groups: [{ id: 'blk', title: 'blk' }],
+    });
+    Object.assign(steps, { modules: [{ id: 'blk' }] });
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    const forward = steps.list.findIndex((s) => s.dir === 'forward' && s.title === 'b');
+    steps.go(forward);
+    const tabs = [...el.querySelectorAll<HTMLButtonElement>('.vf-dirseg button')];
+    tabs[1].click();
+    expect(steps.list[steps.current].dir).toBe('backward');
+    expect(steps.list[steps.current].forwardId).toBe(steps.list[forward].id);
+    tabs[0].click();
+    expect(steps.current).toBe(forward);
+  });
+
   it('keeps the flat track when the steps have no modules', () => {
     const g = graph({ dims: { V: 3 } });
     const x = g.input('x', ['V'], [1, 2, 3]);

@@ -5,6 +5,7 @@ import { Rich, plain } from './rich';
 import type { StepInfo, Steps } from '../steps';
 import { renderFigures } from './figures';
 import { resolveElement, trackSteps } from './mount';
+import { counterpart } from './counterpart';
 import type { Mounted } from './mounted';
 
 function StepsView(props: { steps: Steps }) {
@@ -210,7 +211,7 @@ function Timeline(props: {
                 aria-selected={view().dir === d.dir ? 'true' : 'false'}
                 onClick={() => {
                   if (d.dir === view().dir) return;
-                  steps.go(steps.list.findIndex((info) => info.dir === d.dir));
+                  steps.go(counterpart(steps.list, steps.current));
                 }}
               >
                 {d.name}
