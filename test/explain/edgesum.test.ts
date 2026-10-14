@@ -409,6 +409,23 @@ const cases: Case[] = [
     },
   },
   {
+    op: 'index_copy',
+    build: (g, r) => {
+      const x = g.input('x', [4, 2], randomValues(r, [4, 2]));
+      const index = g.label('index', [3, 0]);
+      const source = g.input('s', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.index_copy(x, 0, index, source), inputs: [x, source] };
+    },
+  },
+  {
+    op: 'index_select',
+    build: (g, r) => {
+      const x = g.input('x', [2, 4], randomValues(r, [2, 4]));
+      const index = g.label('index', [3, 0, 3]);
+      return { out: g.index_select(x, 1, index), inputs: [x] };
+    },
+  },
+  {
     op: 'grouped_linear',
     build: (g, r) => {
       const x = g.input('x', [5, 3], randomValues(r, [5, 3]));

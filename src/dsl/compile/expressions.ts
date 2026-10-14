@@ -14,7 +14,7 @@ const SCALAR_BUILTINS: Record<string, (...values: number[]) => number> = { max: 
 const METHOD_CASTS: Record<string, Dtype> = { float: 'fp32', double: 'fp64', half: 'fp16', bfloat16: 'bf16', bool: 'bool', long: 'int64', int: 'int32' };
 const REF: Mode = { k: 'ref' };
 const COMPARE_TENSOR_OPS: Partial<Record<string, string>> = { '==': 'eq', '>=': 'ge', '<': 'lt', '>': 'greater' };
-const OPS: Record<string, string> = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '//': 'floor_divide' };
+const OPS: Record<string, string> = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '//': 'floor_divide', '%': 'remainder' };
 
 type IndexStep = { op: 'select'; dim: number; index: number } | { op: 'narrow'; dim: number; start: Num; length: Num; step: number } | { op: 'unsqueeze'; dim: number };
 
@@ -514,8 +514,8 @@ export abstract class Expressions extends CompilerState {
         default: return this.fail(env, "'@' needs two tensors", at);
       }
     }
-    if (ast.op === '%') return this.fail(env, "'%' needs two numbers", at);
     const operand = (v: Value) => isTensor(v) || isNum(v);
+    if (ast.op === '%' && !(isTensor(a) && operand(b))) return this.fail(env, "'%' needs a tensor on the left, or two numbers", at);
     if (ast.op === '@') {
       if (!isTensor(a) || !isTensor(b)) this.fail(env, "'@' needs two tensors", at);
       return this.apply('matmul', [a, b], none, env, mode, top, at);

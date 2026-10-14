@@ -694,26 +694,26 @@ export interface IndexAddAttrs {
   dim: number;
 }
 
-function indexAddLayout(input: readonly number[], index: readonly number[], source: readonly number[], attrs: IndexAddAttrs): { dim: number; outer: number; inner: number } {
-  if (input.length === 0) throw new Error('index_add: input must have at least one dimension');
+function indexAddLayout(input: readonly number[], index: readonly number[], source: readonly number[], attrs: IndexAddAttrs, name = 'index_add'): { dim: number; outer: number; inner: number } {
+  if (input.length === 0) throw new Error(`${name}: input must have at least one dimension`);
   const dim = normDim(attrs.dim, input.length);
   const fits = index.length === 1 && source.length === input.length && index[0] === source[dim] && source.every((size, d) => d === dim || size === input[d]);
-  if (!fits) throw new Error(`index_add: index ${formatShape(index)} and source ${formatShape(source)} do not fit input ${formatShape(input)} along dim ${dim}`);
+  if (!fits) throw new Error(`${name}: index ${formatShape(index)} and source ${formatShape(source)} do not fit input ${formatShape(input)} along dim ${dim}`);
   return { dim, outer: input.slice(0, dim).reduce((a, b) => a * b, 1), inner: input.slice(dim + 1).reduce((a, b) => a * b, 1) };
 }
 
-export function indexAddTarget(input: readonly number[], index: Tensor, dim: number, i: number): number {
+export function indexAddTarget(input: readonly number[], index: Tensor, dim: number, i: number, name = 'index_add'): number {
   const raw = Math.round(index.data[i]);
   const picked = raw < 0 ? raw + input[dim] : raw;
-  if (picked < 0 || picked >= input[dim]) throw new Error(`index_add: index ${raw} at [${i}] is out of range for input ${formatShape(input)} along dim ${dim}`);
+  if (picked < 0 || picked >= input[dim]) throw new Error(`${name}: index ${raw} at [${i}] is out of range for input ${formatShape(input)} along dim ${dim}`);
   return picked;
 }
 
-function indexAddPairs(input: Tensor, index: Tensor, source: Tensor, attrs: IndexAddAttrs): [number, number][] {
-  const { dim, outer, inner } = indexAddLayout(input.shape, index.shape, source.shape, attrs);
+function indexAddPairs(input: Tensor, index: Tensor, source: Tensor, attrs: IndexAddAttrs, name = 'index_add'): [number, number][] {
+  const { dim, outer, inner } = indexAddLayout(input.shape, index.shape, source.shape, attrs, name);
   const pairs: [number, number][] = [];
   for (let i = 0; i < index.size; i++) {
-    const target = indexAddTarget(input.shape, index, dim, i);
+    const target = indexAddTarget(input.shape, index, dim, i, name);
     for (let o = 0; o < outer; o++) {
       for (let c = 0; c < inner; c++) pairs.push([(o * input.shape[dim] + target) * inner + c, (o * source.shape[dim] + i) * inner + c]);
     }
@@ -745,6 +745,79 @@ export const indexAddOp: OpDef<IndexAddAttrs> = {
     saves: [[], [], [1]],
     flops: (inputs) => ({ forward: [numel(inputs[2])], backward: inputs.map(() => NO_FLOPS) }),
   },
+};
+
+function indexCopyPairs(input: Tensor, index: Tensor, source: Tensor, attrs: IndexAddAttrs): [number, number][] {
+  const dim = normDim(attrs.dim, input.ndim);
+  const targets = Array.from({ length: index.size }, (_, i) => indexAddTarget(input.shape, index, dim, i, 'index_copy'));
+  if (new Set(targets).size !== targets.length) throw new Error(`index_copy: index ${formatShape(index.shape)} repeats a position along dim ${dim}`);
+  return indexAddPairs(input, index, source, attrs, 'index_copy');
+}
+
+export const indexCopyOp: OpDef<IndexAddAttrs> = {
+  name: 'index_copy',
+  args: ['input', 'dim', 'index', 'source'],
+  tensors: ['input', 'index', 'source'],
+  sameDtype: ['input', 'source'],
+  differentiable: [true, false, true],
+  shape: ([input, index, source], attrs) => {
+    indexAddLayout(input, index, source, attrs, 'index_copy');
+    return [...input];
+  },
+  forward: ([input, index, source], attrs) => {
+    const out = input.clone();
+    for (const [to, from] of indexCopyPairs(input, index, source, attrs)) out.data[to] = source.data[from];
+    return out;
+  },
+  backward: (gradOut, [input, index, source], _out, attrs) => {
+    const gi = gradOut.clone();
+    const gs = new Tensor(source.shape);
+    for (const [to, from] of indexCopyPairs(input, index, source, attrs)) {
+      gs.data[from] = gradOut.data[to];
+      gi.data[to] = 0;
+    }
+    return [gi, null, gs];
+  },
+  cost: movement(false, [[1], [], [1]]),
+};
+
+function indexSelectShape(input: readonly number[], index: readonly number[], attrs: IndexAddAttrs): number[] {
+  if (input.length === 0) throw new Error('index_select: input must have at least one dimension');
+  if (index.length !== 1) throw new Error(`index_select: index ${formatShape(index)} must be one-dimensional`);
+  const dim = normDim(attrs.dim, input.length);
+  return input.map((size, d) => (d === dim ? index[0] : size));
+}
+
+export function indexSelectSource(input: readonly number[], index: Tensor, dim: number, out: readonly number[]): number[] {
+  const source = [...out];
+  source[dim] = indexAddTarget(input, index, dim, out[dim], 'index_select');
+  return source;
+}
+
+export const indexSelectOp: OpDef<IndexAddAttrs> = {
+  name: 'index_select',
+  args: ['input', 'dim', 'index'],
+  tensors: ['input', 'index'],
+  differentiable: [true, false],
+  shape: ([input, index], attrs) => indexSelectShape(input, index, attrs),
+  forward: ([input, index], attrs) => {
+    const shape = indexSelectShape(input.shape, index.shape, attrs);
+    const dim = normDim(attrs.dim, input.ndim);
+    const out = new Tensor(shape);
+    forEachIndex(shape, (at, k) => {
+      out.data[k] = input.data[offsetOf(input.shape, indexSelectSource(input.shape, index, dim, at))];
+    });
+    return out;
+  },
+  backward: (gradOut, [input, index], _out, attrs) => {
+    const dim = normDim(attrs.dim, input.ndim);
+    const grad = new Tensor(input.shape);
+    forEachIndex(gradOut.shape, (at, k) => {
+      grad.data[offsetOf(input.shape, indexSelectSource(input.shape, index, dim, at))] += gradOut.data[k];
+    });
+    return [grad, null];
+  },
+  cost: movement(true, [[1]]),
 };
 
 export interface UnsqueezeAttrs {

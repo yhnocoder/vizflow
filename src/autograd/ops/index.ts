@@ -56,7 +56,9 @@ import {
   expandOp,
   gatherOp,
   indexAddOp,
+  indexCopyOp,
   indexOp,
+  indexSelectOp,
   narrowOp,
   nonzeroStaticOp,
   oneHotOp,
@@ -216,6 +218,8 @@ export interface BuiltinOps {
   nonzero_static(input: Node, options: NonzeroStaticOptions): Node;
   index(input: Node, indices: Node[], options?: OpOptions): Node;
   index_add(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
+  index_copy(input: Node, dim: number, index: Node, source: Node, options?: OpOptions): Node;
+  index_select(input: Node, dim: number, index: Node, options?: OpOptions): Node;
   grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
   cumsum(input: Node, dim: number, options?: OpOptions): Node;
   unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
@@ -294,6 +298,8 @@ export const builtinOps: readonly AnyOpDef[] = [
   nonzeroStaticOp,
   indexOp,
   indexAddOp,
+  indexCopyOp,
+  indexSelectOp,
   groupedLinearOp,
   cumsumOp,
   unsqueezeOp,

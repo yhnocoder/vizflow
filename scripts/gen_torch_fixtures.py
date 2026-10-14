@@ -908,6 +908,31 @@ def promotion_cases():
     return cases
 
 
+def paged_cache_cases():
+    cases = []
+    for shape, dim, index, source in [((6, 2, 3), 0, [4, 1, 5], (3, 2, 3)), ((2, 5), 1, [3, 0], (2, 2))]:
+        cases.append(
+            op_case(
+                "index_copy",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, s, dim=dim: torch.index_copy(x, dim, i, s),
+                [("input", randn(*shape)), ("label", torch.tensor(index)), ("input", randn(*source))],
+                [tensor_arg(0), dim, tensor_arg(1), tensor_arg(2)],
+            )
+        )
+    for shape, dim, index in [((6, 2, 3), 0, [4, 1, 5, 1]), ((2, 5), 1, [3, 0, 4])]:
+        cases.append(
+            op_case(
+                "index_select",
+                f"{shape} dim {dim} index {index}",
+                lambda x, i, dim=dim: torch.index_select(x, dim, i),
+                [("input", randn(*shape)), ("label", torch.tensor(index))],
+                [tensor_arg(0), dim, tensor_arg(1)],
+            )
+        )
+    return cases
+
+
 def write(name, cases):
     payload = {"torch": torch.__version__, "command": COMMAND, "seed": SEED, "cases": cases}
     path = OUT_DIR / name
@@ -931,7 +956,7 @@ def main():
     stable_ops = stability_op_fixtures()
     stable_pages = stability_page_fixtures()
     transformer_ops = transformer_op_fixtures()
-    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
+    write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases() + paged_cache_cases())
     write("pages.json", pages + stable_pages)
     write("dtypes.json", promotion_cases())
     write("rrms.json", rrms_cases())

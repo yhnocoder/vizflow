@@ -1,6 +1,6 @@
 import type { Node, OpCtx, OpExplain } from '../../autograd';
 import { elemTexWith } from '../elem';
-import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, selectScatterTarget, sliceScatterSource, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, selectScatterTarget, sliceScatterSource, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexSelectSource, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
 import { broadcastIndex, formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
 
 const INDEX_LETTERS = ['i', 'j', 'k', 'l', 'm'];
@@ -278,6 +278,40 @@ export const indexAddExplain: OpExplain = {
       picks.push({ arg: 2, index: source });
     }
     return picks;
+  },
+};
+
+export const indexCopyExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{index\\_copy}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]},${s.in[2]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, index] = ctx.inputs;
+    const dim = normDim((ctx.attrs as { dim: number }).dim, input.ndim);
+    for (let i = 0; i < index.size; i++) {
+      if (indexAddTarget(input.shape, index, dim, i) !== out[dim]) continue;
+      const source = [...out];
+      source[dim] = i;
+      return [{ arg: 2, index: source }];
+    }
+    return [{ arg: 0, index: [...out] }];
+  },
+};
+
+export const indexSelectExplain: OpExplain = {
+  pattern: 'select',
+  local: () => 1,
+  tex: {
+    forward: (s) => `\\operatorname{index\\_select}(${s.in[0]},${(s.attrs as { dim: number }).dim},${s.in[1]})`,
+    local: () => '1',
+  },
+  selected: (ctx, out) => {
+    const [input, index] = ctx.inputs;
+    const dim = normDim((ctx.attrs as { dim: number }).dim, input.ndim);
+    return [{ arg: 0, index: indexSelectSource(input.shape, index, dim, out) }];
   },
 };
 

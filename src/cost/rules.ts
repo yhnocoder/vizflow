@@ -22,7 +22,7 @@ export const FLOP_RULES: readonly FlopRule[] = [
   { ops: ['logsumexp'], forward: '4|x|', backward: '3|x|' },
   { ops: ['softmax', 'log_softmax'], forward: '5|x|', backward: '4|x|' },
   { ops: ['nll_loss'], forward: '|t|', backward: '|t|' },
-  { ops: ['gather', 'embedding', 'repeat_interleave', 'repeat_kv', 'repeat', 'expand', 'index', 'sort', 'index_put'], forward: '0', backward: '|y|' },
+  { ops: ['gather', 'embedding', 'repeat_interleave', 'repeat_kv', 'repeat', 'expand', 'index', 'index_select', 'sort', 'index_put'], forward: '0', backward: '|y|' },
   { ops: ['index_add'], forward: '|s|', backward: '0' },
-  { ops: ['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'narrow', 'select', 'identity', 'alias', 'cat', 'pad', 'where', 'masked_fill', 'triu', 'tril', 'squeeze', 'select_scatter', 'slice_scatter', 'zeros', 'ones', 'eye', 'zeros_like', 'scatter', 'topk_mask', 'topk_indices', 'one_hot', 'nonzero_static', 'arange', 'causal_mask'], forward: '0', backward: '0' },
+  { ops: ['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'narrow', 'select', 'identity', 'alias', 'cat', 'pad', 'where', 'masked_fill', 'triu', 'tril', 'squeeze', 'select_scatter', 'slice_scatter', 'index_copy', 'zeros', 'ones', 'eye', 'zeros_like', 'scatter', 'topk_mask', 'topk_indices', 'one_hot', 'nonzero_static', 'arange', 'causal_mask'], forward: '0', backward: '0' },
 ];
