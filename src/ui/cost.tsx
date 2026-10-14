@@ -140,26 +140,55 @@ function OpList(props: { ops: FlopEntry[] }) {
 }
 
 function Timeline(props: { steps: StepCost[]; peak: number; current: number; go: (i: number) => void; labels: string[] }) {
+  const [hovered, setHovered] = createSignal<number>();
   const most = () => Math.max(1, ...props.steps.map((s) => s.flops));
   const width = () => props.steps.length;
   const y = (fraction: number) => TIMELINE_HEIGHT - fraction * (TIMELINE_HEIGHT - 4);
-  const line = () =>
+  const left = (i: number) => i + (1 - TIMELINE_BAR) / 2;
+  const top = (s: StepCost) => y(s.flops / most());
+  const bars = createMemo(() =>
+    props.steps
+      .flatMap((s, i) => (s.overview ? [] : [`M${left(i)},${top(s).toFixed(2)}h${TIMELINE_BAR}V${TIMELINE_HEIGHT}h${-TIMELINE_BAR}Z`]))
+      .join(''),
+  );
+  const line = createMemo(() =>
     props.steps
       .flatMap((s, i) => (s.overview ? [] : [`${i + 0.5},${y(props.peak === 0 ? 0 : s.bytes / props.peak).toFixed(2)}`]))
-      .join(' ');
+      .join(' '),
+  );
+  const current = () => props.steps[props.current] as StepCost | undefined;
+  const stepAt = (ev: MouseEvent) => {
+    const rect = (ev.currentTarget as SVGSVGElement).getBoundingClientRect();
+    const i = Math.floor(((ev.clientX - rect.left) / rect.width) * width());
+    return Math.min(Math.max(i, 0), width() - 1);
+  };
+  const tip = () => {
+    const i = hovered();
+    const s = i === undefined ? undefined : props.steps[i];
+    return s === undefined ? '' : `${props.labels[i!]}：${formatFlops(s.flops)}，${formatBytes(s.bytes)}`;
+  };
   return (
-    <svg class="vf-costline" viewBox={`0 0 ${width()} ${TIMELINE_HEIGHT}`} preserveAspectRatio="none" role="img" aria-label="每一步的计算量与显存">
-      <For each={props.steps}>
-        {(s, i) => (
-          <g class="vf-coststep" classList={{ 'vf-on': i() === props.current }} onClick={() => props.go(i())}>
-            <rect x={i()} y="0" width="1" height={TIMELINE_HEIGHT} class="vf-costhit" />
-            <Show when={!s.overview}>
-              <rect x={i() + (1 - TIMELINE_BAR) / 2} width={TIMELINE_BAR} y={y(s.flops / most())} height={TIMELINE_HEIGHT - y(s.flops / most())} class="vf-costbar" />
-            </Show>
-            <title>{`${props.labels[i()]}：${formatFlops(s.flops)}，${formatBytes(s.bytes)}`}</title>
-          </g>
-        )}
-      </For>
+    <svg
+      class="vf-costline"
+      viewBox={`0 0 ${width()} ${TIMELINE_HEIGHT}`}
+      preserveAspectRatio="none"
+      role="img"
+      aria-label="每一步的计算量与显存"
+      onPointerMove={(ev) => setHovered(stepAt(ev))}
+      onPointerLeave={() => setHovered(undefined)}
+      onClick={(ev) => props.go(stepAt(ev))}
+    >
+      <title>{tip()}</title>
+      <Show when={hovered() !== undefined && hovered() !== props.current}>
+        <rect x={hovered()} y="0" width="1" height={TIMELINE_HEIGHT} class="vf-costhover" />
+      </Show>
+      <Show when={current()}>
+        <rect x={props.current} y="0" width="1" height={TIMELINE_HEIGHT} class="vf-costcurrent" />
+      </Show>
+      <path d={bars()} class="vf-costbar" />
+      <Show when={current() !== undefined && !current()!.overview}>
+        <rect x={left(props.current)} width={TIMELINE_BAR} y={top(current()!)} height={TIMELINE_HEIGHT - top(current()!)} class="vf-costbar vf-on" />
+      </Show>
       <polyline points={line()} class="vf-costmem" />
     </svg>
   );
