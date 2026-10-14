@@ -31,6 +31,7 @@ export class VizflowPage extends HTMLElement {
   #sections: SectionItem[] | undefined;
   #sequence: PageSequence | undefined;
   #scene: VizflowPageScene | undefined;
+  #layoutOf: ((page: CompiledPage) => VizflowPageScene) | undefined;
   #edit = false;
   #created: Steps | undefined;
   #mounted: Mounted[] = [];
@@ -139,15 +140,19 @@ export class VizflowPage extends HTMLElement {
       const [{ loadPage }, { autoLayout }] = await Promise.all([import('../dsl'), import('../scene3d')]);
       const compiled = await loadPage(new URL(src, document.baseURI).href);
       if (loading !== this.#loading) return;
-      const { layout, modules, levels } = autoLayout(compiled.tree, compiled.steps, compiled.levels);
+      const layoutOf = (page: CompiledPage): VizflowPageScene => {
+        const { layout, modules, levels } = autoLayout(page.tree, page.steps, page.levels);
+        return { layout, modules, levels, sequence: page.sequence, camera: compiled.page.camera };
+      };
+      this.#layoutOf = layoutOf;
       this.#compiled = compiled;
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
       this.#mode = compiled.modes === undefined ? 'train' : 'infer';
       this.#panels = this.#panelsFor(this.#mode);
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
-      this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
-      this.#scene = { layout, modules, levels, sequence: this.#sequence, camera: compiled.page.camera };
+      this.#sequence = compiled.sequence;
+      this.#scene = layoutOf(compiled);
       this.#schedule();
       this.#flush();
       this.dispatchEvent(new Event('load'));
@@ -225,7 +230,7 @@ export class VizflowPage extends HTMLElement {
 
   #header(): HTMLElement | undefined {
     const page = this.#compiled?.page;
-    if (page === undefined || this.#graph !== this.#compiled?.graph) return undefined;
+    if (page === undefined || (this.#graph !== this.#compiled?.graph && this.#graph !== this.#compiled?.train?.graph)) return undefined;
     const header = element('header', 'vf-header');
     const title = element('h1', 'vf-title');
     title.textContent = page.title;
@@ -245,6 +250,13 @@ export class VizflowPage extends HTMLElement {
     this.#mode = value;
     this.#steps = modes[value];
     this.#panels = this.#panelsFor(value);
+    const compiled = this.#compiled as CompiledPage;
+    const source = value === 'train' && compiled.train !== undefined ? compiled.train : compiled;
+    if (source.graph !== this.#graph && this.#layoutOf !== undefined) {
+      this.#graph = source.graph;
+      this.#sequence = source.sequence;
+      this.#scene = this.#layoutOf(source);
+    }
     this.#schedule();
   }
 

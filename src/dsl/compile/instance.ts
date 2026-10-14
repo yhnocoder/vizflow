@@ -379,7 +379,12 @@ export abstract class Modules extends Expressions {
     const listAt = Array.isArray(decl.cache) ? at : child(at, spec, 'nodes');
     if (!Array.isArray(spec.nodes) || spec.nodes.length === 0) fail(listAt, 'cache must be a list of forward names, or { nodes, note }');
     const names = spec.nodes as unknown[];
-    const nodes = names.map((name, i) => this.node(name, this.callEnv(call, child(listAt, names, i))));
+    const nodes = names.flatMap((name, i) => {
+      const node = this.node(name, this.callEnv(call, child(listAt, names, i)));
+      const base = node.name.replace(/\[\d+\]$/, '');
+      const versions = call.created.filter((n) => n.name.startsWith(`${base}[`) && /^\[\d+\]$/.test(n.name.slice(base.length)));
+      return versions.length > 0 ? versions : [node];
+    });
     const note = spec.note === undefined ? undefined : this.text(spec.note, this.callEnv(call, child(at, spec, 'note')));
     const recoverable = new Set<Node>(nodes);
     const positional = new Map<Node, boolean>();

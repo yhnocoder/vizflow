@@ -29,6 +29,7 @@ export interface CompiledPage {
   sequence?: PageSequence;
   modes?: { train: StepsSpec; infer: StepsSpec };
   modePanels?: { train: PanelItem[]; infer: PanelItem[] };
+  train?: CompiledPage;
   page: { title: string; camera?: CameraOptions };
 }
 
@@ -41,7 +42,7 @@ export interface PageSequence {
 }
 
 export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections', 'generate', 'optimizer']);
-const GENERATE_KEYS: ReadonlySet<string> = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note']);
+const GENERATE_KEYS: ReadonlySet<string> = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note', 'config']);
 const OPTIMIZER_KEYS: ReadonlySet<string> = new Set(['type', 'lr', 'weight_decay']);
 const DEFAULT_ADAMW_LR = 0.1;
 const SAMPLER_ONLY = ['top_k', 'top_p', 'seed', 'note'];
@@ -68,6 +69,7 @@ export class PageCompiler extends Texts {
   constructor(
     readonly page: Record<string, unknown>,
     readonly pageWhere: Where,
+    readonly trainTokens?: string[],
   ) {
     super();
   }
@@ -165,9 +167,11 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   const seed = config.seed ?? DEFAULT_SEED;
   if (typeof seed !== 'number' || !Number.isInteger(seed)) fail(child(configWhere, config, 'seed'), 'seed must be an integer');
   const configValues = c.config;
-  for (const [key, value] of Object.entries(config)) {
+  const overrides = c.trainTokens === undefined ? inferConfig(c) : undefined;
+  const entries: [string, unknown, Where][] = Object.entries(config).map(([key, value]) => [key, value, child(configWhere, config, key)]);
+  if (overrides !== undefined) for (const [key, value] of Object.entries(overrides.config)) entries.push([key, value, child(overrides.where, overrides.config, key)]);
+  for (const [key, value, at] of entries) {
     if (PAGE_ONLY.has(key)) continue;
-    const at = child(configWhere, config, key);
     if (isRecord(value)) {
       checkKeys(value, new Set(['expr']), at);
       const exprWhere = child(at, value, 'expr');
@@ -185,7 +189,8 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   for (const [name, value] of Object.entries(data)) {
     const at = child(dataWhere, data, name);
     if (prompt !== undefined && name === prompt.name) {
-      c.data.set(name, { name, value: [...prompt.tokens, ...Array<string>(steps as number).fill((c.vocab as string[])[0])], where: at });
+      const tokens = c.trainTokens ?? [...prompt.tokens, ...Array<string>(steps as number).fill((c.vocab as string[])[0])];
+      c.data.set(name, { name, value: tokens, where: at });
     } else if (isRecord(value)) {
       checkKeys(value, new Set(['expr']), at);
       const exprWhere = child(at, value, 'expr');
@@ -300,7 +305,10 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   if (isRecord(page.camera)) compiled.page.camera = page.camera as CameraOptions;
   const sequence = pageSequence(c, root, env);
   if (sequence !== undefined) compiled.sequence = sequence;
-  if (prompt !== undefined) {
+  if (c.trainTokens !== undefined) {
+    const modes = panelModes(c);
+    compiled.panels = compiled.panels.filter((_, i) => modes[i] !== 'infer');
+  } else if (prompt !== undefined) {
     if (sequence === undefined) fail(child(where, page, 'generate'), 'generate needs a sequence panel that names the tokens, input and label');
     sequence.prompt = prompt.tokens.length;
     const sampler = samplerSpec(c);
@@ -327,6 +335,22 @@ function generateSteps(c: PageCompiler): number | undefined {
   checkKeys(spec, GENERATE_KEYS, where);
   if (typeof spec.steps !== 'number' || !Number.isInteger(spec.steps) || spec.steps < 2) fail(child(where, spec, 'steps'), 'generate.steps must be an integer of at least 2');
   return spec.steps;
+}
+
+function inferConfig(c: PageCompiler): { config: Record<string, unknown>; where: Where } | undefined {
+  if (!isRecord(c.page.generate) || c.page.generate.config === undefined) return undefined;
+  const where = child(child(c.pageWhere, c.page, 'generate'), c.page.generate, 'config');
+  return { config: record(c.page.generate.config, where, 'generate.config'), where };
+}
+
+export function hasInferConfig(page: Record<string, unknown>): boolean {
+  return isRecord(page.generate) && page.generate.config !== undefined;
+}
+
+export function withTrainPage(compiled: CompiledPage, train: CompiledPage): CompiledPage {
+  const modes = compiled.modes as NonNullable<CompiledPage['modes']>;
+  const modePanels = compiled.modePanels as NonNullable<CompiledPage['modePanels']>;
+  return { ...compiled, train, modes: { ...modes, train: train.steps }, modePanels: { ...modePanels, train: train.panels } };
 }
 
 function sequencePanel(c: PageCompiler): Record<string, unknown> | undefined {

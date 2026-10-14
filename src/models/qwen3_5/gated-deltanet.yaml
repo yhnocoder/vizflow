@@ -4,6 +4,7 @@ import:
   Sigmoid: vizflow/nn/sigmoid
   causal_conv1d_fn: ./causal-conv1d-fn.yaml
   torch_chunk_gated_delta_rule: ./chunk-gated-delta-rule.yaml
+  torch_recurrent_gated_delta_rule: ./recurrent-gated-delta-rule.yaml
   Qwen3_5RMSNormGated: ./rmsnorm-gated.yaml
 
 args:
@@ -14,10 +15,15 @@ args:
   head_v_dim: dim
   conv_kernel_size: dim
   chunk_size: { type: dim, default: 64 }
+  gated_delta_rule: { type: str, default: "'chunk'" }
 inputs:
   x: [T, d_model]
 outputs:
   out: [T, d_model]
+
+cache:
+  nodes: [mixed_t]
+  note: HF 的 <code>cache_params.update_conv_state</code> 存下卷积输入 $\mathbf{u}^{\top}$ 的最后 $K={{ conv_kernel_size }}$ 列，decode 时 <code>causal_conv1d_update</code> 把新的一列移进来，用这 $K$ 列算出这个位置的卷积输出。缓存大小和序列长度无关。
 
 init:
   conv1d:
@@ -54,7 +60,12 @@ init:
   sigmoid: Sigmoid
   chunk_gated_delta_rule:
     use: torch_chunk_gated_delta_rule
+    present: gated_delta_rule == 'chunk'
     args: { chunk_size: chunk_size, use_qk_l2norm_in_kernel: true }
+  recurrent_gated_delta_rule:
+    use: torch_recurrent_gated_delta_rule
+    present: gated_delta_rule == 'recurrent'
+    args: { use_qk_l2norm_in_kernel: true }
 
 forward:
   - mixed_qkv: in_proj_qkv(x)
@@ -82,7 +93,7 @@ forward:
   - g: A_neg * dt
   - query_r: query.repeat_interleave(num_v_heads // num_k_heads, 1) if num_v_heads // num_k_heads > 1 else query
   - key_r: key.repeat_interleave(num_v_heads // num_k_heads, 1) if num_v_heads // num_k_heads > 1 else key
-  - core_attn_out: chunk_gated_delta_rule(query=query_r, key=key_r, value=value, g=g, beta=beta)
+  - core_attn_out: chunk_gated_delta_rule(query=query_r, key=key_r, value=value, g=g, beta=beta) if gated_delta_rule == 'chunk' else recurrent_gated_delta_rule(query=query_r, key=key_r, value=value, g=g, beta=beta)
   - core_flat: core_attn_out.reshape(-1, head_v_dim)
   - z_flat: z.reshape(-1, head_v_dim)
   - normed: norm(core_flat, z_flat)
@@ -142,7 +153,7 @@ formula: |-
   \step{out_proj}{\viz{out}}&
   \step{out_proj}{=\Big(}
   \step{norm.*}{\mathrm{norm}\big(}
-  \step{chunk_gated_delta_rule.*}{\operatorname{GDR}(\viz{query},\viz{key},\viz{value},\viz{g},\viz{beta})}
+  \step{chunk_gated_delta_rule.*,recurrent_gated_delta_rule.*}{\operatorname{GDR}(\viz{query},\viz{key},\viz{value},\viz{g},\viz{beta})}
   \step{norm.*}{,\ \viz{x}{\viz{in_proj_z.weight}}^{\top}\big)}
   \step{out_proj}{\Big){\viz{out_proj.weight}}^{\top}}
   \end{aligned}
@@ -299,6 +310,12 @@ steps:
       transpose:
         append: |
           HF 的调用是 <code>torch_chunk_gated_delta_rule(query, key, value, g=g, beta=beta, initial_state=recurrent_state, output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True, ...)</code>。没有缓存时 <code>recurrent_state</code> 是 None，<code>output_final_state</code> 是 False；只有带缓存、一次一个 token 的 decode 才调用逐个位置递推的 <code>torch_recurrent_gated_delta_rule</code>。
+  - id: recurrent_gated_delta_rule
+    subtitle: gated delta rule，逐个位置递推
+    edit:
+      transpose:
+        append: |
+          HF 只在带缓存、这一步只送 1 个 token 时调用 <code>torch_recurrent_gated_delta_rule(query, key, value, g=g, beta=beta, initial_state=recurrent_state, output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True, ...)</code>，<code>recurrent_state</code> 是上一步存下的状态。prefill 和训练调用的是按块计算的 <code>torch_chunk_gated_delta_rule</code>。推理页为了让每个位置的状态都能画出来，prefill 也画成逐位置递推；两种算法的结果相同，自动测试用 float64 对照过 HF 的 logits、loss 和全部梯度。
   - id: norm
     subtitle: Qwen3_5RMSNormGated，按 head_v_dim
     edit:

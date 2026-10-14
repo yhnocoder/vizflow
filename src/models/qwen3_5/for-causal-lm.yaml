@@ -18,6 +18,7 @@ args:
   linear_value_head_dim: dim
   linear_conv_kernel_dim: dim
   chunk_size: { type: dim, default: 64 }
+  gated_delta_rule: { type: str, default: "'chunk'" }
   partial_rotary_factor: float
   rope_theta: float
   dtype: dtype
@@ -47,6 +48,7 @@ init:
       - linear_value_head_dim: linear_value_head_dim
       - linear_conv_kernel_dim: linear_conv_kernel_dim
       - chunk_size: chunk_size
+      - gated_delta_rule: gated_delta_rule
       - partial_rotary_factor: partial_rotary_factor
       - rope_theta: rope_theta
       - dtype: dtype

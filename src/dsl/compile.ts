@@ -1,4 +1,4 @@
-import { type CompiledPage, PAGE_KEYS, PageCompiler, compilePage } from './compile/page';
+import { type CompiledPage, PAGE_KEYS, PageCompiler, compilePage, hasInferConfig, withTrainPage } from './compile/page';
 import type { SectionSources } from './compile/sections';
 import { parsePreamble } from './compile/texts';
 import packagePreamble from '../models/preamble.sty?raw';
@@ -29,14 +29,18 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
   }
   const root = namespace.get(spec.model);
   if (root === undefined) fail(child(where, spec, 'model'), `module '${spec.model}' is neither defined in modules nor imported`);
-  const compiler = new PageCompiler(spec, where);
-  compiler.macros = parsePreamble(packagePreamble, 'vizflow/models/preamble.sty');
+  const macros = parsePreamble(packagePreamble, 'vizflow/models/preamble.sty');
   if (spec.preamble !== undefined) {
     const at = child(where, spec, 'preamble');
     if (typeof spec.preamble !== 'string') fail(at, 'preamble must be a path to a file of \\newcommand definitions');
     const url = loader.resolve(spec.preamble, pageFile, at);
-    for (const [name, macro] of parsePreamble(await loader.text(url), url)) compiler.macros.set(name, macro);
+    for (const [name, macro] of parsePreamble(await loader.text(url), url)) macros.set(name, macro);
   }
+  const compilerFor = (trainTokens?: string[]) => {
+    const compiler = new PageCompiler(spec, where, trainTokens);
+    compiler.macros = new Map(macros);
+    return compiler;
+  };
   const sectionSources: SectionSources = new Map();
   if (Array.isArray(spec.sections)) {
     const sectionsWhere = child(where, spec, 'sections');
@@ -48,5 +52,9 @@ export async function compileSpec(spec: unknown, file: string, options: LoadOpti
       sectionSources.set(section, { file: url, rows: sectionRows(await loader.text(url), url) });
     }
   }
-  return compilePage(compiler, root, sectionSources);
+  const compiled = compilePage(compilerFor(), root, sectionSources);
+  if (!hasInferConfig(spec) || compiled.sequence === undefined) return compiled;
+  const vocab = compiled.sequence.tokens;
+  const train = compilePage(compilerFor(compiled.sequence.get().map((id) => vocab[id])), root, sectionSources);
+  return withTrainPage(compiled, train);
 }

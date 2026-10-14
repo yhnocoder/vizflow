@@ -19,6 +19,7 @@ args:
   linear_value_head_dim: dim
   linear_conv_kernel_dim: dim
   chunk_size: { type: dim, default: 64 }
+  gated_delta_rule: { type: str, default: "'chunk'" }
 inputs:
   x: [T, d_model]
   cos: [T, rotary_dim]
@@ -39,6 +40,7 @@ init:
       head_v_dim: linear_value_head_dim
       conv_kernel_size: linear_conv_kernel_dim
       chunk_size: chunk_size
+      gated_delta_rule: gated_delta_rule
   self_attn:
     use: Qwen3_5Attention
     present: layer_type == 'full_attention'

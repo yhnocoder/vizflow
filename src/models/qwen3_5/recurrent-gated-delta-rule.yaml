@@ -1,0 +1,225 @@
+module: torch_recurrent_gated_delta_rule
+import:
+  l2norm: ./l2norm.yaml
+args:
+  use_qk_l2norm_in_kernel: { type: bool, default: False }
+inputs:
+  query: [T, num_v_heads, k_head_dim]
+  key: [T, num_v_heads, k_head_dim]
+  value: [T, num_v_heads, v_head_dim]
+  g: { type: tensor, shape: [T, num_v_heads], dtype: _ }
+  beta: [T, num_v_heads]
+outputs:
+  attn_out: [T, num_v_heads, v_head_dim]
+
+cache:
+  nodes: [last_recurrent_state]
+  note: HF 的 <code>cache_params.update_recurrent_state</code> 只存最后一个位置的状态，每个 value head 一个 $d_k\times d_v$ 的矩阵，下一步 decode 从它开始递推。缓存大小和序列长度无关。
+init:
+  q_l2norm: { use: l2norm, present: use_qk_l2norm_in_kernel }
+  k_l2norm: { use: l2norm, present: use_qk_l2norm_in_kernel }
+
+forward:
+  - query_f: query.transpose(0, 1).float()
+  - key_f: key.transpose(0, 1).float()
+  - value_f: value.transpose(0, 1).float()
+  - beta_f: beta.transpose(0, 1).float()
+  - decay: g.transpose(0, 1).float()
+  - query_n: q_l2norm(query_f) if use_qk_l2norm_in_kernel else query_f
+  - key_n: k_l2norm(key_f) if use_qk_l2norm_in_kernel else key_f
+  - query_s: query_n / k_head_dim ** 0.5
+  - last_recurrent_state: zeros(num_v_heads, k_head_dim, v_head_dim, dtype=value_f.dtype)
+  - core_attn_out: zeros_like(value_f)
+  - for: i in range(T)
+    do:
+      - q_t: 'query_s[:, i]'
+      - k_t: 'key_n[:, i]'
+      - v_t: 'value_f[:, i]'
+      - decay_t: 'decay[:, i].exp()[..., None, None]'
+      - state_decayed: last_recurrent_state * decay_t
+      - beta_t: 'beta_f[:, i].unsqueeze(-1)'
+      - k_col: k_t.unsqueeze(-1)
+      - kv_prod: state_decayed * k_col
+      - kv_mem: kv_prod.sum(-2)
+      - v_err: v_t - kv_mem
+      - delta: v_err * beta_t
+      - delta_row: delta.unsqueeze(-2)
+      - state_update: k_col * delta_row
+      - last_recurrent_state: state_decayed + state_update
+      - q_col: q_t.unsqueeze(-1)
+      - read: last_recurrent_state * q_col
+      - 'core_attn_out[:, i]': read.sum(-2)
+  - attn_out: core_attn_out.transpose(0, 1).to(query.dtype)
+
+tex:
+  query_f: '\mathbf{q}'
+  key_f: '\mathbf{k}'
+  value_f: '\mathbf{v}'
+  beta_f: '\boldsymbol{\beta}'
+  decay: '\mathbf{g}'
+  query_n: '\hat{\mathbf{q}}'
+  key_n: '\hat{\mathbf{k}}'
+  query_s: '\tilde{\mathbf{q}}'
+  last_recurrent_state: 'S'
+  core_attn_out: '\mathbf{o}'
+  q_t: '\tilde{\mathbf{q}}'
+  k_t: '\hat{\mathbf{k}}'
+  v_t: '\mathbf{v}'
+  decay_t: '\alpha'
+  state_decayed: '\alpha S'
+  beta_t: '\beta'
+  k_col: '\hat{\mathbf{k}}'
+  kv_prod: 'S\odot\hat{\mathbf{k}}'
+  kv_mem: '\hat{\mathbf{v}}'
+  v_err: '\mathbf{v}-\hat{\mathbf{v}}'
+  delta: '\boldsymbol{\delta}'
+  delta_row: '\boldsymbol{\delta}^{\top}'
+  state_update: '\hat{\mathbf{k}}\boldsymbol{\delta}^{\top}'
+  q_col: '\tilde{\mathbf{q}}'
+  read: 'S\odot\tilde{\mathbf{q}}'
+  attn_out: '\mathbf{o}'
+
+fold:
+  label: '$\viz{attn_out}$'
+  title: torch_recurrent_gated_delta_rule
+  text: |
+    按位置逐个递推，每个 value head 有一个 $d_k\times d_v$ 的状态 $S$：先衰减，再按 delta rule 写入这个位置的修正量，最后用 query 读出。
+    $$S_t=\alpha_tS_{t-1}+\hat{\mathbf{k}}_t\big(\beta_t(\mathbf{v}_t-\alpha_tS_{t-1}^{\top}\hat{\mathbf{k}}_t)\big)^{\top},\qquad \mathbf{o}_t=S_t^{\top}\tilde{\mathbf{q}}_t,\qquad \alpha_t=e^{g_t}$$
+    $$\viz{attn_out}={{ attn_out | matrix:2 }}$$
+  backward:
+    label: '$\partial\mathbf{q},\ \partial\mathbf{k},\ \partial\mathbf{v},\ \partial\mathbf{g},\ \partial\boldsymbol{\beta}$'
+    title: '$\pfl{\mathbf{q}},\ \pfl{\mathbf{k}},\ \pfl{\mathbf{v}},\ \pfl{\mathbf{g}},\ \pfl{\boldsymbol{\beta}}$'
+    text: |
+      $$\pfl{\viz{value}}={{ value.grad | matrix:3 }}$$
+
+steps:
+  - id: transpose
+    show: [query_f, key_f, value_f, beta_f, decay]
+    label: '$\mathrm{transpose}$'
+    title: 转成按 head 排列，转成 float32
+    text: |
+      <code>x.transpose(1, 2).to(torch.float32, memory_format=torch.contiguous_format)</code>：HF 的 $(B, T, H, d)$ 换成 $(B, H, T, d)$；这一页没有 batch 维，换的是第 0 维和第 1 维。$\boldsymbol{\beta}$ 和 $\mathbf{g}$ 从 $(T, H)$ 换成 $(H, T)$。之后都在 float32 里算。
+      $$\viz{value_f}={{ value_f | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query},\ \partial\viz{key},\ \partial\viz{value},\ \partial\viz{beta},\ \partial\viz{g}$'
+      title: 转回 $(T, H, d)$
+      text: 换轴的反向把梯度换回原来的轴，再转回输入的 dtype。
+  - id: qk_l2norm
+    show: zip(q_l2norm, k_l2norm)
+    title: l2norm
+    subtitle: use_qk_l2norm_in_kernel=True
+    fold:
+      label: '$\viz{query_n},\ \viz{key_n}$'
+      title: query 和 key 的 l2norm
+      text: |
+        <code>query = l2norm(query, dim=-1, eps=1e-6)</code>，key 相同。每个位置、每个 head 的向量除以自己的模长。
+        $$\viz{key_n}={{ key_n | matrix:2 }}$$
+      backward:
+        label: '$\partial\viz{query_f},\ \partial\viz{key_f}$'
+        title: '$\pfl{\viz{query_f}},\ \pfl{\viz{key_f}}$'
+        text: |
+          $$\pfl{\viz{key_f}}={{ key_f.grad | matrix:3 }}$$
+  - id: scale
+    show: query_s
+    label: '$\viz{query_s}$'
+    title: query 除以 $\sqrt{d_k}$
+    text: |
+      <code>query = query / (query.shape[-1] ** 0.5)</code>。这一页 $d_k={{ k_head_dim }}$。
+      $$\viz{query_s}={{ query_s | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query_n}$'
+      title: '$\pfl{\viz{query_n}}$'
+      text: 局部导数是 $d_k^{-1/2}$。
+  - id: init
+    show: [last_recurrent_state, core_attn_out]
+    label: '$S_0=0$'
+    title: 初始状态和输出缓冲
+    text: |
+      <code>initial_state</code> 是 None 时，HF 用 <code>torch.zeros(batch_size, num_v_heads, k_head_dim, v_head_dim)</code> 作为初始状态；带缓存 decode 时传入的是上一步存下的 <code>recurrent_states</code>。<code>core_attn_out = torch.zeros_like(value)</code> 是输出的缓冲，循环里逐个位置写入。
+    backward:
+      label: '$S_0$'
+      title: 初始状态不需要梯度
+      text: 初始状态是常量，梯度到这里为止。
+  - id: token
+    loop: i in range(T)
+    defaults:
+      title: 位置 {{ i }}
+      subtitle: '<code>for i in range(sequence_length)</code>'
+      steps:
+        - id: take
+          show: [q_t, k_t, v_t, beta_t]
+          label: '$\viz{q_t},\ \viz{k_t},\ \viz{v_t}$'
+          title: 位置 {{ i }}：取出这个位置的 q、k、v、$\beta$
+          text: |
+            <code>q_t, k_t, v_t = query[:, :, i], key[:, :, i], value[:, :, i]</code>，<code>beta_t = beta[:, :, i].unsqueeze(-1)</code>：每个 value head 各取一行。
+            $$\viz{k_t}={{ k_t | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{query_s},\ \partial\viz{key_n},\ \partial\viz{value_f}$'
+            title: 位置 {{ i }}：梯度放回第 {{ i }} 个位置
+            text: 取一行的反向把梯度写回第 {{ i }} 个位置，其余位置是 0。
+        - id: decay
+          show: [decay_t, state_decayed]
+          label: '$\viz{state_decayed}$'
+          title: 位置 {{ i }}：旧状态乘衰减
+          text: |
+            <code>decay_t = decay[:, :, i].exp()[..., None, None]</code>，<code>last_recurrent_state = last_recurrent_state * decay_t</code>：$\alpha=e^{g}$ 在 0 和 1 之间，每个 value head 一个，乘到整个 $d_k\times d_v$ 的状态上。HF 把结果写回同一个变量，图里给它单独的名字 $\alpha_tS$。
+            $$\viz{state_decayed}={{ state_decayed | matrix:3 }}$$
+          backward:
+            label: '$\partial S,\ \partial\viz{decay}$'
+            title: 位置 {{ i }}：穿过衰减
+            text: 旧状态的梯度乘上 $\alpha$；$\alpha$ 的梯度是状态与状态梯度逐元素相乘再求和，经过 exp 交给 $g$。
+        - id: predict
+          show: [k_col, kv_prod, kv_mem]
+          label: '$\viz{kv_mem}$'
+          title: 位置 {{ i }}：旧状态对这个 key 的预测
+          text: |
+            <code>kv_mem = (last_recurrent_state * k_t.unsqueeze(-1)).sum(dim=-2)</code>：$\hat{\mathbf{v}}=S^{\top}\hat{\mathbf{k}}$，旧状态按这个 key 读出它记住的 value。HF 用逐元素乘再沿 $d_k$ 求和来写这次矩阵向量乘。
+            $$\viz{kv_mem}={{ kv_mem | matrix:3 }}$$
+          backward:
+            label: '$\partial S,\ \partial\viz{k_t}$'
+            title: 位置 {{ i }}：穿过预测
+            text: 求和把梯度复制回 $d_k$ 的每一行，逐元素乘的两个输入互为对方的局部导数。
+        - id: delta
+          show: [v_err, delta]
+          label: '$\viz{delta}$'
+          title: 位置 {{ i }}：只写预测错的部分
+          text: |
+            <code>delta = (v_t - kv_mem) * beta_t</code>：新 value 减去旧状态的预测，乘写入强度 $\beta$。这就是 delta rule：状态已经记住的部分不再重复写入。
+            $$\viz{delta}={{ delta | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{v_t},\ \partial\viz{kv_mem},\ \partial\viz{beta_t}$'
+            title: 位置 {{ i }}：穿过差值
+            text: 差值的梯度乘 $\beta$ 交给 $\mathbf{v}$，取负交给预测；$\beta$ 收到差值与梯度的内积。
+        - id: write
+          show: [delta_row, state_update, last_recurrent_state]
+          label: '$\viz{last_recurrent_state}$'
+          title: 位置 {{ i }}：写入状态
+          text: |
+            <code>last_recurrent_state = last_recurrent_state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)</code>：$\hat{\mathbf{k}}\boldsymbol{\delta}^{\top}$ 是 $d_k\times d_v$ 的外积，加到衰减后的状态上。
+            $$\viz{last_recurrent_state}={{ last_recurrent_state | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{k_t},\ \partial\viz{delta}$'
+            title: 位置 {{ i }}：穿过外积
+            text: 外积的两个向量各收到状态梯度乘另一个向量。
+        - id: read
+          show: [q_col, read, core_attn_out]
+          label: '$\viz{core_attn_out}$'
+          title: 位置 {{ i }}：query 读出
+          text: |
+            <code>core_attn_out[:, :, i] = (last_recurrent_state * q_t.unsqueeze(-1)).sum(dim=-2)</code>：$\mathbf{o}=S^{\top}\tilde{\mathbf{q}}$，读的是写入以后的新状态。HF 原地写进第 {{ i }} 个位置，图里画成 <code>select_scatter</code>。
+            $$\viz{core_attn_out}={{ core_attn_out | matrix:2 }}$$
+          backward:
+            label: '$\partial S,\ \partial\viz{q_t}$'
+            title: 位置 {{ i }}：传回状态和 query
+            text: 状态的梯度来自这里的读出和下一个位置的使用，两份相加。
+  - id: output
+    show: attn_out
+    label: '$\viz{attn_out}$'
+    title: 转回 $(T, H, d_v)$ 和输入的 dtype
+    text: |
+      <code>core_attn_out.transpose(1, 2).contiguous().to(initial_dtype)</code>：换回位置在前，转回输入的 dtype。带缓存时函数同时返回最后的状态，HF 用 <code>cache_params.update_recurrent_state</code> 存下，下一步 decode 从它开始。
+      $$\viz{attn_out}={{ attn_out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{core_attn_out}$'
+      title: 转回按 head 排列
+      text: 换轴与类型转换的局部导数是 1。

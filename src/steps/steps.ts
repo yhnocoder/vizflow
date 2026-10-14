@@ -537,7 +537,16 @@ class StepsImpl implements Steps {
     const cacheSet = cache.cached;
     const members = new Set(infer.caches.flatMap((c) => c.members));
     const inCache = (group: Group) => nodesOf(group).some((n) => members.has(n));
-    const computes = (n: Node, t: number) => cache.computes(n, t);
+    const copiesRow = (n: Node, t: number) =>
+      n.kind === 'op' &&
+      n.inputs.length > 1 &&
+      sameShape(n.inputs[0], n) &&
+      cache.horizons(n).every((h, offset) => {
+        if (h !== t) return true;
+        const deps = cache.positions.deps(n, offset);
+        return deps.length === 1 && deps[0][0] === n.inputs[0] && deps[0][1] === offset;
+      });
+    const computes = (n: Node, t: number) => cache.computes(n, t) && !copiesRow(n, t);
     const before = (n: Node, t: number) => horizons(n).some((h) => h !== undefined && h < t);
     const rowUniform = (n: Node) => {
       const h = horizons(n);
@@ -951,7 +960,8 @@ class StepsImpl implements Steps {
           const mask = part.active.find((n) => masks.has(n));
           const direct = unique(part.prod.flatMap((n) => n.inputs.filter((i) => cacheSet.has(i) && reads.has(i))));
           const scoring = part.prod.some((n) => scores.has(n));
-          if (part.info.kind !== 'module' && !scoring && mask === undefined && direct.length === 0 && !part.active.some((n) => derived.has(n))) {
+          const earlier = unique(part.prod.flatMap((n) => n.inputs.filter((i) => reads.has(i) && derived.has(i))));
+          if (part.info.kind !== 'module' && !scoring && mask === undefined && direct.length === 0 && earlier.length === 0) {
             pending.push(part);
             if (writes.has(groupIndex.get(part.group) ?? -1)) flush();
             return;
@@ -967,8 +977,12 @@ class StepsImpl implements Steps {
             text = `第 ${pos} 行的 mask 是 $${vector(mask, row, pos, ':0')}$，对已有的 ${pos} 个位置全是 0。缓存里只有不晚于当前位置的 key，没有需要挡住的未来位置，所以 decode 实际上不需要 mask，加上的只是 0。${rowValues(first, row)}`;
           } else if (direct.length > 0) {
             text = `这一步直接读缓存中的 ${tex(direct)}，算法和 prefill 的同一步相同，只算第 ${pos} 个位置。${rowValues(first, row)}`;
-          } else if (part.active.some((n) => derived.has(n))) {
-            text = `第 ${pos} 个位置按权重对缓存里全部 ${pos} 行的 value 加权求和，得到这个位置唯一的一行输出。${rowValues(first, row)}`;
+          } else if (earlier.length > 0) {
+            const rows = [...new Set(earlier.flatMap((n) => [...(reads.get(n) ?? [])].map((offset) => cache.horizons(n)[offset] as number)))].sort((a, b) => a - b);
+            const span = rows.length === row ? `前面全部 ${row} 个位置` : `第 ${rows[0] + 1} 到第 ${rows[rows.length - 1] + 1} 个位置这 ${rows.length} 行`;
+            text = part.prod.some((n) => n.op === 'matmul' && n.inputs.some((i) => scores.has(i) || [...scores].some((sc) => i.inputs.includes(sc))))
+              ? `第 ${pos} 个位置按权重对缓存里全部 ${pos} 行的 value 加权求和，得到这个位置唯一的一行输出。${rowValues(first, row)}`
+              : `这一步要用到 ${tex(earlier)} 在${span}的值，它们由缓存中的 ${tex(cachedRoots(earlier))} 直接得到，加上本位置的一行，算出第 ${pos} 个位置的输出。${rowValues(first, row)}`;
           } else {
             text = `和 prefill 的同一步相同，只算第 ${pos} 个位置，这一行的长度是 ${pos}。${rowValues(first, row)}`;
           }
@@ -1182,7 +1196,9 @@ function rowState(entry: Entry, infer: InferSpec | undefined, positions: Positio
     if (position >= rows.labels || position < infer.prompt - 1) return 'hidden';
     return entry.active.has(node) && position !== rows.labels - 1 ? 'inactive' : undefined;
   }
-  const offset = offsetOf(collapse(node.shape, index.length), index);
+  const shape = collapse(node.shape, index.length);
+  if (index.some((i, k) => i >= shape[k])) return undefined;
+  const offset = offsetOf(shape, index);
   const h = positions.horizon(node, offset);
   if (h === undefined) return undefined;
   if (h >= rows.shown || skipped(node, offset, h)) return 'hidden';

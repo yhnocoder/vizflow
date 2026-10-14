@@ -18,19 +18,23 @@ interface Qwen3_5Fixture {
 const fixture = loadFixture<never>('qwen3_5.json') as unknown as Qwen3_5Fixture;
 const PAGE = 'qwen3_5/qwen3_5-dsl.yaml';
 
-async function loadInFloat64(chunkSize: number): Promise<CompiledPage> {
+async function loadInFloat64(config: Record<string, unknown>): Promise<CompiledPage> {
   const url = new URL(PAGE, examplesUrl).href;
   const spec = parseYaml(await readFileUrl(url), url) as { config: Record<string, unknown> };
-  spec.config.dtype = 'fp64';
-  spec.config.chunk_size = chunkSize;
+  Object.assign(spec.config, { dtype: 'fp64' }, config);
   return compilePage(spec as never, { base: url, read: readFileUrl });
 }
 
-describe.each([1, 2, 3, 64])('qwen3_5-dsl.yaml with chunk_size %i against transformers Qwen3_5ForCausalLM in float64', (chunkSize) => {
+const variants: [string, Record<string, unknown>][] = [
+  ...[1, 2, 3, 64].map((chunkSize): [string, Record<string, unknown>] => [`chunk_size ${chunkSize}`, { chunk_size: chunkSize }]),
+  ['the recurrent gated delta rule', { gated_delta_rule: 'recurrent' }],
+];
+
+describe.each(variants)('qwen3_5-dsl.yaml with %s against transformers Qwen3_5ForCausalLM in float64', (_, config) => {
   let page: CompiledPage;
 
   beforeAll(async () => {
-    page = await loadInFloat64(chunkSize);
+    page = await loadInFloat64(config);
     for (const [path, tensor] of Object.entries(fixture.weights)) page.nodes.get(path)!.set(nested(tensor));
     page.sequence!.set(fixture.sequence);
   });
