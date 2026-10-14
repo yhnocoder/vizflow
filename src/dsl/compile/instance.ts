@@ -13,6 +13,7 @@ const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', '
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
+const BRANCH_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
 const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'optional']);
 const LIST_USE = /^list\[(.+)\]$/;
@@ -44,7 +45,7 @@ function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
       countNames(ast.obj, counts);
       for (const item of ast.items) {
         if (item.k === 'at') countNames(item.value, counts);
-        if (item.k === 'slice') for (const bound of [item.start, item.stop]) countNames(bound, counts);
+        if (item.k === 'slice') for (const bound of [item.start, item.stop, item.step]) countNames(bound, counts);
       }
       return;
     case 'call':
@@ -54,8 +55,11 @@ function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
       for (const item of ast.items) countNames(item, counts);
       return;
     case 'neg':
+    case 'invert':
+    case 'not':
       countNames(ast.arg, counts);
       return;
+    case 'logic':
     case 'bin':
     case 'cmp':
       countNames(ast.a, counts);
@@ -132,7 +136,9 @@ export abstract class Modules extends Expressions {
     const init = this.fieldOf(def, 'init');
     for (const [key, spec] of Object.entries(init)) {
       const at = child(initWhere, init, key);
-      if (key === 'weights') {
+      if (key === 'constants') {
+        for (const [constant, text] of Object.entries(record(spec, at, 'constants'))) this.constantMember(instance, constant, text, child(at, spec as object, constant));
+      } else if (key === 'weights') {
         for (const [weight, decl] of Object.entries(record(spec, at, 'weights'))) this.tensorMember(instance, weight, decl, child(at, spec as object, weight), 'param');
       } else if (key === 'buffers') {
         for (const [buffer, decl] of Object.entries(record(spec, at, 'buffers'))) this.tensorMember(instance, buffer, decl, child(at, spec as object, buffer), 'buffer');
@@ -140,6 +146,14 @@ export abstract class Modules extends Expressions {
         this.childMember(instance, key, spec, at);
       }
     }
+  }
+
+  private constantMember(instance: Instance, name: string, text: unknown, at: Where): void {
+    if (!NAME.test(name)) fail(at, `'${name}' is not a valid name`);
+    if (instance.members.has(name) || instance.args.has(name)) fail(at, `name '${name}' is already defined in ${instance.def.name}`);
+    const value = this.computed(text, { ...this.instanceEnv(instance, at), where: at }, new ProgramBuilder(), false);
+    if (!isNum(value) && typeof value !== 'boolean' && typeof value !== 'string' && !(value instanceof Eager)) fail(at, `constant '${name}' must be a number, a bool, a str or a tensor computed at init, got ${describe(value)}`);
+    instance.args.set(name, value);
   }
 
   private define(instance: Instance, name: string, value: Member, where: Where): void {
@@ -206,6 +220,16 @@ export abstract class Modules extends Expressions {
   private childMember(instance: Instance, name: string, spec: unknown, at: Where): void {
     const env = this.instanceEnv(instance, at);
     const decl: Record<string, unknown> = typeof spec === 'string' ? { use: spec } : record(spec, at, `'${name}'`);
+    if ('if' in decl) {
+      checkKeys(decl, BRANCH_KEYS, at);
+      if (decl.then === undefined) fail(at, `'${name}' has 'if' but no 'then'`);
+      const test = this.expression(decl.if, { ...env, where: child(at, decl, 'if') });
+      if (typeof test !== 'boolean') fail(child(at, decl, 'if'), `if must be True or False, got ${describe(test)}`);
+      const branch = test ? 'then' : 'else';
+      if (decl[branch] === undefined) this.define(instance, name, null, at);
+      else this.childMember(instance, name, decl[branch], child(at, decl, branch));
+      return;
+    }
     checkKeys(decl, CHILD_KEYS, at);
     if (decl.present !== undefined) {
       const present = this.expression(decl.present, { ...env, where: child(at, decl, 'present') });
@@ -400,7 +424,7 @@ export abstract class Modules extends Expressions {
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
     if (dtype === '_') return;
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
-      this.checkUsed(call, dtype, dtypeWhere);
+      if (!Array.isArray(spec)) this.checkUsed(call, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
       return;
     }
@@ -454,8 +478,15 @@ export abstract class Modules extends Expressions {
     each(decl.args, section('args'), (arg, at) => fields(arg, at, ['default']));
     for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(fieldSpec(field), at, ['shape', 'dtype']));
     each(decl.init, section('init'), (entry, at) => {
-      if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
-      else fields(entry, at, ['args', 'count', 'present']);
+      if (at.key === 'constants') walk(entry, at, expression);
+      else if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
+      else {
+        const member = (spec: unknown, where: Where): void => {
+          fields(spec, where, ['args', 'count', 'present', 'if']);
+          if (isRecord(spec)) for (const key of ['then', 'else']) if (spec[key] !== undefined) member(spec[key], child(where, spec, key));
+        };
+        member(entry, at);
+      }
     });
     walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
     walk(decl.unshown, section('unshown'), expression);
@@ -542,7 +573,11 @@ export abstract class Modules extends Expressions {
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
       call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
-      if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor or a module result, got ${describe(value)}`);
+      if (value === null && item.target === undefined && !inLoop) {
+        call.values.set(name, null);
+        continue;
+      }
+      if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor, a module result or None, got ${describe(value)}`);
       const previous = call.values.get(name);
       call.values.set(name, value);
       if (!call.results.includes(name)) call.results.push(name);

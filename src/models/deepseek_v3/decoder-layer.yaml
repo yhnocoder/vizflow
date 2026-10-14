@@ -1,0 +1,173 @@
+module: DeepseekV3DecoderLayer
+import:
+  DeepseekV3RMSNorm: ./rmsnorm.yaml
+  DeepseekV3MLP: ./mlp.yaml
+  DeepseekV3MoE: ./moe.yaml
+  DeepseekV3Attention: ./attention.yaml
+args:
+  layer_idx: int
+  first_k_dense_replace: int
+  d_model: dim
+  d_ff: dim
+  d_moe: dim
+  num_heads: dim
+  q_lora_rank: dim
+  kv_lora_rank: dim
+  qk_nope_head_dim: dim
+  qk_rope_head_dim: dim
+  v_head_dim: dim
+  n_routed_experts: dim
+  num_experts_per_tok: dim
+  n_group: dim
+  topk_group: dim
+  n_shared_experts: dim
+  routed_scaling_factor: float
+  norm_topk_prob: bool
+  rope_type: str
+  factor: float
+  mscale_all_dim: float
+inputs:
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, qk_rope_head_dim]
+  sin: [T, qk_rope_head_dim]
+outputs:
+  out: [T, d_model]
+init:
+  self_attn:
+    use: DeepseekV3Attention
+    args: [d_model, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, rope_type, factor, mscale_all_dim]
+  mlp:
+    if: layer_idx >= first_k_dense_replace
+    then:
+      use: DeepseekV3MoE
+      args: [d_model, d_moe, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor, norm_topk_prob]
+    else:
+      use: DeepseekV3MLP
+      args: [d_model, d_ff]
+  input_layernorm:
+    use: DeepseekV3RMSNorm
+    args: { hidden_size: d_model }
+  post_attention_layernorm:
+    use: DeepseekV3RMSNorm
+    args: { hidden_size: d_model }
+forward:
+  - res: x
+  - h: input_layernorm(res)
+  - att: self_attn(h, mask=mask, cos=cos, sin=sin)
+  - a: res + att
+  - n: post_attention_layernorm(a)
+  - down: mlp(n)
+  - out: a + down
+
+tex:
+  res: '\mathbf{h}'
+  h: '\mathbf{h}'
+  att: '\mathbf{att}'
+  a: '\mathrm{att}_\mathrm{res}'
+  n: '\mathbf{n}'
+  down: '\mathbf{down}'
+  out: '\mathbf{h}_{\mathrm{out}}'
+
+formula: |-
+  \begin{aligned}
+  \step{res1}{\viz{a}}&
+  \step{res1}{=\viz{res}+}
+  \step{self_attn.*}{\mathrm{MLA}\big(}
+  \step{input_layernorm.*}{\mathrm{norm}(\viz{x})}
+  \step{self_attn.*}{\big)}\\
+  \step{res2}{\viz{out}}&
+  \step{res2}{=\viz{a}+}
+  \step{mlp.*}{\mathrm{ffn}\big(}
+  \step{post_attention_layernorm.*}{\mathrm{norm}(\viz{a})}
+  \step{mlp.*}{\big)}
+  \end{aligned}
+fold:
+  label: '$\viz{out}=\mathrm{layer}(\viz{x})$'
+  title: DeepseekV3DecoderLayer
+  text: |
+    一层是两次「先 norm、再计算、再加回」：
+    $$\viz{a}=\viz{x}+\mathrm{MLA}(\mathrm{norm}(\viz{x})),\qquad \viz{out}=\viz{a}+\mathrm{ffn}(\mathrm{norm}(\viz{a}))$$
+    前 {{ first_k_dense_replace }} 层的 ffn 是普通的 MLP，之后的层是 MoE。位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以整层的 Jacobian 是块下三角的；两次残差相加把 $\viz{x}$ 原样带到输出，所以对角块里含有一个单位阵。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
+    text: |
+      一次反向算出这一层全部参数的梯度和 $\pfl{\viz{x}}$。$\pfl{\viz{x}}$ 里有一项就是 $\pfl{\viz{out}}$ 本身，它沿两条残差原样传过整层。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+steps:
+  - id: input_layernorm
+    subtitle: DeepseekV3RMSNorm
+    edit:
+      float:
+        append: |
+          这是 input_layernorm，在 attention 之前。DeepSeek V3 和 Qwen3 一样是 Pre-Norm 结构：残差路径上的 $\viz{x}$ 本身不做 norm，只有送进 attention 的那一份做。
+        backward:
+          append: |
+            $\viz{x}$ 除了经过 norm 拿到的梯度，还沿残差直接收到 $\pfl{\viz{a}}$，所以 $\pfl{\viz{x}}$ 是两者之和。
+      scale:
+        append: |
+          $\viz{h}$ 是 q_a_proj 和 kv_a_proj_with_mqa 共同的输入。
+    fold:
+      text: |
+        每一行只和自己有关，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
+        $$\viz{h}={{ h | matrix:2 }}$$
+      backward:
+        text: |
+          一步算出 $\viz{input_layernorm.weight}$ 的梯度，以及经过 norm 交给 $\viz{x}$ 的那一份梯度。
+          $$\pfl{\viz{input_layernorm.weight}}={{ input_layernorm.weight.grad | matrix:3 }}$$
+  - id: self_attn
+    subtitle: DeepseekV3Attention（MLA）
+  - id: res1
+    show: a
+    brace: true
+    subtitle: '$\viz{res}+\viz{att}$'
+    notes:
+      - at: a
+        text: '残差：$\viz{res}$ 绕过 attention 直接加到这里'
+    label: '$\viz{a}=\viz{res}+\viz{att}$'
+    title: 残差相加
+    text: |
+      <code>hidden_states = residual + hidden_states</code>。attention 的输出作为增量加到输入上。
+      $$\viz{a}=\viz{x}+\viz{att}={{ a | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x},\ \partial\viz{att}$'
+      title: '$\pfl{\viz{x}},\ \pfl{\viz{att}}$'
+      text: |
+        相加对两个输入的局部导数都是 1，梯度复制成两份：一份给 $\viz{att}$ 进入 attention，一份沿残差直接交给 $\viz{x}$。
+        $$\pfl{\viz{att}}=\pfl{\viz{a}}={{ a.grad | matrix:3 }}$$
+  - id: post_attention_layernorm
+    subtitle: DeepseekV3RMSNorm
+    edit:
+      float:
+        append: |
+          这是 post_attention_layernorm，在 {{ 'MoE' if layer_idx >= first_k_dense_replace else 'MLP' }} 之前，计算与 input_layernorm 相同，但参数各自独立。
+        backward:
+          append: |
+            $\viz{a}$ 除了经过 norm 拿到的梯度，还沿残差直接收到 $\pfl{\viz{out}}$，所以 $\pfl{\viz{a}}$ 是两者之和。
+    fold:
+      text: |
+        计算和 input_layernorm 相同，参数各自独立。
+        $$\viz{n}={{ n | matrix:2 }}$$
+  - id: mlp
+    subtitle: "{{ 'DeepseekV3MoE' if layer_idx >= first_k_dense_replace else 'DeepseekV3MLP' }}"
+    fold:
+      text: |
+        $$\viz{down}={{ down | matrix:2 }}$$
+  - id: res2
+    show: out
+    brace: true
+    subtitle: '$\viz{a}+\viz{down}$'
+    label: '$\viz{out}=\viz{a}+\viz{down}$'
+    title: 残差相加
+    text: |
+      <code>hidden_states = residual + hidden_states</code>，{{ 'MoE' if layer_idx >= first_k_dense_replace else 'MLP' }} 的输出作为增量加到 $\viz{a}$ 上，得到这一层的输出。
+      $$\viz{out}=\viz{a}+\viz{down}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{a},\ \partial\viz{down}$'
+      title: '$\pfl{\viz{a}},\ \pfl{\viz{down}}$'
+      text: |
+        梯度复制成两份，一份进入 {{ 'MoE' if layer_idx >= first_k_dense_replace else 'MLP' }}，一份沿残差直接交给 $\viz{a}$。
+        $$\pfl{\viz{down}}=\pfl{\viz{out}}={{ out.grad | matrix:3 }}$$

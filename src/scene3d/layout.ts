@@ -210,7 +210,9 @@ export function sourceIndex(n: Node, source: Node, index: readonly number[]): nu
   return at;
 }
 
-function splitsLastDim(input: readonly number[], out: readonly number[]): boolean {
+function splitsLastDim(shape: readonly number[], out: readonly number[]): boolean {
+  const lead = shape.findIndex((size) => size !== 1);
+  const input = lead < 0 ? shape : shape.slice(lead);
   return out.length === input.length + 1 && input.slice(0, -1).every((size, d) => size === out[d]) && out[out.length - 2] * out[out.length - 1] === input[input.length - 1];
 }
 

@@ -11,21 +11,27 @@
 # torch = { index = "pytorch-cpu" }
 # ///
 import json
+import re
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 import transformers
-from transformers.models.deepseek_v3 import modeling_deepseek_v3 as hf
-from transformers.models.deepseek_v3.configuration_deepseek_v3 import DeepseekV3Config
+from transformers import DeepseekV3Config, DeepseekV3ForCausalLM
 
-SEED = 20261011
+SEED = 20261014
 COMMAND = "uv run scripts/gen_deepseek_v3_fixture.py"
 OUT = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "torch" / "deepseek_v3.json"
 
-DIMS = {"T": 3, "d": 4, "f": 6, "V": 5, "H": 2, "dn": 2, "dr": 2, "dv": 2, "rq": 3, "rkv": 3, "Ne": 6, "G": 2, "TG": 1, "K": 2, "mf": 2, "Sh": 1}
+DIMS = {
+    "V": 5, "d_model": 4, "d_ff": 6, "d_moe": 2, "num_heads": 2, "q_lora_rank": 3, "kv_lora_rank": 3,
+    "qk_nope_head_dim": 2, "qk_rope_head_dim": 4, "v_head_dim": 2, "n_routed_experts": 6, "n_group": 2,
+    "topk_group": 1, "num_experts_per_tok": 2, "n_shared_experts": 1, "num_layers": 2, "first_k_dense_replace": 1,
+}
+ROPE_THETA = 10.0
+ROUTED_SCALING_FACTOR = 2.5
+YARN = {"factor": 40.0, "original_max_position_embeddings": 16, "beta_fast": 32.0, "beta_slow": 1.0, "mscale": 1.0, "mscale_all_dim": 1.0}
 SEQUENCE = [2, 4, 3, 0]
-ROUTER_BIAS = [0, 0.1, -0.02, 0, 0.02, -0.03]
 
 
 def float64_everywhere():
@@ -59,26 +65,27 @@ def float64_everywhere():
 def config():
     return DeepseekV3Config(
         vocab_size=DIMS["V"],
-        hidden_size=DIMS["d"],
-        intermediate_size=DIMS["f"],
-        moe_intermediate_size=DIMS["mf"],
-        num_hidden_layers=2,
-        first_k_dense_replace=1,
-        num_attention_heads=DIMS["H"],
-        num_key_value_heads=DIMS["H"],
-        n_shared_experts=DIMS["Sh"],
-        n_routed_experts=DIMS["Ne"],
-        num_experts_per_tok=DIMS["K"],
-        n_group=DIMS["G"],
-        topk_group=DIMS["TG"],
-        routed_scaling_factor=2.5,
+        hidden_size=DIMS["d_model"],
+        intermediate_size=DIMS["d_ff"],
+        moe_intermediate_size=DIMS["d_moe"],
+        num_hidden_layers=DIMS["num_layers"],
+        first_k_dense_replace=DIMS["first_k_dense_replace"],
+        num_attention_heads=DIMS["num_heads"],
+        num_key_value_heads=DIMS["num_heads"],
+        n_shared_experts=DIMS["n_shared_experts"],
+        n_routed_experts=DIMS["n_routed_experts"],
+        num_experts_per_tok=DIMS["num_experts_per_tok"],
+        n_group=DIMS["n_group"],
+        topk_group=DIMS["topk_group"],
+        routed_scaling_factor=ROUTED_SCALING_FACTOR,
         norm_topk_prob=True,
-        q_lora_rank=DIMS["rq"],
-        kv_lora_rank=DIMS["rkv"],
-        qk_nope_head_dim=DIMS["dn"],
-        qk_rope_head_dim=DIMS["dr"],
-        v_head_dim=DIMS["dv"],
-        rope_parameters={"rope_type": "default", "rope_theta": 10000.0},
+        q_lora_rank=DIMS["q_lora_rank"],
+        kv_lora_rank=DIMS["kv_lora_rank"],
+        qk_nope_head_dim=DIMS["qk_nope_head_dim"],
+        qk_rope_head_dim=DIMS["qk_rope_head_dim"],
+        v_head_dim=DIMS["v_head_dim"],
+        rope_parameters={"rope_type": "yarn", "rope_theta": ROPE_THETA, **YARN},
+        max_position_embeddings=YARN["original_max_position_embeddings"] * int(YARN["factor"]),
         rope_interleave=True,
         rms_norm_eps=1e-6,
         tie_word_embeddings=False,
@@ -88,35 +95,17 @@ def config():
     )
 
 
-def attention_paths(prefix, attn):
-    return {
-        f"{prefix}.self_attn.Wqa": attn.q_a_proj.weight,
-        f"{prefix}.self_attn.q_a_layernorm.weight": attn.q_a_layernorm.weight,
-        f"{prefix}.self_attn.Wqb": attn.q_b_proj.weight,
-        f"{prefix}.self_attn.Wkva": attn.kv_a_proj_with_mqa.weight,
-        f"{prefix}.self_attn.kv_a_layernorm.weight": attn.kv_a_layernorm.weight,
-        f"{prefix}.self_attn.Wkvb": attn.kv_b_proj.weight,
-        f"{prefix}.self_attn.Wo": attn.o_proj.weight,
-    }
+def page_path(key):
+    return re.sub(r"\.(\d+)\.", r"[\1].", key)
 
 
-def mlp_paths(prefix, mlp):
-    return {f"{prefix}.Wg": mlp.gate_proj.weight, f"{prefix}.Wu": mlp.up_proj.weight, f"{prefix}.Wd": mlp.down_proj.weight}
-
-
-def page_paths(model, lm_head, take):
-    dense, moe = model.layers
-    paths = {"E": model.embed_tokens.weight, "W": lm_head.weight, "norm.weight": model.norm.weight}
-    for name, layer in [("dense_layer", dense), ("moe_layer", moe)]:
-        paths[f"{name}.input_layernorm.weight"] = layer.input_layernorm.weight
-        paths[f"{name}.post_attention_layernorm.weight"] = layer.post_attention_layernorm.weight
-        paths.update(attention_paths(name, layer.self_attn))
-    paths.update(mlp_paths("dense_layer.mlp", dense.mlp))
-    paths.update(mlp_paths("moe_layer.mlp.shared_experts", moe.mlp.shared_experts))
-    paths["moe_layer.mlp.Wr"] = moe.mlp.gate.weight
-    paths["moe_layer.mlp.experts.Wgu"] = moe.mlp.experts.gate_up_proj
-    paths["moe_layer.mlp.experts.Wd"] = moe.mlp.experts.down_proj
-    return {path: take(p) for path, p in paths.items()}
+def fill(params, generator):
+    with torch.no_grad():
+        for path, p in params.items():
+            if path.endswith("norm.weight"):
+                p.copy_(1 + torch.randn(p.shape, generator=generator) * 0.1)
+            else:
+                p.copy_(torch.randn(p.shape, generator=generator) * 0.6)
 
 
 def routing_order(top_k_index, num_experts):
@@ -132,16 +121,6 @@ def routing_order(top_k_index, num_experts):
     return order
 
 
-def fill(model, lm_head, generator):
-    with torch.no_grad():
-        for name, p in [*model.named_parameters(), ("lm_head.weight", lm_head.weight)]:
-            if "norm" in name:
-                p.copy_(1 + torch.randn(p.shape, generator=generator) * 0.1)
-            else:
-                p.copy_(torch.randn(p.shape, generator=generator) * 0.6)
-        model.layers[1].mlp.gate.e_score_correction_bias.copy_(torch.tensor(ROUTER_BIAS))
-
-
 def encode(t):
     return {"shape": list(t.shape), "values": [float(v) for v in t.detach().reshape(-1)]}
 
@@ -150,37 +129,29 @@ def main():
     torch.set_default_dtype(torch.float64)
     float64_everywhere()
     generator = torch.Generator().manual_seed(SEED)
-    model = hf.DeepseekV3Model(config()).double().eval()
-    lm_head = torch.nn.Linear(DIMS["d"], DIMS["V"], bias=False).double()
-    fill(model, lm_head, generator)
-    ids = torch.tensor([SEQUENCE[:-1]])
-    labels = torch.tensor(SEQUENCE[1:])
-    captured = {}
-    for i, name in enumerate(["x1", "x2"]):
-        model.layers[i].register_forward_hook(lambda _m, _i, out, name=name: captured.__setitem__(name, out[0] if isinstance(out, tuple) else out))
+    model = DeepseekV3ForCausalLM(config()).double().eval()
+    params = {page_path(key): p for key, p in model.named_parameters()}
+    fill(params, generator)
     routing = {}
-    model.layers[1].mlp.gate.register_forward_hook(lambda _m, _i, out: routing.update(routing_order(out[2], DIMS["Ne"])))
-    hidden = model(input_ids=ids).last_hidden_state
-    logp = F.log_softmax(lm_head(hidden).double(), -1)
-    loss = F.nll_loss(logp.view(-1, DIMS["V"]), labels)
-    loss.backward()
-    weights = page_paths(model, lm_head, lambda p: p)
-    grads = page_paths(model, lm_head, lambda p: p.grad if p.grad is not None else torch.zeros_like(p))
+    moe = model.model.layers[DIMS["first_k_dense_replace"]].mlp
+    moe.gate.register_forward_hook(lambda _m, _i, out: routing.update(routing_order(out[2][:-1], DIMS["n_routed_experts"])))
+    tokens = torch.tensor([SEQUENCE])
+    output = model(input_ids=tokens, labels=tokens)
+    output.loss.backward()
     payload = {
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "command": COMMAND,
         "seed": SEED,
         "sequence": SEQUENCE,
-        "router_bias": ROUTER_BIAS,
-        "weights": {path: encode(t) for path, t in weights.items()},
-        "loss": loss.item(),
-        "nodes": {"x1": encode(captured["x1"][0]), "x2": encode(captured["x2"][0]), "h": encode(hidden[0])},
-        "grads": {path: encode(t) for path, t in grads.items()},
+        "weights": {path: encode(p) for path, p in params.items()},
+        "loss": output.loss.item(),
+        "logits": encode(output.logits[0, :-1]),
+        "grads": {path: encode(p.grad if p.grad is not None else torch.zeros_like(p)) for path, p in params.items()},
         "routing": routing,
     }
     OUT.write_text(json.dumps(payload, indent=1) + "\n")
-    print(f"{OUT.name}: loss {loss.item():.6f}")
+    print(f"{OUT.name}: loss {output.loss.item():.6f}")
 
 
 if __name__ == "__main__":

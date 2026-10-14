@@ -182,6 +182,7 @@ export interface BuiltinOps {
   gather(input: Node, dim: number, index: Node, options?: OpOptions): Node;
   embedding(input: Node, weight: Node, options?: OpOptions): Node;
   narrow(input: Node, dim: number, start: number, length: number | string, options?: OpOptions): Node;
+  narrow(input: Node, dim: number, start: number, length: number | string, step: number, options?: OpOptions): Node;
   cat(tensors: Node[], dim?: number | CatOptions, options?: CatOptions): Node;
   nll_loss(input: Node, target: Node, options?: NllLossOptions): Node;
   view(input: Node, shape: (number | string)[], options?: OpOptions): Node;

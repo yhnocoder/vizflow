@@ -113,6 +113,10 @@ export abstract class Texts extends Modules {
     if (name !== undefined && figureNames.includes(name)) return this.figure(name, expr, arg, source, env);
     const found = this.reference(expr, env);
     if (name === undefined) return this.plain(found, source, env);
+    if (name === 'real') {
+      if (arg !== undefined || !isNum(found)) this.fail(env, `real takes no argument and needs a number, got ${describe(found)} in '{{${source}}}'`);
+      return this.plain({ toy: found.real, real: found.real }, source, env);
+    }
     if (name === 'join') {
       const separator = arg === undefined ? undefined : /^(["'])(.*)\1$/.exec(arg);
       if (separator === undefined || separator === null) this.fail(env, `join takes a quoted separator, such as join: ", ", in '{{${source}}}'`);
@@ -127,7 +131,7 @@ export abstract class Texts extends Modules {
       if (arg !== undefined && !/^\d+$/.test(arg)) this.fail(env, `matrix takes a number of digits, got '${arg}' in '{{${source}}}'`);
       return this.matrix(this.viewOf(found, source, env), arg === undefined ? '' : `:${arg}`);
     }
-    return this.fail(env, `unknown format '${name}' in '{{${source}}}'; formats are matrix, join and ${figureNames.join(', ')}`);
+    return this.fail(env, `unknown format '${name}' in '{{${source}}}'; formats are matrix, join, real and ${figureNames.join(', ')}`);
   }
 
   private figure(name: string, expr: string, arg: string | undefined, source: string, env: Env): string {

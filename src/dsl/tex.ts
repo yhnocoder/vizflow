@@ -35,7 +35,36 @@ export function addMark(tex: string, mark: string): string {
   return addSubscript(tex, mark);
 }
 
+function hasTopLevelSuperscript(tex: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < tex.length; i++) {
+    const c = tex[i];
+    if (c === '\\') i++;
+    else if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0 && (c === '^' || c === "'")) return true;
+  }
+  return false;
+}
+
+const TOP_LEVEL_OPERATOR_COMMANDS = ['\\cdot', '\\times', '\\pm', '\\mp'];
+
+function hasTopLevelOperator(tex: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < tex.length; i++) {
+    const c = tex[i];
+    if (c === '\\') {
+      if (depth === 0 && TOP_LEVEL_OPERATOR_COMMANDS.some((command) => tex.startsWith(command, i) && !/[A-Za-z]/.test(tex[i + command.length] ?? ''))) return true;
+      i++;
+    } else if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0 && (c === '+' || c === '-' || c === '=' || c === ',')) return true;
+  }
+  return false;
+}
+
 function addSuperscript(tex: string, sup: string): string {
+  if (hasTopLevelOperator(tex)) return `\\left(${tex}\\right)^{${sup}}`;
   if (tex.endsWith('}')) {
     let depth = 0;
     for (let i = tex.length - 1; i >= 0; i--) {
@@ -46,7 +75,7 @@ function addSuperscript(tex: string, sup: string): string {
       }
     }
   }
-  if (/\^(?:[^{}\\]|\\[A-Za-z]+)$/.test(tex)) return `{${tex}}^{${sup}}`;
+  if (hasTopLevelSuperscript(tex)) return `{${tex}}^{${sup}}`;
   return `${tex}^{${sup}}`;
 }
 

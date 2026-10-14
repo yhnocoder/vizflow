@@ -1,4 +1,4 @@
-export type IndexItem = { k: 'at'; value: Ast } | { k: 'slice'; start?: Ast; stop?: Ast } | { k: 'ellipsis' };
+export type IndexItem = { k: 'at'; value: Ast } | { k: 'slice'; start?: Ast; stop?: Ast; step?: Ast } | { k: 'ellipsis' };
 
 export type Ast =
   | { k: 'num'; v: number; pos: number }
@@ -11,6 +11,9 @@ export type Ast =
   | { k: 'call'; fn: Ast; args: Ast[]; kwargs: [string, Ast][]; pos: number }
   | { k: 'list'; items: Ast[]; pos: number }
   | { k: 'neg'; arg: Ast; pos: number }
+  | { k: 'invert'; arg: Ast; pos: number }
+  | { k: 'not'; arg: Ast; pos: number }
+  | { k: 'logic'; op: 'and' | 'or'; a: Ast; b: Ast; pos: number }
   | { k: 'bin'; op: BinaryOp; a: Ast; b: Ast; pos: number }
   | { k: 'cmp'; op: CompareOp; a: Ast; b: Ast; pos: number }
   | { k: 'cond'; test: Ast; then: Ast; other: Ast; pos: number };
@@ -32,7 +35,7 @@ export class ParseError extends Error {
 
 type Token = { t: 'num'; v: number; pos: number } | { t: 'str'; v: string; pos: number } | { t: 'id'; v: string; pos: number } | { t: 'op'; v: string; pos: number } | { t: 'end'; pos: number };
 
-const OPERATORS = ['...', '**', '//', '==', '!=', '<=', '>=', '<', '>', '+', '-', '*', '/', '%', '@', '(', ')', '[', ']', ',', '=', '.', ':'];
+const OPERATORS = ['...', '**', '//', '==', '!=', '<=', '>=', '<', '>', '~', '+', '-', '*', '/', '%', '@', '(', ')', '[', ']', ',', '=', '.', ':'];
 
 function tokenize(text: string): Token[] {
   const tokens: Token[] = [];
@@ -106,13 +109,39 @@ class Parser {
   }
 
   expr(): Ast {
-    const then = this.comparison();
-    if (!this.isWord('if')) return then;
+    const value = this.disjunction();
+    if (!this.isWord('if')) return value;
     const at = this.take();
-    const test = this.comparison();
+    const test = this.disjunction();
     if (!this.isWord('else')) throw new ParseError("expected 'else'", this.peek().pos);
     this.take();
-    return { k: 'cond', test, then, other: this.expr(), pos: at.pos };
+    return { k: 'cond', test, then: value, other: this.expr(), pos: at.pos };
+  }
+
+  private disjunction(): Ast {
+    let left = this.conjunction();
+    while (this.isWord('or')) {
+      const op = this.take();
+      left = { k: 'logic', op: 'or', a: left, b: this.conjunction(), pos: op.pos };
+    }
+    return left;
+  }
+
+  private conjunction(): Ast {
+    let left = this.inversion();
+    while (this.isWord('and')) {
+      const op = this.take();
+      left = { k: 'logic', op: 'and', a: left, b: this.inversion(), pos: op.pos };
+    }
+    return left;
+  }
+
+  private inversion(): Ast {
+    if (this.isWord('not')) {
+      const op = this.take();
+      return { k: 'not', arg: this.inversion(), pos: op.pos };
+    }
+    return this.comparison();
   }
 
   private comparison(): Ast {
@@ -149,6 +178,10 @@ class Parser {
       const op = this.take();
       return { k: 'neg', arg: this.unary(), pos: op.pos };
     }
+    if (this.isOp('~')) {
+      const op = this.take();
+      return { k: 'invert', arg: this.unary(), pos: op.pos };
+    }
     return this.power();
   }
 
@@ -167,10 +200,16 @@ class Parser {
     const start = this.isOp(':') ? undefined : this.expr();
     if (!this.isOp(':')) return { k: 'at', value: start as Ast };
     this.take();
-    const stop = this.isOp(',') || this.isOp(']') ? undefined : this.expr();
+    const bound = () => (this.isOp(',') || this.isOp(']') || this.isOp(':') ? undefined : this.expr());
+    const stop = bound();
     const item: IndexItem = { k: 'slice' };
     if (start !== undefined) item.start = start;
     if (stop !== undefined) item.stop = stop;
+    if (this.isOp(':')) {
+      this.take();
+      const step = bound();
+      if (step !== undefined) item.step = step;
+    }
     return item;
   }
 
@@ -229,8 +268,18 @@ class Parser {
     }
     if (token.t === 'op' && token.v === '(') {
       const inner = this.expr();
+      if (!this.isOp(',')) {
+        this.expect(')');
+        return inner;
+      }
+      const items: Ast[] = [inner];
+      while (this.isOp(',')) {
+        this.take();
+        if (this.isOp(')')) break;
+        items.push(this.expr());
+      }
       this.expect(')');
-      return inner;
+      return { k: 'list', items, pos: token.pos };
     }
     if (token.t === 'op' && token.v === '[') {
       const items: Ast[] = [];

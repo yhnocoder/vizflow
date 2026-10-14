@@ -3,6 +3,7 @@ import { type CompiledPage, loadPage, parseYaml } from '../../src/dsl';
 import { runProgram } from '../../src/core';
 import { levelPlan } from '../../src/scene3d/levels';
 import { createSteps } from '../../src/steps';
+import { addMark } from '../../src/dsl/tex';
 import { decodeProgram } from '../../src/ui/figure-spec';
 
 const BASE = 'mem:/pages/page.yaml';
@@ -211,6 +212,38 @@ steps:
     expect(p.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
   });
 
+  it('picks a child module by a condition on args', async () => {
+    const LAYER = `
+module: Layer
+import: { Scale: ./scale.yaml }
+args: { n: dim, layer_idx: int }
+inputs:
+  x: { type: tensor, shape: [T, n], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: [T, n], dtype: dtype }
+init:
+  s:
+    if: layer_idx >= 1
+    then: { use: Scale, args: { n: n, factor: 3 } }
+    else: { use: Scale, args: [n] }
+forward:
+  - out: s(x)
+steps:
+  - id: s
+`;
+    const p = await page(
+      root({
+        init: "layers: { use: 'list[Layer]', count: 3, index: layer_idx, args: { n: d, layer_idx: layer_idx } }",
+        extra: 'import: { Layer: ./layer.yaml }',
+        forward: '- y: layers(x)\n- l: y.mean()',
+        steps: '- id: layers\n  loop: layer = layers[i]\n  defaults: {}\n- id: l',
+      }),
+      { 'mem:/pages/layer.yaml': LAYER, [SCALE_FILE]: SCALE },
+    );
+    expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([18, 36, 54, 72, 90, 108]);
+    await expect(page(root({ init: "layers: { use: 'list[Layer]', count: 2, index: layer_idx, args: { n: d, layer_idx: layer_idx } }", extra: 'import: { Layer: ./layer.yaml }', forward: '- y: layers(x)\n- l: y.mean()', steps: '- id: l' }), { 'mem:/pages/layer.yaml': LAYER.replace('if: layer_idx >= 1', 'if: layer_idx'), [SCALE_FILE]: SCALE })).rejects.toThrow(/True or False/);
+  });
+
   it('returns named results and rejects a name defined twice', async () => {
     const yaml = (forward: string) => page(root({ init: 'nll: NLLLoss', extra: 'import: { NLLLoss: vizflow/nn/nll-loss }', data: 'x: [[-1, -2], [-3, -4]]\ny: [0, 1]', inputs: 'x: { type: tensor, shape: [T, d], dtype: fp32 }\ny: { type: tensor, shape: [T], dtype: int64 }', forward, steps: '- id: nll' }));
     const p = await yaml('- result: nll(logp=x, y=y)\n- l: result.loss\n- lt: result.lt');
@@ -297,6 +330,19 @@ describe('expressions', () => {
     expect(p.graph.nodes.filter((n) => n.name.startsWith('s')).map((n) => n.name)).toEqual(['s']);
   });
 
+  it('evaluates comparisons, conditionals, step slices, topk and tensor indices like Python and torch', async () => {
+    const forward = ['f: x.view([T * d])', "e: 'f[0::2]'", 'm: x > 2', 'n: ~m', 'k: topk(x, k=1, dim=-1)[1]', 'tv: x.topk(1, dim=-1)[0]', "g: 'x[k[:, 0]]'", 'z: x * (2 if d == 2 and not d > 2 else 3)', 'l: e.mean() + tv.mean() + g.mean() + z.mean()'];
+    const p = await page(root({ forward: forward.map((line) => `- ${line}`).join('\n'), unshown: '[f, e, m, n, k, tv, g, z]', steps: '- id: l' }));
+    const data = (name: string) => Array.from(p.nodes.get(name)!.value.data);
+    expect(data('e')).toEqual([1, 3, 5]);
+    expect(data('n')).toEqual([1, 1, 0, 0, 0, 0]);
+    expect(data('k')).toEqual([1, 1, 1]);
+    expect(data('tv')).toEqual([2, 4, 6]);
+    expect(data('g')).toEqual([3, 4, 3, 4, 3, 4]);
+    expect(data('z')).toEqual([2, 4, 6, 8, 10, 12]);
+    await expect(page(root({ forward: '- t: topk(x, k=1, dim=-1)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/topk/);
+  });
+
   it('rejects arange with a zero step', async () => {
     await expect(page(root({ forward: '- t: arange(0, 4, 0)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/arange: step must be nonzero/);
   });
@@ -315,6 +361,11 @@ describe('templates and tex', () => {
     expect((await yaml("{{ real['big'].name }}: {{ real['big'].V }}, {{ real['big'].d // d }}, {{ 0.00001 }}")).steps.forward[0].text).toBe('Big: 151936, 2048, 10^{-5}');
     await expect(yaml("{{ real['small'].d }}")).rejects.toThrow("real has no 'small'; it has big");
     await expect(yaml("{{ real['big'].T }}")).rejects.toThrow("real size 'big' has no 'T'; it has name, d, V");
+  });
+
+  it('prints the real value of a number with the real format', async () => {
+    const p = await page(root({ config: '{ d: 2, real: { big: { name: Big, d: 4096 } } }', forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n  text: "{{ d * 3 | real }} {{ d | real }}"\n- id: l' }));
+    expect(p.steps.forward[0].text).toBe('12288 4096');
   });
 
   it('wraps the blocks of a matrix to at most eight columns per line', async () => {
@@ -343,6 +394,34 @@ describe('templates and tex', () => {
   it('evaluates buffer values with ops and broadcasting', async () => {
     const p = await page(root({ init: "buffers:\n  b: { shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
     expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
+  });
+
+  it('evaluates init constants with math, max and min, and uses them in buffers and forward', async () => {
+    const p = await page(
+      root({
+        args: "d: dim\nmode: { type: str, default: \"'half'\" }",
+        init: "constants:\n  low: 'max(math.floor(math.log(8) / math.log(2)) - 4, 0)'\n  half: \"0.5 if mode == 'half' else 1.0\"\n  ramp: 'clamp(arange(d).float() - low, 0, 1)'\nbuffers:\n  b: { shape: [d], dtype: fp32, value: 'ramp * min(half, math.pi)' }",
+        forward: '- y: x * half\n- l: y.mean()',
+        steps: '- id: y\n- id: l',
+      }),
+    );
+    expect([...p.nodes.get('b')!.value.data]).toEqual([0, 0.5]);
+    expect([...p.nodes.get('y')!.value.data]).toEqual([0.5, 1, 1.5, 2, 2.5, 3]);
+    await expect(page(root({ init: "constants:\n  d: '1'", forward: '- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/already defined/);
+  });
+
+  it('builds new_empty as zeros of the same dtype, writes with slice_scatter and drops steps of None results', async () => {
+    const p = await page(
+      root({
+        args: 'd: dim\nkeep: bool',
+        config: '{ d: 2, keep: False }',
+        forward: "- k: x.new_empty(T, 2 * d)\n- k1: slice_scatter(k, x, dim=-1, start=0, end=d)\n- k2: slice_scatter(k1, -x, dim=-1, start=d)\n- extra: k2 * 2 if keep else None\n- l: k2.mean()",
+        steps: '- id: k\n- id: k1\n- id: k2\n- id: extra\n- id: l',
+      }),
+    );
+    expect(p.nodes.get('k')!.dtype).toBe('fp32');
+    expect([...p.nodes.get('k2')!.value.data.slice(0, 4)]).toEqual([1, 2, -1, -2]);
+    expect(p.nodes.has('extra')).toBe(false);
   });
 
   it('expands preamble macros and takes tex of a child result from the outer module', async () => {
@@ -439,5 +518,13 @@ steps:
     const p = await yaml('- y: x * 1\n- for: i in range(1, 2)\n  do:\n    - y[i, :i]: x[i, :i] * 10\n- l: y.mean()');
     expect(Array.from(p.nodes.get('y[1]')!.value.data)).toEqual([1, 2, 30, 4, 5, 6]);
     await expect(yaml('- y: x * 1\n- y[0]: x[0]\n- l: y.mean()')).rejects.toThrow(/writes into a tensor, which forward does only inside a loop/);
+  });
+});
+
+describe('layer marks on TeX', () => {
+  it('merges into a trailing superscript, wraps primes and puts compound expressions in parentheses', () => {
+    expect(addMark('\\mathbf{s}^{\\mathrm{grp}}', '^{[1]}')).toBe('\\mathbf{s}^{\\mathrm{grp},[1]}');
+    expect(addMark("\\mathbf{k}'", '^{[1]}')).toBe("{\\mathbf{k}'}^{[1]}");
+    expect(addMark('\\textstyle\\sum\\mathbf{w}+10^{-20}', '^{[1]}')).toBe('\\left(\\textstyle\\sum\\mathbf{w}+10^{-20}\\right)^{[1]}');
   });
 });

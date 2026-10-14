@@ -129,7 +129,8 @@ export interface ModuleFile extends Module {
 }
 
 export interface Initializers {
-  [name: string]: ModuleInitializer | Record&lt;string, TensorInit&gt; | undefined;
+  [name: string]: ModuleInitializer | ConditionalInitializer | Record&lt;string, TensorInit&gt; | Record&lt;string, Expression&gt; | undefined;
+  constants?: Record&lt;string, Expression&gt;;
   weights?: Record&lt;string, TensorInit&gt;;
   buffers?: Record&lt;string, TensorInit&gt;;
 }
@@ -146,12 +147,20 @@ export interface ModuleInstance {
   use: string;
   args?: Args;
   count?: never;
+  present?: Expression;
 }
 
 export interface ModuleListInstance {
   use: ModuleList;
   count: Dimension;
   args?: Args;
+  index?: string;
+}
+
+export interface ConditionalInitializer {
+  if: Expression;
+  then: ModuleInstance;
+  else?: ModuleInstance;
 }
 
 export interface Assignment {
@@ -302,7 +311,15 @@ export interface RopeDisplay {
   <li>模板：<code>label</code>、<code>title</code>、<code>subtitle</code>、<code>text</code>、<code>append</code>、<code>note</code>、<code>hint</code>。普通文字；<code>$...$</code> 是 LaTeX，<code>{{ }}</code> 插入表达式的值，<code>\viz{名字}</code> 插入张量的 tex。</li>
   <li>LaTeX：<code>tex</code> 的值和 <code>formula</code>，整个值就是 LaTeX。</li>
 </ul>
-<p>表达式支持 <code>+ - * / // ** @</code>、函数调用和关键字参数、方法调用、成员访问、下标与切片、列表和字面量，语义与 Python 和 torch 相同：列表不自动拼成张量；数在左边的运算按反射运算算；下标里的 <code>None</code> 和 <code>...</code> 与 torch 相同；转换到当前 dtype 的 <code>.float()</code> 不产生节点。名字先在当前作用域里找，所以 <code>forward</code> 里定义的 <code>cos</code> 会遮住运算 <code>cos</code>，这时写 <code>x.cos()</code>。</p>
+<p>表达式支持 <code>+ - * / // ** @</code>、比较 <code>== != &lt; &lt;= &gt; &gt;=</code>（不能连写）、<code>and or not</code>、条件表达式 <code>a if c else b</code>、按位取反 <code>~</code>、函数调用和关键字参数、方法调用、成员访问、下标与切片（可以带步长，例如 <code>x[..., 0::2]</code>）、列表、元组和字面量，语义与 Python 和 torch 相同：列表不自动拼成张量；数在左边的运算按反射运算算；下标里的 <code>None</code> 和 <code>...</code> 与 torch 相同；转换到当前 dtype 的 <code>.float()</code> 不产生节点。名字先在当前作用域里找，所以 <code>forward</code> 里定义的 <code>cos</code> 会遮住运算 <code>cos</code>，这时写 <code>x.cos()</code>。</p>
+<ul>
+  <li>张量的比较和 <code>~</code> 编译成逐元素运算；数、字符串、bool 和 <code>None</code> 的比较在编译时求值，<code>and</code>、<code>or</code>、<code>not</code> 和条件表达式只接受编译时的 bool。</li>
+  <li>张量作下标是高级索引，<code>x[idx]</code> 按 <code>idx</code> 取第一维，<code>w[a, b, None]</code> 按两个下标张量逐对取元素并在末尾加一维，与 torch 相同。</li>
+  <li><code>topk</code> 必须紧跟 <code>[0]</code> 或 <code>[1]</code>：<code>[1]</code> 是编号；<code>[0]</code> 是值，编译成先求编号、再用 <code>gather</code> 取值。<code>largest</code> 只能是 True，<code>sorted</code> 不改变结果，编号按值从大到小排。</li>
+  <li><code>.bool()</code>、<code>.long()</code>、<code>.int()</code> 与 <code>.float()</code> 一样是类型转换，<code>.type(dtype)</code> 等于 <code>.to(dtype)</code>；<code>float('-inf')</code> 是负无穷。</li>
+  <li>数的函数与 Python 相同：<code>math.log</code>、<code>math.exp</code>、<code>math.sqrt</code>、<code>math.floor</code>、<code>math.ceil</code>，常数 <code>math.pi</code>、<code>math.e</code>、<code>math.inf</code>，以及参数都是数时的 <code>max</code>、<code>min</code>、<code>abs</code>。它们在编译时求值，不产生节点。</li>
+  <li><code>x.new_empty(大小...)</code> 与 <code>x.new_zeros(大小...)</code> 建一个 dtype 与 <code>x</code> 相同、没有梯度的张量。torch 的 <code>new_empty</code> 不写初值，这里画成 0，所以随后必须用写入覆盖全部元素，例如两次 <code>slice_scatter</code> 对应 HF 的两次 <code>copy_</code>。</li>
+</ul>
 
 <h2>Page</h2>
 <pre><code class="language-yaml">title: Qwen3 Basic
@@ -324,7 +341,7 @@ data:
   <li><code>model</code> 是根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。<code>import</code> 里 <code>vizflow/nn/名字</code> 是和模型无关的包内模块，<code>vizflow/models/模型/名字</code> 是一个模型的包内定义，<code>./x.yaml</code> 相对于当前文件；包内文件之间也用 <code>./x.yaml</code>、<code>../模型/x.yaml</code> 相对引用。</li>
   <li><code>config</code> 的名字按同名传给根模块的 <code>args</code>；<code>seed</code>、<code>tokenizer</code>、<code>real</code> 只属于页面。<code>config.dtype</code> 是参数的 dtype，相当于 <code>model.to(torch.bfloat16)</code>，默认 <code>fp32</code>。</li>
   <li><code>data</code> 是根模块的输入，需要计算时写 <code>{ expr: ... }</code>。token 列表与 <code>tokens_to_ids</code> 的结果编译成带词表的标签节点，序列面板替换 token 后按原表达式重新计算。</li>
-  <li><code>real</code> 的第一个规格用于卡片上的真实形状和显存与计算量面板，不改变示例计算。根模块的模板可以读 <code>{{ real['qwen3-8b'].d_model }}</code>。</li>
+  <li><code>real</code> 的第一个规格用于卡片上的真实形状和显存与计算量面板，不改变示例计算。根模块的模板可以读 <code>{{ real['qwen3-8b'].d_model }}</code>。任何模块的模板都可以写 <code>{{ 表达式 | real }}</code>，按第一个规格求这个数的真实值，例如 attention 里的 <code>{{ kv_lora_rank + qk_rope_head_dim | real }}</code>。</li>
   <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。包内模块用到的宏在 <code>src/models/preamble.sty</code>，每个页面先载入它，页面的 <code>preamble</code> 再追加或覆盖。</li>
 </ul>
 
@@ -348,20 +365,30 @@ data:
   layers:
     use: list[Qwen3DecoderLayer]
     count: num_layers
-    args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+    index: layer_idx                # 第 i 层的 layer_idx 是 i
+    args: [d_model, d_head, d_ff, num_heads, num_kv_heads, layer_idx]
+  mlp:
+    if: layer_idx >= first_k_dense_replace
+    then: { use: DeepseekV3MoE, args: [d_model, d_moe] }
+    else: { use: DeepseekV3MLP, args: [d_model, d_ff] }
+  constants:
+    pos_freqs: rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)
+    attention_scaling: "0.1 * math.log(factor) + 1.0 if rope_type == 'yarn' else 1.0"
   weights:
     weight: { shape: [hidden_size], init: ones }
   buffers:
     inv_freq:
       shape: [d_head // 2]
       dtype: fp32
-      value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)</code></pre>
+      value: 1.0 / pos_freqs</code></pre>
 <ul>
   <li>子模块写 <code>{ use, args }</code>，没有参数时只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建层列表，第 $i$ 层的路径是 <code>layers[i]</code>。层列表写 <code>index: layer_idx</code> 时，<code>args</code> 对每一层单独求值，<code>layer_idx</code> 是这一层的序号，对应 HF 的 <code>Qwen3_5DecoderLayer(config, layer_idx)</code>。不同类型的层用这个序号读 <code>layer_types[layer_idx]</code>，再由模块自己按类型创建子模块。</li>
   <li>子模块也可以写 <code>present</code>，为假时不创建，名字是 <code>None</code>，对应 HF 里 <code>if</code> 分支只创建其中一个子模块。</li>
+  <li>按参数选择子模块写 <code>{ if, then, else }</code>，<code>if</code> 是只读 <code>args</code> 的 bool 表达式，对应 HF <code>__init__</code> 里的 <code>if</code>。条件为假且没写 <code>else</code> 时不创建子模块，<code>forward</code> 里它的名字是 <code>None</code>。两个分支的参数路径相同，都是这个名字。</li>
   <li><code>weights</code> 和 <code>buffers</code> 的字段相同，区别只在 <code>weights</code> 有梯度。两者都可以写 <code>shape</code>、<code>dtype</code>、<code>present</code>，取值用 <code>init</code> 或 <code>value</code> 二选一。</li>
   <li><code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数。</li>
   <li><code>value</code> 是编译时求值的表达式，不能读张量。</li>
+  <li><code>constants</code> 是 <code>__init__</code> 里算出的数、bool、字符串或编译时的张量，对应 HF 的 <code>self.scaling = ...</code> 和 <code>rope_init_fn</code> 里的局部变量。它们按书写顺序求值，可以读参数和前面的常量，之后在 <code>init</code>、<code>forward</code> 与文字里和参数一样使用。它们不是参数，不进 <code>state_dict</code>，名字不能与参数或成员重名。</li>
   <li><code>present</code> 是一个 bool 参数，为假时不创建这个张量，<code>forward</code> 里它的名字是 <code>None</code>，对应 HF 的 <code>self.bias = None</code>。</li>
   <li>参数路径沿 <code>init</code> 树拼接，与 <code>state_dict</code> 的键一致，例如 <code>model.<wbr>layers[0].<wbr>self_attn.<wbr>q_proj.<wbr>weight</code>。</li>
 </ul>
@@ -382,6 +409,7 @@ data:
   <li>同一个实例可以调用多次，共用参数；第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。层列表依次调用各层，第一个位置参数逐层串联。</li>
   <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算和类型转换不单独画，画在最近的已画出的源节点上。</li>
   <li>每个 <code>forward</code> 结果都要被某一步展示，或由一个被展示的模块调用算出，否则报错。确实不需要展示的结果写进 <code>unshown</code>。</li>
+  <li>循环外的结果可以是 <code>None</code>，对应 HF 里由配置决定、可能不执行的一段，例如 <code>denominator: s.sum(-1) + 1e-20 if norm_topk_prob else None</code>。这时不产生节点，展示它的步骤按规则 12 不生成。</li>
   <li>表达式支持比较 <code>==</code>、<code>!=</code>、<code>&lt;</code>、<code>&lt;=</code>、<code>&gt;</code>、<code>&gt;=</code>（不能连写），条件表达式 <code>a if 条件 else b</code>（只求值选中的一边，条件必须是 True 或 False），以及数的 <code>%</code>（与 Python 一样，结果与除数同号）。</li>
 </ul>
 <pre><code class="language-yaml">forward:
@@ -492,9 +520,9 @@ data:
 <p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
 
 <h2>tex 与 formula</h2>
-<p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。</p>
+<p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。tex 末尾已经是上标时并进同一个上标，例如 $\mathbf{s}^{\mathrm{grp},[1]}$；tex 在顶层有其他上标或撇号时先加花括号，例如 ${\mathbf{k}'}^{[1]}$；tex 在顶层有 <code>+ - = ,</code>、<code>\cdot</code>、<code>\times</code> 等运算时是复合表达式，整体加括号再加上标，例如 $\left(\sum\mathbf{w}+10^{-20}\right)^{[1]}$。</p>
 <p><code>formula</code> 里 <code>\step{步骤路径}{公式片段}</code> 标出由哪一步算出的部分：前向走到这一步之前不显示，走到时用正色标出；反向时整条公式显示，当前步骤对应的部分用负色标出。<code>子实例.*</code> 表示子实例的全部步骤，几个路径用逗号隔开。</p>
-<p><code>{{ 表达式 | 格式 }}</code> 插入值。格式有 <code>matrix:位数</code>、<code>join: "分隔符"</code>（张量或 config 里的列表） 和内置小图 <code>lines:...</code>，小图的写法见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</p>
+<p><code>{{ 表达式 | 格式 }}</code> 插入值。格式有 <code>matrix:位数</code>、<code>join: "分隔符"</code>（张量或 config 里的列表）、<code>real</code>（见 Page 一节）和内置小图 <code>lines:...</code>，小图的写法见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</p>
 
 
 <h2>编译接口</h2>

@@ -1,0 +1,227 @@
+module: DeepseekV3TopkRouter
+args:
+  d_model: dim
+  n_routed_experts: dim
+  num_experts_per_tok: dim
+  n_group: dim
+  topk_group: dim
+  routed_scaling_factor: float
+  norm_topk_prob: bool
+inputs:
+  hidden_states: [T, d_model]
+outputs:
+  router_logits: { type: tensor, shape: [T, n_routed_experts], dtype: fp32 }
+  topk_weights: { type: tensor, shape: [T, num_experts_per_tok], dtype: fp32 }
+  topk_indices: { type: tensor, shape: [T, num_experts_per_tok], dtype: int64 }
+init:
+  weights:
+    weight: { shape: [n_routed_experts, d_model], init: normal }
+  buffers:
+    e_score_correction_bias: { shape: [n_routed_experts], dtype: fp32, init: zeros }
+forward:
+  - x32: hidden_states.type(fp32)
+  - w32: weight.type(fp32)
+  - router_logits: linear(x32, w32)
+  - scores: router_logits.sigmoid()
+  - scores_for_choice: scores + e_score_correction_bias
+  - grouped: scores_for_choice.view(-1, n_group, n_routed_experts // n_group)
+  - top2: grouped.topk(2, dim=-1)[0]
+  - group_scores: top2.sum(dim=-1)
+  - group_idx: topk(group_scores, k=topk_group, dim=-1, sorted=False)[1]
+  - group_zeros: zeros_like(group_scores)
+  - group_mask: group_zeros.scatter(1, group_idx, 1)
+  - score_mask: group_mask.unsqueeze(-1).expand(-1, n_group, n_routed_experts // n_group).reshape(-1, n_routed_experts)
+  - masked_scores: scores_for_choice.masked_fill(~score_mask.bool(), float('-inf'))
+  - topk_indices: topk(masked_scores, k=num_experts_per_tok, dim=-1, sorted=False)[1]
+  - topk_w: scores.gather(1, topk_indices)
+  - denominator: topk_w.sum(dim=-1, keepdim=True) + 1e-20 if norm_topk_prob else None
+  - normed: topk_w / denominator if norm_topk_prob else None
+  - topk_weights: (normed if norm_topk_prob else topk_w) * routed_scaling_factor
+layout:
+  place:
+    w32: { with: x32 }
+tex:
+  x32: '\mathbf{x}_{32}'
+  w32: 'W_{r,32}'
+  weight: 'W_{r}'
+  e_score_correction_bias: '\mathbf{b}'
+  router_logits: '\mathbf{r}'
+  scores: '\mathbf{s}'
+  scores_for_choice: '\tilde{\mathbf{s}}'
+  grouped: '\tilde{\mathbf{s}}^{\mathrm{grp}}'
+  top2: '\tilde{\mathbf{s}}^{\mathrm{top2}}'
+  group_scores: '\mathbf{g}'
+  group_idx: '\mathbf{i}^{\mathrm{grp}}'
+  group_zeros: '\mathbf{0}^{\mathrm{grp}}'
+  group_mask: '\mathbf{m}^{\mathrm{grp}}'
+  score_mask: '\mathbf{m}'
+  masked_scores: '\tilde{\mathbf{s}}^{\mathrm{cand}}'
+  topk_indices: '\mathbf{i}'
+  topk_w: '\mathbf{w}'
+  denominator: '\textstyle\sum\mathbf{w}+10^{-20}'
+  normed: '\bar{\mathbf{w}}'
+  topk_weights: '\mathbf{p}'
+formula: |-
+  \begin{aligned}
+  \step{sigmoid}{\viz{scores}}&\step{sigmoid}{=\sigma\big(}\step{logits}{\viz{x32}{\viz{w32}}^{\top}}\step{sigmoid}{\big)}\\
+  \step{group_scores}{\viz{group_scores}}&\step{group_scores}{=\textstyle\sum\operatorname{top2}\big(}\step{bias}{\viz{scores}+\viz{e_score_correction_bias}}\step{group_scores}{\big)}\\
+  \step{select}{\viz{topk_indices}}&\step{select}{=\operatorname{topk}_{K}\big(}\step{mask}{\viz{scores_for_choice}\ \text{只留}\ }\step{group_select}{\operatorname{topk}(\viz{group_scores})}\step{mask}{\ \text{这几组}}\step{select}{\big)}\\
+  \step{scale}{\viz{topk_weights}}&\step{scale}{=\rho\cdot}\step{normalize}{\frac{\step{gather}{\viz{scores}[\viz{topk_indices}]}}{\sum\viz{scores}[\viz{topk_indices}]}}
+  \end{aligned}
+fold:
+  label: '$\viz{topk_indices},\ \viz{topk_weights}$'
+  title: gate
+  text: |
+    每个位置给 {{ n_routed_experts }} 个路由专家打分，先选出 {{ topk_group }} 组，再在这几组里选 {{ num_experts_per_tok }} 个专家，返回它们的编号 $\viz{topk_indices}$ 和权重 $\viz{topk_weights}$。选专家的部分没有梯度，梯度只经过权重回到 $\viz{scores}$。
+    $$\viz{topk_indices}={{ topk_indices | matrix }},\qquad \viz{topk_weights}={{ topk_weights | matrix:3 }}$$
+  backward:
+    label: '$\partial\viz{weight},\ \partial\viz{hidden_states}$'
+    title: '$\pfl{\viz{weight}},\ \pfl{\viz{hidden_states}}$'
+    text: |
+      $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }}$$
+
+steps:
+  - id: cast
+    show: [x32, w32]
+    label: '$\viz{x32},\ \viz{w32}$'
+    title: 输入和权重转成 float32
+    text: |
+      <code>router_logits = F.linear(hidden_states.type(torch.float32), self.weight.type(torch.float32))</code> 里的两次类型转换：gate 的输入和权重 $\viz{weight}$ 都先转成 float32，路由的分数都在 float32 里算，bf16 的舍入误差不会改变选中哪些专家。$\viz{weight}$ 的形状是 $E\times d$，每行对应一个路由专家。前一行 <code>hidden_states = hidden_states.view(-1, self.hidden_dim)</code> 把 batch 和序列两维合成一维；这一页没有 batch 维，$\viz{hidden_states}$ 本来就是 $T\times d$，这一行不改变任何东西。
+      $$\viz{x32}={{ x32 | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{hidden_states},\ \partial\viz{weight}$'
+      title: '$\pfl{\viz{hidden_states}},\ \pfl{\viz{weight}}$'
+      text: |
+        类型转换的局部导数是 1，梯度转回模型的 dtype。
+        $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: logits
+    show: router_logits
+    label: '$\viz{router_logits}$'
+    title: 每个专家一个分数
+    text: |
+      <code>F.linear</code> 算 $\viz{x32}\,{\viz{w32}}^{\top}$，给每个位置、每个路由专家一个分数 <code>router_logits</code>。
+      $$\viz{router_logits}={{ router_logits | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{w32},\ \partial\viz{x32}$'
+      title: '$\pfl{\viz{w32}},\ \pfl{\viz{x32}}$'
+      text: |
+        $$\pfl{\viz{router_logits}}={{ router_logits.grad | matrix:3 }}$$
+  - id: sigmoid
+    show: scores
+    label: '$\viz{scores}=\sigma(\viz{router_logits})$'
+    title: sigmoid 得到亲和度
+    text: |
+      <code>scores = router_logits.sigmoid()</code>。DeepSeek V3 用 sigmoid 把分数变成 0 到 1 之间的亲和度，每个专家各自计算，互不影响；DeepSeek V2 和很多别的 MoE 用的是 softmax。
+      $$\viz{scores}={{ scores | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{router_logits}$'
+      title: '$\pfl{\viz{router_logits}}$'
+      text: |
+        局部导数是 $\sigma(1-\sigma)$。只有被选中的专家把梯度传回 $\viz{scores}$，没选中的那几列梯度是 0。
+        $$\pfl{\viz{scores}}={{ scores.grad | matrix:3 }}$$
+  - id: bias
+    show: scores_for_choice
+    label: '$\viz{scores_for_choice}=\viz{scores}+\viz{e_score_correction_bias}$'
+    title: 加上负载均衡的偏置
+    text: |
+      <code>scores_for_choice = scores + self.e_score_correction_bias</code>。<code>e_score_correction_bias</code> 是每个专家一个的偏置，只用来挑专家，不进入专家输出的权重。它是 buffer，不靠梯度更新：训练时哪个专家接的 token 太多就把它的偏置调低，太少就调高，DeepSeek V3 用它代替辅助的负载均衡损失。HF 初始化为 0，这一页按初始化的值计算，所以这一步不改变数值。
+      $$\viz{e_score_correction_bias}={{ e_score_correction_bias | matrix:3 }},\qquad \viz{scores_for_choice}={{ scores_for_choice | matrix:3 }}$$
+  - id: group_view
+    show: grouped
+    label: '$\viz{grouped}$'
+    title: 按组排开
+    text: |
+      <code>scores_for_choice.view(-1, self.num_group, self.num_experts // self.num_group)</code>：$E={{ n_routed_experts }}$ 个专家按编号分成 $G={{ n_group }}$ 组，每组 {{ n_routed_experts // n_group }} 个，形状从 $T\times E$ 变成 $T\times G\times E/G$。数值不变，只是换了形状。DeepSeek-V3 里 {{ n_routed_experts | real }} 个专家分成 {{ n_group | real }} 组，每组 {{ n_routed_experts // n_group | real }} 个。
+      $$\viz{grouped}={{ grouped | matrix:3 }}$$
+  - id: group_scores
+    show: [top2, group_scores]
+    label: '$\viz{group_scores}$'
+    title: 每组最大的两个分数相加
+    text: |
+      <code>.topk(2, dim=-1)[0].sum(dim=-1)</code>：每个位置、每一组里按 $\viz{scores_for_choice}$ 选最大的两个分数，相加作为这一组的得分 <code>group_scores</code>。topk 一次给出值和编号两样，<code>[0]</code> 只取值；图上先求编号，再按编号取出值，这两步合起来就是 topk 的值。
+      $$\viz{top2}={{ top2 | matrix:3 }},\qquad \viz{group_scores}={{ group_scores | matrix:3 }}$$
+  - id: group_select
+    show: group_idx
+    label: '$\viz{group_idx}$'
+    title: 选出得分最高的 {{ topk_group }} 组
+    text: |
+      <code>group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]</code>：每个位置选出得分最高的 {{ topk_group }} 组的编号。HF 写 <code>sorted=False</code>，选出的编号在一行里的顺序没有规定；这里按得分从大到小排，下一步只用到选中了哪些组，结果和顺序无关。DeepSeek-V3 里每个 token 从 {{ n_group | real }} 组里选 {{ topk_group | real }} 组，部署时专家按组放在不同的节点上，这样每个 token 最多发往 {{ topk_group | real }} 个节点，通信量有上限。编号没有梯度。
+      $$\viz{group_idx}={{ group_idx | matrix }}$$
+  - id: group_mask
+    show: [group_zeros, group_mask]
+    label: '$\viz{group_mask}$'
+    title: 组的掩码
+    text: |
+      <code>group_mask = torch.zeros_like(group_scores)</code> 建一个形状 $T\times G$ 的全 0 张量，再 <code>group_mask.scatter_(1, group_idx, 1)</code>：每个位置在 $\viz{group_idx}$ 列出的那几组写上 1。选中的组是 1，其余是 0。
+      $$\viz{group_mask}={{ group_mask | matrix }}$$
+  - id: score_mask
+    show: score_mask
+    label: '$\viz{score_mask}$'
+    title: 组的掩码展开到每个专家
+    text: |
+      <code>group_mask.unsqueeze(-1).expand(-1, self.num_group, self.num_experts // self.num_group).reshape(-1, self.num_experts)</code>：先在最后加一个长度为 1 的维度，形状变成 $T\times G\times 1$；expand 把这一维展开成 $E/G={{ n_routed_experts // n_group }}$，组的 0 或 1 复制给组里的每个专家；最后组和组内两维按行优先合成一维，第 $e$ 列对应第 $e$ 个专家。expand 的结果在内存里不连续，所以 HF 用 reshape，这里会复制出一份连续的数据。
+      $$\viz{score_mask}={{ score_mask | matrix }}$$
+  - id: mask
+    show: masked_scores
+    label: '$\viz{masked_scores}$'
+    title: 不能选的专家记成 $-\infty$
+    text: |
+      <code>scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))</code>：<code>.bool()</code> 把浮点的 0 和 1 转成 false 和 true，<code>~</code> 是逐元素的逻辑非，取反后 true 标出落在没选中的组里、这一次不能选的专家。这些位置填 $-\infty$，其余保留 $\viz{scores_for_choice}$。HF 把结果赋回 <code>scores_for_choice</code>，图上另起一个名字。
+      $$\viz{masked_scores}={{ masked_scores | matrix:3 }}$$
+  - id: select
+    show: topk_indices
+    label: '$\viz{topk_indices}$'
+    title: 选出 {{ num_experts_per_tok }} 个专家的编号
+    text: |
+      <code>topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]</code>：每个位置在 $\viz{masked_scores}$ 里选最大的 $K={{ num_experts_per_tok }}$ 个，记成 $-\infty$ 的专家不会被选中。$\viz{topk_indices}$ 是专家的编号，从 0 开始。HF 写 <code>sorted=False</code>，一行里 $K$ 个编号的顺序没有规定；这里按分数从大到小排，后面每个位置的输出是 $K$ 个专家输出的和，和这个顺序无关。DeepSeek-V3 里每个 token 从 {{ n_routed_experts | real }} 个路由专家里选 {{ num_experts_per_tok | real }} 个。编号没有梯度。
+      $$\viz{topk_indices}={{ topk_indices | matrix }}$$
+  - id: gather
+    show: topk_w
+    label: '$\viz{topk_w}$'
+    title: 按编号取出亲和度
+    text: |
+      <code>topk_weights = scores.gather(1, topk_indices)</code>：权重用不带偏置的 $\viz{scores}$，按 $\viz{topk_indices}$ 从每一行取出 $K$ 个。偏置只影响选哪几个专家，不影响权重。
+      $$\viz{topk_w}={{ topk_w | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{scores}$'
+      title: '$\pfl{\viz{scores}}$'
+      text: |
+        gather 的反向把梯度放回被选中的那 $K$ 个亲和度，没选中的专家拿到 0。
+        $$\pfl{\viz{topk_w}}={{ topk_w.grad | matrix:3 }}$$
+  - id: denominator
+    show: denominator
+    label: '$\viz{denominator}$'
+    title: 选中的亲和度求和
+    text: |
+      DeepSeek-V3 的配置里 <code>norm_topk_prob</code> 是 True，<code>if self.norm_topk_prob:</code> 成立，执行 <code>denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20</code>。每个位置一个和，加上 $10^{-20}$ 防止和为 0 时除以 0。sigmoid 的值都大于 0，所以和总是正的，加上的数不改变显示的数值。
+      $$\viz{denominator}={{ denominator | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{topk_w}$'
+      title: '$\pfl{\viz{topk_w}}$'
+      text: 求和与加常数的局部导数都是 1。
+  - id: normalize
+    show: normed
+    label: '$\viz{normed}$'
+    title: 归一化
+    text: |
+      <code>topk_weights /= denominator</code>：选中的 $K$ 个亲和度除以它们的和，每行加起来是 1。
+      $$\viz{normed}=\frac{\viz{topk_w}}{\textstyle\sum\viz{topk_w}}={{ normed | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{topk_w},\ \partial\viz{denominator}$'
+      title: '$\pfl{\viz{topk_w}},\ \pfl{\viz{denominator}}$'
+      text: |
+        归一化让被选中的几个亲和度互相影响：一个专家的亲和度变大，其他被选中的专家的权重就变小。
+        $$\pfl{\viz{normed}}={{ normed.grad | matrix:3 }}$$
+  - id: scale
+    show: topk_weights
+    label: "$\\viz{topk_weights}=\\rho\\,\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}$"
+    title: 乘 routed_scaling_factor
+    text: |
+      <code>topk_weights = topk_weights * self.routed_scaling_factor</code>，$\rho={{ routed_scaling_factor }}$。{{ '这里的 topk_weights 是上一步归一化后的权重。' if norm_topk_prob else '这一页的 norm_topk_prob 是 False，HF 跳过归一化，这里的 topk_weights 是 gather 取出的亲和度。' }}gate 返回 <code>router_logits, topk_weights, topk_indices</code>，MoE 只用后两个。
+      $$\viz{topk_weights}={{ topk_weights | matrix:3 }}$$
+    backward:
+      label: "$\\partial\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}$"
+      title: "$\\pfl{\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}}$"
+      text: |
+        乘常数的局部导数是 $\rho$。
+        $$\pfl{\viz{topk_weights}}={{ topk_weights.grad | matrix:3 }}$$

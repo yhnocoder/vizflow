@@ -97,9 +97,9 @@ describe('costTimeline at real sizes', () => {
 
 describe('real shapes under a new T', () => {
   it('re-derives sizes computed from T, including ones the compiler registered from expressions', async () => {
-    const g = (await loadExample('deepseek_v3-dsl.yaml')).graph;
+    const g = (await loadExample('deepseek_v3/deepseek_v3-dsl.yaml')).graph;
     const shapes = g.realShapes({ T: 1024 });
-    expect(shapes[g.node('moe_layer.self_attn.eager_attention_forward.P[1]')!.id]).toEqual([1024, 1024]);
+    expect(shapes[g.node('model.layers[1].self_attn.eager_attention_forward.P')!.id]).toEqual([128, 1024, 1024]);
     expect(g.realShapes().every((shape, id) => shape.join() === g.nodes[id].realShape.join())).toBe(true);
   });
 });

@@ -1,0 +1,103 @@
+module: DeepseekV3MLP
+import:
+  SiLU: vizflow/nn/silu
+args:
+  d_model: dim
+  d_ff: dim
+  act: { type: module, default: SiLU }
+inputs:
+  x: ['...', d_model]
+outputs:
+  down: ['...', d_model]
+init:
+  gate_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: d_ff, bias: False }
+  up_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: d_ff, bias: False }
+  down_proj:
+    use: Linear
+    args: { in_features: d_ff, out_features: d_model, bias: False }
+  act_fn: act
+forward:
+  - gate: gate_proj(x)
+  - a: act_fn(gate)
+  - up: up_proj(x)
+  - m: a * up
+  - down: down_proj(m)
+tex:
+  gate: '\mathbf{gate}'
+  a: '\phi(\mathbf{gate})'
+  up: '\mathbf{up}'
+  m: '\mathbf{m}'
+  gate_proj.weight: 'W_g'
+  up_proj.weight: 'W_u'
+  down_proj.weight: 'W_d'
+formula: '\step{down}{\viz{down}=\big(}\step{act_fn.*}{\phi\big(}\step{gate_proj}{\viz{x}{\viz{gate_proj.weight}}^{\top}}\step{act_fn.*}{\big)}\step{gate}{\odot}\step{up_proj}{\viz{x}{\viz{up_proj.weight}}^{\top}}\step{down}{\big){\viz{down_proj.weight}}^{\top}}'
+fold:
+  label: '$\viz{down}=\mathrm{mlp}(\viz{x})$'
+  title: 门控 MLP
+  text: |
+    MLP 对每个位置单独计算，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+    $$\viz{down}={{ down | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\frac{\partial\ell}{\partial \theta},\ \frac{\partial\ell}{\partial \viz{x}}$'
+    text: |
+      $$\frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
+
+steps:
+  - id: gate_proj
+    label: '$\mathbf{gate}$'
+    title: gate_proj
+    text: |
+      门控 MLP 用两个投影代替普通 MLP 的一个：<code>self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))</code>，写成公式是
+      $$\mathrm{mlp}(\mathbf{x})=\big(\mathrm{act}(\mathbf{x}W_g^{\top})\odot\mathbf{x}W_u^{\top}\big)W_d^{\top}$$
+      第一个投影经过激活后，逐元素乘到第二个投影上。第一步 gate_proj 把 $\viz{x}$ 从 $d$ 维投影到 $f$ 维，没有 bias。
+      $$\mathbf{gate}=\viz{x}W_g^{\top}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial W_g,\ \partial\viz{x}$'
+      title: '$\frac{\partial\ell}{\partial W_g},\ \frac{\partial\ell}{\partial \viz{x}}$'
+      text: |
+        $\frac{\partial \ell}{\partial W_g^{\top}}={\viz{x}}^{\top}\frac{\partial\ell}{\partial \mathbf{gate}}$，$\viz{x}$ 加上 $\frac{\partial\ell}{\partial \mathbf{gate}}W_g$。
+  - id: act_fn
+  - id: up_proj
+    label: '$\mathbf{up}$'
+    title: up_proj
+    text: |
+      up_proj 的输入也是 $\viz{x}$，同样投影到 $f$ 维，没有 bias。HF 的表达式里 <code>self.act_fn(self.gate_proj(x))</code> 在 <code>self.up_proj(x)</code> 之前求值，所以激活在这一步之前。
+      $$\mathbf{up}=\viz{x}W_u^{\top}={{ up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_u,\ \partial\viz{x}$'
+      title: '$\frac{\partial\ell}{\partial W_u},\ \frac{\partial\ell}{\partial \viz{x}}$'
+      text: |
+        $\viz{x}$ 用在 gate_proj 和 up_proj 两处，每个 $x_{t,k}$ 影响两个投影的全部 $2f$ 个输出分量，梯度是两路之和：
+        $$\frac{\partial\ell}{\partial \viz{x}}=\frac{\partial\ell}{\partial \mathbf{gate}}W_g+\frac{\partial\ell}{\partial \mathbf{up}}W_u={{ x.grad | matrix:3 }}$$
+  - id: gate
+    show: m
+    label: '$\viz{a}\odot\mathbf{up}$'
+    title: 门控相乘
+    text: |
+      $\mathbf{m}=\mathrm{act}(\mathbf{gate})\odot\mathbf{up}$。普通 MLP 的 $\mathrm{act}(\mathbf{x}W^{\top})$ 只有一个线性函数，而这里每个分量是两个线性函数的乘积（其中一个经过激活），所以 $\mathbf{m}$ 对 $\viz{x}$ 近似是二次的。$\viz{a}$ 像一排阀门：激活值接近 0 的分量把阀门关上，$\mathbf{up}$ 的对应分量几乎不进入输出；激活值大的分量把阀门打开。
+      $$\mathbf{m}={{ m | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{a},\ \partial\mathbf{up}$'
+      title: '$\frac{\partial\ell}{\partial \viz{a}},\ \frac{\partial\ell}{\partial \mathbf{up}}$'
+      text: |
+        逐元素乘的两个输入互为对方的局部导数：
+        $$\frac{\partial\ell}{\partial \viz{a}}=\frac{\partial\ell}{\partial \mathbf{m}}\odot\mathbf{up},\qquad \frac{\partial\ell}{\partial \mathbf{up}}=\frac{\partial\ell}{\partial \mathbf{m}}\odot\viz{a}={{ up.grad | matrix:3 }}$$
+        所以激活值接近 0 的分量，$\mathbf{up}$ 那一路几乎收不到梯度。
+  - id: down
+    show: down_proj
+    label: '$\viz{down}$'
+    title: down_proj
+    text: |
+      down_proj 把 $f$ 维投影回 $d$ 维，没有 bias。
+      $$\viz{down}=\mathbf{m}W_d^{\top}={{ down | matrix:2 }}$$
+    backward:
+      label: '$\partial W_d,\ \partial\mathbf{m}$'
+      title: '$\frac{\partial\ell}{\partial W_d},\ \frac{\partial\ell}{\partial \mathbf{m}}$'
+      text: |
+        $$\frac{\partial \ell}{\partial W_d^{\top}}=\mathbf{m}^{\top}\frac{\partial\ell}{\partial \viz{down}},\qquad \frac{\partial\ell}{\partial \mathbf{m}}=\frac{\partial\ell}{\partial \viz{down}}W_d={{ m.grad | matrix:3 }}$$
+        权重的梯度是 $T$ 个位置的外积之和。

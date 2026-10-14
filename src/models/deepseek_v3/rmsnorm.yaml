@@ -1,0 +1,111 @@
+module: DeepseekV3RMSNorm
+args:
+  hidden_size: dim
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: ['...', hidden_size]
+outputs:
+  out: ['...', hidden_size]
+init:
+  weights:
+    weight: { shape: [hidden_size], init: ones }
+forward:
+  - xf: x.float()
+  - rms: rrms(xf, eps)
+  - xh: xf * rms
+  - xc: xh.to(x.dtype)
+  - out: weight * xc
+tex:
+  weight: '\boldsymbol{\gamma}'
+  xf: '{\viz{x}}_{\mathrm{fp32}}'
+  rms: '\mathrm{rrms}'
+  xh: '\hat{\viz{x}}_{\mathrm{fp32}}'
+  xc: '\hat{\viz{x}}'
+formula: 
+  \newcommand{\normalize}[1]{\step{normalize}{\viz{x}#1 \odot}}
+  \begin{aligned}
+  \viz{out}=
+  \normalize{\step{cast}{_{\mathrm{dtype}}}}
+  \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{x}}^{2})+\epsilon}}}
+  \step{scale}{\odot\viz{weight}}
+  \end{aligned}
+fold:
+  label: '$\viz{out}$'
+  title: RMSNorm
+  text: |
+    每一行只和自己那一行有关，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{weight},\ \partial\viz{x}$'
+    title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{x}}$'
+    text: |
+      $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{weight}}={{ weight.grad | matrix:3 }}$$
+
+steps:
+  - id: float
+    show: xf
+    label: '$\viz{xf}$'
+    title: RMSNorm：转成 float32
+    text: |
+      RMSNorm 把每一行缩放到均方根为 1，再乘一个可学习的权重：
+      $$\viz{out}=\viz{weight}\odot\frac{\viz{x}}{\sqrt{\frac{1}{d}\sum_k {\viz{x}}_k^2+\epsilon}}$$
+      和 LayerNorm 相比，它不减均值，也没有 bias。计算从分母里的 ${\viz{x}}_k^2$ 开始：HF 第一行 <code>hidden_states.to(torch.float32)</code> 先转成 float32。
+      $$\viz{xf}={{ xf | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x}$'
+      title: '$\frac{\partial\ell}{\partial \viz{x}}$'
+      text: |
+        均方根倒数这一路和归一化那一步的直连在 $\viz{xf}$ 上相加。记 $\mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}$，两路合起来是：
+        $$\frac{\partial\ell}{\partial \viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big),\qquad \frac{\partial\ell}{\partial \viz{x}}={{ x.grad | matrix:3 }}$$
+        第二项减去了 $\mathbf{u}$ 在 $\hat{\viz{x}}$ 方向上的分量，所以 $\viz{x}\cdot\frac{\partial\ell}{\partial \viz{x}}=r\,(\viz{x}\cdot\mathbf{u})\,\frac{\epsilon}{\frac{1}{d}\sum_k x_k^2+\epsilon}$，$\epsilon$ 可忽略时为 0。也就是说，梯度和这一行的输入垂直。原因是把整行放大或缩小时输出几乎不变，损失也就不会沿这个方向变化。
+  - id: rrms
+    show: rms
+    label: '$\viz{rms}$'
+    title: 均方根倒数
+    text: |
+      <code>rrms(xf, eps)</code> 在最后一维上计算平方的平均，加上 $\epsilon$，再取平方根的倒数。每一行得到一个缩放系数，输出保留最后一维，下一步用它乘这一行的每个分量。$\epsilon$ 避免全零输入导致除零。
+      $$r_t=\frac{1}{\sqrt{\frac{1}{d}\sum_k x_{t,k}^{2}+\epsilon}},\qquad \viz{rms}={{ rms | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{xf}$'
+      title: '$\frac{\partial\ell}{\partial \viz{xf}}$'
+      text: |
+        每个输入分量的局部导数是 $\frac{\partial r_t}{\partial x_{t,k}}=-\frac{x_{t,k}r_t^3}{d}$。均方根倒数这一步给输入的梯度贡献为 $-\frac{\partial\ell}{\partial r_t}\frac{x_{t,k}r_t^3}{d}$，随后与归一化乘法的直连贡献相加。
+  - id: normalize
+    show: xh
+    label: '$\viz{xh}$'
+    title: 归一化
+    text: |
+      <code>hidden_states * torch.rsqrt(...)</code>，每个分量乘上这一行的 $r$：$\hat x_{t,k}=x_{t,k}\,r_t$。乘完以后每行的均方是 $1-\epsilon r_t^2\approx1$，也就是模长约为 $\sqrt d$。
+
+      一个元素直接依赖自己，又经过 $r_t$ 依赖同一行的所有元素。$r_t$ 只由这一行算出，所以行与行之间互不依赖。
+      $$\viz{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{rms},\ \partial\viz{xf}$'
+      title: '$\frac{\partial\ell}{\partial \viz{rms}},\ \frac{\partial\ell}{\partial \viz{xf}}$'
+      text: |
+        $r_t$ 用在这一行的 $d$ 个输出里，每一路的局部导数是 $x_{t,k}$，所以 $\frac{\partial\ell}{\partial r_t}=\sum_kx_{t,k}u_{t,k}=\mathbf{x}_t\cdot\mathbf{u}_t$。另一条是直连，局部导数是 $r_t$，所以输入从这一条拿到 $r_t\,u_{t,k}$。
+        $$\frac{\partial\ell}{\partial r}={{ rms.grad | matrix:3 }}$$
+  - id: cast
+    show: xc
+    label: '$\viz{xc}$'
+    title: 转回输入的 dtype
+    text: |
+      随后 <code>hidden_states.to(input_dtype)</code> 转回输入的 dtype。
+      $$\viz{xc}={{ xc | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{xh}$'
+      title: '$\frac{\partial\ell}{\partial \viz{xh}}$'
+      text: 类型转换的局部导数是 1，梯度转回 float32。
+  - id: scale
+    show: [weight, out]
+    label: '$\viz{out}$'
+    title: 乘上权重 $\viz{weight}$
+    text: |
+      <code>self.weight * hidden_states</code>。归一化把每一行的尺度固定了，所以再乘上 $\viz{weight}$，让模型能给每个维度重新设定尺度。它是长度为 $d$ 的向量，初始化为全 1，所有位置共用，所以它的第 $k$ 个分量作用于每一行的第 $k$ 列。
+      $$\viz{out}=\viz{weight}\odot\viz{xc}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{weight},\ \partial\viz{xc}$'
+      title: '$\frac{\partial\ell}{\partial \viz{weight}},\ \frac{\partial\ell}{\partial \viz{xc}}$'
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。$\viz{weight}$ 被 $T$ 行共用，所以梯度按行相加：
+        $$\frac{\partial\ell}{\partial \viz{weight}}=\sum_t\frac{\partial\ell}{\partial {\viz{out}}_t}\odot{\viz{xc}}_t={{ weight.grad | matrix:3 }},\qquad \mathbf{u}=\frac{\partial\ell}{\partial \viz{out}}\odot\viz{weight}={{ xc.grad | matrix:3 }}$$
