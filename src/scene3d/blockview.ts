@@ -1,14 +1,14 @@
 import { Vector3 } from 'three';
 import { type Node, isIntegerDtype } from '../autograd';
 import { render } from '../formula';
-import { isLeafLike } from '../steps';
+import { type RowState, isLeafLike } from '../steps';
 import { formatNumber } from '../tensor';
 import type { LinearRgb } from '../theme';
 import type { BarMesh } from './blocks';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import type { SceneController } from './controller';
 import { IDLE_FLAG, type Label } from './labels';
-import type { Vec3 } from './layout';
+import type { Block, Vec3 } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 import { barHeight } from './scales';
 
@@ -151,10 +151,12 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const scale = renderable.scale[dir];
   for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
   const heights = new Float64Array(block.elements.length);
+  const rows = rowStates(c, block);
+  const shownAt = (i: number) => revealed && rows[i] !== 'hidden';
   for (let i = 0; i < heights.length; i++) {
-    const { height, clipped } = barHeight(values[i], scale, revealed, renderable.cap);
+    const { height, clipped } = barHeight(values[i], scale, shownAt(i), renderable.cap);
     heights[i] = height;
-    renderable.clipped[i] = revealed && clipped;
+    renderable.clipped[i] = shownAt(i) && clipped;
   }
   renderable.transition.retarget(heights, now);
   const focusedRow = (row: number) => !block.batched || row === c.state.focus;
@@ -177,7 +179,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       const rowShown = !c.follow || element.z === front || zoom >= VALUE_ALL_ROWS_ZOOM;
-      label.visible = showValues && focusedRow(element.row) && rowShown;
+      label.visible = showValues && focusedRow(element.row) && rowShown && rows[i] !== 'hidden';
     });
   }
   if (renderable.nodes !== undefined) {
@@ -192,10 +194,10 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       label.pos = [element.x + NODE_VALUE_OFFSET, element.y + mesh.height / 2, element.z];
-      label.visible = showValues && focusedRow(element.row);
+      label.visible = showValues && focusedRow(element.row) && rows[i] !== 'hidden';
     });
-    const colors = block.elements.map((element, i) => nodeColor(values[i], c.theme, { dir, revealed, active, far, focused: focusedRow(element.row) }));
-    mesh.update(block.elements, colors, block.elements.map(() => revealed), renderable.seeThrough);
+    const colors = block.elements.map((element, i) => nodeColor(values[i], c.theme, { dir, revealed, active: active && rows[i] !== 'inactive', far, focused: focusedRow(element.row) }));
+    mesh.update(block.elements, colors, block.elements.map((_, i) => shownAt(i)), renderable.seeThrough);
   }
   renderable.classes.forEach((label, i) => {
     const text = block.classLabels[i];
@@ -246,11 +248,13 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   const colors: LinearRgb[] = [];
   const outline: number[] = [];
   const far = renderable.far;
+  const rows = rowStates(c, block);
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
     const faded = far || block.slabs?.[element.index[0]]?.used === false;
-    colors.push(barColor(values[i], c.theme, { active: revealed && active, far: faded, focused }));
-    outline.push(outlineOpacity({ active: active && revealed, far: faded, tile: block.shape === 'tile' }));
+    const on = revealed && active && rows[i] !== 'inactive';
+    colors.push(barColor(values[i], c.theme, { active: on, far: faded, focused }));
+    outline.push(outlineOpacity({ active: on, far: faded, tile: block.shape === 'tile' }));
     const label = renderable.values[i];
     if (label !== undefined) {
       const h = heights[i];
@@ -259,4 +263,8 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
     }
   });
   bars.update(block.elements, { heights, clipped: renderable.clipped, colors, outlineOpacity: outline, seeThrough: renderable.seeThrough });
+}
+
+export function rowStates(c: SceneController, block: Block): (RowState | undefined)[] {
+  return block.elements.map((e) => c.state.row?.(block.node, e.index));
 }

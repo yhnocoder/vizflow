@@ -1,4 +1,5 @@
 import { type Graph, type Node, type Size, graph } from '../../autograd';
+import type { CacheDecl } from '../../steps';
 import type { Nested } from '../../tensor';
 import { type Where, fail } from '../source';
 import type { Env, Num, RealSizeValues } from './types';
@@ -28,6 +29,7 @@ export class CompilerState {
   g!: Graph;
   realSizes: Readonly<Record<string, RealSizeValues>> | undefined;
   readonly nodes = new Map<string, Node>();
+  readonly caches: CacheDecl[] = [];
   private random: () => number = rng(0);
   private realPage = false;
 

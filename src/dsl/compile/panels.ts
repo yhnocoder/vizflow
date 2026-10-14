@@ -1,4 +1,5 @@
 import type { Node } from '../../autograd';
+import type { InferSpec } from '../../steps';
 import type { PanelItem } from '../../ui';
 import { type Where, child, fail } from '../source';
 import type { PageCompiler } from './page';
@@ -6,6 +7,16 @@ import type { Env } from './types';
 import { checkKeys, isRecord, record } from './util';
 
 const TEXT_KEYS = ['title', 'note'];
+const PANEL_MODES = ['train', 'infer'] as const;
+
+export type PanelMode = (typeof PANEL_MODES)[number];
+
+export const PENDING_INFER = Object.freeze({}) as InferSpec;
+
+export function panelModes(c: PageCompiler): (PanelMode | undefined)[] {
+  const panels = Array.isArray(c.page.panels) ? c.page.panels : [];
+  return panels.map((panel) => (isRecord(panel) ? (panel.mode as PanelMode | undefined) : undefined));
+}
 
 export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
   const page = c.page;
@@ -17,6 +28,8 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
     const at = child(where, panels, i);
     if (panel === 'cost') return 'cost';
     if (!isRecord(panel)) fail(at, "a panel must be 'cost' or a mapping");
+    if (panel.mode !== undefined && !PANEL_MODES.includes(panel.mode as PanelMode)) fail(child(at, panel, 'mode'), "mode must be 'train' or 'infer'");
+    if (panel.mode !== undefined && page.generate === undefined) fail(child(at, panel, 'mode'), 'a panel mode needs generate on the page');
     const field = (key: string): Env => ({ ...env, where: child(at, panel, key) });
     const node = (key: string, obj: Record<string, unknown> = panel, base: Where = at): Node => c.node(obj[key], { ...env, where: child(base, obj, key) });
     const texts = (allowed: string[]): Record<string, string> => {
@@ -24,8 +37,13 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       for (const key of allowed) if (panel[key] !== undefined) out[key] = c.text(panel[key], field(key));
       return out;
     };
+    if (panel.cost !== undefined) {
+      checkKeys(panel, new Set(['mode', 'cost']), at);
+      if (panel.cost !== true) fail(field('cost').where, 'cost must be true');
+      return 'cost';
+    }
     if (panel.loss !== undefined) {
-      checkKeys(panel, new Set(['loss']), at);
+      checkKeys(panel, new Set(['mode', 'loss']), at);
       const loss = record(panel.loss, child(at, panel, 'loss'), 'loss');
       const lossWhere = child(at, panel, 'loss');
       checkKeys(loss, new Set(['parts', 'hint']), lossWhere);
@@ -35,7 +53,7 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       return { loss: out };
     }
     if (panel.sequence !== undefined) {
-      checkKeys(panel, new Set(['sequence', 'tokens', 'input', 'label', 'labels', 'sgd', 'random', 'reset', ...TEXT_KEYS]), at);
+      checkKeys(panel, new Set(['mode', 'sequence', 'tokens', 'input', 'label', 'labels', 'sgd', 'random', 'reset', ...TEXT_KEYS]), at);
       if (panel.sequence !== true) fail(field('sequence').where, 'sequence must be true');
       const out: Extract<PanelItem, { sequence: true }> = { sequence: true, ...texts(TEXT_KEYS) };
       if (panel.labels !== undefined) {
@@ -63,17 +81,23 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       }
       return out;
     }
+    if (panel.generation !== undefined) {
+      checkKeys(panel, new Set(['mode', 'generation', ...TEXT_KEYS]), at);
+      if (panel.generation !== true) fail(field('generation').where, 'generation must be true');
+      if (page.generate === undefined) fail(field('generation').where, 'a generation panel needs generate on the page');
+      return { generation: PENDING_INFER, ...texts(TEXT_KEYS) };
+    }
     if (panel.code !== undefined) {
-      checkKeys(panel, new Set(['code', ...TEXT_KEYS]), at);
+      checkKeys(panel, new Set(['mode', 'code', ...TEXT_KEYS]), at);
       if (typeof panel.code !== 'string') fail(field('code').where, 'code must be text');
       return { code: panel.code, ...texts(TEXT_KEYS) };
     }
     if (panel.attention !== undefined) {
-      checkKeys(panel, new Set(['attention', 'ids', ...TEXT_KEYS]), at);
+      checkKeys(panel, new Set(['mode', 'attention', 'ids', ...TEXT_KEYS]), at);
       return { attention: [node('attention')], ids: node('ids'), ...texts(TEXT_KEYS) };
     }
     if (panel.matrices !== undefined) {
-      checkKeys(panel, new Set(['matrices', 'highlight', 'rows', ...TEXT_KEYS]), at);
+      checkKeys(panel, new Set(['mode', 'matrices', 'highlight', 'rows', ...TEXT_KEYS]), at);
       const matrices = panel.matrices;
       if (!Array.isArray(matrices)) fail(field('matrices').where, 'matrices must be a list');
       const out: Extract<PanelItem, { matrices: unknown }> = {
@@ -98,6 +122,6 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       if (panel.rows !== undefined) out.rows = node('rows').name;
       return out;
     }
-    return fail(at, 'a panel needs one of loss, sequence, code, attention or matrices, or is cost');
+    return fail(at, 'a panel needs one of loss, sequence, generation, code, attention or matrices, or is cost');
   });
 }

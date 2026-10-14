@@ -65,7 +65,7 @@ export class TokenChips {
           return fragment;
         });
         label.pos = [chip.x, y + CHIP_LIFT, zs[t]];
-        label.visible = shown;
+        label.visible = shown && c.state.row?.(chip.label, [t]) !== 'hidden';
       });
       if (chip.arrow) {
         const arrow = this.arrow ?? this.createArrow();

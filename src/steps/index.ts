@@ -6,6 +6,10 @@ export {
   type StepsSpec,
   type StepInfo,
   type StepState,
+  type InferSpec,
+  type UpdateSpec,
+  type RowSpec,
+  type RowState,
   type ForwardStep,
   type BackwardOverride,
   type BackwardSpec,
@@ -20,3 +24,5 @@ export {
 } from './steps';
 export { compileTemplate } from './template';
 export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type Scale, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';
+export { analyzeCache, checkCache, type CacheAnalysis, type CacheDecl, type CacheKind } from './cache';
+export { drawToken, isGreedy, type SampleDraw, type SamplerSpec, uniforms } from './sampling';

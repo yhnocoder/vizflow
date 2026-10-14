@@ -89,6 +89,10 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     });
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
   };
+  const blocked = (node: Node, index: number[], target: boolean) => {
+    const state = c.state.row?.(node, index);
+    return state === 'hidden' || (target && state === 'inactive');
+  };
   const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
   const frontZ = new Map<Block, number>();
   const frontOf = (block: Block) => frontZ.get(block) ?? frontZ.set(block, Math.max(...block.elements.map((e) => e.z))).get(block)!;
@@ -111,6 +115,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const y = board.y + LINE_HEIGHT;
       const tile = (block: Block, kk: number, ii: number) => (block === board.b ? elementAt(block, matmulOperands(edge.op, [...batch, r, kk, ii]).b) : block.elements.find((e) => e.row === kk && e.col === ii)!);
       const [tileW, tileD] = board.b.footprint;
+      if (blocked(board.out.node, operands.out, true) || blocked(board.a.node, operands.a, false)) continue;
       const outElement = elementAt(board.out, operands.out);
       const rows = [board.out.batched ? r : undefined];
       let entry: EdgeEntry;
@@ -143,6 +148,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const fromR = renderableOf(c, from.node);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
+    if (blocked(from.node, from.index, false) || blocked(to.node, to.index, true)) continue;
     const fromElement = elementOf(fromR.block, from.node, from.index);
     const toElement = elementOf(toR.block, to.node, to.index);
     const rows = [rowOf(fromR, fromElement.index), rowOf(toR, toElement.index)];
@@ -180,6 +186,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
         if (Math.abs(value) <= JACOBIAN_EPSILON) return;
         const fromIndex = indexOf(pair.input.shape, ii);
         const toIndex = indexOf(pair.output.shape, oi);
+        if (blocked(pair.input, fromIndex, false) || blocked(pair.output, toIndex, true)) return;
         const fromElement = elementOf(inR.block, pair.input, fromIndex);
         const toElement = elementOf(outR.block, pair.output, toIndex);
         const edge: FlowEdge = { id: `jac:${pair.module.id}:${pair.input.id}:${pair.output.id}:${oi}:${ii}`, op: pair.output, arg: 0, from: { node: pair.input, index: fromIndex }, to: { node: pair.output, index: toIndex } };

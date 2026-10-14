@@ -3,13 +3,13 @@ import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
 import { isLayoutOp } from '../../scene3d/layout';
-import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
+import { type ForwardStep, type InferSpec, type PageModule, type SampleDraw, type SamplerSpec, type StepsSpec, type UpdateSpec, checkCache, drawToken, uniforms } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import type { ModuleDef } from '../load';
 import { DslError, type Where, child, fail } from '../source';
 import { elemOf } from '../tex';
-import { compilePanels } from './panels';
+import { PENDING_INFER, compilePanels, panelModes } from './panels';
 import { type SectionSources, compileSections } from './sections';
 import { StepCompiler } from './steps';
 import { Texts } from './texts';
@@ -27,17 +27,24 @@ export interface CompiledPage {
   sections: SectionItem[];
   nodes: Map<string, Node>;
   sequence?: PageSequence;
+  modes?: { train: StepsSpec; infer: StepsSpec };
+  modePanels?: { train: PanelItem[]; infer: PanelItem[] };
   page: { title: string; camera?: CameraOptions };
 }
 
 export interface PageSequence {
+  prompt?: number;
   tokens: string[];
   length: number;
   get(): number[];
   set(ids: number[]): void;
 }
 
-export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections']);
+export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections', 'generate', 'optimizer']);
+const GENERATE_KEYS: ReadonlySet<string> = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note']);
+const OPTIMIZER_KEYS: ReadonlySet<string> = new Set(['type', 'lr', 'weight_decay']);
+const DEFAULT_ADAMW_LR = 0.1;
+const SAMPLER_ONLY = ['top_k', 'top_p', 'seed', 'note'];
 const PAGE_ONLY = new Set(['seed', 'tokenizer', 'real', 'dtype']);
 const DEFAULT_PAGE_DTYPE: Dtype = 'fp32';
 const DEFAULT_SEED = 0;
@@ -173,9 +180,13 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   };
   const dataWhere = child(where, page, 'data');
   const data = record(page.data, dataWhere, 'data');
+  const steps = generateSteps(c);
+  const prompt = steps === undefined ? undefined : promptTokens(c, data, dataWhere);
   for (const [name, value] of Object.entries(data)) {
     const at = child(dataWhere, data, name);
-    if (isRecord(value)) {
+    if (prompt !== undefined && name === prompt.name) {
+      c.data.set(name, { name, value: [...prompt.tokens, ...Array<string>(steps as number).fill((c.vocab as string[])[0])], where: at });
+    } else if (isRecord(value)) {
       checkKeys(value, new Set(['expr']), at);
       const exprWhere = child(at, value, 'expr');
       const expr = exprText(value.expr, exprWhere);
@@ -272,11 +283,12 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   checkShown(c, sc, forward);
   const visible = new Set(forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])));
   const modules = sc.modules(visible);
-  const steps: StepsSpec = { forward, groups, braces, backward: 'reverse', modules };
+  const spec: StepsSpec = { forward, groups, braces, backward: 'reverse', modules };
+  if (page.optimizer !== undefined) spec.update = updateSpec(c);
   const env = c.rootEnv();
   const compiled: CompiledPage = {
     graph: c.g,
-    steps,
+    steps: spec,
     tree: { kind: 'module', children: c.g.nodes.filter((n) => visible.has(n)).map((node) => ({ kind: 'node', node })) },
     levels: layoutOf(c, call),
     modules,
@@ -288,7 +300,120 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   if (isRecord(page.camera)) compiled.page.camera = page.camera as CameraOptions;
   const sequence = pageSequence(c, root, env);
   if (sequence !== undefined) compiled.sequence = sequence;
+  if (prompt !== undefined) {
+    if (sequence === undefined) fail(child(where, page, 'generate'), 'generate needs a sequence panel that names the tokens, input and label');
+    sequence.prompt = prompt.tokens.length;
+    const sampler = samplerSpec(c);
+    const base = inferSpec(c, sequence);
+    const infer: InferSpec = { ...base, draws: generate(base, sequence, sampler), ...(sampler === undefined ? {} : { sampler }) };
+    compiled.modes = { train: spec, infer: { ...spec, update: undefined, infer } };
+    compiled.steps = compiled.modes.infer;
+    const modes = panelModes(c);
+    const panels = compiled.panels.map((item) => (typeof item === 'object' && 'generation' in item ? { ...item, generation: infer } : item));
+    const inMode = (mode: 'train' | 'infer') => panels.filter((_, i) => modes[i] === undefined || modes[i] === mode);
+    compiled.modePanels = { train: inMode('train'), infer: inMode('infer') };
+    compiled.panels = compiled.modePanels.infer;
+  } else if (compiled.panels.some((item) => typeof item === 'object' && 'generation' in item && item.generation === PENDING_INFER)) {
+    fail(child(where, page, 'panels'), 'a generation panel needs generate on the page');
+  }
   return compiled;
+}
+
+function generateSteps(c: PageCompiler): number | undefined {
+  const page = c.page;
+  if (page.generate === undefined) return undefined;
+  const where = child(c.pageWhere, page, 'generate');
+  const spec = record(page.generate, where, 'generate');
+  checkKeys(spec, GENERATE_KEYS, where);
+  if (typeof spec.steps !== 'number' || !Number.isInteger(spec.steps) || spec.steps < 2) fail(child(where, spec, 'steps'), 'generate.steps must be an integer of at least 2');
+  return spec.steps;
+}
+
+function sequencePanel(c: PageCompiler): Record<string, unknown> | undefined {
+  const panels = Array.isArray(c.page.panels) ? c.page.panels : [];
+  return panels.find((p): p is Record<string, unknown> => isRecord(p) && p.sequence !== undefined);
+}
+
+function promptTokens(c: PageCompiler, data: Record<string, unknown>, dataWhere: Where): { name: string; tokens: string[] } {
+  const where = child(c.pageWhere, c.page, 'generate');
+  const name = sequencePanel(c)?.tokens;
+  if (typeof name !== 'string') return fail(where, 'generate needs a sequence panel whose tokens names the prompt in data');
+  const tokens = data[name];
+  if (!Array.isArray(tokens) || tokens.length < 1 || !tokens.every((t) => typeof t === 'string')) return fail(child(dataWhere, data, name), `'${name}' is the prompt of generate, so it must be a list of tokens`);
+  if (c.vocab === undefined) return fail(where, 'generate needs config.tokenizer.vocab');
+  return { name, tokens: tokens as string[] };
+}
+
+function samplerSpec(c: PageCompiler): SamplerSpec | undefined {
+  const where = child(c.pageWhere, c.page, 'generate');
+  const spec = c.page.generate as Record<string, unknown>;
+  const at = (key: string) => child(where, spec, key);
+  const { temperature, top_k: topK, top_p: topP, seed, note } = spec;
+  if (temperature === undefined || temperature === 0) {
+    const why = temperature === undefined ? 'needs a temperature above 0; without one generate is greedy' : 'has no effect when temperature is 0, which is greedy decoding';
+    for (const key of SAMPLER_ONLY) if (spec[key] !== undefined) fail(at(key), `generate.${key} ${why}`);
+    return undefined;
+  }
+  if (typeof temperature !== 'number' || !(temperature > 0)) fail(at('temperature'), 'generate.temperature must be a number of at least 0');
+  if (topK !== undefined && (typeof topK !== 'number' || !Number.isInteger(topK) || topK < 1)) fail(at('top_k'), 'generate.top_k must be a positive integer');
+  if (topP !== undefined && (typeof topP !== 'number' || !(topP > 0 && topP <= 1))) fail(at('top_p'), 'generate.top_p must be a number in (0, 1]');
+  if (seed !== undefined && (typeof seed !== 'number' || !Number.isInteger(seed) || seed < 0)) fail(at('seed'), 'generate.seed must be a non-negative integer');
+  const text = note === undefined ? undefined : c.text(note, c.rootEnv(at('note')));
+  return { temperature, seed: (seed as number | undefined) ?? 0, ...(text === undefined ? {} : { note: text }), ...(topK === undefined ? {} : { topK: topK as number }), ...(topP === undefined ? {} : { topP: topP as number }) };
+}
+
+function logProbsOf(g: Graph, label: Node): Node | undefined {
+  const fromLabel = new Set<Node>([label]);
+  for (const n of g.nodes) if (n.kind === 'op' && (n.op === 'view' || n.op === 'reshape' || n.op === 'unsqueeze') && fromLabel.has(n.inputs[0])) fromLabel.add(n);
+  const pick = g.nodes.find((n) => n.kind === 'op' && (n.op === 'gather' || n.op === 'nll_loss') && fromLabel.has(n.inputs[1]));
+  return pick?.inputs[0];
+}
+
+function inferSpec(c: PageCompiler, sequence: PageSequence): Omit<InferSpec, 'draws'> {
+  const panel = sequencePanel(c) as Record<string, unknown>;
+  const panels = c.page.panels as unknown[];
+  const at = child(child(c.pageWhere, c.page, 'panels'), panels, panels.indexOf(panel));
+  const env = c.rootEnv();
+  const input = c.node(panel.input, { ...env, where: child(at, panel, 'input') });
+  const label = c.node(panel.label, { ...env, where: child(at, panel, 'label') });
+  const logits = logProbsOf(c.g, label);
+  if (logits === undefined) fail(child(at, panel, 'label'), `generate samples from the log probabilities that '${String(panel.label)}' picks from, but no gather reads '${String(panel.label)}'`);
+  const scored = new Set<Node>();
+  for (const n of c.g.nodes) if (n.inputs.some((i) => i === label || scored.has(i))) scored.add(n);
+  const scope = new Set(c.g.nodes.filter((n) => !scored.has(n)));
+  const prompt = sequence.prompt as number;
+  const problem = checkCache(c.g, label.shape[0], prompt, c.caches, scope, [logits]);
+  if (problem !== undefined) fail(child(c.pageWhere, c.page, 'generate'), problem);
+  return { prompt, input, label, logits, caches: c.caches };
+}
+
+function generate(infer: Omit<InferSpec, 'draws'>, sequence: PageSequence, sampler: SamplerSpec | undefined): Map<number, SampleDraw> {
+  const { logits } = infer;
+  const ids = sequence.get();
+  const V = logits.shape[1];
+  const random = uniforms(sampler?.seed ?? 0);
+  const draws = new Map<number, SampleDraw>();
+  for (let t = infer.prompt - 1; t < ids.length - 1; t++) {
+    const draw = drawToken(logits.value.data.subarray(t * V, (t + 1) * V), sampler, random());
+    draws.set(t, draw);
+    ids[t + 1] = draw.token;
+    sequence.set(ids);
+  }
+  return draws;
+}
+
+function updateSpec(c: PageCompiler): UpdateSpec {
+  const page = c.page;
+  const where = child(c.pageWhere, page, 'optimizer');
+  const spec = record(page.optimizer, where, 'optimizer');
+  checkKeys(spec, OPTIMIZER_KEYS, where);
+  if (spec.type !== 'adamw') fail(child(where, spec, 'type'), "optimizer.type must be 'adamw'");
+  const number = (key: string, fallback: number) => {
+    const value = spec[key] ?? fallback;
+    if (typeof value !== 'number' || value < 0) fail(child(where, spec, key), `optimizer.${key} must be a non-negative number`);
+    return value;
+  };
+  return { lr: number('lr', DEFAULT_ADAMW_LR), weightDecay: number('weight_decay', 0), title: '参数更新：AdamW 第一步', label: '更新' };
 }
 
 function rootInput(c: PageCompiler, name: string, field: Record<string, unknown>, entry: DataEntry, at: Where): Node {

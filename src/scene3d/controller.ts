@@ -2,7 +2,7 @@ import { AmbientLight, Color, DirectionalLight, type OrthographicCamera, SRGBCol
 import type { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Graph, Node } from '../autograd';
 import { type Explainer, explain } from '../explain';
-import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
+import { type RowState, type StepInfo, type StepState, type Steps, allVisible } from '../steps';
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { PlateMesh } from './blocks';
 import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
@@ -188,6 +188,7 @@ export class SceneController implements EditHost {
       focus: state.focus,
       revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
       active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
+      row: (node, index) => state.row?.(node, index) ?? viewRow(views, state, node, index),
     };
   }
 
@@ -413,4 +414,9 @@ export class SceneController implements EditHost {
     this.renderer.forceContextLoss();
     this.root.remove();
   }
+}
+
+function viewRow(views: [Node, Node][], state: StepState, node: Node, index: readonly number[]): RowState | undefined {
+  const view = views.find(([, source]) => source === node)?.[0];
+  return view === undefined || view.shape.length !== index.length || index.some((i, k) => i >= view.shape[k]) ? undefined : state.row?.(view, index);
 }

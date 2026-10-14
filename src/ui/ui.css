@@ -1570,3 +1570,82 @@ table.vf-costrule {
   margin: 8px 0 0;
   color: var(--pos);
 }
+
+.vf-gen-phase {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.vf-gen-seq {
+  display: grid;
+  gap: 6px;
+}
+
+.vf-gen-tok {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 2px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-gen-new {
+  border-color: var(--pos);
+}
+
+.vf-gen-pending {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.vf-gen-now {
+  box-shadow: 0 0 0 2px var(--ink);
+}
+
+.vf-gen-pos,
+.vf-gen-p {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+
+.vf-gen-word {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.vf-gen-cache {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  margin-top: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-gen-cache th,
+.vf-gen-cache td {
+  text-align: left;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.vf-gen-cache td:not(:first-child),
+.vf-gen-cache th:not(:first-child) {
+  text-align: right;
+  font-family: var(--mono);
+}
+
+.vf-gen-kind {
+  font-size: 11px;
+  color: var(--muted);
+}

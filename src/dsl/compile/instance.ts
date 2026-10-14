@@ -11,7 +11,8 @@ import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, record } fro
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'str', 'list', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
-const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
+const CACHE_KEYS: ReadonlySet<string> = new Set(['nodes', 'note']);
+const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown', 'cache']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
 const BRANCH_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
@@ -337,6 +338,8 @@ export abstract class Modules extends Expressions {
 
   abstract expandTex(tex: string, env: Env): string;
 
+  abstract text(value: unknown, env: Env): string;
+
   resultAlias(call: Call, name: string, env: Env): Alias {
     const given = call.aliases.get(name);
     const outer = this.outerTex(call.instance, name);
@@ -361,9 +364,35 @@ export abstract class Modules extends Expressions {
     this.calls.push(call);
     this.runForward(call);
     call.created = this.g.nodes.slice(before);
+    if (instance.def.decl.cache !== undefined) this.declareCache(call);
     const result = this.checkOutputs(call);
     for (const node of call.outputs.values()) if (!this.producers.has(node)) this.producers.set(node, call);
     return result;
+  }
+
+  private declareCache(call: Call): void {
+    const def = call.instance.def;
+    const decl = def.decl;
+    const at = child(def.where, decl, 'cache');
+    const spec = Array.isArray(decl.cache) ? { nodes: decl.cache } : record(decl.cache, at, 'cache');
+    if (!Array.isArray(decl.cache)) checkKeys(spec, CACHE_KEYS, at);
+    const listAt = Array.isArray(decl.cache) ? at : child(at, spec, 'nodes');
+    if (!Array.isArray(spec.nodes) || spec.nodes.length === 0) fail(listAt, 'cache must be a list of forward names, or { nodes, note }');
+    const names = spec.nodes as unknown[];
+    const nodes = names.map((name, i) => this.node(name, this.callEnv(call, child(listAt, names, i))));
+    const note = spec.note === undefined ? undefined : this.text(spec.note, this.callEnv(call, child(at, spec, 'note')));
+    const recoverable = new Set<Node>(nodes);
+    const positional = new Map<Node, boolean>();
+    const varies = (n: Node): boolean => {
+      let known = positional.get(n);
+      if (known === undefined) positional.set(n, (known = n.kind === 'input' || n.kind === 'label' || n.inputs.some(varies)));
+      return known;
+    };
+    for (const n of call.created) {
+      if (n.kind === 'op' && n.inputs.some((i) => recoverable.has(i)) && n.inputs.every((i) => recoverable.has(i) || !varies(i))) recoverable.add(n);
+    }
+    const kept = this.caches.filter((cache) => !cache.nodes.every((n) => recoverable.has(n)));
+    this.caches.splice(0, this.caches.length, ...kept, { nodes, members: call.created, ...(note === undefined ? {} : { note }) });
   }
 
   bindInputs(call: Call, args: Value[], kwargs: Map<string, Value>, env: Env, at: number): void {
@@ -490,6 +519,7 @@ export abstract class Modules extends Expressions {
     });
     walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
     walk(decl.unshown, section('unshown'), expression);
+    walk(isRecord(decl.cache) ? decl.cache.nodes : decl.cache, isRecord(decl.cache) ? child(section('cache'), decl.cache, 'nodes') : section('cache'), expression);
     walk(decl.layout, section('layout'), expression);
     walk(decl.tex, section('tex'), latex);
     walk(decl.formula, section('formula'), latex);

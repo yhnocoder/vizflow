@@ -39,6 +39,7 @@ export class VizflowPage extends HTMLElement {
   #pending = false;
   #compiled: CompiledPage | undefined;
   #loading = 0;
+  #mode: 'train' | 'infer' = 'infer';
 
   static readonly observedAttributes = ['src'];
 
@@ -142,7 +143,8 @@ export class VizflowPage extends HTMLElement {
       this.#compiled = compiled;
       this.#graph = compiled.graph;
       this.#steps = compiled.steps;
-      this.#panels = compiled.panels.length > 0 ? compiled.panels : undefined;
+      this.#mode = compiled.modes === undefined ? 'train' : 'infer';
+      this.#panels = this.#panelsFor(this.#mode);
       this.#sections = compiled.sections.length > 0 ? compiled.sections : undefined;
       this.#sequence = (compiled as CompiledPage & { sequence?: PageSequence }).sequence;
       this.#scene = { layout, modules, levels, sequence: this.#sequence, camera: compiled.page.camera };
@@ -228,7 +230,47 @@ export class VizflowPage extends HTMLElement {
     const title = element('h1', 'vf-title');
     title.textContent = page.title;
     header.append(title);
+    const modes = this.#compiled?.modes;
+    if (modes !== undefined) header.append(this.#modeSwitch(modes));
     return header;
+  }
+
+  get mode(): 'train' | 'infer' {
+    return this.#mode;
+  }
+
+  set mode(value: 'train' | 'infer') {
+    const modes = this.#compiled?.modes;
+    if (modes === undefined || value === this.#mode) return;
+    this.#mode = value;
+    this.#steps = modes[value];
+    this.#panels = this.#panelsFor(value);
+    this.#schedule();
+  }
+
+  #panelsFor(mode: 'train' | 'infer'): PanelItem[] | undefined {
+    const compiled = this.#compiled;
+    if (compiled === undefined) return undefined;
+    const panels = compiled.modePanels?.[mode] ?? compiled.panels;
+    return panels.length > 0 ? panels : undefined;
+  }
+
+  #modeSwitch(modes: NonNullable<CompiledPage['modes']>): HTMLElement {
+    const box = element('div', 'vf-modes');
+    box.setAttribute('role', 'group');
+    box.setAttribute('aria-label', '模式');
+    for (const [mode, text] of [['train', '训练'], ['infer', '推理']] as const) {
+      const button = element('button', 'vf-mode') as HTMLButtonElement;
+      button.type = 'button';
+      button.textContent = text;
+      button.setAttribute('aria-pressed', String(mode === this.#mode));
+      button.disabled = modes[mode] === undefined;
+      button.addEventListener('click', () => {
+        this.mode = mode;
+      });
+      box.append(button);
+    }
+    return box;
   }
 
   async #mountScene(stage: HTMLElement, g: Graph, options: SceneOptions): Promise<void> {

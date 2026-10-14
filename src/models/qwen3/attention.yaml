@@ -17,6 +17,8 @@ inputs:
 outputs:
   att: [T, d_model]
 
+cache: [kr, vt]
+
 init:
   q_proj:
     use: Linear
