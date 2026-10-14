@@ -22,11 +22,13 @@ function StepsView(props: { steps: Steps }) {
   let title!: HTMLHeadingElement;
   let body!: HTMLDivElement;
   let frame: number | undefined;
+  let shown: { title: string; body: string } | undefined;
   const draw = () => {
     frame = undefined;
     const text = steps.text();
-    renderText(text.title, title);
-    renderText(text.body, body);
+    if (text.title !== shown?.title) renderText(text.title, title);
+    if (text.body !== shown?.body) renderText(text.body, body);
+    shown = text;
     renderFigures(body, steps.graph);
   };
   const schedule = () => {
@@ -136,6 +138,19 @@ type Sibling = { kind: 'group'; name: string; position: number; on: boolean } | 
 
 type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number; run: number[] };
 
+function sameItem(a: object, b: object): boolean {
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  const keys = Object.keys(x);
+  if (keys.length !== Object.keys(y).length) return false;
+  return keys.every((k) => {
+    const u = x[k];
+    const v = y[k];
+    if (Array.isArray(u) && Array.isArray(v)) return u.length === v.length && u.every((e, i) => e === v[i]);
+    return Object.is(u, v);
+  });
+}
+
 export const SEGMENT_PREVIEW_STEPS = 5;
 export const PEEK_ARROW_INSET = 18;
 
@@ -152,8 +167,16 @@ function Timeline(props: {
   plainLabel: (info: StepInfo) => string | undefined;
 }) {
   const steps = props.steps;
+  let kept = new Map<string, object>();
   const view = createMemo(() => {
     props.version();
+    const keeping = new Map<string, object>();
+    const keep = <T extends object>(key: string, item: T): T => {
+      const known = kept.get(key);
+      const chosen = known !== undefined && sameItem(known, item) ? (known as T) : item;
+      keeping.set(key, chosen);
+      return chosen;
+    };
     const list = steps.list;
     const current = steps.current;
     const dir = list[current].dir;
@@ -197,11 +220,12 @@ function Timeline(props: {
     const siblings: Sibling[] =
       level === undefined
         ? []
-        : itemsAt(level, pool(level)).map((item) =>
+        : itemsAt(level, pool(level)).map((item): Sibling =>
             item.kind === 'group' ? { kind: 'group', name: item.name, position: item.position, on: item.run.includes(current) } : { kind: 'step', info: item.info, position: item.position, on: item.position === current },
-          );
-    const crumbs = level === undefined ? [] : path.slice(0, level);
-    const own = level === undefined ? itemsAt(0, active.positions) : itemsAt(chain.length, positionsInside(chain.length));
+          ).map((sibling, i) => keep(`sibling:${i}`, sibling));
+    const crumbs = (level === undefined ? [] : path.slice(0, level)).map((crumb, i) => keep(`crumb:${i}`, crumb));
+    const own = (level === undefined ? itemsAt(0, active.positions) : itemsAt(chain.length, positionsInside(chain.length))).map((item, i) => keep(`own:${i}`, item));
+    kept = keeping;
     return { dir, segments, all, active, directions, crumbs, siblings, own, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');

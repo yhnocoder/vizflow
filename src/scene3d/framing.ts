@@ -4,6 +4,7 @@ import { LABEL_SAFE_MARGIN, type Label, anchorOffset } from './labels';
 import { DISC_RADIUS, type Vec3 } from './layout';
 import { braceTip } from './modules';
 import type { Renderable } from './renderable';
+import type { Tensor } from '../tensor';
 
 export const CAMERA_DISTANCE = 150;
 
@@ -47,37 +48,47 @@ function span(items: FrameItem[], k: number, at: (i: FrameItem) => number, befor
   return { lo, hi, size: hi - lo };
 }
 
+const blockPoints = new WeakMap<Renderable['block'], { value: Tensor; grad: Tensor | null; points: Vec3[] }>();
+
+function pointsOf(renderable: Renderable): Vec3[] {
+  const { block } = renderable;
+  const value = block.node.value;
+  const grad = block.node.grad;
+  const known = blockPoints.get(block);
+  if (known !== undefined && known.value === value && known.grad === grad) return known.points;
+  const points: Vec3[] = [];
+  const [w, d] = block.footprint;
+  const values = value.data;
+  let high = 0;
+  let low = 0;
+  for (let i = 0; i < values.length; i++) {
+    for (const h of [values[i] * renderable.scale.forward, grad === null ? 0 : grad.data[i] * renderable.scale.backward]) {
+      high = Math.max(high, Math.min(h, renderable.cap));
+      low = Math.min(low, Math.max(h, -renderable.cap));
+    }
+  }
+  const top = renderable.nodes === undefined ? high : renderable.nodes.height;
+  const bottom = renderable.nodes === undefined ? low : 0;
+  const radius = block.shape === 'disc' ? DISC_RADIUS : w / 2;
+  const depth = block.shape === 'disc' ? DISC_RADIUS : d / 2;
+  for (const e of block.elements) {
+    for (const dx of [-radius, radius]) for (const dz of [-depth, depth]) points.push([e.x + dx, e.y + bottom, e.z + dz], [e.x + dx, e.y + top, e.z + dz]);
+  }
+  if (block.plate !== undefined) {
+    const p = block.plate;
+    for (const dx of [-p.w / 2, p.w / 2]) for (const dz of [-p.d / 2, p.d / 2]) points.push([p.x + dx, p.y, p.z + dz]);
+  }
+  points.push([block.title.x, block.title.y, block.title.z]);
+  for (const text of [...block.classLabels, ...block.rowLabels]) points.push([text.x, text.y, text.z]);
+  if (block.axis !== undefined) points.push([block.axis.x - 0.5, block.elements[0].y, block.axis.z]);
+  points.push(...block.extent);
+  blockPoints.set(block, { value, grad, points });
+  return points;
+}
+
 export function framingPoints(renderables: Renderable[]): Vec3[] {
   const points: Vec3[] = [];
-  for (const renderable of renderables) {
-    const { block } = renderable;
-    const [w, d] = block.footprint;
-    const values = block.node.value.data;
-    const grad = block.node.grad;
-    let high = 0;
-    let low = 0;
-    for (let i = 0; i < values.length; i++) {
-      for (const h of [values[i] * renderable.scale.forward, grad === null ? 0 : grad.data[i] * renderable.scale.backward]) {
-        high = Math.max(high, Math.min(h, renderable.cap));
-        low = Math.min(low, Math.max(h, -renderable.cap));
-      }
-    }
-    const top = renderable.nodes === undefined ? high : renderable.nodes.height;
-    const bottom = renderable.nodes === undefined ? low : 0;
-    const radius = block.shape === 'disc' ? DISC_RADIUS : w / 2;
-    const depth = block.shape === 'disc' ? DISC_RADIUS : d / 2;
-    for (const e of block.elements) {
-      for (const dx of [-radius, radius]) for (const dz of [-depth, depth]) points.push([e.x + dx, e.y + bottom, e.z + dz], [e.x + dx, e.y + top, e.z + dz]);
-    }
-    if (block.plate !== undefined) {
-      const p = block.plate;
-      for (const dx of [-p.w / 2, p.w / 2]) for (const dz of [-p.d / 2, p.d / 2]) points.push([p.x + dx, p.y, p.z + dz]);
-    }
-    points.push([block.title.x, block.title.y, block.title.z]);
-    for (const text of [...block.classLabels, ...block.rowLabels]) points.push([text.x, text.y, text.z]);
-    if (block.axis !== undefined) points.push([block.axis.x - 0.5, block.elements[0].y, block.axis.z]);
-    points.push(...block.extent);
-  }
+  for (const renderable of renderables) for (const p of pointsOf(renderable)) points.push(p);
   return points;
 }
 

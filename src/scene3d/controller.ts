@@ -15,7 +15,7 @@ import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
 import type { Box } from './avoid';
 import { LabelLayer } from './labels';
-import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
+import { type BoardGeometry, type ResolvedLayout, type Vec3, classAlignment, resolveLayout, sameData, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
@@ -53,8 +53,16 @@ export class SceneController implements EditHost {
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
+  private readonly overlayObserver = new ResizeObserver(() => {
+    this.overlayBoxes = undefined;
+    this.labelsDirty = true;
+    this.requestFrame();
+  });
+  private overlayBoxes: Box[] | undefined;
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
+  private resolvedKey: string | undefined;
+  private resolved: ResolvedLayout | undefined;
   private lastFrame: number | undefined;
   private far = true;
   private seeThrough = true;
@@ -161,7 +169,7 @@ export class SceneController implements EditHost {
   }
 
   relayout(reframe: boolean): void {
-    this.resolve();
+    this.resolve(true);
     for (const renderable of this.renderables) {
       if (renderable.plate === undefined) continue;
       this.scene.remove(renderable.plate.group);
@@ -196,7 +204,16 @@ export class SceneController implements EditHost {
     return steps === undefined ? undefined : (steps.list[steps.current] as PageStepInfo);
   }
 
-  private resolve(): void {
+  private layoutKey(): string {
+    const steps = this.steps;
+    const folded = steps === undefined ? [] : steps.modules.filter((m) => steps.folded(m.id)).map((m) => m.id);
+    return JSON.stringify([this.g.version, this.state.focus, folded]);
+  }
+
+  private resolve(force = false): void {
+    const key = this.layoutKey();
+    if (!force && key === this.resolvedKey) return;
+    this.resolvedKey = key;
     const steps = this.steps;
     const resolved = resolveLayout(this.options.layout, {
       visible: this.visible,
@@ -206,6 +223,8 @@ export class SceneController implements EditHost {
       folded: steps === undefined ? undefined : (id) => steps.folded(id),
       plan: this.options.levels,
     });
+    if (this.resolved !== undefined && sameData(resolved, this.resolved)) return;
+    this.resolved = resolved;
     this.boards = resolved.boards;
     this.levelLayout = resolved.levels;
     if (this.renderables.length === 0) {
@@ -272,7 +291,11 @@ export class SceneController implements EditHost {
   }
 
   private overlays(): Box[] {
-    return [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-formula, .vf-key, .vf-hint')].flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
+    if (this.overlayBoxes !== undefined) return this.overlayBoxes;
+    const elements = [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-formula, .vf-key, .vf-hint')];
+    for (const el of elements) this.overlayObserver.observe(el);
+    this.overlayBoxes = elements.flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
+    return this.overlayBoxes;
   }
 
   private updateGeometry(): void {
@@ -327,6 +350,7 @@ export class SceneController implements EditHost {
     this.width = Math.max(1, this.root.clientWidth);
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
+    this.overlayBoxes = undefined;
     this.rig.reframe();
     this.labelsDirty = true;
   }
@@ -398,6 +422,7 @@ export class SceneController implements EditHost {
     if (this.frameHandle !== 0) cancelAnimationFrame(this.frameHandle);
     clearTimeout(this.rig.wheelTimer);
     this.resizeObserver.disconnect();
+    this.overlayObserver.disconnect();
     this.unsubscribe.forEach((fn) => fn());
     this.controls.dispose();
     for (const renderable of this.renderables) {

@@ -222,6 +222,7 @@ class Plan implements LevelPlan {
   private readonly entries: Entry[] = [];
   private readonly entryOf = new Map<Node, Entry>();
   private readonly sourceOf = new Map<Node, Node>();
+  private consumersOf: Map<Node, Node[]> | undefined;
   private readonly drawnOn = new Map<Node, Node[]>();
   private readonly columns = new Set<Node>();
   private readonly boards = new Map<Node, BoardRef>();
@@ -288,8 +289,18 @@ class Plan implements LevelPlan {
     return m.inputs.some((i) => this.source(i) === n);
   }
 
-  private consumers(n: Node): Node[] {
-    return [...this.computed].filter((u) => u.inputs.some((i) => this.source(i) === n));
+  private consumers(n: Node): readonly Node[] {
+    if (this.consumersOf === undefined) {
+      this.consumersOf = new Map();
+      for (const u of this.computed) {
+        for (const source of new Set(u.inputs.map((i) => this.source(i)))) {
+          const list = this.consumersOf.get(source);
+          if (list === undefined) this.consumersOf.set(source, [u]);
+          else list.push(u);
+        }
+      }
+    }
+    return this.consumersOf.get(n) ?? [];
   }
 
   private chain(id: string | null | undefined): StepModule[] {

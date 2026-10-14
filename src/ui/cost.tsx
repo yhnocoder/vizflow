@@ -201,11 +201,10 @@ export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVers
       setTip(same ? null : key);
     },
   });
-  const labels = () => {
-    props.stepsVersion();
+  const labels = createMemo(() => {
     const seen = { forward: 0, backward: 0 };
-    return (props.steps?.list ?? []).map((info) => `${info.dir === 'forward' ? '前向' : '反向'}第 ${++seen[info.dir]} 步`);
-  };
+    return list().map((info) => `${info.dir === 'forward' ? '前向' : '反向'}第 ${++seen[info.dir]} 步`);
+  });
   const tipGroup = () => groups().find((group) => group.kind === tip());
   const realName = () => (typeof g.real?.name === 'string' ? g.real.name : '真实模型');
   return (
