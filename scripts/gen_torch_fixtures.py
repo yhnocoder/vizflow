@@ -873,6 +873,8 @@ def creation_and_reverse_cases():
         cases.append(op_case("select_scatter", f"{shape} dim {dim} index {index}", lambda x, v, dim=dim, index=index: torch.select_scatter(x, v, dim, index), [("input", randn(*shape)), ("input", randn(*src))], [tensor_arg(0), tensor_arg(1), dim, index]))
     for shape, src, dim, start, end in [((3, 4), (3, 2), -1, 1, 3), ((4, 2), (2, 2), 0, None, 2)]:
         cases.append(op_case("slice_scatter", f"{shape} dim {dim} {start}:{end}", lambda x, v, dim=dim, start=start, end=end: torch.slice_scatter(x, v, dim, start, end), [("input", randn(*shape)), ("input", randn(*src))], [tensor_arg(0), tensor_arg(1), dim, start, end]))
+    for shape, dim, start, length, step in [((2, 6), -1, 0, 3, 2), ((2, 6), 1, 1, 3, 2), ((7, 2), 0, 1, 2, 3)]:
+        cases.append(op_case("narrow", f"shape {shape} dim {dim} start {start} length {length} step {step}", lambda x, dim=dim, start=start, length=length, step=step: x.narrow(dim, start, (length - 1) * step + 1)[(slice(None),) * (dim % len(shape)) + (slice(None, None, step),)], [("input", randn(*shape))], [tensor_arg(0), dim, start, length, step]))
     return cases
 
 

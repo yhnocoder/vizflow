@@ -1,0 +1,227 @@
+module: DeepseekV3Experts
+import:
+  SiLU: vizflow/nn/silu
+args:
+  d_model: dim
+  d_moe: dim
+  n_routed_experts: dim
+  act: { type: module, default: SiLU }
+inputs:
+  hidden_states: [T, d_model]
+  top_k_index: { type: tensor, shape: [T, K], dtype: int64 }
+  top_k_weights: { type: tensor, shape: [T, K], dtype: fp32 }
+outputs:
+  out: [T, d_model]
+init:
+  weights:
+    gate_up_proj: { shape: [n_routed_experts, 2 * d_moe, d_model], init: normal }
+    down_proj: { shape: [n_routed_experts, d_model, d_moe], init: normal }
+  act_fn: act
+forward:
+  - final_hidden_states: zeros_like(hidden_states)
+  - expert_onehot: one_hot(top_k_index, num_classes=n_routed_experts + 1)
+  - expert_mask: expert_onehot.permute(2, 1, 0)
+  - expert_count: expert_mask.sum(dim=(-1, -2))
+  - expert_hit: expert_count > 0
+  - hits: nonzero_static(expert_mask, size=T * K)
+  - expert_idx: 'hits[:, 0]'
+  - top_k_pos: 'hits[:, 1]'
+  - token_idx: 'hits[:, 2]'
+  - current_state: hidden_states[token_idx]
+  - gate_up: grouped_linear(current_state, gate_up_proj, expert_idx)
+  - gate: 'gate_up[..., : d_moe]'
+  - up: 'gate_up[..., d_moe :]'
+  - act_gate: act_fn(gate)
+  - current_hidden: act_gate * up
+  - down: grouped_linear(current_hidden, down_proj, expert_idx)
+  - weighted: down * top_k_weights[token_idx, top_k_pos, None]
+  - cast: weighted.to(final_hidden_states.dtype)
+  - out: final_hidden_states.index_add(0, token_idx, cast)
+layout:
+  place:
+    final_hidden_states: { with: cast }
+    expert_hit: { with: expert_count }
+    top_k_pos: { with: expert_idx }
+    token_idx: { with: expert_idx }
+    up: { with: gate }
+tex:
+  final_hidden_states: '\mathbf{0}'
+  expert_onehot: '\mathbf{o}'
+  expert_mask: '\mathbf{o}^{\top}'
+  expert_count: '\mathbf{c}'
+  expert_hit: '\mathbf{c}>0'
+  hits: '\mathbf{z}'
+  expert_idx: '\mathbf{e}'
+  top_k_pos: '\mathbf{k}'
+  token_idx: '\mathbf{t}'
+  current_state: '\mathbf{x}_{\mathrm{sel}}'
+  gate_up_proj: 'W_{gu}'
+  down_proj: 'W_{d}'
+  gate_up: '\mathbf{gu}'
+  gate: '\mathbf{gate}'
+  up: '\mathbf{up}'
+  act_gate: '\operatorname{SiLU}(\mathbf{gate})'
+  current_hidden: '\mathbf{m}'
+  down: '\mathbf{d}'
+  weighted: '\mathbf{d}^{w}'
+  cast: '\mathbf{d}^{w}_{\mathrm{cast}}'
+  out: '\mathbf{y}^{\mathrm{r}}'
+formula: '\step{index_add}{\viz{out}=\operatorname{index\_add}_{\viz{token_idx}}\big(}\step{weight}{\viz{top_k_weights}[\viz{token_idx},\viz{top_k_pos}]\odot}\step{down}{\big(}\step{act_fn.*}{\operatorname{SiLU}(}\step{gate_up}{\viz{current_state}{W_{gu}[\viz{expert_idx}]}^{\top}}\step{act_fn.*}{)}\step{mul}{\odot\,\mathbf{up}}\step{down}{\big){W_{d}[\viz{expert_idx}]}^{\top}}\step{index_add}{\big)}'
+fold:
+  label: '$\viz{out}$'
+  title: experts
+  text: |
+    每个位置只经过选中的 $K$ 个路由专家，输出是这 $K$ 个专家输出按 $\viz{top_k_weights}$ 加权的和。没被选中的专家不参与计算，权重拿不到梯度。
+    $$\viz{out}={{ out | matrix:3 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{hidden_states}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{hidden_states}}$'
+    text: |
+      $$\pfl{\viz{hidden_states}}={{ hidden_states.grad | matrix:3 }}$$
+
+steps:
+  - id: zeros
+    show: final_hidden_states
+    label: '$\viz{final_hidden_states}$'
+    title: 建一个全 0 的累加张量
+    text: |
+      <code>final_hidden_states = torch.zeros_like(hidden_states)</code>：形状和 dtype 都和 $\viz{hidden_states}$ 相同的全 0 张量，后面每个专家把结果加到它上面。它不依赖 $\viz{hidden_states}$ 的数值，没有梯度。图上把它画在最后累加的那一层旁边。
+  - id: onehot
+    show: expert_onehot
+    label: '$\viz{expert_onehot}$'
+    title: 专家掩码
+    text: |
+      <code>expert_mask = torch.nn.functional.one_hot(top_k_index, num_classes=self.num_experts + 1)</code>。$\viz{top_k_index}$ 的每个元素是一个专家编号；one_hot 把它变成一个长 $E+1={{ n_routed_experts + 1 }}$ 的向量，只有那个编号的位置是 1。结果的形状是 $T\times K\times(E+1)$。多出来的一类（编号 $E$）是给填充用的：别的实现里没选专家的槽位可以填编号 $E$，HF 的循环直接跳过它。top-k 选出的编号都小于 $E$，所以这一列全是 0。这一段在 <code>torch.no_grad()</code> 里，编号没有梯度。
+      $$\viz{top_k_index}={{ top_k_index | matrix }}$$
+  - id: permute
+    show: expert_mask
+    label: '$\viz{expert_mask}$'
+    title: 换成按专家排的顺序
+    text: |
+      <code>expert_mask = expert_mask.permute(2, 1, 0)</code>，形状从 $T\times K\times(E+1)$ 变成 $(E+1)\times K\times T$：第一维是专家，第二维是 top-k 的槽位，第三维是位置。数值没有变。按专家取一块 <code>expert_mask[expert_idx]</code>，就是 $K\times T$ 的表，标出这个专家在哪些位置、哪个槽位被选中。
+  - id: hit
+    show: [expert_count, expert_hit]
+    label: '$\viz{expert_count},\ \viz{expert_hit}$'
+    title: 哪些专家被选中
+    text: |
+      <code>expert_hit = torch.greater(expert_mask.sum(dim=(-1, -2)), 0).nonzero()</code>。先对槽位和位置两维求和，得到每个专家被选中的次数，再和 0 比较，大于 0 的专家才进入循环。所有专家的次数加起来正好是 $TK={{ T * K }}$，因为每个位置选 $K$ 个不同的专家。
+      $$\viz{expert_count}={{ expert_count | matrix }},\qquad \viz{expert_hit}={{ expert_hit | matrix }}$$
+      次数是 0 的专家这一次没有任何 token，HF 的循环不会访问它，它的权重拿不到梯度。<code>.nonzero()</code> 列出的专家个数随数据变化，所以图上只画到比较这一步；下一步的 nonzero_static 一次列出全部 (专家, 槽位, 位置)，结果相同。
+  - id: nonzero
+    show: hits
+    label: '$\viz{hits}$'
+    title: 列出每个专家的 (槽位, 位置)
+    text: |
+      HF 对每个被选中的专家 <code>expert_idx</code> 调用 <code>top_k_pos, token_idx = torch.where(expert_mask[expert_idx])</code>，按行优先列出 $K\times T$ 表里为 1 的格子，先按槽位、再按位置排序。专家按编号从小到大处理，<code>if expert_idx == self.num_experts: continue</code> 跳过填充用的那一类。
+      计算图的形状是固定的，每个专家分到几个 token 却随数据变化，所以图上不能给每个专家单独画一块。这里把 HF 循环里各个专家的结果按循环的顺序首尾相接，排成 $TK$ 行：<code>torch.nonzero_static</code>（HF 没有调用它）对 $(E+1)\times K\times T$ 的掩码按行优先列出所有为 1 的下标 (专家, 槽位, 位置)，正好是 HF 循环和 <code>torch.where</code> 给出的顺序。为 1 的元素恰好有 $TK$ 个，所以不需要填充，填充类那一列全是 0，也不会出现在这里。
+      $$\viz{hits}={{ hits | matrix }}$$
+      同一个专家的行连在一起，次数为 0 的专家没有行。grouped GEMM 的 MoE 内核也是这样把 token 按专家排好再算。
+  - id: split
+    show: [expert_idx, top_k_pos, token_idx]
+    label: '$\viz{expert_idx},\ \viz{top_k_pos},\ \viz{token_idx}$'
+    title: 专家、槽位和位置三列
+    text: |
+      把 $\viz{hits}$ 的三列分开：第 $r$ 行由专家 $e_r$ 计算，它是位置 $t_r$ 选中的第 $k_r$ 个专家。HF 循环里 <code>expert_idx</code> 是循环变量，<code>top_k_pos</code>、<code>token_idx</code> 是 <code>torch.where</code> 的两个输出。
+      $$\viz{expert_idx}={{ expert_idx | matrix }},\quad \viz{top_k_pos}={{ top_k_pos | matrix }},\quad \viz{token_idx}={{ token_idx | matrix }}$$
+  - id: select
+    show: current_state
+    label: '$\viz{current_state}=\viz{hidden_states}[\viz{token_idx}]$'
+    title: 取出送给每个专家的 token
+    text: |
+      <code>current_state = hidden_states[token_idx]</code>：按 $\viz{token_idx}$ 从 $\viz{hidden_states}$ 里取行。一个位置选了 $K$ 个专家，它的那一行就被取 $K$ 次，分别送给这 $K$ 个专家。每个专家只拿到选中它的那些 token，HF 的实现就是这样省下没选中的计算。
+      $$\viz{current_state}={{ current_state | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{hidden_states}$'
+      title: '$\pfl{\viz{hidden_states}}$'
+      text: |
+        取行的反向是把每一行的梯度加回它来自的那个位置。一个位置被 $K$ 个专家用过，它的梯度就是这 $K$ 行梯度的和。
+        $$\pfl{\viz{hidden_states}}={{ hidden_states.grad | matrix:3 }}$$
+  - id: gate_up
+    show: gate_up
+    label: '$\viz{gate_up}$'
+    title: 每个专家的 gate_up_proj
+    text: |
+      <code>gate, up = nn.functional.linear(current_state, self.gate_up_proj[expert_idx]).chunk(2, dim=-1)</code> 里的矩阵乘法。所有专家的 gate_proj 和 up_proj 存在一个参数 <code>experts.gate_up_proj</code> 里，形状 $E\times 2m\times d$，$m={{ d_moe }}$ 是 moe_intermediate_size，第 $e$ 块是第 $e$ 个专家的 $2m\times d$。HF 对每个专家把它的那几行乘上它自己那一块；这里的 grouped_linear 一次算完所有行，第 $r$ 行乘的是 ${W_{gu}[e_r]}^{\top}$，和逐个专家算的结果相同。DeepSeek-V3 里 $m={{ d_moe | real }}$。
+      $$\viz{gate_up}={{ gate_up | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{gu},\ \partial\viz{current_state}$'
+      title: '$\pfl{W_{gu}},\ \pfl{\viz{current_state}}$'
+      text: |
+        每一行的梯度只进入它自己那个专家的 $W_{gu}[e]$。没被选中的专家没有行，它那一块的梯度是 0。
+        $$\pfl{\viz{gate_up}}={{ gate_up.grad | matrix:3 }}$$
+  - id: chunk
+    show: [gate, up]
+    label: '$\viz{gate},\ \viz{up}$'
+    title: 切成 gate 和 up
+    text: |
+      同一行里的 <code>.chunk(2, dim=-1)</code>：最后一维前一半是 gate，后一半是 up，各 $m={{ d_moe }}$ 列。chunk 返回两个张量，这里写成两个切片，取的列相同。
+    backward:
+      label: '$\partial\viz{gate_up}$'
+      title: '$\pfl{\viz{gate_up}}$'
+      text: |
+        切片的反向把 $\viz{gate}$ 和 $\viz{up}$ 的梯度按列拼回去，前 $m$ 列来自 gate，后 $m$ 列来自 up。
+  - id: act_fn
+    subtitle: SiLU
+  - id: mul
+    show: current_hidden
+    label: '$\viz{current_hidden}=\viz{act_gate}\odot\viz{up}$'
+    title: 门控相乘
+    text: |
+      <code>current_hidden_states = self.act_fn(gate) * up</code>：DeepSeek V3 的 <code>hidden_act</code> 是 <code>"silu"</code>，激活后的 gate 和 $\viz{up}$ 逐元素相乘。
+      $$\viz{current_hidden}={{ current_hidden | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{act_gate},\ \partial\viz{up}$'
+      title: '$\pfl{\viz{act_gate}},\ \pfl{\viz{up}}$'
+      text: |
+        $\viz{act_gate}$ 的梯度是上游梯度乘 $\viz{up}$，$\viz{up}$ 的梯度是上游梯度乘 $\viz{act_gate}$，都是逐元素相乘。
+        $$\pfl{\viz{up}}={{ up.grad | matrix:3 }}$$
+  - id: down
+    show: down
+    label: '$\viz{down}$'
+    title: 每个专家的 down_proj
+    text: |
+      <code>current_hidden_states = nn.functional.linear(current_hidden_states, self.down_proj[expert_idx])</code>，<code>experts.down_proj</code> 的形状是 $E\times d\times m$。第 $r$ 行乘 ${W_{d}[e_r]}^{\top}$，回到 $d$ 维。
+      $$\viz{down}={{ down | matrix:2 }}$$
+    backward:
+      label: '$\partial W_{d},\ \partial\viz{current_hidden}$'
+      title: '$\pfl{W_{d}},\ \pfl{\viz{current_hidden}}$'
+      text: |
+        和 gate_up_proj 一样，每一行的梯度只进入它自己那个专家的 $W_{d}[e]$。
+        $$\pfl{\viz{down}}={{ down.grad | matrix:3 }}$$
+  - id: weight
+    show: weighted
+    label: '$\viz{weighted}$'
+    title: 乘上路由权重
+    text: |
+      <code>current_hidden_states * top_k_weights[token_idx, top_k_pos, None]</code>：第 $r$ 行取位置 $t_r$、槽位 $k_r$ 的路由权重，也就是这个位置给这个专家的权重。索引里的 <code>None</code> 在最后加一个长度为 1 的维度，每一行的 $d$ 个数乘同一个权重。路由权重是 float32，按类型提升，结果也是 float32。
+      $$\viz{weighted}={{ weighted | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{down},\ \partial\viz{top_k_weights}$'
+      title: '$\pfl{\viz{down}},\ \pfl{\viz{top_k_weights}}$'
+      text: |
+        每一行的梯度乘这一行的路由权重，传给 $\viz{down}$；这一行 $d$ 个元素的梯度与 $\viz{down}$ 对应元素的乘积加起来，放回 $\viz{top_k_weights}$ 里对应的位置和槽位。$TK$ 行和 $\viz{top_k_weights}$ 的 $TK$ 个元素一一对应。
+        $$\pfl{\viz{top_k_weights}}={{ top_k_weights.grad | matrix:3 }}$$
+  - id: cast
+    show: cast
+    label: '$\viz{cast}$'
+    title: 转成累加张量的 dtype
+    text: |
+      <code>current_hidden_states.to(final_hidden_states.dtype)</code>：<code>final_hidden_states = torch.zeros_like(hidden_states)</code>，dtype 和输入相同，是模型的 dtype。乘过 float32 路由权重的结果在这里舍入回模型的 dtype。
+      $$\viz{cast}={{ cast | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{weighted}$'
+      title: '$\pfl{\viz{weighted}}$'
+      text: 类型转换的局部导数是 1，梯度转回 float32。
+  - id: index_add
+    show: out
+    label: '$\viz{out}$'
+    title: 加回各个位置
+    text: |
+      每个专家执行 <code>final_hidden_states.index_add_(0, token_idx, ...)</code>：第 $r$ 行加到第 $t_r$ 个位置上。一个位置选了 $K$ 个专家，就收到 $K$ 行，加起来就是这个位置的输出。HF 在循环里逐个专家原地累加，这里一次加完：第 $r$ 行按 $r$ 从小到大加上去，行的顺序就是 HF 循环的顺序，所以每个位置上加法的次序也和 HF 相同。
+      $$\viz{out}={{ out | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{cast}$'
+      title: '$\pfl{\viz{cast}}$'
+      text: |
+        index_add 的反向是按 $\viz{token_idx}$ 取行：第 $r$ 行收到位置 $t_r$ 的输出梯度。$\viz{final_hidden_states}$ 是常量，没有梯度。
+        $$\pfl{\viz{cast}}={{ cast.grad | matrix:3 }}$$

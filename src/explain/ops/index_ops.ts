@@ -35,16 +35,16 @@ export const narrowExplain: OpExplain = {
   local: () => 1,
   tex: {
     forward: (s) => {
-      const { dim, start, length } = s.attrs as { dim: number; start: number; length: number };
-      return `\\operatorname{narrow}(${s.in[0]},${dim},${start},${length})`;
+      const { dim, start, length, step = 1 } = s.attrs as { dim: number; start: number; length: number; step?: number };
+      return `\\operatorname{narrow}(${s.in[0]},${dim},${start},${length}${step === 1 ? '' : `,${step}`})`;
     },
     local: () => '1',
   },
   selected: (ctx, out) => {
-    const attrs = ctx.attrs as { dim: number; start: number };
+    const attrs = ctx.attrs as { dim: number; start: number; step?: number };
     const dim = normDim(attrs.dim, out.length);
     const index = [...out];
-    index[dim] += attrs.start < 0 ? attrs.start + ctx.inputs[0].shape[dim] : attrs.start;
+    index[dim] = (attrs.start < 0 ? attrs.start + ctx.inputs[0].shape[dim] : attrs.start) + index[dim] * (attrs.step ?? 1);
     return [{ arg: 0, index }];
   },
 };

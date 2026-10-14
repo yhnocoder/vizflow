@@ -1,0 +1,149 @@
+module: apply_rotary_pos_emb_interleave
+inputs:
+  q: { type: tensor, shape: [num_heads, T, d_rot], dtype: dtype }
+  k: { type: tensor, shape: [num_kv_heads, T, d_rot], dtype: dtype }
+  cos: { type: tensor, shape: [T, d_rot], dtype: dtype }
+  sin: { type: tensor, shape: [T, d_rot], dtype: dtype }
+outputs:
+  q_embed: { type: tensor, shape: [num_heads, T, d_rot], dtype: dtype }
+  k_embed: { type: tensor, shape: [num_kv_heads, T, d_rot], dtype: dtype }
+forward:
+  - cos_half: 'cos[..., : d_rot // 2]'
+  - sin_half: 'sin[..., : d_rot // 2]'
+  - q1: 'q[..., 0::2]'
+  - q2: 'q[..., 1::2]'
+  - k1: 'k[..., 0::2]'
+  - k2: 'k[..., 1::2]'
+  - q1c: q1 * cos_half
+  - q2s: q2 * sin_half
+  - qa: q1c - q2s
+  - q2c: q2 * cos_half
+  - q1s: q1 * sin_half
+  - qb: q2c + q1s
+  - q_embed: cat([qa, qb], dim=-1)
+  - k1c: k1 * cos_half
+  - k2s: k2 * sin_half
+  - ka: k1c - k2s
+  - k2c: k2 * cos_half
+  - k1s: k1 * sin_half
+  - kb: k2c + k1s
+  - k_embed: cat([ka, kb], dim=-1)
+layout:
+  place:
+    sin_half: { with: cos_half }
+    q2: { with: q1 }
+    k2: { with: k1 }
+    q2c: { with: q1c }
+    q1s: { with: q2s }
+    qb: { with: qa }
+    k2c: { with: k1c }
+    k1s: { with: k2s }
+    kb: { with: ka }
+tex:
+  cos_half: '\overline{\viz{cos}}'
+  sin_half: '\overline{\viz{sin}}'
+  q1: '\operatorname{even}(\viz{q})'
+  q2: '\operatorname{odd}(\viz{q})'
+  k1: '\operatorname{even}(\viz{k})'
+  k2: '\operatorname{odd}(\viz{k})'
+  q1c: '\operatorname{even}(\viz{q})\odot\overline{\viz{cos}}'
+  q2c: '\operatorname{odd}(\viz{q})\odot\overline{\viz{cos}}'
+  k1c: '\operatorname{even}(\viz{k})\odot\overline{\viz{cos}}'
+  k2c: '\operatorname{odd}(\viz{k})\odot\overline{\viz{cos}}'
+  q1s: '\operatorname{even}(\viz{q})\odot\overline{\viz{sin}}'
+  q2s: '\operatorname{odd}(\viz{q})\odot\overline{\viz{sin}}'
+  k1s: '\operatorname{even}(\viz{k})\odot\overline{\viz{sin}}'
+  k2s: '\operatorname{odd}(\viz{k})\odot\overline{\viz{sin}}'
+  qa: "\\operatorname{rot}_1(\\viz{q})"
+  qb: "\\operatorname{rot}_2(\\viz{q})"
+  ka: "\\operatorname{rot}_1(\\viz{k})"
+  kb: "\\operatorname{rot}_2(\\viz{k})"
+formula: '\step{cat}{\viz{q_embed}=\operatorname{cat}\big(}\step{combine}{\step{cos}{\step{even_odd}{\operatorname{even}(\viz{q})}\odot\step{half}{\overline{\viz{cos}}}}-\step{sin}{\step{even_odd}{\operatorname{odd}(\viz{q})}\odot\step{half}{\overline{\viz{sin}}}}}\step{cat}{,\ }\step{combine}{\step{cos}{\operatorname{odd}(\viz{q})\odot\overline{\viz{cos}}}+\step{sin}{\operatorname{even}(\viz{q})\odot\overline{\viz{sin}}}}\step{cat}{\big)}'
+fold:
+  label: '$\viz{q_embed},\ \viz{k_embed}$'
+  title: RoPE（相邻分量配对）
+  text: |
+    DeepSeek V3 的 RoPE 把每个 head 里第 $2c$ 和第 $2c+1$ 个分量配成一对，转过 $t\,\omega_c$；转完以后，第 $c$ 对的两个分量放到输出的第 $c$ 列和第 $c+d_r/2$ 列。所以 Jacobian 由 $2\times2$ 的旋转矩阵组成，只是输出的列序和输入不同。位置 0 的角度是 0，那里只剩列的重排。
+    $$\begin{pmatrix}q'_c\\ q'_{c+d_r/2}\end{pmatrix}=\begin{pmatrix}\cos t\omega_c & -\sin t\omega_c\\ \sin t\omega_c & \cos t\omega_c\end{pmatrix}\begin{pmatrix}q_{2c}\\ q_{2c+1}\end{pmatrix}$$
+  backward:
+    label: '$\partial\viz{q},\ \partial\viz{k}$'
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+    text: |
+      旋转矩阵是正交矩阵，转置等于逆，所以反向把梯度转回 $-t\,\omega_c$，并放回第 $2c$、$2c+1$ 列。
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
+
+steps:
+  - id: half
+    show: [cos_half, sin_half]
+    label: '$\overline{\viz{cos}},\ \overline{\viz{sin}}$'
+    title: 只用 cos、sin 的前一半
+    text: |
+      <code>cos = cos[..., : cos.shape[-1] // 2]</code>，sin 相同。rotary_emb 生成的表是 <code>torch.cat((freqs, freqs), dim=-1)</code>，前一半和后一半相同，第 $c$ 列是 $\cos t\,\omega_c$。这里每一对只需要一个角度，所以取前 $d_r/2$ 列。cos、sin 是常量，没有梯度。
+      $$\overline{\viz{cos}}={{ cos_half | matrix:2 }}$$
+  - id: even_odd
+    show: [q1, q2, k1, k2]
+    label: '$\operatorname{even}(\viz{q}),\ \operatorname{odd}(\viz{q})$'
+    title: 取出偶数列和奇数列
+    text: |
+      <code>q1 = q[..., 0::2]</code>、<code>q2 = q[..., 1::2]</code>，k 相同。HF 的这个函数把相邻的第 $2c$、$2c+1$ 个分量配成一对：偶数列是每一对的第一个分量，奇数列是第二个分量。这和 Qwen3 的 rotate_half 不同，那里配对的是第 $c$ 和第 $c+d_h/2$ 个分量。步长切片只取出元素，局部导数是 1。
+      $$\operatorname{even}(\viz{q})={{ q1 | matrix:2 }},\qquad \operatorname{odd}(\viz{q})={{ q2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q},\ \partial\viz{k}$'
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+      text: |
+        步长切片的反向把梯度放回被取出的列：偶数列来自 $\operatorname{even}(\viz{q})$，奇数列来自 $\operatorname{odd}(\viz{q})$。
+        $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial \viz{k}}={{ k.grad | matrix:3 }}$$
+  - id: cos
+    show: [q1c, q2c, k1c, k2c]
+    label: '$\odot\cos$'
+    title: 两个分量都乘 cos
+    text: |
+      <code>q1 * cos</code> 和 <code>q2 * cos</code>。$\overline{\viz{cos}}$ 的形状是 $T\times d_r/2$，按广播乘到每个 head 上，所以所有 head 用同一张表。
+      $$\operatorname{even}(\viz{q})\odot\overline{\viz{cos}}={{ q1c | matrix:2 }}$$
+    backward:
+      label: '$\partial\operatorname{even}(\viz{q}),\ \partial\operatorname{odd}(\viz{q})$（cos）'
+      title: '$\frac{\partial\ell}{\partial \operatorname{even}(\viz{q})},\ \frac{\partial\ell}{\partial \operatorname{odd}(\viz{q})}$'
+      text: |
+        局部导数是对应位置的 $\cos t\omega_c$。这一路和乘 sin 的一路在 $\operatorname{even}(\viz{q})$、$\operatorname{odd}(\viz{q})$ 上相加：
+        $$\frac{\partial\ell}{\partial q_{2c}}=g_c\cos t\omega_c+g_{c+d_r/2}\sin t\omega_c,\qquad \frac{\partial\ell}{\partial q_{2c+1}}=g_{c+d_r/2}\cos t\omega_c-g_c\sin t\omega_c$$
+        其中 $g=\frac{\partial\ell}{\partial \viz{q_embed}}$。这正是把 $(g_c,g_{c+d_r/2})$ 转过 $-t\,\omega_c$。
+        $$\frac{\partial\ell}{\partial \operatorname{even}(\viz{q})}={{ q1.grad | matrix:3 }}$$
+  - id: sin
+    show: [q2s, q1s, k2s, k1s]
+    label: '$\odot\sin$'
+    title: 两个分量都乘 sin
+    text: |
+      <code>q2 * sin</code> 和 <code>q1 * sin</code>。位置 $t=0$ 的角度是 0，$\sin 0=0$，所以第 0 行在这一步全为 0。
+      $$\operatorname{odd}(\viz{q})\odot\overline{\viz{sin}}={{ q2s | matrix:2 }}$$
+    backward:
+      label: '$\partial\operatorname{even}(\viz{q}),\ \partial\operatorname{odd}(\viz{q})$（sin）'
+      title: '$\frac{\partial\ell}{\partial \operatorname{even}(\viz{q})},\ \frac{\partial\ell}{\partial \operatorname{odd}(\viz{q})}$'
+      text: 局部导数是对应位置的 $\sin t\omega_c$。
+  - id: combine
+    show: [qa, qb, ka, kb]
+    label: "$\\operatorname{rot}_1(\\viz{q}),\\ \\operatorname{rot}_2(\\viz{q})$"
+    title: 相减、相加：完成旋转
+    text: |
+      <code>q1 * cos - q2 * sin</code> 和 <code>q2 * cos + q1 * sin</code>，按一对分量写开：
+      $$q'_{2c}=q_{2c}\cos t\omega_c-q_{2c+1}\sin t\omega_c,\qquad q'_{2c+1}=q_{2c}\sin t\omega_c+q_{2c+1}\cos t\omega_c$$
+      这是 $2\times2$ 旋转矩阵乘 $(q_{2c},q_{2c+1})$。位置 0 的 q、k 保持不变。
+      $$\operatorname{rot}_1(\viz{q})={{ qa | matrix:2 }},\qquad \operatorname{rot}_2(\viz{q})={{ qb | matrix:2 }}$$
+    backward:
+      label: '$\partial(\cdot\cos),\ \partial(\cdot\sin)$'
+      title: '$\frac{\partial\ell}{\partial (\cdot\cos)},\ \frac{\partial\ell}{\partial (\cdot\sin)}$'
+      text: |
+        相加的两个输入拿到同一份梯度；相减的第二个输入拿到它的相反数。
+  - id: cat
+    show: [q_embed, k_embed]
+    label: '$\viz{q_embed},\ \viz{k_embed}$'
+    title: 前后拼接，不交错回去
+    text: |
+      <code>q_embed = torch.cat([q1 * cos - q2 * sin, q2 * cos + q1 * sin], dim=-1)</code>：转完的偶数分量放在前 $d_r/2$ 列，奇数分量放在后 $d_r/2$ 列，HF 不把它们交错回原来的列序。第 $2c$、$2c+1$ 列转完后分别到了第 $c$、$c+d_r/2$ 列。
+      这样做不改变注意力分数：q 和 k 的列按同一种方式重排，点积对列的重排不变。旋转矩阵满足 $R_t^{\top}R_s=R_{s-t}$，所以 $\mathbf{q}'_t\cdot\mathbf{k}'_s=\mathbf{q}_t^{\top}R_{s-t}\mathbf{k}_s$：分数里的位置只以差 $t-s$ 出现。
+      $$\viz{q_embed}={{ q_embed | matrix:2 }},\qquad \viz{k_embed}={{ k_embed | matrix:2 }}$$
+    backward:
+      label: "$\\partial\\operatorname{rot}_1(\\viz{q}),\\ \\partial\\operatorname{rot}_2(\\viz{q})$"
+      title: "$\\frac{\\partial\\ell}{\\partial \\operatorname{rot}_1(\\viz{q})},\\ \\frac{\\partial\\ell}{\\partial \\operatorname{rot}_2(\\viz{q})}$"
+      text: |
+        拼接的反向把梯度按列切回两段。
+        $$\frac{\partial\ell}{\partial \viz{q_embed}}={{ q_embed.grad | matrix:3 }}$$

@@ -7,11 +7,12 @@ import { CompilerState } from './state';
 import { type DtypeValue, Eager, type Env, Instance, InstanceList, type Make, type Mode, type ModuleRef, type Num, PageFunction, type RealSizeEntry, type RealSizes, Result, type TensorView, type Value, type ViewIndex } from './types';
 import { combine, isNum, isRecord, num } from './util';
 
-const METHOD_CASTS: Record<string, Dtype> = { float: 'fp32', double: 'fp64', half: 'fp16', bfloat16: 'bf16' };
+const METHOD_CASTS: Record<string, Dtype> = { float: 'fp32', double: 'fp64', half: 'fp16', bfloat16: 'bf16', bool: 'bool', long: 'int64', int: 'int32' };
 const REF: Mode = { k: 'ref' };
+const COMPARE_TENSOR_OPS: Partial<Record<string, string>> = { '==': 'eq', '>=': 'ge', '<': 'lt', '>': 'greater' };
 const OPS: Record<string, string> = { '+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '//': 'floor_divide' };
 
-type IndexStep = { op: 'select'; dim: number; index: number } | { op: 'narrow'; dim: number; start: Num; length: Num } | { op: 'unsqueeze'; dim: number };
+type IndexStep = { op: 'select'; dim: number; index: number } | { op: 'narrow'; dim: number; start: Num; length: Num; step: number } | { op: 'unsqueeze'; dim: number };
 
 export function isDtype(value: unknown): value is DtypeValue {
   return isRecord(value) && typeof value.dtype === 'string' && Object.keys(value).length === 1;
@@ -178,10 +179,22 @@ export abstract class Expressions extends CompilerState {
         if (isTensor(arg)) return this.apply('neg', [arg], new Map(), env, mode, top, ast.pos);
         return this.fail(env, `cannot negate ${describe(arg)}`, ast.pos);
       }
+      case 'invert': {
+        const arg = this.evaluate(ast.arg, env, mode, false);
+        if (isTensor(arg) && arg.dtype === 'bool') return this.apply('logical_not', [arg], new Map(), env, mode, top, ast.pos);
+        return this.fail(env, `'~' needs a bool tensor, got ${describe(arg)}`, ast.pos);
+      }
+      case 'not':
+        return !this.truth(this.evaluate(ast.arg, env, mode, false), env, ast.pos);
+      case 'logic': {
+        const a = this.truth(this.evaluate(ast.a, env, mode, false), env, ast.pos);
+        if (ast.op === 'and' ? !a : a) return a;
+        return this.truth(this.evaluate(ast.b, env, mode, false), env, ast.pos);
+      }
       case 'bin':
         return this.binary(ast, env, mode, top);
       case 'cmp':
-        return this.compare(ast, env, mode);
+        return this.compare(ast, env, mode, top);
       case 'cond': {
         const test = this.evaluate(ast.test, env, mode, false);
         if (typeof test !== 'boolean') return this.fail(env, `the condition is ${describe(test)}, not True or False`, ast.test.pos);
@@ -256,7 +269,47 @@ export abstract class Expressions extends CompilerState {
     return new Eager(value, node.dtype, mode.program.read(node.name, grad));
   }
 
+  private isTopk(ast: Ast, env: Env): boolean {
+    if (ast.k !== 'call') return false;
+    if (ast.fn.k === 'member') return ast.fn.name === 'topk';
+    if (ast.fn.k !== 'name' || ast.fn.name !== 'topk') return false;
+    return !env.locals.has('topk') && env.call?.values.get('topk') === undefined && !env.instance.members.has('topk');
+  }
+
+  private topk(ast: Extract<Ast, { k: 'call' }>, part: number, env: Env, mode: Mode, top: boolean): Value {
+    const at = ast.pos;
+    const given = ast.args.map((arg) => this.evaluate(arg, env, mode, false));
+    if (ast.fn.k === 'member') given.unshift(this.evaluate(ast.fn.obj, env, mode, false));
+    const options = new Map(ast.kwargs.map(([key, arg]) => [key, this.evaluate(arg, env, mode, false)]));
+    const names = ['input', 'k', 'dim', 'largest', 'sorted'];
+    if (given.length > names.length) this.fail(env, `topk takes at most ${names.length} arguments`, at);
+    const bound = new Map<string, Value>(given.map((value, i) => [names[i], value]));
+    for (const [key, value] of options) {
+      if (!names.includes(key)) this.fail(env, `topk has no argument '${key}'`, at);
+      if (bound.has(key)) this.fail(env, `argument '${key}' of topk is given twice`, at);
+      bound.set(key, value);
+    }
+    const input = bound.get('input');
+    const k = bound.get('k');
+    if (!isTensor(input)) this.fail(env, 'topk needs a tensor', at);
+    if (k === undefined) this.fail(env, 'topk needs k', at);
+    if (bound.has('largest') && bound.get('largest') !== true) this.fail(env, 'topk only picks the largest values; largest must be True', at);
+    const sorted = bound.get('sorted');
+    if (sorted !== undefined && typeof sorted !== 'boolean') this.fail(env, 'sorted must be True or False', at);
+    const dim = bound.get('dim') ?? num(-1);
+    const none = new Map<string, Value>();
+    if (part === 1) return this.apply('topk_indices', [input, k, dim], none, env, mode, top, at);
+    const indices = this.apply('topk_indices', [input, k, dim], none, env, mode, false, at);
+    return this.apply('gather', [input, dim, indices], none, env, mode, top, at);
+  }
+
   index(ast: Extract<Ast, { k: 'index' }>, env: Env, mode: Mode, top: boolean): Value {
+    if (this.isTopk(ast.obj, env)) {
+      const item = ast.items[0];
+      const part = ast.items.length === 1 && item.k === 'at' ? this.evaluate(item.value, env, REF, false) : undefined;
+      if (!isNum(part) || (part.toy !== 0 && part.toy !== 1)) this.fail(env, 'topk returns (values, indices); take [0] or [1]', ast.pos);
+      return this.topk(ast.obj as Extract<Ast, { k: 'call' }>, part.toy, env, mode, top);
+    }
     const base = this.evaluate(ast.obj, env, mode, false);
     if (base instanceof InstanceList || Array.isArray(base)) return this.listIndex(base instanceof InstanceList ? base.items : base, base instanceof InstanceList, ast, env);
     if (isRealSizes(base)) {
@@ -273,6 +326,8 @@ export abstract class Expressions extends CompilerState {
       return { ...view, index: composeIndex(view.index, view.node.shape, this.indexItems(ast.items, viewShape(view), env, ast.pos)) };
     }
     if (!isTensor(base)) return this.fail(env, `cannot index ${describe(base)}`, ast.pos);
+    const advanced = this.advancedIndex(base, ast, env, mode, top);
+    if (advanced !== undefined) return advanced;
     const steps = this.indexSteps(base, ast, env, mode);
     if (steps.length === 0) {
       if (mode.k === 'graph') this.fail(env, 'this index selects the whole tensor', ast.pos);
@@ -280,8 +335,28 @@ export abstract class Expressions extends CompilerState {
     }
     let current: Value = base;
     steps.forEach((step, k) => {
-      const args: Value[] = step.op === 'narrow' ? [current, num(step.dim), step.start, step.length] : step.op === 'select' ? [current, num(step.dim), num(step.index)] : [current, num(step.dim)];
+      const args: Value[] = step.op === 'narrow' ? [current, num(step.dim), step.start, step.length, ...(step.step === 1 ? [] : [num(step.step)])] : step.op === 'select' ? [current, num(step.dim), num(step.index)] : [current, num(step.dim)];
       current = this.apply(step.op, args, new Map(), env, mode, top && k === steps.length - 1, ast.pos);
+    });
+    return current;
+  }
+
+  private advancedIndex(base: Node | Eager, ast: Extract<Ast, { k: 'index' }>, env: Env, mode: Mode, top: boolean): Value | undefined {
+    const tensors: (Node | Eager)[] = [];
+    for (const item of ast.items) {
+      if (item.k !== 'at' || isNone(item)) break;
+      const value = this.evaluate(item.value, env, mode, false);
+      if (!isTensor(value)) break;
+      tensors.push(value);
+    }
+    if (tensors.length === 0) return undefined;
+    const rest = ast.items.slice(tensors.length);
+    if (!rest.every(isNone)) this.fail(env, 'a tensor index can only be followed by None', ast.pos);
+    const none = new Map<string, Value>();
+    if (rest.length === 0) return this.apply('index', [base, tensors], none, env, mode, top, ast.pos);
+    let current = this.apply('index', [base, tensors], none, env, mode, false, ast.pos);
+    rest.forEach((_, k) => {
+      current = this.apply('unsqueeze', [current, num(-1)], none, env, mode, top && k === rest.length - 1, ast.pos);
     });
     return current;
   }
@@ -328,7 +403,9 @@ export abstract class Expressions extends CompilerState {
         continue;
       }
       const slice = item?.k === 'slice' ? item : undefined;
-      if (slice === undefined || (slice.start === undefined && slice.stop === undefined)) {
+      const stride = slice?.step === undefined ? 1 : this.int(slice.step, env, 0);
+      if (stride < 1) this.fail(env, 'a slice step must be a positive integer', ast.pos);
+      if (slice === undefined || (slice.start === undefined && slice.stop === undefined && stride === 1)) {
         dim++;
         continue;
       }
@@ -340,8 +417,8 @@ export abstract class Expressions extends CompilerState {
         return combine([size, value], (s, v) => Math.min(s, Math.max(0, v < 0 ? s + v : v)));
       };
       const start = bound(slice.start, num(0));
-      const length = combine([bound(slice.stop, size), start], (stop, from) => Math.max(0, stop - from));
-      steps.push({ op: 'narrow', dim: dim++, start, length });
+      const length = combine([bound(slice.stop, size), start], (stop, from) => Math.max(0, Math.ceil((stop - from) / stride)));
+      steps.push({ op: 'narrow', dim: dim++, start, length, step: stride });
     }
     return steps;
   }
@@ -359,7 +436,10 @@ export abstract class Expressions extends CompilerState {
         const v = this.int(ast, env, 0);
         return Math.min(size, Math.max(0, v < 0 ? size + v : v));
       };
-      if (item.k === 'slice') return { start: bound(item.start, 0), stop: bound(item.stop, size) };
+      if (item.k === 'slice') {
+        if (item.step !== undefined) this.fail(env, 'a reference to a part of a tensor cannot use a slice step', at);
+        return { start: bound(item.start, 0), stop: bound(item.stop, size) };
+      }
       const i = this.int(item.value, env, 0);
       const k = i < 0 ? size + i : i;
       if (k < 0 || k >= size) this.fail(env, `index ${i} is out of range for dimension ${d} of size ${size}`, at);
@@ -367,9 +447,19 @@ export abstract class Expressions extends CompilerState {
     });
   }
 
-  compare(ast: Extract<Ast, { k: 'cmp' }>, env: Env, mode: Mode): boolean {
+  private truth(value: Value, env: Env, at: number): boolean {
+    if (typeof value === 'boolean') return value;
+    return this.fail(env, `a condition must be True or False, got ${describe(value)}`, at);
+  }
+
+  compare(ast: Extract<Ast, { k: 'cmp' }>, env: Env, mode: Mode, top: boolean): Value {
     const a = this.evaluate(ast.a, env, mode, false);
     const b = this.evaluate(ast.b, env, mode, false);
+    if (isTensor(a) && (isTensor(b) || isNum(b))) {
+      const op = COMPARE_TENSOR_OPS[ast.op];
+      if (op === undefined) this.fail(env, `'${ast.op}' is not available on tensors`, ast.pos);
+      return this.apply(op, [a, b], new Map(), env, mode, top, ast.pos);
+    }
     const plain = (v: Value) => (isNum(v) ? v.toy : v);
     const [x, y] = [plain(a), plain(b)];
     if (ast.op === '==' || ast.op === '!=') {
@@ -431,10 +521,10 @@ export abstract class Expressions extends CompilerState {
       if (!isTensor(target)) this.fail(env, `${describe(target)} has no method '${method}'`, ast.fn.pos);
       const given = args();
       const options = kwargs();
-      if (method in METHOD_CASTS || method === 'to') {
+      if (method in METHOD_CASTS || method === 'to' || method === 'type') {
         let dtype: Dtype;
-        if (method === 'to') {
-          if (given.length !== 1 || !isDtype(given[0]) || options.size > 0) this.fail(env, "'.to' takes one dtype, such as x.to(fp32) or x.to(y.dtype)", at);
+        if (method === 'to' || method === 'type') {
+          if (given.length !== 1 || !isDtype(given[0]) || options.size > 0) this.fail(env, `'.${method}' takes one dtype, such as x.${method}(fp32) or x.${method}(y.dtype)`, at);
           dtype = given[0].dtype;
         } else {
           if (given.length > 0 || options.size > 0) this.fail(env, `'.${method}()' takes no arguments`, at);
@@ -446,6 +536,7 @@ export abstract class Expressions extends CompilerState {
       if (opDef(method) === undefined && compositeDef(method) === undefined) this.fail(env, `tensors have no method '${method}'`, ast.fn.pos);
       return this.apply(method, [target, ...given], options, env, mode, top, at);
     }
+    if (this.isTopk(ast, env)) return this.fail(env, 'topk returns (values, indices); take [0] or [1]', at);
     if (ast.fn.k === 'index') {
       const callee = this.evaluate(ast.fn, env, mode, false);
       if (!(callee instanceof Instance)) return this.fail(env, `${describe(callee)} cannot be called`, at);

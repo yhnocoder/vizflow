@@ -102,6 +102,12 @@ describe('narrow, split and cat', () => {
     expect(g.narrow(x, -1, -1, 1).value.toNested()).toEqual([[4], [8]]);
     expect(g.narrow(x, 0, 1, 1).value.toNested()).toEqual([[5, 6, 7, 8]]);
     expect(() => g.narrow(x, 1, 3, 2)).toThrow('narrow: start 3 and length 2 are out of range for input (2, 4) along dim 1');
+    expect(g.narrow(x, 1, 1, 2, 2).value.toNested()).toEqual([[2, 4], [6, 8]]);
+    const h = graph({ check: true });
+    const y = h.input('y', [2, 4], [[1, 2, 3, 4], [5, 6, 7, 8]]);
+    const odd = h.narrow(y, 1, 1, 2, 2);
+    h.sum(h.mul(odd, odd));
+    expect(y.grad!.toNested()).toEqual([[0, 4, 0, 8], [0, 12, 0, 16]]);
   });
 
   it('split returns narrow nodes named after the tensor, with a smaller last chunk', () => {
@@ -113,9 +119,9 @@ describe('narrow, split and cat', () => {
     expect(parts.map((p) => p.shape)).toEqual([[2, 2], [2, 2], [2, 1]]);
     expect(parts[2].value.toNested()).toEqual([[5], [10]]);
     expect(parts.map((p) => p.attrs)).toEqual([
-      { dim: 1, start: 0, length: 2 },
-      { dim: 1, start: 2, length: 2 },
-      { dim: 1, start: 4, length: 1 },
+      { dim: 1, start: 0, length: 2, step: 1 },
+      { dim: 1, start: 2, length: 2, step: 1 },
+      { dim: 1, start: 4, length: 1, step: 1 },
     ]);
     const y = g.input('y', [2, 5], [[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]]);
     const rows = g.split(y, 1);
@@ -173,7 +179,7 @@ describe('dimension names as sizes', () => {
     const heads = g.split(q, 'dh', 1);
     expect(heads.map((h) => h.shape)).toEqual([[3, 2], [3, 2]]);
     expect(heads.map((h) => h.realShape)).toEqual([[3, 128], [3, 128]]);
-    expect(heads[1].attrs).toEqual({ dim: 1, start: 2, length: 2 });
+    expect(heads[1].attrs).toEqual({ dim: 1, start: 2, length: 2, step: 1 });
     expect(heads[1].value.toNested()).toEqual([[2, 3], [6, 7], [10, 11]]);
     const single = g.narrow(q, 1, 0, 'dh', { name: 'head' });
     expect(single.realShape).toEqual([3, 128]);

@@ -35,6 +35,18 @@ export function addMark(tex: string, mark: string): string {
   return addSubscript(tex, mark);
 }
 
+function hasTopLevelSuperscript(tex: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < tex.length; i++) {
+    const c = tex[i];
+    if (c === '\\') i++;
+    else if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0 && (c === '^' || c === "'")) return true;
+  }
+  return false;
+}
+
 function addSuperscript(tex: string, sup: string): string {
   if (tex.endsWith('}')) {
     let depth = 0;
@@ -46,7 +58,7 @@ function addSuperscript(tex: string, sup: string): string {
       }
     }
   }
-  if (/\^(?:[^{}\\]|\\[A-Za-z]+)$/.test(tex)) return `{${tex}}^{${sup}}`;
+  if (hasTopLevelSuperscript(tex)) return `{${tex}}^{${sup}}`;
   return `${tex}^{${sup}}`;
 }
 

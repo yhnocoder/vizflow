@@ -1,0 +1,364 @@
+module: DeepseekV3Attention
+import:
+  DeepseekV3RMSNorm: ./rmsnorm.yaml
+  apply_rotary_pos_emb_interleave: ./apply-rotary-pos-emb-interleave.yaml
+  eager_attention_forward: ./eager-attention-forward.yaml
+args:
+  d_model: dim
+  num_heads: dim
+  q_lora_rank: dim
+  kv_lora_rank: dim
+  qk_nope_head_dim: dim
+  qk_rope_head_dim: dim
+  v_head_dim: dim
+inputs:
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, qk_rope_head_dim]
+  sin: [T, qk_rope_head_dim]
+outputs:
+  att: [T, d_model]
+init:
+  q_a_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: q_lora_rank, bias: false }
+  q_a_layernorm:
+    use: DeepseekV3RMSNorm
+    args: { hidden_size: q_lora_rank }
+  q_b_proj:
+    use: Linear
+    args: { in_features: q_lora_rank, out_features: num_heads * (qk_nope_head_dim + qk_rope_head_dim), bias: false }
+  kv_a_proj_with_mqa:
+    use: Linear
+    args: { in_features: d_model, out_features: kv_lora_rank + qk_rope_head_dim, bias: false }
+  kv_a_layernorm:
+    use: DeepseekV3RMSNorm
+    args: { hidden_size: kv_lora_rank }
+  kv_b_proj:
+    use: Linear
+    args: { in_features: kv_lora_rank, out_features: num_heads * (qk_nope_head_dim + v_head_dim), bias: false }
+  o_proj:
+    use: Linear
+    args: { in_features: num_heads * v_head_dim, out_features: d_model, bias: false }
+  apply_rotary_pos_emb_interleave: apply_rotary_pos_emb_interleave
+  eager_attention_forward:
+    use: eager_attention_forward
+    args: { scaling: (qk_nope_head_dim + qk_rope_head_dim) ** -0.5 }
+forward:
+  - q_a: q_a_proj(x)
+  - q_an: q_a_layernorm(q_a)
+  - q_b: q_b_proj(q_an)
+  - q_states: q_b.view(T, num_heads, qk_nope_head_dim + qk_rope_head_dim).transpose(0, 1)
+  - q_pass: 'q_states[..., : qk_nope_head_dim]'
+  - q_rot: 'q_states[..., qk_nope_head_dim :]'
+  - compressed_kv: kv_a_proj_with_mqa(x)
+  - kv_nope: 'compressed_kv[..., : kv_lora_rank]'
+  - k_rot: 'compressed_kv[..., kv_lora_rank :]'
+  - kv_norm: kv_a_layernorm(kv_nope)
+  - kv_latent: kv_norm.view(1, T, kv_lora_rank)
+  - k_rot_h: k_rot.view(1, T, qk_rope_head_dim)
+  - rotated: apply_rotary_pos_emb_interleave(q_rot, k_rot_h, cos, sin)
+  - q_emb: rotated.q_embed
+  - k_emb: rotated.k_embed
+  - query_states: cat([q_pass, q_emb], dim=-1)
+  - kv_b: kv_b_proj(kv_latent)
+  - kv_heads: kv_b.view(T, num_heads, qk_nope_head_dim + v_head_dim).transpose(0, 1)
+  - k_nope: 'kv_heads[..., : qk_nope_head_dim]'
+  - value_states: 'kv_heads[..., qk_nope_head_dim :]'
+  - k_rot_e: k_emb.expand(num_heads, -1, -1)
+  - key_states: cat([k_nope, k_rot_e], dim=-1)
+  - attn_output: eager_attention_forward(q=query_states, k=key_states, v=value_states, mask=mask)
+  - o: attn_output.reshape(T, num_heads * v_head_dim)
+  - att: o_proj(o)
+
+tex:
+  q_a: '\mathbf{c}_{q}'
+  q_an: '\bar{\mathbf{c}}_{q}'
+  q_b: '\mathbf{q}'
+  q_states: '\mathbf{q}'
+  q_pass: '\mathbf{q}_{\mathrm{pass}}'
+  q_rot: '\mathbf{q}_{\mathrm{rot}}'
+  compressed_kv: '[\mathbf{c}_{kv}\,|\,\mathbf{k}_{\mathrm{rot}}]'
+  kv_nope: '\mathbf{c}_{kv}'
+  k_rot: '\mathbf{k}_{\mathrm{rot}}'
+  kv_norm: '\bar{\mathbf{c}}_{kv}'
+  kv_latent: '\bar{\mathbf{c}}_{kv}'
+  k_rot_h: '\mathbf{k}_{\mathrm{rot}}'
+  q_emb: "\\mathbf{q}_{\\mathrm{rot}}'"
+  k_emb: "\\mathbf{k}_{\\mathrm{rot}}'"
+  query_states: "\\mathbf{q}'"
+  kv_b: '\mathbf{kv}'
+  kv_heads: '\mathbf{kv}'
+  k_nope: '\mathbf{k}_{\mathrm{pass}}'
+  value_states: '\mathbf{v}'
+  k_rot_e: "\\mathrm{expand}(\\mathbf{k}_{\\mathrm{rot}}')"
+  key_states: "\\mathbf{k}'"
+  attn_output: '\mathbf{o}'
+  o: '\mathbf{o}'
+  att: '\mathbf{att}'
+  mask: 'M'
+  q_a_proj.weight: 'W_{qa}'
+  q_b_proj.weight: 'W_{qb}'
+  kv_a_proj_with_mqa.weight: 'W_{kva}'
+  kv_b_proj.weight: 'W_{kvb}'
+  o_proj.weight: 'W_o'
+  q_a_layernorm.weight: '\boldsymbol{\gamma}_{q}'
+  kv_a_layernorm.weight: '\boldsymbol{\gamma}_{kv}'
+
+formula: |-
+  \begin{aligned}
+  \step{q_cat}{\viz{query_states}}&
+  \step{q_cat}{=\big[}
+  \step{q_split}{\viz{q_pass},\ }
+  \step{apply_rotary_pos_emb_interleave.*}{\mathrm{RoPE}(\viz{q_rot})}
+  \step{q_cat}{\big]},\quad
+  \step{q_b_proj}{\viz{q_b}=\mathrm{norm}(}
+  \step{q_a_proj}{\viz{x}{\viz{q_a_proj.weight}}^{\top}}
+  \step{q_b_proj}{){\viz{q_b_proj.weight}}^{\top}}\\
+  \step{expand_kv.k_cat}{\viz{key_states}}&
+  \step{expand_kv.k_cat}{=\big[}
+  \step{expand_kv.kv_split}{\viz{k_nope},\ }
+  \step{expand_kv.k_expand}{\mathrm{RoPE}(\viz{k_rot})}
+  \step{expand_kv.k_cat}{\big]},\quad
+  \step{expand_kv.kv_b_proj}{[\viz{k_nope}\,|\,\viz{value_states}]=\mathrm{norm}(}
+  \step{kv_split}{\viz{kv_nope}}
+  \step{expand_kv.kv_b_proj}{){\viz{kv_b_proj.weight}}^{\top}}\\
+  \step{o_proj}{\viz{att}}&
+  \step{o_proj}{=}
+  \step{eager_attention_forward.*}{\operatorname{Attn}(\viz{query_states},\viz{key_states},\viz{value_states})}
+  \step{o_proj}{ {\viz{o_proj.weight}}^{\top}}
+  \end{aligned}
+fold:
+  label: '$\viz{att}=\mathrm{self\_attn}(\viz{x})$'
+  title: self_attn（MLA）
+  text: |
+    q 和 kv 各自先压缩到一个低维的 latent，再展开成 {{ num_heads }} 个 head。每个 head 的 query 和 key 由两段拼成：不带位置的一段来自 latent，带位置的一段做 RoPE，其中 key 的这一段所有 head 共用一份。之后是普通的多头因果注意力和 o_proj。位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以 Jacobian 是块下三角的。
+    $$\viz{att}={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
+    text: |
+      一次反向算出 MLA 全部参数的梯度和 $\pfl{\viz{x}}$。$\viz{x}$ 进入 q_a_proj 和 kv_a_proj_with_mqa 两个投影，梯度是两路之和。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+layout:
+  place:
+    k_rot: { with: kv_nope }
+    k_rot_h: { with: kv_latent }
+    value_states: { with: k_nope }
+
+steps:
+  - id: q_a_proj
+    subtitle: nn.Linear
+    label: '$\viz{q_a}$'
+    title: q_a_proj：把 query 压缩成 latent
+    text: |
+      DeepSeek V3 的注意力是 MLA（multi-head latent attention）。它和普通多头注意力的区别在 q、k、v 怎么得到：query 和 key/value 都先从 $\viz{x}$ 压缩到一个低维的 latent，再从 latent 展开成每个 head 的向量。
+
+      query 这一路先做 <code>self.q_a_proj(hidden_states)</code>，没有 bias（<code>config.attention_bias</code> 是 False），从 $d_{\mathrm{model}}={{ d_model }}$ 维压到 $r_q={{ q_lora_rank }}$ 维。DeepSeek-V3 里 $d_{\mathrm{model}}={{ d_model | real }}$、$r_q={{ q_lora_rank | real }}$，展开后的宽度是 $H(d_n+d_r)={{ num_heads * (qk_nope_head_dim + qk_rope_head_dim) | real }}$。一步投影要 ${{ d_model | real }}\times{{ num_heads * (qk_nope_head_dim + qk_rope_head_dim) | real }}$ 个参数，先压缩再展开只要 ${{ d_model | real }}\times{{ q_lora_rank | real }}+{{ q_lora_rank | real }}\times{{ num_heads * (qk_nope_head_dim + qk_rope_head_dim) | real }}$ 个。HF 在 <code>q_lora_rank</code> 为 None 时改用一个 <code>q_proj</code>，DeepSeek V3 的配置给了 $r_q$，所以走这条路。
+      $$\viz{q_a}=\viz{x}{\viz{q_a_proj.weight}}^{\top}={{ q_a | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q_a_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{q_a_proj.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        $$\pf{\ell}{{\viz{q_a_proj.weight}}^{\top}}={\viz{x}}^{\top}\pfl{\viz{q_a}},\qquad \pfl{\viz{x}}\mathrel{+}=\pfl{\viz{q_a}}\viz{q_a_proj.weight}$$
+  - id: q_a_layernorm
+    subtitle: DeepseekV3RMSNorm，范围是 $r_q$ 维
+    fold:
+      text: |
+        <code>self.q_a_layernorm(...)</code>：latent 做一次 RMSNorm，计算和 input_layernorm 相同，范围是 $r_q={{ q_lora_rank }}$ 维，权重 $\viz{q_a_layernorm.weight}$ 是它自己的。
+        $$\viz{q_an}={{ q_an | matrix:2 }}$$
+      backward:
+        text: |
+          $$\pfl{\viz{q_a_layernorm.weight}}={{ q_a_layernorm.weight.grad | matrix:3 }},\qquad \pfl{\viz{q_a}}={{ q_a.grad | matrix:3 }}$$
+  - id: q_b_proj
+    subtitle: nn.Linear
+    label: '$\viz{q_b}$'
+    title: q_b_proj：从 latent 展开成 {{ num_heads }} 个 head
+    text: |
+      <code>q_states = self.q_b_proj(...)</code> 把 $r_q$ 维的 latent 投影到 $H(d_n+d_r)={{ num_heads }}\times({{ qk_nope_head_dim }}+{{ qk_rope_head_dim }})={{ num_heads * (qk_nope_head_dim + qk_rope_head_dim) }}$ 维，没有 bias。
+      $$\viz{q_b}=\viz{q_an}{\viz{q_b_proj.weight}}^{\top}={{ q_b | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q_b_proj.weight},\ \partial\viz{q_an}$'
+      title: '$\pfl{\viz{q_b_proj.weight}},\ \pfl{\viz{q_an}}$'
+      text: |
+        $$\pf{\ell}{{\viz{q_b_proj.weight}}^{\top}}={\viz{q_an}}^{\top}\pfl{\viz{q_b}},\qquad \pfl{\viz{q_an}}=\pfl{\viz{q_b}}\viz{q_b_proj.weight}={{ q_an.grad | matrix:3 }}$$
+  - id: q_heads
+    show: q_states
+    label: '$\viz{q_states}$'
+    title: 分成 head
+    text: |
+      <code>q_states.view(query_shape).transpose(1, 2)</code>：每一行切成 $H={{ num_heads }}$ 段，每段宽 $d_n+d_r={{ qk_nope_head_dim + qk_rope_head_dim }}$，再把 head 维换到位置维前面，形状变成 $H\times T\times(d_n+d_r)$。HF 的张量多一个 batch 维，所以 transpose 的轴是 1 和 2，这一页是 0 和 1。view 和 transpose 只改变形状的解释，局部导数是 1。
+      $$\viz{q_states}={{ q_states | matrix:2 }}$$
+    backward:
+      title: '$\pfl{\viz{q_b}}$'
+      text: 把梯度的轴换回去，再合并成 $T\times H(d_n+d_r)$。
+  - id: q_split
+    show: [q_pass, q_rot]
+    label: '$\viz{q_pass},\ \viz{q_rot}$'
+    title: 每个 head 切成不带位置和带位置的两段
+    text: |
+      <code>q_pass, q_rot = torch.split(q_states, [self.qk_nope_head_dim, self.qk_rope_head_dim], dim=-1)</code>：每个 head 的前 $d_n={{ qk_nope_head_dim }}$ 维是 $\viz{q_pass}$，只和内容有关；后 $d_r={{ qk_rope_head_dim }}$ 维是 $\viz{q_rot}$，接下来做 RoPE。split 等于沿最后一维取两段切片，这里画成两个切片。
+
+      为什么要分开？如果像普通注意力那样对整个 head 做 RoPE，推理时就不能把 $W_{kvb}$ 里属于 k 的部分并进 query 的投影（见 kv_b_proj 一步），因为 RoPE 的旋转夹在两个矩阵中间，随位置变化。所以 MLA 只让一小段维度带位置，其余维度保持和位置无关。
+      $$\viz{q_rot}={{ q_rot | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q_states}$'
+      title: '$\pfl{\viz{q_states}}$'
+      text: 两段的梯度按列拼回一个 head。
+  - id: kv_a_proj_with_mqa
+    subtitle: nn.Linear
+    label: '$\viz{compressed_kv}$'
+    title: kv_a_proj_with_mqa：kv 的 latent 和共享的 RoPE key
+    text: |
+      <code>compressed_kv = self.kv_a_proj_with_mqa(hidden_states)</code>：一个投影同时算出两样东西，$r_{kv}={{ kv_lora_rank }}$ 维的 latent $\viz{kv_nope}$，以及 $d_r={{ qk_rope_head_dim }}$ 维的 $\viz{k_rot}$。推理时 KV cache 只存这两样，每个位置 $r_{kv}+d_r$ 个数，DeepSeek-V3 里是 ${{ kv_lora_rank | real }}+{{ qk_rope_head_dim | real }}={{ kv_lora_rank + qk_rope_head_dim | real }}$；同样 {{ num_heads | real }} 个 head 的普通多头注意力要存 $H(d_n+d_r)+Hd_v={{ num_heads * (qk_nope_head_dim + qk_rope_head_dim + v_head_dim) | real }}$ 个。名字里的 mqa 指 $\viz{k_rot}$ 只有一份，所有 head 共用，像 multi-query attention。
+      $$\viz{compressed_kv}=\viz{x}{\viz{kv_a_proj_with_mqa.weight}}^{\top}={{ compressed_kv | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{kv_a_proj_with_mqa.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{kv_a_proj_with_mqa.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        $\viz{x}$ 的梯度是 q 和 kv 两条路之和：
+        $$\pfl{\viz{x}}=\pfl{\viz{q_a}}\viz{q_a_proj.weight}+\pfl{\viz{compressed_kv}}\viz{kv_a_proj_with_mqa.weight}={{ x.grad | matrix:3 }}$$
+  - id: kv_split
+    show: [kv_nope, k_rot]
+    label: '$\viz{kv_nope},\ \viz{k_rot}$'
+    title: 切出 latent 和 RoPE key
+    text: |
+      <code>kv_nope, k_rot = torch.split(compressed_kv, [self.kv_lora_rank, self.qk_rope_head_dim], dim=-1)</code>，前 $r_{kv}$ 列是 latent，后 $d_r$ 列是 RoPE key。
+      $$\viz{kv_nope}={{ kv_nope | matrix:2 }},\qquad \viz{k_rot}={{ k_rot | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{compressed_kv}$'
+      title: '$\pfl{\viz{compressed_kv}}$'
+      text: 两段的梯度按列拼回去。
+  - id: kv_a_layernorm
+    subtitle: DeepseekV3RMSNorm，范围是 $r_{kv}$ 维
+    fold:
+      text: |
+        <code>kv_nope = self.kv_a_layernorm(kv_nope)</code>：只对 latent 做 RMSNorm，范围是 $r_{kv}={{ kv_lora_rank }}$ 维；RoPE key 那一段不归一化。计算和 input_layernorm 相同，权重是它自己的。
+        $$\viz{kv_norm}={{ kv_norm | matrix:2 }}$$
+      backward:
+        text: |
+          $$\pfl{\viz{kv_a_layernorm.weight}}={{ kv_a_layernorm.weight.grad | matrix:3 }},\qquad \pfl{\viz{kv_nope}}={{ kv_nope.grad | matrix:3 }}$$
+  - id: latent_view
+    show: [kv_latent, k_rot_h]
+    label: '$\viz{kv_latent},\ \viz{k_rot_h}$'
+    title: 两个 latent 写成 1 个 head
+    text: |
+      <code>kv_nope.view(batch_size, 1, seq_length, self.kv_lora_rank)</code> 和 <code>k_rot.view(batch_size, 1, seq_length, self.qk_rope_head_dim)</code>：两者都写成只有 1 个 head 的四维张量，HF 的注释说这是为了让各种 KV cache 都按同样的形状处理它们。这一页没有 batch 维，形状是 $1\times T\times r_{kv}$ 和 $1\times T\times d_r$。view 只改变形状的解释，局部导数是 1。
+    backward:
+      title: '$\pfl{\viz{kv_norm}},\ \pfl{\viz{k_rot}}$'
+      text: 梯度的形状改回 $T\times r_{kv}$ 和 $T\times d_r$。
+  - id: apply_rotary_pos_emb_interleave
+    subtitle: 只转带位置的 $d_r$ 维
+    edit:
+      even_odd:
+        append: |
+          这里转的 query 是 $\viz{q_rot}$，有 {{ num_heads }} 个 head；key 是 $\viz{k_rot_h}$，只有 1 个 head，所有 head 共用。
+  - id: q_cat
+    show: query_states
+    label: "$\\viz{query_states}$"
+    title: 拼回 query
+    text: |
+      <code>query_states = torch.cat((q_pass, q_rot), dim=-1)</code>：不带位置的 $\viz{q_pass}$ 在前，转过的 $\viz{q_emb}$ 在后，每个 head 宽 $d_n+d_r={{ qk_nope_head_dim + qk_rope_head_dim }}$。拼接只搬动元素，局部导数是 1。
+      $$\viz{query_states}={{ query_states | matrix:2 }}$$
+    backward:
+      label: "$\\partial\\viz{q_pass},\\ \\partial\\viz{q_emb}$"
+      title: "$\\pfl{\\viz{q_pass}},\\ \\pfl{\\viz{q_emb}}$"
+      text: 梯度按列切回两段。
+  - id: expand_kv
+    title: expand_kv
+    subtitle: 从 latent 展开 k 和 v
+    text: |
+      <code>key_states, value_states = self.expand_kv(kv_nope, k_rot)</code>：HF 先把两个 latent 写进 KV cache（训练时没有 cache，这一步不做任何事），再用这个函数从 latent 展开每个 head 的 k 和 v。所以 cache 里存的始终是压缩后的 latent。
+    steps:
+      - id: kv_b_proj
+        subtitle: nn.Linear
+        label: '$\viz{kv_b}$'
+        title: kv_b_proj：从 latent 展开 k 和 v
+        text: |
+          <code>kv_nope = self.kv_b_proj(kv_nope)</code>：latent 投影到 $H(d_n+d_v)={{ num_heads }}\times({{ qk_nope_head_dim }}+{{ v_head_dim }})={{ num_heads * (qk_nope_head_dim + v_head_dim) }}$ 维，没有 bias。所有 head 的 k、v 都来自同一个 $r_{kv}$ 维的 latent。
+
+          推理时可以不做这一步：k 的部分 $W_{kvb}^{k}$ 可以并进 query，$\mathbf{q}_{\mathrm{pass}}\cdot(W^{k}_{kvb}\bar{\mathbf{c}}_{kv})=(W^{k\top}_{kvb}\mathbf{q}_{\mathrm{pass}})\cdot\bar{\mathbf{c}}_{kv}$；v 的部分可以并进 o_proj。这样注意力直接在 latent 上算，cache 也只存 latent。这正是前面只让 $d_r$ 维带位置的原因。HF 的实现和训练按这里的顺序展开。
+          $$\viz{kv_b}=\viz{kv_latent}{\viz{kv_b_proj.weight}}^{\top}={{ kv_b | matrix:2 }}$$
+        backward:
+          label: '$\partial\viz{kv_b_proj.weight},\ \partial\viz{kv_latent}$'
+          title: '$\pfl{\viz{kv_b_proj.weight}},\ \pfl{\viz{kv_latent}}$'
+          text: |
+            $$\pf{\ell}{{\viz{kv_b_proj.weight}}^{\top}}={\viz{kv_latent}}^{\top}\pfl{\viz{kv_b}},\qquad \pfl{\viz{kv_latent}}=\pfl{\viz{kv_b}}\viz{kv_b_proj.weight}={{ kv_latent.grad | matrix:3 }}$$
+      - id: kv_heads
+        show: kv_heads
+        label: '$\viz{kv_heads}$'
+        title: 分成 head
+        text: |
+          <code>.view(key_shape).transpose(1, 2)</code>，<code>key_shape = (batch_size, seq_length, -1, qk_nope_head_dim + v_head_dim)</code>：每一行切成 {{ num_heads }} 段，每段宽 $d_n+d_v={{ qk_nope_head_dim + v_head_dim }}$，再把 head 维换到前面，形状是 $H\times T\times(d_n+d_v)$。
+          $$\viz{kv_heads}={{ kv_heads | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{kv_b}}$'
+          text: 把梯度的轴换回去，再合并。
+      - id: kv_split
+        show: [k_nope, value_states]
+        label: '$\viz{k_nope},\ \viz{value_states}$'
+        title: 每个 head 切成 key 和 value
+        text: |
+          <code>k_nope, value_states = torch.split(kv_nope, [self.qk_nope_head_dim, self.v_head_dim], dim=-1)</code>：前 $d_n$ 维是不带位置的 key，后 $d_v$ 维是 value。v 不参与打分，所以不做 RoPE。
+          $$\viz{value_states}={{ value_states | matrix:2 }}$$
+        backward:
+          label: '$\partial\viz{kv_heads}$'
+          title: '$\pfl{\viz{kv_heads}}$'
+          text: 两段的梯度按列拼回去。
+      - id: k_expand
+        show: k_rot_e
+        label: "$\\viz{k_rot_e}$"
+        title: RoPE key 复制给每个 head
+        text: |
+          <code>k_rot = k_rot.expand(-1, k_nope.shape[1], -1, -1)</code>：转过的 $\viz{k_emb}$ 只有 1 个 head，expand 把它复制给 {{ num_heads }} 个 head。HF 的注释说 expand 不复制底层数据，只是让几个 head 读同一块内存。局部导数是 1。
+          $$\viz{k_rot_e}={{ k_rot_e | matrix:2 }}$$
+        backward:
+          label: "$\\partial\\viz{k_emb}$"
+          title: "$\\pfl{\\viz{k_emb}}$"
+          text: |
+            {{ num_heads }} 个 head 用的是同一个 $\viz{k_emb}$，反向时 {{ num_heads }} 份梯度加回这一份：
+            $$\pfl{\viz{k_emb}}=\sum_h\pfl{\viz{k_rot_e}{}^{(h)}}={{ k_emb.grad | matrix:3 }}$$
+      - id: k_cat
+        show: key_states
+        label: "$\\viz{key_states}$"
+        title: 拼回 key
+        text: |
+          HF 先用 <code>kv_nope.new_empty(...)</code> 建一个 $H\times T\times(d_n+d_r)$ 的张量，再用两次 <code>copy_</code> 把 $\viz{k_nope}$ 写进前 $d_n$ 列、$\viz{k_rot_e}$ 写进后 $d_r$ 列，结果和 <code>torch.cat</code> 相同，这里画成拼接。和 query 一样，不带位置的在前，带位置的在后，所以 $\mathbf{q}'\cdot\mathbf{k}'$ 分成两部分：前 $d_n$ 维只看内容，后 $d_r$ 维带相对位置。
+          $$\viz{key_states}={{ key_states | matrix:2 }}$$
+        backward:
+          label: "$\\partial\\viz{k_nope},\\ \\partial\\viz{k_rot_e}$"
+          title: "$\\pfl{\\viz{k_nope}},\\ \\pfl{\\viz{k_rot_e}}$"
+          text: 梯度按列切回两段。
+  - id: eager_attention_forward
+    subtitle: 'softmax $\cdot$ $P\mathbf{v}$，每个 head 各算一次'
+    flat: true
+    edit:
+      krep:
+        append: |
+          MLA 的 <code>num_key_value_heads</code> 等于 head 数 {{ num_heads }}，所以 $n_{\mathrm{rep}}=1$。<code>repeat_kv</code> 在 $n_{\mathrm{rep}}=1$ 时直接返回输入，k 原样交给下一步。
+      Ssc:
+        append: |
+          MLA 的 <code>self.scaling = self.qk_head_dim ** (-0.5)</code>，$d_{qk}=d_n+d_r={{ qk_nope_head_dim + qk_rope_head_dim }}$，这一页是 ${{ (qk_nope_head_dim + qk_rope_head_dim) ** -0.5 }}$。DeepSeek-V3 用 YaRN 把上下文扩到 128K，HF 的 <code>yarn_apply_mscale</code> 还会再乘上 $m^2$；这一页的 RoPE 不用 YaRN，所以没有这个系数。
+  - id: reshape
+    show: o
+    label: '$\viz{o}$'
+    title: 拼回 $T\times{{ num_heads * v_head_dim }}$
+    text: |
+      <code>attn_output.reshape(batch_size, seq_length, -1).contiguous()</code> 把 $T\times H\times d_v$ 合并成 $T\times Hd_v$，{{ num_heads }} 个 head 的输出在每一行里并排。局部导数是 1。
+      $$\viz{o}={{ o | matrix:2 }}$$
+    backward:
+      title: '$\pfl{\viz{attn_output}}$'
+      text: 把梯度按列切回 {{ num_heads }} 个 head。
+  - id: o_proj
+    subtitle: nn.Linear
+    label: o_proj
+    title: o_proj
+    text: |
+      <code>self.o_proj(attn_output)</code> 把 $Hd_v={{ num_heads * v_head_dim }}$ 维投影回 $d_{\mathrm{model}}={{ d_model }}$ 维，没有 bias，把各 head 的输出混合起来。
+      $$\viz{att}=\viz{o}{\viz{o_proj.weight}}^{\top}={{ att | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{o_proj.weight},\ \partial\viz{o}$'
+      title: '$\pfl{\viz{o_proj.weight}},\ \pfl{\viz{o}}$'
+      text: |
+        $$\pf{\ell}{{\viz{o_proj.weight}}^{\top}}={\viz{o}}^{\top}\pfl{\viz{att}},\qquad \pfl{\viz{o}}=\pfl{\viz{att}}\viz{o_proj.weight}={{ o.grad | matrix:3 }}$$

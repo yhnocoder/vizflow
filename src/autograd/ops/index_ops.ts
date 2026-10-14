@@ -100,34 +100,39 @@ export interface NarrowAttrs {
   dim: number;
   start: number;
   length: number;
+  step?: number;
 }
 
-function narrowed(shape: readonly number[], attrs: NarrowAttrs): { dim: number; start: number; shape: number[] } {
+function narrowed(shape: readonly number[], attrs: NarrowAttrs): { dim: number; start: number; step: number; shape: number[] } {
   if (shape.length === 0) throw new Error('narrow: input must have at least one dimension');
   const dim = normDim(attrs.dim, shape.length);
   const size = shape[dim];
   const start = attrs.start < 0 ? attrs.start + size : attrs.start;
   const { length } = attrs;
-  if (!Number.isInteger(start) || !Number.isInteger(length) || length < 0 || start < 0 || start + length > size) {
-    throw new Error(`narrow: start ${attrs.start} and length ${length} are out of range for input ${formatShape(shape)} along dim ${dim}`);
+  const step = attrs.step ?? 1;
+  if (!Number.isInteger(step) || step < 1) throw new Error(`narrow: step ${step} must be a positive integer`);
+  if (!Number.isInteger(start) || !Number.isInteger(length) || length < 0 || start < 0 || (length > 0 && start + (length - 1) * step >= size)) {
+    const given = step === 1 ? `start ${attrs.start} and length ${length}` : `start ${attrs.start}, length ${length} and step ${step}`;
+    throw new Error(`narrow: ${given} are out of range for input ${formatShape(shape)} along dim ${dim}`);
   }
   const out = [...shape];
   out[dim] = length;
-  return { dim, start, shape: out };
+  return { dim, start, step, shape: out };
 }
 
 export function narrowSource(inputShape: readonly number[], attrs: NarrowAttrs, out: readonly number[]): number[] {
-  const { dim, start } = narrowed(inputShape, attrs);
+  const { dim, start, step } = narrowed(inputShape, attrs);
   const index = [...out];
-  index[dim] += start;
+  index[dim] = start + index[dim] * step;
   return index;
 }
 
 export const narrowOp: OpDef<NarrowAttrs> = {
   name: 'narrow',
-  args: ['input', 'dim', 'start', 'length'],
+  args: ['input', 'dim', 'start', 'length', 'step'],
   tensors: ['input'],
   sizes: ['length'],
+  defaults: { step: 1 },
   shape: ([input], attrs) => narrowed(input, attrs).shape,
   forward: ([input], attrs) => {
     const out = new Tensor(narrowed(input.shape, attrs).shape);

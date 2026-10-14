@@ -344,7 +344,8 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 | `softmax` `log_softmax` | `g.softmax(a, dim)` | |
 | `gather` | `g.gather(a, dim, index)` | `index` 是 label 节点，维数与 `a` 相同 |
 | `embedding` | `g.embedding(ids, E)` | `ids` 是 label 节点（token id，0 维或 1 维），`E` 是 `(num, dim)`，输出 shape 为 `[...ids.shape, dim]`；`ids` 不求梯度 |
-| `narrow` | `g.narrow(a, dim, start, length)` | `start` 可以为负数；`length` 可以是维度名 |
+| `narrow` | `g.narrow(a, dim, start, length, step?)` | `start` 可以为负数；`length` 可以是维度名；`step` 默认 1，第 i 个元素取 `start + i*step` |
+| `zeros_like` | `g.zeros_like(a)` | 形状和 dtype 与 `a` 相同的全 0 张量，没有梯度 |
 | `view` | `g.view(a, [T, H, dh])`、`g.view(a, T, H, dh)` | 与 `torch.view` 相同，按行优先重排，不移动数据；形状可以写维度名，其中一个可以是 `-1` |
 | `select` | `g.select(a, dim, index)` | 取出 `dim` 上的第 `index` 个，去掉这一维；`index` 可以为负数 |
 | `select_matmul` | `g.select_matmul(a, b, index)` | `a` 是 `(T, H, K)`，`b` 是 `(K, N)`，结果是 `a[:, index, :] @ b`，即某个 head 直接参与矩阵乘，不另建切片节点 |

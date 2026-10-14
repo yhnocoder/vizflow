@@ -1,0 +1,76 @@
+module: DeepseekV3RotaryEmbedding
+args:
+  qk_rope_head_dim: dim
+  rope_theta: float
+inputs:
+  x: ['...']
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  cos: [T, qk_rope_head_dim]
+  sin: [T, qk_rope_head_dim]
+init:
+  buffers:
+    inv_freq:
+      shape: [qk_rope_head_dim // 2]
+      dtype: fp32
+      value: 1.0 / rope_theta ** (arange(0, qk_rope_head_dim, 2, dtype=int64).float() / qk_rope_head_dim)
+forward:
+  - freqs: position_ids[..., None].float() * inv_freq.float()
+  - emb: cat([freqs, freqs], dim=-1)
+  - cos_fp32: emb.cos()
+  - cos: cos_fp32.to(x.dtype)
+  - sin_fp32: emb.sin()
+  - sin: sin_fp32.to(x.dtype)
+tex:
+  inv_freq: '\boldsymbol{\omega}'
+  freqs: 't\,\boldsymbol{\omega}'
+  emb: '\boldsymbol{\theta}'
+  cos: '\cos'
+  sin: '\sin'
+formula: 
+  \newcommand{\freqs}{\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}_\mathrm{fp32}}}
+  \newcommand{\emb}[1]{\step{emb}{\operatorname{cat}\big(}#1 \step{emb}{,\ \cdot\big)}}
+  \newcommand{\vcos}[1]{\step{cos_sin}{\viz{cos}=\cos\big(}#1 \step{cos_sin}{\big)}}
+  \newcommand{\vsin}[1]{\step{cos_sin}{\viz{sin}=\sin\big(}#1 \step{cos_sin}{\big)}}
+  \begin{aligned}
+  \vcos{\emb{\freqs}}\step{to_dtype}{_\mathrm{dtype}}\\
+  \vsin{\emb{\freqs}}\step{to_dtype}{_\mathrm{dtype}}
+  \end{aligned}
+
+layout:
+  place:
+    sin_fp32: {with: cos_fp32}
+    sin: {with: cos}
+steps:
+  - id: freqs
+    label: '$\viz{freqs}$'
+    title: 每个位置、每组频率的角度
+    text: |
+      RoPE 把 q、k 的分量两两配对，每一对按位置转一个角度（原理见 section「RoPE：用旋转来编码位置」）。这一步算出所有角度。
+
+      频率 <code>inv_freq</code> 在 <code>__init__</code> 里算好，是一个 buffer：
+      $$\omega_i=\theta^{-2i/d_r},\qquad i=0,\dots,d_r/2-1,\qquad \viz{inv_freq}={{ inv_freq | matrix:3 }}$$
+      代码是 <code>1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))</code>，<code>arange(0, dim, 2)</code> 给出的正是 $2i$。$i$ 越大，$\omega_i$ 越小，转得越慢。
+
+      有了频率，再乘上位置就得到角度：<code>freqs = position_ids[..., None].float() * self.inv_freq.to(device=x.device, dtype=torch.float)</code> 是位置与频率的外积，得到 $T\times d_r/2$ 的表：
+      $${\viz{freqs}}_{t,i}=t\,\omega_i,\qquad \viz{freqs}={{ freqs | matrix:3 }}$$
+  - id: emb
+    label: '$\viz{emb}$'
+    title: 角度表复制成 $d_r$ 列
+    text: |
+      <code>emb = torch.cat((freqs, freqs), dim=-1)</code> 把角度表左右拼两份，得到 $T\times d_r$：
+      $${\viz{emb}}_{t,c}={\viz{emb}}_{t,c+d_r/2}=t\,\omega_c,\qquad c=0,\dots,d_r/2-1$$
+      <code>DeepseekV3RotaryEmbedding</code> 和 Qwen3 的 rotary_emb 写法相同，所以表也拼成两份。拼两份是为 rotate_half 准备的：rotate_half 把第 $c$ 和第 $c+d_r/2$ 个分量配成一对，两个分量要用同一个角度。DeepSeek V3 的配置里 <code>rope_interleave</code> 是 True，attention 改用 <code>apply_rotary_pos_emb_interleave</code>，把相邻的第 $2c$、$2c+1$ 个分量配成一对，只取这张表的前 $d_r/2$ 列，后一半在那里用不到。
+      $$\viz{emb}={{ emb | matrix:3 }}$$
+  - id: cos_sin
+    show: [cos_fp32, sin_fp32]
+    label: '$\viz{cos_fp32},\ \viz{sin_fp32}$'
+    title: 取 cos 和 sin
+    text: |
+      <code>cos = emb.cos() * self.attention_scaling</code>，sin 相同。默认的 RoPE 里 <code>attention_scaling</code> 是 1，所以这两张表就是角度的 cos 和 sin。角度和 cos、sin 都在 float32 里算，最后的 <code>cos.to(dtype=x.dtype)</code> 才转成输入的 dtype。
+      $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
+      这两张表只由位置和 $\theta$ 决定，和输入的内容无关，所以不需要梯度：<code>forward</code> 带 <code>@torch.no_grad()</code>，反向不经过这里。
+  - id: to_dtype
+    show: [cos, sin]
+    label: '$\viz{cos},\ \viz{sin}$'
+    title: to(dtype)

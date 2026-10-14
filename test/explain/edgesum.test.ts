@@ -113,6 +113,13 @@ const cases: Case[] = [
     },
   },
   { op: 'arange', build: (g) => ({ out: g.arange(1, 7, 2), inputs: [] }) },
+  {
+    op: 'zeros_like',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.zeros_like(x), inputs: [] };
+    },
+  },
   { op: 'causal_mask', build: (g) => ({ out: g.causal_mask(3, 'fp32'), inputs: [] }) },
   { op: 'zeros', build: (g) => ({ out: g.zeros(2, 3), inputs: [] }) },
   { op: 'ones', build: (g) => ({ out: g.ones(2, 3), inputs: [] }) },
@@ -232,6 +239,13 @@ const cases: Case[] = [
     build: (g, r) => {
       const x = g.input('x', [3, 5], randomValues(r, [3, 5]));
       return { out: g.narrow(x, -2, -2, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'narrow',
+    build: (g, r) => {
+      const x = g.input('x', [3, 6], randomValues(r, [3, 6]));
+      return { out: g.narrow(x, 1, 1, 3, 2), inputs: [x] };
     },
   },
   {

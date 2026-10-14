@@ -1,0 +1,87 @@
+module: DeepseekV3MoE
+import:
+  DeepseekV3Experts: ./experts.yaml
+  DeepseekV3TopkRouter: ./topk-router.yaml
+  DeepseekV3MLP: ./mlp.yaml
+args:
+  d_model: dim
+  d_moe: dim
+  n_routed_experts: dim
+  num_experts_per_tok: dim
+  n_group: dim
+  topk_group: dim
+  n_shared_experts: dim
+  routed_scaling_factor: float
+inputs:
+  hidden_states: [T, d_model]
+outputs:
+  out: [T, d_model]
+init:
+  experts:
+    use: DeepseekV3Experts
+    args: [d_model, d_moe, n_routed_experts]
+  gate:
+    use: DeepseekV3TopkRouter
+    args: [d_model, n_routed_experts, num_experts_per_tok, n_group, topk_group, routed_scaling_factor]
+  shared_experts:
+    use: DeepseekV3MLP
+    args: { d_model: d_model, d_ff: d_moe * n_shared_experts }
+forward:
+  - residuals: hidden_states
+  - routing: gate(hidden_states)
+  - topk_weights: routing.topk_weights
+  - topk_indices: routing.topk_indices
+  - routed: experts(hidden_states, topk_indices, topk_weights)
+  - shared: shared_experts(residuals)
+  - out: routed + shared
+layout:
+  place:
+    residuals: { after: routed }
+tex:
+  topk_weights: '\mathbf{p}'
+  topk_indices: '\mathbf{i}'
+  residuals: '\viz{hidden_states}'
+  routed: '\mathbf{y}^{\mathrm{r}}'
+  shared: '\mathbf{y}^{\mathrm{s}}'
+  out: '\mathbf{moe}'
+formula: '\step{add}{\viz{out}=}\step{experts.*}{\textstyle\sum_{e\in\mathrm{top}K}p_e\,\mathrm{expert}_e(\viz{hidden_states})}\step{add}{+}\step{shared_experts.*}{\mathrm{shared}(\viz{hidden_states})}'
+fold:
+  label: '$\viz{out}=\mathrm{MoE}(\viz{hidden_states})$'
+  title: DeepseekV3MoE
+  text: |
+    路由、{{ n_routed_experts }} 个路由专家和 {{ n_shared_experts }} 个共享专家都收进了盒子。每个位置只经过 {{ num_experts_per_tok }} 个路由专家和共享专家，位置之间互不影响。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{hidden_states}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{hidden_states}}$'
+    text: |
+      $$\pfl{\viz{hidden_states}}={{ hidden_states.grad | matrix:3 }}$$
+
+steps:
+  - id: gate
+    subtitle: DeepseekV3TopkRouter
+  - id: experts
+    subtitle: DeepseekV3Experts，每个专家只算选中它的 token
+    edit:
+      onehot:
+        append: |
+          这里的 $\viz{topk_indices}$ 和 $\viz{topk_weights}$ 是 gate 的后两个输出，HF 写的是 <code>_, topk_weights, topk_indices = self.gate(hidden_states)</code>，再调用 <code>self.experts(hidden_states, topk_indices, topk_weights)</code>。调用前还有一行 <code>hidden_states = hidden_states.view(-1, hidden_states.shape[-1])</code>，把 batch 和序列两维合成一维；这一页没有 batch 维，这一行不改变任何东西。
+  - id: shared_experts
+    subtitle: DeepseekV3MLP，共享专家
+    edit:
+      gate_proj:
+        append: |
+          这是共享专家 <code>self.shared_experts(residuals)</code>，<code>residuals</code> 是进入 MoE 时的 $\viz{hidden_states}$。它是一个普通的 DeepseekV3MLP，中间维度是 moe_intermediate_size 乘 n_shared_experts，${{ d_moe }}\times{{ n_shared_experts }}$，计算和前面 dense 层的 mlp 相同，权重是共享专家自己的。
+  - id: add
+    show: out
+    label: '$\viz{out}=\viz{routed}+\viz{shared}$'
+    title: 加上共享专家
+    text: |
+      <code>hidden_states = hidden_states + self.shared_experts(residuals)</code>。共享专家每个位置都要经过，权重固定是 1，学所有 token 共有的部分；路由专家可以更专门。HF 在相加之前把专家的输出 <code>.view(*orig_shape)</code> 变回输入的形状；这一页没有 batch 维，这一步不改变任何东西。
+      $$\viz{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{routed},\ \partial\viz{shared}$'
+      title: '$\pfl{\viz{routed}},\ \pfl{\viz{shared}}$'
+      text: |
+        相加的两个输入拿到同一份梯度。
+        $$\pfl{\viz{out}}={{ out.grad | matrix:3 }}$$

@@ -211,6 +211,38 @@ steps:
     expect(p.modules.map((m) => m.subtitle)).toEqual(['layer 1', 'layer 2', 'last']);
   });
 
+  it('picks a child module by a condition on args', async () => {
+    const LAYER = `
+module: Layer
+import: { Scale: ./scale.yaml }
+args: { n: dim, layer_idx: int }
+inputs:
+  x: { type: tensor, shape: [T, n], dtype: dtype }
+outputs:
+  out: { type: tensor, shape: [T, n], dtype: dtype }
+init:
+  s:
+    if: layer_idx >= 1
+    then: { use: Scale, args: { n: n, factor: 3 } }
+    else: { use: Scale, args: [n] }
+forward:
+  - out: s(x)
+steps:
+  - id: s
+`;
+    const p = await page(
+      root({
+        init: "layers: { use: 'list[Layer]', count: 3, index: layer_idx, args: { n: d, layer_idx: layer_idx } }",
+        extra: 'import: { Layer: ./layer.yaml }',
+        forward: '- y: layers(x)\n- l: y.mean()',
+        steps: '- id: layers\n  loop: layer = layers[i]\n  defaults: {}\n- id: l',
+      }),
+      { 'mem:/pages/layer.yaml': LAYER, [SCALE_FILE]: SCALE },
+    );
+    expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([18, 36, 54, 72, 90, 108]);
+    await expect(page(root({ init: "layers: { use: 'list[Layer]', count: 2, index: layer_idx, args: { n: d, layer_idx: layer_idx } }", extra: 'import: { Layer: ./layer.yaml }', forward: '- y: layers(x)\n- l: y.mean()', steps: '- id: l' }), { 'mem:/pages/layer.yaml': LAYER.replace('if: layer_idx >= 1', 'if: layer_idx'), [SCALE_FILE]: SCALE })).rejects.toThrow(/True or False/);
+  });
+
   it('returns named results and rejects a name defined twice', async () => {
     const yaml = (forward: string) => page(root({ init: 'nll: NLLLoss', extra: 'import: { NLLLoss: vizflow/nn/nll-loss }', data: 'x: [[-1, -2], [-3, -4]]\ny: [0, 1]', inputs: 'x: { type: tensor, shape: [T, d], dtype: fp32 }\ny: { type: tensor, shape: [T], dtype: int64 }', forward, steps: '- id: nll' }));
     const p = await yaml('- result: nll(logp=x, y=y)\n- l: result.loss\n- lt: result.lt');
@@ -297,6 +329,19 @@ describe('expressions', () => {
     expect(p.graph.nodes.filter((n) => n.name.startsWith('s')).map((n) => n.name)).toEqual(['s']);
   });
 
+  it('evaluates comparisons, conditionals, step slices, topk and tensor indices like Python and torch', async () => {
+    const forward = ['f: x.view([T * d])', "e: 'f[0::2]'", 'm: x > 2', 'n: ~m', 'k: topk(x, k=1, dim=-1)[1]', 'tv: x.topk(1, dim=-1)[0]', "g: 'x[k[:, 0]]'", 'z: x * (2 if d == 2 and not d > 2 else 3)', 'l: e.mean() + tv.mean() + g.mean() + z.mean()'];
+    const p = await page(root({ forward: forward.map((line) => `- ${line}`).join('\n'), unshown: '[f, e, m, n, k, tv, g, z]', steps: '- id: l' }));
+    const data = (name: string) => Array.from(p.nodes.get(name)!.value.data);
+    expect(data('e')).toEqual([1, 3, 5]);
+    expect(data('n')).toEqual([1, 1, 0, 0, 0, 0]);
+    expect(data('k')).toEqual([1, 1, 1]);
+    expect(data('tv')).toEqual([2, 4, 6]);
+    expect(data('g')).toEqual([3, 4, 3, 4, 3, 4]);
+    expect(data('z')).toEqual([2, 4, 6, 8, 10, 12]);
+    await expect(page(root({ forward: '- t: topk(x, k=1, dim=-1)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/topk/);
+  });
+
   it('rejects arange with a zero step', async () => {
     await expect(page(root({ forward: '- t: arange(0, 4, 0)\n- l: x.mean()', steps: '- id: l' }))).rejects.toThrow(/arange: step must be nonzero/);
   });
@@ -315,6 +360,11 @@ describe('templates and tex', () => {
     expect((await yaml("{{ real['big'].name }}: {{ real['big'].V }}, {{ real['big'].d // d }}, {{ 0.00001 }}")).steps.forward[0].text).toBe('Big: 151936, 2048, 10^{-5}');
     await expect(yaml("{{ real['small'].d }}")).rejects.toThrow("real has no 'small'; it has big");
     await expect(yaml("{{ real['big'].T }}")).rejects.toThrow("real size 'big' has no 'T'; it has name, d, V");
+  });
+
+  it('prints the real value of a number with the real format', async () => {
+    const p = await page(root({ config: '{ d: 2, real: { big: { name: Big, d: 4096 } } }', forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n  text: "{{ d * 3 | real }} {{ d | real }}"\n- id: l' }));
+    expect(p.steps.forward[0].text).toBe('12288 4096');
   });
 
   it('wraps the blocks of a matrix to at most eight columns per line', async () => {

@@ -13,6 +13,7 @@ const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', '
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
+const BRANCH_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
 const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'optional']);
 const LIST_USE = /^list\[(.+)\]$/;
@@ -44,7 +45,7 @@ function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
       countNames(ast.obj, counts);
       for (const item of ast.items) {
         if (item.k === 'at') countNames(item.value, counts);
-        if (item.k === 'slice') for (const bound of [item.start, item.stop]) countNames(bound, counts);
+        if (item.k === 'slice') for (const bound of [item.start, item.stop, item.step]) countNames(bound, counts);
       }
       return;
     case 'call':
@@ -54,8 +55,11 @@ function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
       for (const item of ast.items) countNames(item, counts);
       return;
     case 'neg':
+    case 'invert':
+    case 'not':
       countNames(ast.arg, counts);
       return;
+    case 'logic':
     case 'bin':
     case 'cmp':
       countNames(ast.a, counts);
@@ -206,6 +210,16 @@ export abstract class Modules extends Expressions {
   private childMember(instance: Instance, name: string, spec: unknown, at: Where): void {
     const env = this.instanceEnv(instance, at);
     const decl: Record<string, unknown> = typeof spec === 'string' ? { use: spec } : record(spec, at, `'${name}'`);
+    if ('if' in decl) {
+      checkKeys(decl, BRANCH_KEYS, at);
+      if (decl.then === undefined) fail(at, `'${name}' has 'if' but no 'then'`);
+      const test = this.expression(decl.if, { ...env, where: child(at, decl, 'if') });
+      if (typeof test !== 'boolean') fail(child(at, decl, 'if'), `if must be True or False, got ${describe(test)}`);
+      const branch = test ? 'then' : 'else';
+      if (decl[branch] === undefined) this.define(instance, name, null, at);
+      else this.childMember(instance, name, decl[branch], child(at, decl, branch));
+      return;
+    }
     checkKeys(decl, CHILD_KEYS, at);
     if (decl.present !== undefined) {
       const present = this.expression(decl.present, { ...env, where: child(at, decl, 'present') });
@@ -400,7 +414,7 @@ export abstract class Modules extends Expressions {
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
     if (dtype === '_') return;
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
-      this.checkUsed(call, dtype, dtypeWhere);
+      if (!Array.isArray(spec)) this.checkUsed(call, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
       return;
     }
@@ -455,7 +469,13 @@ export abstract class Modules extends Expressions {
     for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(fieldSpec(field), at, ['shape', 'dtype']));
     each(decl.init, section('init'), (entry, at) => {
       if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
-      else fields(entry, at, ['args', 'count', 'present']);
+      else {
+        const member = (spec: unknown, where: Where): void => {
+          fields(spec, where, ['args', 'count', 'present', 'if']);
+          if (isRecord(spec)) for (const key of ['then', 'else']) if (spec[key] !== undefined) member(spec[key], child(where, spec, key));
+        };
+        member(entry, at);
+      }
     });
     walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
     walk(decl.unshown, section('unshown'), expression);

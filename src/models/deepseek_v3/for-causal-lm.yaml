@@ -1,0 +1,140 @@
+module: DeepseekV3ForCausalLM
+import:
+  LogSoftmax: vizflow/nn/log-softmax
+  NLLLoss: vizflow/nn/nll-loss
+  DeepseekV3Model: ./model.yaml
+args:
+  V: dim
+  d_model: dim
+  d_ff: dim
+  d_moe: dim
+  num_heads: dim
+  q_lora_rank: dim
+  kv_lora_rank: dim
+  qk_nope_head_dim: dim
+  qk_rope_head_dim: dim
+  v_head_dim: dim
+  n_routed_experts: dim
+  num_experts_per_tok: dim
+  n_group: dim
+  topk_group: dim
+  n_shared_experts: dim
+  routed_scaling_factor: float
+  num_layers: int
+  first_k_dense_replace: int
+  rope_theta: float
+  dtype: dtype
+inputs:
+  tokens: { type: list, dtype: str }
+  ids: { type: tensor, shape: [T], dtype: int64 }
+  y: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  z: [T, V]
+  loss: { type: tensor, shape: [], dtype: fp32 }
+
+init:
+  model:
+    use: DeepseekV3Model
+    args: [V, d_model, d_ff, d_moe, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor, num_layers, first_k_dense_replace, rope_theta, dtype]
+  lm_head:
+    use: Linear
+    args: { in_features: d_model, out_features: V, bias: False }
+  log_softmax: LogSoftmax
+  nll_loss: NLLLoss
+
+forward:
+  - h_norm: model(ids)
+  - hidden_states: h_norm
+  - z: lm_head(hidden_states)
+  - zf: z.float()
+  - logp: log_softmax(zf)
+  - result: nll_loss(logp=logp, y=y)
+  - loss: result.loss
+  - lt: result.lt
+
+tex:
+  ids: 'x'
+  h_norm: '\mathbf{h}_{\mathrm{norm}}'
+  hidden_states: '\mathbf{h}'
+  z: '\mathbf{z}'
+  zf: '\mathbf{z}_{\mathrm{fp32}}'
+  loss: '\ell'
+  lt: '\ell_t'
+  lm_head.weight: 'W'
+
+steps:
+  - id: overview
+    label: 总览
+    title: 模型如何预测下一个词
+    show: all()
+    text: |
+      输入是 <code>{{ tokens[:-1] | join: " " }}</code>，模型要在每个位置 $t$ 给出下一个 token 的概率分布 $p(\,\cdot\mid x_0,\dots,x_t)$。训练时，每个位置的目标是真实的下一个 token，损失是目标 token 的负对数概率的平均。
+
+      计算分三段。第一段把 token 编号变成向量，并准备位置编码表和 causal mask。第二段是 {{ num_layers }} 个 decoder 层，每层先用注意力从前面的位置取信息，再对每个位置单独变换，两部分的结果都加回输入。DeepSeek V3 的注意力是 MLA（Multi-head Latent Attention）：k 和 v 先压缩成一个低维的 latent，再展开到每个 head，推理时 KV cache 只存这个 latent。前 {{ first_k_dense_replace }} 层对每个位置用普通的 MLP，之后的层用 MoE：每个位置只经过 {{ n_routed_experts }} 个路由专家里选出的 {{ num_experts_per_tok }} 个，再加上一个所有位置都经过的共享专家。第三段把最后的向量投影成词表上的 logits，算出损失。
+
+      这里的规模是缩小的：隐藏维度 $d_{\mathrm{model}}={{ d_model }}$，词表 {{ V }} 个 token，{{ num_layers }} 层，每层参数各自按 seed 随机初始化。{{ real['deepseek-v3'].name }} 的结构与这一页相同，而隐藏维度是 {{ real['deepseek-v3'].d_model }}，有 {{ real['deepseek-v3'].num_layers }} 层，前 {{ real['deepseek-v3'].first_k_dense_replace }} 层是普通 MLP，每层 {{ real['deepseek-v3'].n_routed_experts }} 个路由专家，每个 token 选 {{ real['deepseek-v3'].num_experts_per_tok }} 个。DeepSeek-V3 的 MTP（多 token 预测）模块不在 HF 的 <code>DeepseekV3ForCausalLM</code> 里，这一页也不画。
+    backward:
+      label: 结束
+      title: 从损失到每个参数的梯度
+      text: |
+        反向传播按前向的逆序，对每一步应用链式法则：一个张量的梯度，等于它的每条出边上「下游梯度乘局部导数」之和。所以每一步只做两件事：乘局部导数，以及在张量被多处使用时把各路梯度相加。
+
+        有了 $\pfl{\theta}$，就可以更新参数：参数沿它的反方向微小变化时损失下降最快，所以优化器沿这个方向更新参数，例如 SGD 的 $\theta\leftarrow\theta-\eta\,\pfl{\theta}$。
+  - id: input_and_params
+    label: 输入和参数
+    title: 输入和参数
+    show: inputs() + parameters()
+    text: |
+      文字先由 tokenizer 切成 token，每个 token 对应词表里的一个编号。输入是前 $T={{ T }}$ 个 token 的编号 $\viz{ids}$，目标 $\viz{y}$ 是同一句话错开一个位置的编号，$y_t=x_{t+1}$：
+      $$\viz{ids}=({{ ids | join: ", " }}),\qquad \viz{y}=({{ y | join: ", " }})$$
+
+      HF 的 <code>ForCausalLMLoss</code> 收到的标签和输入相同，在函数里做这次错位，而这里直接给出错位后的 $\viz{y}$，两种做法结果一样。
+
+      输入之外的另一类张量是参数。参数决定每一步计算的结果，所以训练通过调整参数来降低损失。
+  - id: model
+    flat: true
+    edit:
+      prepare.rotary_emb.cos_sin:
+        append: |
+          第 $c$ 列的周期是 $2\pi/\omega_c$ 个位置，频率越小周期越长，$\theta$ 的取值要让最慢一组在 $T$ 个位置内也能看出转动。{{ real['deepseek-v3'].name }} 的 $d_r$ 是 {{ real['deepseek-v3'].qk_rope_head_dim }}，有 {{ real['deepseek-v3'].qk_rope_head_dim // 2 }} 组频率，$\theta={{ real['deepseek-v3'].rope_theta }}$。而这一页 $d_r={{ qk_rope_head_dim }}$，只有 {{ qk_rope_head_dim // 2 }} 组，如果也用这个 $\theta$，最慢一组的频率是 $\theta^{-(d_r-2)/d_r}={{ real['deepseek-v3'].rope_theta ** (-(qk_rope_head_dim - 2) / qk_rope_head_dim) }}$，在 {{ T }} 个位置内几乎不转，表上看不出变化。所以这一页取 $\theta={{ rope_theta }}$。下面把位置延长到 24，阴影是这一页用到的前 {{ T }} 个位置。
+
+          {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).cos() | lines:shade=T }}
+
+          {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).sin() | lines:shade=T }}
+  - id: logits
+    label: '$\viz{z}$'
+    title: lm_head
+    show: lm_head
+    text: |
+      <code>hidden_states = outputs.last_hidden_state</code> 取出 model 的输出 $\viz{h_norm}$，<code>logits = self.lm_head(hidden_states)</code>。$\viz{lm_head.weight}$ 的每一行对应词表里的一个 token，$z_{t,v}=\mathbf{h}_t\cdot W_v$ 是位置 $t$ 的向量与 token $v$ 的那一行的点积，下一步经过 softmax 成为概率。
+      $$\viz{z}=\viz{hidden_states}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
+      这一页词表只有 {{ V }} 个 token，而 {{ real['deepseek-v3'].name }} 的词表是 {{ real['deepseek-v3'].V }}，lm_head 有 ${{ real['deepseek-v3'].V }}\times{{ real['deepseek-v3'].d_model }}$ 个参数，logits 是 $T\times{{ real['deepseek-v3'].V }}$。
+    backward:
+      label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{hidden_states}}$'
+      text: |
+        $$\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{hidden_states}}^{\top}\pfl{\viz{z}},\qquad \pfl{\viz{hidden_states}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ hidden_states.grad | matrix:3 }}$$
+        代入后面算出的 $\pfl{z_{t,v}}=(p_{t,v}-[v=y_t])/T$，第 $v$ 行的梯度是 $\frac1T\sum_t(p_{t,v}-[v=y_t])\,\mathbf{h}_t$。于是按梯度下降更新时，目标 token 那一行沿 $\mathbf{h}_t$ 方向增加，其他行则沿 $\mathbf{h}_t$ 方向按概率 $p_{t,v}$ 减少。
+  - id: float
+    show: zf
+    label: '$\viz{zf}$'
+    title: 转成 float32
+    text: |
+      HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
+    backward:
+      label: '$\pfl{\viz{z}}$'
+      title: '$\pfl{\viz{z}}$'
+      text: |
+        局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
+        $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
+  - id: log_softmax
+    subtitle: F.cross_entropy 的第一部分：log_softmax
+    fold:
+      backward:
+        append: |
+          由 nll_loss 的反向，$g$ 只在标签那一格为 $-1/T$，代入得 $\pfl{z_{t,v}}=\big(p_{t,v}-[v=y_t]\big)/T$：预测概率减去 one-hot 目标，再除以位置数。
+  - id: nll_loss
+    subtitle: "F.cross_entropy 的第二部分：F.nll_loss(logp, labels)"
+    edit:
+      pick:
+        append: |
+          这里 $N=T={{ T }}$，目标序列是 <code>{{ tokens[1:] | join: " " }}</code>。HF 在 <code>ForCausalLMLoss</code> 里给标签末尾补一个 <code>-100</code> 再错位，所以最后一个位置没有目标、不计入平均；而这一页直接给出错位后的 $T$ 个目标，没有需要忽略的位置。

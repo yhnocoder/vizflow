@@ -633,7 +633,8 @@ class Plan implements LevelPlan {
           continue;
         }
         const start = n.kind === 'op' && n.op === 'narrow' ? ((n.attrs as { start: number }).start ?? 0) : n.kind === 'op' && n.op === 'select' && n.inputs[0].shape.length === 3 && (n.attrs as { dim: number }).dim === 1 ? (n.attrs as { index: number }).index * n.inputs[0].shape[2] : 0;
-        let offsets = main.offsets.length >= start + e.cols ? main.offsets.slice(start, start + e.cols) : consecutive(main.offsets[0] ?? 0, e.cols);
+        const stride = n.kind === 'op' && n.op === 'narrow' ? ((n.attrs as { step?: number }).step ?? 1) : 1;
+        let offsets = main.offsets.length >= start + (e.cols - 1) * stride + 1 ? Array.from({ length: e.cols }, (_, i) => main.offsets[start + i * stride]) : consecutive(main.offsets[0] ?? 0, e.cols);
         const taken = this.occupied(level, main.lane, e);
         if (offsets.some((o) => taken.has(o))) offsets = consecutive(Math.max(...taken) + 1, e.cols);
         this.setLane(e, main.lane, offsets);

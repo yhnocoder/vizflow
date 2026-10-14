@@ -1,53 +1,107 @@
+// @vitest-environment jsdom
+import katex from 'katex';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { CompiledPage } from '../../src/dsl';
+import { type CompiledPage, compilePage, parseYaml } from '../../src/dsl';
+import { elemTexOf } from '../../src/explain/elem';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
-import { expectRouting } from './deepseek_moe';
-import { loadExample } from './load';
+import { examplesUrl, loadExample, readFileUrl } from './load';
 
 interface DeepseekV3Fixture {
   sequence: number[];
-  router_bias: number[];
   weights: Record<string, EncodedTensor>;
   loss: number;
-  nodes: Record<string, EncodedTensor>;
+  logits: EncodedTensor;
   grads: Record<string, EncodedTensor>;
   routing: { topk_indices: number[][]; experts: Record<string, number[]> };
 }
 
 const fixture = loadFixture<never>('deepseek_v3.json') as unknown as DeepseekV3Fixture;
+const PAGE = 'deepseek_v3/deepseek_v3-dsl.yaml';
+const MOE = 'model.layers[1].mlp';
 
-describe('deepseek_v3-dsl.yaml against transformers DeepseekV3Model in float64', () => {
+async function loadInFloat64(): Promise<CompiledPage> {
+  const url = new URL(PAGE, examplesUrl).href;
+  const spec = parseYaml(await readFileUrl(url), url) as { config: Record<string, unknown> };
+  spec.config.dtype = 'fp64';
+  return compilePage(spec as never, { base: url, read: readFileUrl });
+}
+
+describe('deepseek_v3-dsl.yaml against transformers DeepseekV3ForCausalLM in float64', () => {
   let page: CompiledPage;
 
   beforeAll(async () => {
-    page = await loadExample('deepseek_v3-dsl.yaml');
+    page = await loadInFloat64();
     for (const [path, tensor] of Object.entries(fixture.weights)) page.nodes.get(path)!.set(nested(tensor));
     page.sequence!.set(fixture.sequence);
   });
 
-  it('gives every HF parameter a weight on the page and uses the same router bias', () => {
+  it('names every parameter by its state_dict key', () => {
     const params = page.graph.nodes.filter((n) => n.kind === 'param').map((n) => n.name);
     expect(new Set(params)).toEqual(new Set(Object.keys(fixture.weights)));
-    expect(page.nodes.get('moe_layer.mlp.bias')!.value.toNested()).toEqual(fixture.router_bias);
   });
 
-  it('matches the loss and the hidden states of both layers', () => {
-    expect(page.graph.findLoss()!.value.data[0]).toBeCloseTo(fixture.loss, 9);
-    expectTensor(page.nodes.get('x1')!.value, fixture.nodes.x1, 'dense layer output');
-    expectTensor(page.nodes.get('x2')!.value, fixture.nodes.x2, 'MoE layer output');
-    expectTensor(page.nodes.get('h')!.value, fixture.nodes.h, 'final norm output');
+  it('matches the logits and the loss', () => {
+    expectTensor(page.nodes.get('z')!.value, fixture.logits, 'logits');
+    expectTensor(page.nodes.get('loss')!.value, { shape: [], values: [fixture.loss] }, 'loss');
   });
 
-  it('matches the gradient of every weight', () => {
+  it('matches the gradient of every parameter', () => {
     for (const [path, grad] of Object.entries(fixture.grads)) expectTensor(page.nodes.get(path)!.grad, grad, `grad of ${path}`);
   });
 
-  it('routes each position to the same K experts as HF, all from the top group, and expert selection has no gradient', () => {
-    expectRouting(page, fixture.routing);
-    const dtype = (name: string) => page.nodes.get(`moe_layer.mlp.${name}`)!.dtype;
-    expect([dtype('logits'), dtype('rw'), dtype('score_mask_b'), dtype('experts.scaled'), dtype('experts.cast')]).toEqual(['fp32', 'fp32', 'bool', 'fp32', 'bf16']);
+  it('routes each position to the same experts as HF and gives each expert the same tokens', () => {
+    const node = (name: string) => page.nodes.get(`${MOE}.${name}`)!;
+    const picked = node('gate.topk_indices').value.toNested() as number[][];
+    picked.forEach((row, t) => expect([...row].sort(), `position ${t}`).toEqual([...fixture.routing.topk_indices[t]].sort()));
+    const experts = Array.from(node('experts.expert_idx').value.data);
+    const tokens = Array.from(node('experts.token_idx').value.data);
+    const tokensOf: Record<string, number[]> = {};
+    experts.forEach((e, r) => (tokensOf[String(e)] ??= []).push(tokens[r]));
+    expect(tokensOf).toEqual(fixture.routing.experts);
+    for (const name of ['gate.scores_for_choice', 'gate.group_scores', 'gate.masked_scores', 'gate.topk_indices']) expect(node(name).grad, name).toBeNull();
+  });
+});
+
+describe('deepseek_v3-dsl.yaml as written', () => {
+  let page: CompiledPage;
+
+  beforeAll(async () => {
+    page = await loadExample(PAGE);
+  });
+
+  it('builds a dense first layer and an MoE second layer from first_k_dense_replace', () => {
+    expect(page.nodes.has('model.layers[0].mlp.gate_proj.weight')).toBe(true);
+    expect(page.nodes.has('model.layers[1].mlp.gate.weight')).toBe(true);
+    expect(page.nodes.get('model.layers[1].mlp.gate.router_logits')!.dtype).toBe('fp32');
+    expect(page.nodes.get('model.layers[1].mlp.experts.cast')!.dtype).toBe('bf16');
+  });
+
+  it('renders every step text, label and node TeX, folded or not', () => {
+    const failures = new Set<string>();
+    const renders = (tex: string, what: string) => {
+      try {
+        katex.renderToString(tex, { throwOnError: true, trust: true });
+      } catch (error) {
+        failures.add(`${what}: ${(error as Error).message}`);
+      }
+    };
+    const math = (text: string) => [...text.matchAll(/\$\$([\s\S]+?)\$\$|\$([^$]+?)\$/g)].map((m) => m[1] ?? m[2]);
     const steps = createSteps(page.graph, page.steps);
-    expect(steps.list.map((s) => s.title)).toContain('乘 routed_scaling_factor');
+    const check = () =>
+      steps.list.forEach((info, i) => {
+        const { title, body } = steps.text(i);
+        for (const tex of [...math(title), ...math(body), ...math(info.label)]) renders(tex, `step ${i} ${title}`);
+      });
+    check();
+    steps.setAllFolded(true);
+    check();
+    steps.dispose();
+    for (const m of page.modules) if (m.formula !== undefined) renders(m.formula, `formula of ${m.id}`);
+    for (const n of page.graph.nodes) {
+      renders(n.tex, n.name);
+      renders(elemTexOf(n, n.shape.map(() => 0)), `${n.name} elem`);
+    }
+    expect([...failures]).toEqual([]);
   });
 });
