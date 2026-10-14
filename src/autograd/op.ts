@@ -38,6 +38,7 @@ export interface OpExplain {
   };
   selected?(ctx: OpCtx, out: number[]): { arg: number; index: number[] }[];
   note?(ctx: OpCtx, tex: { in: string[] }): string;
+  element?(node: Node): string;
 }
 
 export type Saved = number | 'out';
