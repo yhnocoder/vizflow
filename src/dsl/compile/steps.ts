@@ -189,7 +189,9 @@ export class StepCompiler {
   private isNone(show: unknown, env: Env): boolean {
     if (typeof show !== 'string') return false;
     const ast = this.c.parse(show, env);
-    return (ast.k === 'name' || ast.k === 'member') && this.c.evaluate(ast, env, { k: 'ref' }, false) === null;
+    if (ast.k !== 'name' && ast.k !== 'member') return false;
+    const value = this.c.evaluate(ast, env, { k: 'ref' }, false);
+    return value === null || (value instanceof Instance && value.calls.length === 0);
   }
 
   private field(env: Env, options: Options, key: string): Env {

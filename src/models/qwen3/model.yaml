@@ -3,6 +3,7 @@ import:
   Qwen3RMSNorm: ./rmsnorm.yaml
   Qwen3RotaryEmbedding: ./rotary-embedding.yaml
   Qwen3DecoderLayer: ./decoder-layer.yaml
+  create_causal_mask: vizflow/nn/create-causal-mask
 args:
   V: dim
   d_model: dim
@@ -15,6 +16,7 @@ args:
   dtype: dtype
 inputs:
   ids: { type: tensor, shape: [T], dtype: int64 }
+  position_ids: { type: tensor, shape: [T], dtype: int64, optional: true }
 outputs:
   h_norm: [T, d_model]
 
@@ -32,12 +34,15 @@ init:
   rotary_emb:
     use: Qwen3RotaryEmbedding
     args: [d_head, rope_theta]
+  create_causal_mask:
+    use: create_causal_mask
+    args: [dtype]
 
 forward:
   - e: embed_tokens(ids)
-  - position_ids: arange(T)
+  - M: causal_mask(T, dtype=e.dtype) if position_ids is None else create_causal_mask(position_ids)
+  - position_ids: arange(T) if position_ids is None else position_ids
   - position_embeddings: rotary_emb(e, position_ids)
-  - M: causal_mask(T, dtype=e.dtype)
   - cos: position_embeddings.cos
   - sin: position_embeddings.sin
   - h_last: layers(e, mask=M, cos=cos, sin=sin)
@@ -76,7 +81,7 @@ steps:
         label: '$\viz{position_ids}$'
         title: 位置编号
         text: |
-          调用时没有传 <code>position_ids</code>，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。这里没有 batch 维，训练时也没有 KV cache，<code>past_seen_tokens</code> 是 0，所以位置编号就是 $0,\dots,T-1$：
+          调用时没有传 <code>position_ids</code> 的话，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。训练时没有 KV cache，<code>past_seen_tokens</code> 是 0，位置编号就是 $0,\dots,T-1$。几条序列拼成一行训练（packing）时，<code>DataCollatorWithFlattening</code> 直接传入 position_ids，每条序列从 0 开始编号。这一页的位置编号：
           $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
           位置编号是整数常量，没有梯度，只在 RoPE 里用来算角度。
       - id: rotary_emb
@@ -95,7 +100,10 @@ steps:
 
           做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
           $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
-          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
+          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层；几条序列拼成一行时，它还从 position_ids 找出序列的边界，挡住不同序列之间的位置。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
+      - id: create_causal_mask
+        title: create_causal_mask
+        subtitle: 按 position_ids 分开打包的序列
   - id: layers
     loop: layer = layers[i]
 

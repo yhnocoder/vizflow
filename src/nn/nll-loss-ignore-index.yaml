@@ -1,0 +1,93 @@
+module: NLLLossIgnoreIndex
+args:
+  ignore_index: { type: int, default: -100 }
+inputs:
+  logp: { type: tensor, shape: [N, _], dtype: dtype }
+  y: { type: tensor, shape: [N], dtype: int64 }
+outputs:
+  loss: { type: tensor, shape: [], dtype: dtype }
+  lt: { type: tensor, shape: [N], dtype: dtype }
+forward:
+  - ignored: y == ignore_index
+  - safe_y: y.masked_fill(ignored, 0)
+  - pick: logp.gather(-1, safe_y.view(-1, 1))
+  - nll: -pick.view(-1)
+  - lt: nll.masked_fill(ignored, 0)
+  - kept: ~ignored
+  - count: kept.sum()
+  - total: lt.sum()
+  - loss: total / count
+tex:
+  ignored: '[y=-100]'
+  safe_y: '\tilde{y}'
+  pick: '\log p_{y}'
+  nll: '-\log p_{y}'
+  lt: '\boldsymbol{\ell}'
+  kept: '[y\ne-100]'
+  count: 'N_{y}'
+  total: '\textstyle\sum\boldsymbol{\ell}'
+  loss: '\ell'
+formula: '\step{mean}{\viz{loss}=\frac{1}{N_y}\sum_{n:\,y_n\ne-100}}\step{neg}{-}\step{pick}{\viz{logp}_{n,\,y_{n}}}'
+fold:
+  label: '$\viz{loss}$'
+  title: nll_loss(ignore_index=-100)
+  text: |
+    标签等于 $-100$ 的位置不计入损失，平均只除以其余位置的个数。
+    $$\viz{loss}={{ loss | matrix:3 }}$$
+  backward:
+    label: '$\partial\viz{logp}$'
+    title: '$\frac{\partial\ell}{\partial \viz{logp}}$'
+    text: |
+      有标签的每一行只有标签那一格收到 $-1/N_y$，被忽略的行全是 0。
+      $$\frac{\partial\ell}{\partial \viz{logp}}={{ logp.grad | matrix:3 }}$$
+
+steps:
+  - id: ignore
+    show: [ignored, safe_y]
+    label: '$\viz{safe_y}$'
+    title: nll_loss：找出被忽略的标签
+    text: |
+      <code>F.nll_loss(logp, y, ignore_index=-100)</code> 先找出标签等于 $-100$ 的位置。$-100$ 不是合法的类别编号，取格之前要换成任意合法编号，这里换成 0，取出的值随后被置 0，不影响结果。
+      $$\viz{safe_y}={{ safe_y | matrix:0 }}$$
+    backward:
+      label: '$y$'
+      title: 标签没有梯度
+      text: 标签是整数常量，梯度到这里为止。
+  - id: pick
+    label: '$\viz{pick}$'
+    title: nll_loss：按标签取格
+    text: |
+      每一行按自己的标签取出一格，相当于 <code>logp.gather(-1, y.view(-1, 1))</code>。
+      $$\viz{pick}={{ pick | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{logp}$'
+      title: '$\frac{\partial\ell}{\partial \viz{logp}}$'
+      text: |
+        取格的反向把梯度放回被取到的那一格，同一行的其他格为 0。被忽略的行收到的梯度是 0。
+        $$\frac{\partial\ell}{\partial \viz{logp}}={{ logp.grad | matrix:3 }}$$
+  - id: neg
+    show: [nll, lt]
+    label: '$\viz{lt}$'
+    title: nll_loss：取负，被忽略的位置置 0
+    text: |
+      $\ell_n=-\log p_{n,y_n}$，标签是 $-100$ 的位置置为 0。
+      $$\viz{lt}={{ lt | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{pick}$'
+      title: '$\frac{\partial\ell}{\partial \viz{pick}}$'
+      text: |
+        置 0 的位置梯度是 0，其余位置的局部导数是 $-1$。
+        $$\frac{\partial\ell}{\partial \viz{pick}}={{ pick.grad | matrix:3 }}$$
+  - id: mean
+    show: [kept, count, total, loss]
+    label: '$\viz{loss}$'
+    title: nll_loss：只对有标签的位置取平均
+    text: |
+      默认 <code>reduction='mean'</code> 的分母是标签不等于 $-100$ 的位置个数 $N_y={{ count | matrix:0 }}$，不是总行数 $N$。
+      $$\viz{loss}=\frac{1}{N_y}\sum_n\ell_n={{ loss | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{lt}$'
+      title: '$\frac{\partial\ell}{\partial \viz{lt}}$'
+      text: |
+        每个位置拿到 $1/N_y$。
+        $$\frac{\partial\ell}{\partial \viz{lt}}={{ lt.grad | matrix:3 }}$$

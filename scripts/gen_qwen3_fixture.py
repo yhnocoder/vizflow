@@ -22,10 +22,12 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 SEED = 20261013
 COMMAND = "uv run scripts/gen_qwen3_fixture.py"
 OUT = Path(__file__).resolve().parent.parent / "test" / "fixtures" / "torch" / "qwen3.json"
+PACKED_OUT = OUT.with_name("qwen3_packed.json")
 
 DIMS = {"V": 5, "d_model": 4, "d_head": 4, "d_ff": 6, "num_heads": 2, "num_kv_heads": 1, "num_layers": 2}
 ROPE_THETA = 10.0
 SEQUENCE = [2, 4, 3, 0]
+PACKED = [[2, 4, 3], [0, 1]]
 
 
 def float64_everywhere():
@@ -111,5 +113,34 @@ def main():
     print(f"{OUT.name}: loss {loss.item():.6f}")
 
 
+def main_packed():
+    torch.set_default_dtype(torch.float64)
+    float64_everywhere()
+    generator = torch.Generator().manual_seed(SEED)
+    model = Qwen3ForCausalLM(config()).double().eval()
+    params = {page_path(key): p for key, p in model.named_parameters()}
+    fill(params, generator)
+    batch = transformers.DataCollatorWithFlattening(return_tensors="pt")([{"input_ids": ids} for ids in PACKED])
+    output = model(input_ids=batch["input_ids"], position_ids=batch["position_ids"], labels=batch["labels"], use_cache=False)
+    output.loss.backward()
+    loss = output.loss
+    payload = {
+        "torch": torch.__version__,
+        "transformers": transformers.__version__,
+        "command": COMMAND,
+        "seed": SEED,
+        "input_ids": batch["input_ids"][0].tolist(),
+        "position_ids": batch["position_ids"][0].tolist(),
+        "labels": batch["labels"][0].tolist(),
+        "weights": {path: encode(p) for path, p in params.items()},
+        "loss": loss.item(),
+        "logits": encode(output.logits[0]),
+        "grads": {path: encode(p.grad) for path, p in params.items()},
+    }
+    PACKED_OUT.write_text(json.dumps(payload, indent=1) + "\n")
+    print(f"{PACKED_OUT.name}: loss {loss.item():.6f}")
+
+
 if __name__ == "__main__":
     main()
+    main_packed()

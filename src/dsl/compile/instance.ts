@@ -125,7 +125,7 @@ export abstract class Modules extends Expressions {
       if (provided !== undefined) value = provided.value;
       else if (fallback !== undefined) value = this.expression(fallback, { ...env, where: child(at, spec as object, 'default') });
       else return fail(where, `module ${def.name} needs arg '${key}'`);
-      instance.args.set(key, checkArg(type, key, value, provided?.where ?? at));
+      instance.args.set(key, value === null && fallback === 'None' ? null : checkArg(type, key, value, provided?.where ?? at));
     }
     this.initMembers(instance);
     return instance;
@@ -594,7 +594,8 @@ export abstract class Modules extends Expressions {
       }
       const { name, where } = item;
       const inLoop = loops.length > 0;
-      const defined = call.values.has(name);
+      const optionalInput = !inLoop && call.inputs.has(name);
+      const defined = call.values.has(name) && !(optionalInput || call.values.get(name) === null);
       if ((!inLoop && defined) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
       if (item.target !== undefined && !defined) fail(where, `'${name}' must be defined before '${name}[${item.target}]' writes into it`);
       if (inLoop && defined && loops.some((loop) => loop.variable === name)) fail(where, `'${name}' is the loop variable`);
@@ -608,6 +609,7 @@ export abstract class Modules extends Expressions {
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
       call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
+      if (optionalInput && value === call.values.get(name)) continue;
       if (value === null && item.target === undefined && !inLoop) {
         call.values.set(name, null);
         continue;

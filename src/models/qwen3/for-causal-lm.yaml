@@ -2,6 +2,7 @@ module: Qwen3ForCausalLM
 import:
   LogSoftmax: vizflow/nn/log-softmax
   NLLLoss: vizflow/nn/nll-loss
+  NLLLossIgnoreIndex: vizflow/nn/nll-loss-ignore-index
   Qwen3Model: ./model.yaml
 args:
   V: dim
@@ -13,10 +14,12 @@ args:
   num_layers: int
   rope_theta: float
   dtype: dtype
+  ignore_index: { type: int, default: None }
 inputs:
   tokens: { type: list, dtype: str }
   ids: { type: tensor, shape: [T], dtype: int64 }
   y: { type: tensor, shape: [T], dtype: int64 }
+  position_ids: { type: tensor, shape: [T], dtype: int64, optional: true }
 outputs:
   z: [T, V]
   loss: { type: tensor, shape: [], dtype: fp32 }
@@ -29,10 +32,15 @@ init:
     use: Linear
     args: { in_features: d_model, out_features: V, bias: False }
   log_softmax: LogSoftmax
-  nll_loss: NLLLoss
+  nll_loss:
+    if: ignore_index is None
+    then: NLLLoss
+    else:
+      use: NLLLossIgnoreIndex
+      args: [ignore_index]
 
 forward:
-  - h_norm: model(ids)
+  - h_norm: model(ids, position_ids=position_ids)
   - hidden_states: h_norm
   - z: lm_head(hidden_states)
   - zf: z.float()
@@ -57,7 +65,7 @@ steps:
     title: 模型如何预测下一个词
     show: all()
     text: |
-      输入是 <code>{{ tokens[:-1] | join: " " }}</code>，模型要在每个位置 $t$ 给出下一个 token 的概率分布 $p(\,\cdot\mid x_0,\dots,x_t)$。训练时，每个位置的目标是真实的下一个 token，损失是目标 token 的负对数概率的平均。
+      输入是 <code>{{ tokens[:T] | join: " " }}</code>，模型要在每个位置 $t$ 给出下一个 token 的概率分布 $p(\,\cdot\mid x_0,\dots,x_t)$。训练时，每个位置的目标是真实的下一个 token，损失是目标 token 的负对数概率的平均。
 
       计算分三段。第一段把 token 编号变成向量，并准备位置编码表和 causal mask。第二段是 {{ num_layers }} 个 decoder 层，每层先用注意力从前面的位置取信息，再用 MLP 对每个位置单独变换，两部分的结果都加回输入。第三段把最后的向量投影成词表上的 logits，算出损失。
 
@@ -78,6 +86,7 @@ steps:
       $$\viz{ids}=({{ ids | join: ", " }}),\qquad \viz{y}=({{ y | join: ", " }})$$
 
       HF 的 <code>ForCausalLMLoss</code> 收到的标签和输入相同，在函数里做这次错位，而这里直接给出错位后的 $\viz{y}$，两种做法结果一样。
+      {{ '' if position_ids is None else '这一行由几条序列首尾相接拼成（packing）。每条序列的最后一个位置后面接的是下一条序列的开头，不是它自己的下一个 token，所以标签是 $-100$，不计入损失。HF 的 <code>DataCollatorWithFlattening</code> 把每条序列开头的标签设为 $-100$，<code>ForCausalLMLoss</code> 错位以后，$-100$ 就落在前一条序列的最后一个位置上。它还给出每条序列从 0 开始的 position_ids，模型据此区分序列。' }}
 
       输入之外的另一类张量是参数。参数决定每一步计算的结果，所以训练通过调整参数来降低损失。
   - id: model

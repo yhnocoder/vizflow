@@ -241,6 +241,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     const at = child(inputsWhere, inputs, name);
     const field = record(fieldSpec(spec), at, `input '${name}'`);
     const entry = c.data.get(name);
+    if (entry === undefined && field.optional === true) continue;
     if (entry === undefined) fail(dataWhere, `data needs '${name}', an input of ${root.name}`);
     if (field.type !== 'tensor' || !Array.isArray(field.shape)) continue;
     const shape = shapeOfData(entry.value);
@@ -262,7 +263,11 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   for (const [name, spec] of Object.entries(inputs)) {
     const at = child(inputsWhere, inputs, name);
     const field = record(fieldSpec(spec), at, `input '${name}'`);
-    const entry = c.data.get(name) as DataEntry;
+    const entry = c.data.get(name);
+    if (entry === undefined) {
+      call.values.set(name, null);
+      continue;
+    }
     const node = rootInput(c, name, field, entry, at);
     c.rootInputs.add(node);
     c.nodes.set(name, node);

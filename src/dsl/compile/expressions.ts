@@ -1,4 +1,4 @@
-import { type AnyOpDef, type CompositeDef, DEFAULT_DTYPE, DTYPES, type Dtype, Node, ProgramBuilder, bindComposite, bindOp, checkDtype, compositeDef, opDef, outputDtype } from '../../autograd';
+import { type AnyOpDef, type CompositeDef, DEFAULT_DTYPE, DTYPES, type Dtype, Node, ProgramBuilder, bindComposite, bindOp, checkDtype, compositeDef, finfoMin, opDef, outputDtype } from '../../autograd';
 import { explainOf } from '../../explain';
 import { type Ast, type IndexItem, ParseError, parseExpr } from '../expr';
 import { DslError } from '../source';
@@ -213,6 +213,13 @@ export abstract class Expressions extends CompilerState {
     if (this.isMath(ast.obj, env)) {
       if (!(ast.name in MATH_CONSTANTS)) this.fail(env, `math has no constant '${ast.name}'; it has ${Object.keys(MATH_CONSTANTS).join(', ')}`, ast.pos);
       return num(MATH_CONSTANTS[ast.name]);
+    }
+    if (ast.obj.k === 'call' && ast.obj.fn.k === 'name' && ast.obj.fn.name === 'finfo') {
+      const [arg] = ast.obj.args;
+      const dtype = arg === undefined || ast.obj.args.length !== 1 ? undefined : this.evaluate(arg, env, mode, false);
+      if (!isDtype(dtype)) return this.fail(env, 'finfo takes one dtype', ast.obj.pos);
+      if (ast.name !== 'min') this.fail(env, `finfo has no '${ast.name}' here; it has min`, ast.pos);
+      return num(finfoMin(dtype.dtype, 'finfo'));
     }
     const base = this.evaluate(ast.obj, env, mode, false);
     if (base instanceof Instance) {
@@ -463,6 +470,10 @@ export abstract class Expressions extends CompilerState {
   compare(ast: Extract<Ast, { k: 'cmp' }>, env: Env, mode: Mode, top: boolean): Value {
     const a = this.evaluate(ast.a, env, mode, false);
     const b = this.evaluate(ast.b, env, mode, false);
+    if (ast.op === 'is' || ast.op === 'is not') {
+      if (a !== null && b !== null) this.fail(env, `'${ast.op}' only tests for None`, ast.pos);
+      return (a === b) === (ast.op === 'is');
+    }
     if (isTensor(a) && (isTensor(b) || isNum(b))) {
       const op = COMPARE_TENSOR_OPS[ast.op];
       if (op === undefined) this.fail(env, `'${ast.op}' is not available on tensors`, ast.pos);

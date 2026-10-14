@@ -1,0 +1,71 @@
+module: create_causal_mask
+args:
+  dtype: dtype
+inputs:
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  mask: [T, T]
+forward:
+  - first_dummy_value: 'position_ids[:1] - 1'
+  - previous: 'cat([first_dummy_value, position_ids[:-1]])'
+  - position_diff: position_ids - previous
+  - continues: position_diff == 1
+  - starts: ~continues
+  - packed_sequence_mask: starts.cumsum(-1)
+  - q_sequence: packed_sequence_mask.unsqueeze(1)
+  - kv_sequence: packed_sequence_mask.unsqueeze(0)
+  - same_sequence: q_sequence == kv_sequence
+  - causal: causal_mask(T, dtype=dtype)
+  - other_sequence: ~same_sequence
+  - mask: causal.masked_fill(other_sequence, finfo(dtype).min)
+tex:
+  first_dummy_value: 't_{0}-1'
+  previous: '\mathbf{t}_{\mathrm{prev}}'
+  position_diff: '\Delta\mathbf{t}'
+  continues: '[\Delta t=1]'
+  starts: '[\Delta t\ne1]'
+  packed_sequence_mask: '\mathbf{s}'
+  q_sequence: '\mathbf{s}^{\downarrow}'
+  kv_sequence: '\mathbf{s}^{\rightarrow}'
+  same_sequence: '[s_t=s_u]'
+  causal: '\mathbf{M}_{\mathrm{causal}}'
+  other_sequence: '[s_t\ne s_u]'
+  mask: '\mathbf{M}'
+formula: '\step{sequence}{\mathbf{s}=\operatorname{cumsum}([\Delta\viz{position_ids}\ne1])}\quad\step{mask}{\viz{mask}_{t,u}=\begin{cases}0&u\le t,\ s_u=s_t\\ \min&\text{否则}\end{cases}}'
+fold:
+  label: '$\viz{mask}$'
+  title: create_causal_mask
+  text: |
+    从 position_ids 找出每个位置属于哪条序列，在 causal mask 的基础上再挡住不同序列之间的位置。
+    $$\viz{mask}={{ mask | matrix:2 }}$$
+  backward:
+    label: '$\viz{mask}$'
+    title: mask 没有梯度
+    text: mask 是常量。
+
+steps:
+  - id: sequence
+    show: [first_dummy_value, previous, position_diff, continues, starts, packed_sequence_mask]
+    label: '$\viz{packed_sequence_mask}$'
+    title: 从 position_ids 找出序列编号
+    text: |
+      HF 的 <code>create_causal_mask</code> 在训练时（没有 attention_mask，也没有缓存）调用 <code>find_packed_sequence_indices(position_ids)</code>：<code>position_diff = torch.diff(position_ids, prepend=position_ids[:, :1] - 1, dim=-1)</code>，相邻位置编号之差不等于 1 的地方是一条新序列的开头，<code>(position_diff != 1).cumsum(-1)</code> 给每个位置标上序列编号。
+      $$\viz{position_ids}={{ position_ids | matrix:0 }},\qquad \viz{packed_sequence_mask}={{ packed_sequence_mask | matrix:0 }}$$
+      编号全是 0 时 HF 返回 None，按普通的 causal mask 处理。
+
+      这个检测只在 <code>past_key_values</code> 为 None 时进行。transformers 5.19 的模型默认 <code>use_cache=True</code>，前向时会新建一个空的 <code>DynamicCache</code>，检测就被跳过，eager 和 sdpa 注意力下后一条序列会看到前一条，结果和分开计算不同。打包训练时要传 <code>use_cache=False</code>。flash attention 不走这里，它直接从 position_ids 得到每条序列的边界。
+    backward:
+      label: '$\viz{packed_sequence_mask}$'
+      title: 序列编号没有梯度
+      text: 整数常量，没有梯度。
+  - id: mask
+    show: [q_sequence, kv_sequence, same_sequence, causal, other_sequence, mask]
+    label: '$\viz{mask}$'
+    title: 分块的下三角 mask
+    text: |
+      <code>packed_sequence_mask_function</code> 只允许同一条序列内的位置互相看到，它和 causal 条件用 <code>and_masks</code> 合并：位置 $t$ 能看到位置 $u$，当且仅当 $u\le t$ 且两者属于同一条序列。不允许的格子填 <code>torch.finfo(dtype).min</code>。结果是沿对角线排列的几个下三角块。
+      $$\viz{mask}={{ mask | matrix:2 }}$$
+    backward:
+      label: '$\viz{mask}$'
+      title: mask 没有梯度
+      text: mask 是常量。

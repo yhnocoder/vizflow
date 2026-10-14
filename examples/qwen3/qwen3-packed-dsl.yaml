@@ -1,0 +1,50 @@
+title: Qwen3 两条序列打包训练
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  Qwen3ForCausalLM: vizflow/models/qwen3/for-causal-lm
+
+model: Qwen3ForCausalLM
+
+config:
+  V: 5
+  d_model: 4
+  d_head: 8
+  d_ff: 6
+  num_heads: 2
+  num_kv_heads: 1
+  num_layers: 2
+  rope_theta: 100
+  dtype: bf16
+  ignore_index: -100
+  seed: 20261010
+  tokenizer:
+    vocab: [on, mat, the, sat, cat]
+  real:
+    qwen3-8b: { name: Qwen3-8B, T: 4096, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
+
+data:
+  tokens: [the, cat, sat, on, mat]
+  ids: { expr: 'tokens_to_ids(tokens)' }
+  position_ids: [0, 1, 2, 0, 1]
+  y: [4, 3, -100, 1, -100]
+
+optimizer: { type: adamw, lr: 0.02 }
+
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
+  - title: 对应的 PyTorch 计算
+    code: |-
+      batch = DataCollatorWithFlattening()([
+          {"input_ids": tok("the cat sat").input_ids},
+          {"input_ids": tok("on mat").input_ids},
+      ])
+      # input_ids    = [the, cat, sat, on, mat]
+      # position_ids = [0, 1, 2, 0, 1]
+      # labels       = [-100, cat, sat, -100, mat]
+      out = model(**batch, use_cache=False)
+      # ForCausalLMLoss 把 labels 左移一位：
+      # y = [cat, sat, -100, mat, -100]
+      out.loss.backward()
+    note: |
+      没有 attention_mask，模型从 position_ids 找出两条序列，构造分块的下三角 mask；RoPE 按每条序列从 0 开始的位置旋转。示例使用 {{ num_layers }} 层，隐藏维度 {{ d_model }}，词表大小 {{ V }}，拼接后长度 {{ T }}。

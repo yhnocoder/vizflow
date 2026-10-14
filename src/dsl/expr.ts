@@ -20,7 +20,7 @@ export type Ast =
 
 export type BinaryOp = '+' | '-' | '*' | '/' | '//' | '%' | '@' | '**';
 
-export type CompareOp = '==' | '!=' | '<' | '<=' | '>' | '>=';
+export type CompareOp = '==' | '!=' | '<' | '<=' | '>' | '>=' | 'is' | 'is not';
 
 const COMPARE_OPS: readonly string[] = ['==', '!=', '<', '<=', '>', '>='];
 
@@ -147,6 +147,12 @@ class Parser {
   private comparison(): Ast {
     const left = this.sum();
     const token = this.peek();
+    if (this.isWord('is')) {
+      this.take();
+      const negated = this.isWord('not');
+      if (negated) this.take();
+      return { k: 'cmp', op: negated ? 'is not' : 'is', a: left, b: this.sum(), pos: token.pos };
+    }
     if (token.t !== 'op' || !COMPARE_OPS.includes(token.v)) return left;
     this.take();
     const node: Ast = { k: 'cmp', op: token.v as CompareOp, a: left, b: this.sum(), pos: token.pos };
