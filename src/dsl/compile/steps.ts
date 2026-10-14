@@ -511,8 +511,8 @@ export class StepCompiler {
         outputs: outputs.length > 0 ? outputs : nodes.slice(-1),
         nodes,
         params: unique(used.flatMap((n) => (isLeafLike(n) && n.kind === 'op' ? [n, n.inputs[0]] : [n])).filter((n) => isLeafLike(n) && n.kind !== 'label')).sort((a, b) => a.id - b.id),
-        folded: shown === undefined ? false : !shown.expand,
-        foldable: shown !== undefined && !shown.flat,
+        folded: false,
+        foldable: false,
         forward: shown?.fold.forward ?? {},
         backward: shown?.fold.backward ?? {},
       });

@@ -20,7 +20,7 @@ export const NOTE_REACH = [1, 1.8, 2.8];
 export const NOTE_SHIFTS = [-0.5, 0, -1, 0.5, 1];
 
 const SVG = 'http://www.w3.org/2000/svg';
-const CHROME_SELECTOR = ':scope > .vf-stage-tools, :scope > .vf-ovnav, :scope > .vf-key, :scope > .vf-hint, :scope > .vf-formula';
+const CHROME_SELECTOR = ':scope > .vf-stage-tools, :scope > .vf-key, :scope > .vf-hint, :scope > .vf-formula';
 const tmpVector = new Vector3();
 
 type Point = [number, number];

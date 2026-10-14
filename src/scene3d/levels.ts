@@ -891,8 +891,7 @@ class Plan implements LevelPlan {
       }
       for (const group of lanes.values()) {
         group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => {
-          if (i === 0) e.title = 'left';
-          else if (e.lane !== undefined && isLeafLike(e.node) && Math.min(...e.offsets) > Math.max(...group[i - 1].offsets) + 1) e.title = 'below';
+          e.title = i === 0 ? 'left' : 'below';
         });
       }
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
@@ -923,7 +922,7 @@ class Plan implements LevelPlan {
       }
       const nested = this.braces.some((other) => other !== brace && other.nodes.length < brace.nodes.length && other.nodes.every((n) => brace.nodes.includes(n)));
       const side = brace.depth >= 2 ? 'left' : brace.depth === 0 && nested ? 'outer' : 'right';
-      const module: SceneModule = { id: brace.module ?? brace.id, title: brace.title, subtitle: brace.subtitle, nodes: brace.nodes, side, inner: side === 'left' };
+      const module: SceneModule = { id: brace.module ?? brace.id, title: brace.title, subtitle: brace.subtitle, nodes: brace.nodes, side, depth: brace.depth };
       if (side === 'left') module.column = brace.depth - 2;
       this.modules.push(module);
     }

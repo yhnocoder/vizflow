@@ -8,7 +8,7 @@ export interface SceneModule {
   subtitle?: string;
   nodes: Node[];
   side?: 'left' | 'right' | 'outer';
-  inner?: boolean;
+  depth?: number;
   column?: number;
 }
 

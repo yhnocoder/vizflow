@@ -69,7 +69,7 @@ describe('mountSteps timeline', () => {
     expect(bars[0].classList.contains('vf-on')).toBe(true);
     expect(bars[0].style.getPropertyValue('--vf-fr')).toBe('100%');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`1/${forwardCount}`);
-    expect(el.querySelector('.vf-tl-inner')).toBeNull();
+    expect(el.querySelector('.vf-tl-crumb')).toBeNull();
     expect([...el.querySelectorAll('.vf-tl-sub .vf-st')].map(text)).toEqual(['总览']);
 
     steps.go(3);
@@ -77,18 +77,18 @@ describe('mountSteps timeline', () => {
     expect(bars[2].classList.contains('vf-on')).toBe(true);
     expect(bars[2].style.getPropertyValue('--vf-fr')).toBe('67%');
     expect(bars[1].classList.contains('vf-done')).toBe(true);
-    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual([
-      'vf-tl-inner:self_attn',
-      'vf-st:a',
-      'vf-tl-inner vf-sub:q_norm $\\cdot$ k_norm',
-      'vf-st:b',
-      'vf-st:c',
-    ]);
+    expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn', 'q_norm $\\cdot$ k_norm']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:b', 'vf-st:c']);
     expect(el.querySelector('.vf-tl-sub [aria-current="step"]')!.textContent).toBe('b');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
-    steps.go(5);
-    expect(text(el.querySelector('.vf-tl-inner'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
+    steps.go(2);
+    expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-group:q_norm $\\cdot$ k_norm›']);
+    el.querySelectorAll<HTMLButtonElement>('.vf-st-group')[0].click();
+    expect(steps.current).toBe(3);
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-crumb')[0].click();
+    expect(steps.current).toBe(2);
 
     barsOf()[1].click();
     expect(steps.current).toBe(1);

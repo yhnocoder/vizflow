@@ -207,30 +207,57 @@
   margin: 0 2px;
 }
 
+.vf-tl-path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin-top: 12px;
+  min-height: 1em;
+}
+
+.vf-tl-path:empty {
+  display: none;
+}
+
+.vf-tl-crumb {
+  font: inherit;
+  font-family: var(--serif);
+  font-size: 13.5px;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.vf-tl-crumb:hover {
+  background: color-mix(in srgb, var(--ink) 7%, var(--surface));
+}
+
+.vf-tl-crumbsep {
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.vf-st.vf-st-group {
+  font-family: var(--sans);
+  font-size: 12px;
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.vf-st-more {
+  margin-left: 4px;
+}
+
 .vf-tl-sub {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  margin-top: 12px;
-}
-
-.vf-tl-inner {
-  font-family: var(--serif);
-  font-size: 13.5px;
-  color: var(--fg);
-  margin: 0 4px 0 2px;
-}
-
-.vf-tl-inner:first-child {
-  margin-left: 0;
-}
-
-.vf-tl-inner.vf-sub {
-  font-family: var(--sans);
-  font-size: 11px;
-  color: var(--muted);
-  margin-left: 8px;
+  margin-top: 8px;
 }
 
 .vf-tl-sub .vf-st {
@@ -239,7 +266,7 @@
 }
 
 .vf-st .katex,
-.vf-tl-inner .katex,
+.vf-tl-crumb .katex,
 .vf-caption h3 .katex,
 .vf-card h2 .katex,
 .vf-lossrows .katex,

@@ -51,11 +51,6 @@ export class FormulaPanel {
     for (const part of this.body.querySelectorAll<HTMLElement>('[data-vf-step]')) {
       const marks = (part.dataset.vfStep ?? '').split('.');
       const state: PartState = !forward ? (marks.some((m) => grad.has(m)) ? 'grad' : 'on') : marks.some((m) => now.has(m)) ? 'now' : marks.some((m) => reached.has(m)) ? 'on' : 'off';
-      if (part.dataset.vfState === 'off' && state !== 'off' && !this.c.reduceMotion.matches) {
-        part.classList.remove('vf-f-in');
-        void part.offsetWidth;
-        part.classList.add('vf-f-in');
-      }
       part.dataset.vfState = state;
     }
   }

@@ -25,7 +25,7 @@ export class ModuleBraces {
   private foldable(module: SceneModule): string | undefined {
     const steps = this.c.steps;
     if (module.id === undefined || steps?.setFolded === undefined || steps.folded === undefined) return undefined;
-    if (!steps.modules.some((m) => m.id === module.id)) return undefined;
+    if (steps.modules.find((m) => m.id === module.id)?.foldable !== true) return undefined;
     return module.id;
   }
 
@@ -75,7 +75,7 @@ export class ModuleBraces {
     const levels = c.levelLayout;
     if (levels !== undefined) {
       const xs = c.renderables.flatMap((r) => r.block.elements.map((e) => e.x));
-      const shown = modules.filter((m) => !(c.lod && m.inner === true));
+      const shown = modules.filter((m) => !(c.lod && (m.depth ?? 0) > 0));
       this.braces = levelBraces(shown, levels.ranges, { xMin: Math.min(...xs), xMax: Math.max(...xs), ...levels.braces }, BRACE_X);
     } else {
       const { min, max } = boundsOf(framingPoints(c.renderables));

@@ -131,6 +131,8 @@ interface Segment {
   folded: boolean;
 }
 
+type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number };
+
 export const SEGMENT_PREVIEW_STEPS = 5;
 
 const DIRECTIONS = [
@@ -167,18 +169,23 @@ function Timeline(props: {
     const all = segments.flatMap((s) => s.positions);
     const active = segments.find((s) => s.positions.includes(current)) ?? segments[0];
     const directions = DIRECTIONS.filter((d) => list.some((info) => info.dir === d.dir));
-    const only = active.positions.length === 1 ? list[active.positions[0]] : undefined;
-    const showName = active.name !== '' && !(only !== undefined && only.label === active.name);
-    let previous: string | undefined;
-    const items = active.positions.map((position) => {
+    const chain = list[current].groups;
+    const firstIn = (depth: number) => list.findIndex((info) => info.dir === dir && info.groups.length > depth && info.groups[depth] === chain[depth]);
+    const path = chain.map((id, depth) => ({ name: titles.get(id) ?? id, position: firstIn(depth) }));
+    const within = (info: StepInfo) => info.dir === dir && chain.every((id, depth) => info.groups[depth] === id);
+    const pool = chain.length === 0 ? active.positions : list.flatMap((info, position) => (within(info) ? [position] : []));
+    const items: Item[] = [];
+    for (const position of pool) {
       const info = list[position];
-      const inner = info.groups.length > 1 ? info.groups[info.groups.length - 1] : undefined;
-      const sub = inner === undefined ? undefined : titles.get(inner);
-      const heading = sub !== undefined && inner !== previous ? sub : undefined;
-      previous = inner;
-      return { info, position, heading };
-    });
-    return { dir, segments, all, active, directions, showName, items, position: all.indexOf(current) + 1 };
+      const child = info.groups[chain.length];
+      if (child === undefined) items.push({ kind: 'step', info, position });
+      else {
+        const last = items[items.length - 1];
+        if (last?.kind === 'group' && last.id === child) continue;
+        items.push({ kind: 'group', id: child, name: titles.get(child) ?? child, position });
+      }
+    }
+    return { dir, segments, all, active, directions, path, items, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
   const [peek, setPeek] = createSignal<{ segment: Segment; center: number } | undefined>();
@@ -239,14 +246,24 @@ function Timeline(props: {
           {view().all.length}
         </span>
       </div>
-      <div class="vf-tl-sub">
-        <Show when={view().showName}>
-          <Rich class="vf-tl-inner" text={view().active.name + (view().active.folded ? '（已折叠）' : '')} />
-        </Show>
-        <For each={view().items}>
-          {(item) => (
+      <div class="vf-tl-path">
+        <For each={view().path}>
+          {(crumb, i) => (
             <>
-              <Show when={item.heading}>{(heading) => <Rich class="vf-tl-inner vf-sub" text={heading()} />}</Show>
+              <Show when={i() > 0}>
+                <span class="vf-tl-crumbsep">›</span>
+              </Show>
+              <button type="button" class="vf-tl-crumb" onClick={() => steps.go(crumb.position)}>
+                <Rich text={crumb.name} />
+              </button>
+            </>
+          )}
+        </For>
+      </div>
+      <div class="vf-tl-sub">
+        <For each={view().items}>
+          {(item) =>
+            item.kind === 'step' ? (
               <button
                 type="button"
                 class="vf-st"
@@ -256,8 +273,13 @@ function Timeline(props: {
               >
                 {props.plainLabel(item.info)}
               </button>
-            </>
-          )}
+            ) : (
+              <button type="button" class="vf-st vf-st-group" onClick={() => steps.go(item.position)}>
+                <Rich text={item.name} />
+                <span class="vf-st-more">›</span>
+              </button>
+            )
+          }
         </For>
       </div>
     </div>

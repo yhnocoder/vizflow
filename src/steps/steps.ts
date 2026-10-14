@@ -60,10 +60,10 @@ export interface PageModule {
   nodes: Node[];
   params: Node[];
   folded: boolean;
+  foldable: boolean;
 }
 
 export interface StepModule extends PageModule {
-  foldable: boolean;
   forward: BackwardOverride;
   backward: BackwardOverride;
 }
