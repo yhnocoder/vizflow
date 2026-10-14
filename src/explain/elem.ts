@@ -24,7 +24,11 @@ export function trailingSubscript(elem: string): { base: string; inner: string }
 }
 
 export function elemTexOf(node: Node, index: readonly number[]): string {
-  const shown = index.filter((_, d) => node.shape[d] !== 1).map((i) => i + 1);
+  return elemTexWith(node, index.map((i) => String(i + 1)));
+}
+
+export function elemTexWith(node: Node, subscripts: readonly string[]): string {
+  const shown = subscripts.filter((_, d) => node.shape[d] !== 1);
   if (shown.length === 0) return node.elem;
   const merged = trailingSubscript(node.elem);
   if (merged === undefined) return `${node.elem}_{${shown.join(',')}}`;

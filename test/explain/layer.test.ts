@@ -113,4 +113,13 @@ describe('element subscripts', () => {
     expect(card.title).toBe('\\mathrm{ms}_{1,2}\\to r_{1,2}');
     expect(card.local.tex).toBe('\\frac{\\partial r_{1,2}}{\\partial \\mathrm{ms}_{1,2}}=-\\frac{1}{2}{r_{1,2}}^{3}');
   });
+
+  it('writes gather as a call and as the element it picks, looking through a reshape of the index', () => {
+    const g = graph();
+    const x = g.input('x', [2, 3], [[1, 2, 3], [4, 5, 6]]);
+    const y = g.label('y', [2, 0], { classes: 3 });
+    const p = g.gather(x, -1, g.view(y, [-1, 1]), { name: 'p' });
+    const ex = explain(g);
+    expect(ex.nodeCard(p, 'forward').tex).toEqual(['\\mathbf{p}=\\operatorname{gather}(\\mathbf{x},-1,\\mathrm{view1})', 'p_{i}=x_{i,y_{i}}']);
+  });
 });

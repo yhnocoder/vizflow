@@ -128,7 +128,8 @@ export function markSeeThrough(c: SceneController): boolean {
   let changed = false;
   for (const r of c.renderables) {
     const box = boxes.get(r);
-    const next = box !== undefined && !inStep(r.block.node) && targets.some((t) => covers(box, t));
+    const node = r.block.node;
+    const next = (c.state.dir === 'backward' && node.op === 'alias' && !c.state.active(node)) || (box !== undefined && !inStep(node) && targets.some((t) => covers(box, t)));
     if (next !== r.seeThrough) changed = true;
     r.seeThrough = next;
   }
