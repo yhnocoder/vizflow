@@ -966,7 +966,7 @@ vf-figure {
 .vf-peek::after {
   content: "";
   position: absolute;
-  top: 100%;
+  top: calc(100% + 0.5px);
   left: var(--vf-peek-arrow, 50%);
   width: 8px;
   height: 8px;

@@ -134,6 +134,7 @@ interface Segment {
 type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number };
 
 export const SEGMENT_PREVIEW_STEPS = 5;
+export const PEEK_ARROW_INSET = 18;
 
 const DIRECTIONS = [
   { dir: 'forward', name: '前向' },
@@ -305,7 +306,8 @@ function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; cu
     on([() => props.center, () => props.segment, () => props.current], ([center]) => {
       const width = el.offsetWidth;
       const max = props.bar.clientWidth;
-      const left = Math.min(Math.max(center - width / 2, 0), Math.max(max - width, 0));
+      const fitted = Math.min(Math.max(center - width / 2, 0), Math.max(max - width, 0));
+      const left = Math.max(Math.min(fitted, center - PEEK_ARROW_INSET), center - width + PEEK_ARROW_INSET);
       el.style.left = `${left}px`;
       el.style.setProperty('--vf-peek-arrow', `${center - left}px`);
     }),
