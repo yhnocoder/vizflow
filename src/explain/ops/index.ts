@@ -74,7 +74,7 @@ import {
 import { arangeExplain, causalMaskExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
-import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain } from './reduce';
+import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain, rrmsExplain } from './reduce';
 import { logSoftmaxExplain, softmaxExplain } from './softmax';
 
 export const builtinExplains: Readonly<Record<string, OpExplain>> = {
@@ -92,6 +92,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   log: logExplain,
   pow: powExplain,
   rsqrt: rsqrtExplain,
+  rrms: rrmsExplain,
   sqrt: sqrtExplain,
   reciprocal: reciprocalExplain,
   erf: erfExplain,

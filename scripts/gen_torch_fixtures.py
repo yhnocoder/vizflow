@@ -902,6 +902,14 @@ def write(name, cases):
     print(f"{path.relative_to(OUT_DIR.parent.parent.parent)}: {len(cases)} cases")
 
 
+def rrms_cases():
+    cases = []
+    for shape in [(4,), (2, 3), (2, 3, 4)]:
+        x = torch.arange(math.prod(shape), dtype=torch.float64).reshape(shape) / 7 - 1
+        cases.append(op_case("rrms", f"last axis {shape}", lambda x: torch.rsqrt(x.square().mean(-1, keepdim=True) + 1e-6), [("input", x)], [tensor_arg(0), 1e-6]))
+    return cases
+
+
 def main():
     torch.set_default_dtype(torch.float64)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -913,6 +921,7 @@ def main():
     write("ops.json", ops + stable_ops + transformer_ops + clamp_cases() + floor_divide_cases() + integer_and_scatter_cases() + attention_layout_cases() + trigonometric_cases() + creation_and_reverse_cases())
     write("pages.json", pages + stable_pages)
     write("dtypes.json", promotion_cases())
+    write("rrms.json", rrms_cases())
 
 
 if __name__ == "__main__":

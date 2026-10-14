@@ -72,3 +72,13 @@ export const cumsumExplain: OpExplain = {
     });
   },
 };
+
+export const rrmsExplain: OpExplain = {
+  pattern: 'select',
+  selected: (ctx, out) => Array.from({ length: ctx.inputs[0].shape.at(-1)! }, (_, col) => ({ arg: 0, index: [...out.slice(0, -1), col] })),
+  local: (ctx, out, _arg, input) => -ctx.inputs[0].get(input) * ctx.out.get(out) ** 3 / ctx.inputs[0].shape.at(-1)!,
+  tex: {
+    forward: (s) => `\\frac{1}{\\sqrt{\\operatorname{mean}(${s.in[0]}^{2})+\\epsilon}}`,
+    local: (s) => `-\\frac{${s.in}\\,${s.out}^{3}}{${s.ctx.inputs[0].shape.at(-1)!}}`,
+  },
+};

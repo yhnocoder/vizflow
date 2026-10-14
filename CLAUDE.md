@@ -62,9 +62,9 @@ dashboard issue 同一时间只由一个 agent 修改，其他 agent 完成 Task
 - Implement 和 Test 的具体规则见 `.claude/agents/implementer.md`。普通任务使用 implementer 默认的 opus 模型；复杂任务在调用时指定 `model: fable`；更复杂的任务可以让多个 fable 和 opus subagent 协作。
 - Review 的依据是本文件和 `.claude/agents/implementer.md`。改动涉及 `docs/design/` 时，主 agent 要看 `scripts/check_design.py` 生成的截图。退回时指出未通过的条目。
 
-### 小任务
+### 小任务、调研任务、尝试任务
 
-经用户明确同意，小任务可以跳过上面的流程，也可以把多个小任务合并到一个 PR。
+经用户明确同意，小任务、调研任务、尝试任务可以跳过上面的流程，也可以把多个任务合并到一个 PR。
 
 ## 代码地图
 

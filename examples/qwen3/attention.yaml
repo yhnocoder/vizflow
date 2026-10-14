@@ -79,10 +79,8 @@ tex:
   o_proj.weight: 'W_o'
   q_norm.weight: '\boldsymbol{\gamma}_q'
   k_norm.weight: '\boldsymbol{\gamma}_k'
-  q_norm.ms: '\mathrm{ms}^{q}'
-  k_norm.ms: '\mathrm{ms}^{k}'
-  q_norm.r: 'r^{q}'
-  k_norm.r: 'r^{k}'
+  q_norm.rms: 'r^{q}'
+  k_norm.rms: 'r^{k}'
 
 formula: |-
   \begin{aligned}
@@ -172,9 +170,8 @@ steps:
     subtitle: Qwen3RMSNorm，按 head_dim
     formula: |-
       \step{scale}{\viz{qn}=\viz{q_norm.weight}\odot}
-      \step{normalize}{\viz{q}\big/}
-      \step{rms}{\sqrt{\operatorname{mean}\big(
-      \step{square}{ {\viz{q}}^{2}}\big)+\epsilon}}
+      \step{normalize}{\viz{q}\odot}
+      \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{q}}^{2})+\epsilon}}}
     fold:
       label: '$\viz{qn},\ \viz{kn}$'
       title: q_norm 和 k_norm
@@ -187,40 +184,27 @@ steps:
         text: |
           $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }}$$
     edit:
-      square:
-        title: q_norm、k_norm：逐元素平方
+      rrms:
+        title: 每个 head 的均方根倒数
         text: |
           <code>self.q_norm(... .view(hidden_shape))</code>：Qwen3 在 RoPE 之前对 q、k 的每个 head 各做一次 RMSNorm，范围是 $d_h$ 个分量。这是 Qwen3 相对 Qwen2 新增的一步。
 
           它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
           $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|\gamma_{q,c}|\,\max_c|\gamma_{k,c}|$$
           后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
-          $${\viz{q}}^{2}={{ q_norm.sq | matrix:2 }},\qquad {\viz{k}}^{2}={{ k_norm.sq | matrix:2 }}$$
+          每个位置、每个 head 沿最后一维计算 $r=(\frac{1}{d_h}\sum_c x_c^2+\epsilon)^{-1/2}$。
+          $$\viz{q_norm.rms}={{ q_norm.rms | matrix:3 }},\qquad \viz{k_norm.rms}={{ k_norm.rms | matrix:3 }}$$
         backward:
-          title: '$\pfl{\viz{q}},\ \pfl{\viz{k}}$'
+          title: '$\pfl{\viz{q_norm.xf}},\ \pfl{\viz{k_norm.xf}}$'
           text: |
-            两路相加后，每个 head 交回的梯度和这个 head 的输入垂直（$\epsilon$ 可忽略时），推导与 RMSNorm 的一般情形相同，只是 $d$ 换成 $d_h$。
-            $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{k}}={{ k.grad | matrix:3 }}$$
-      mean:
-        text: |
-          每个位置、每个 head 对 $d_h$ 个平方取平均。q 有 {{ num_heads }} 个 head，所以每个位置有 {{ num_heads }} 个 $\mathrm{ms}^{q}$，k 相应地有 {{ num_kv_heads }} 个。
-          $$\viz{q_norm.ms}={{ q_norm.ms | matrix:3 }},\qquad \viz{k_norm.ms}={{ k_norm.ms | matrix:3 }}$$
-      rms:
-        title: 每个 head 的均方根倒数
-        text: |
-          $$\viz{q_norm.r}={{ q_norm.r | matrix:3 }},\qquad \viz{k_norm.r}={{ k_norm.r | matrix:3 }}$$
-        backward:
-          title: '$\pfl{\viz{q_norm.ms}},\ \pfl{\viz{k_norm.ms}}$'
-          text: |
-            局部导数是 $-r^3/2$，下一步再除以 $d_h$ 分给这一组的每个平方。
-            $$\pfl{\viz{q_norm.ms}}={{ q_norm.ms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.ms}}={{ k_norm.ms.grad | matrix:3 }}$$
+            均方根倒数对每个分量的局部导数是 $-x_c r^3/d_h$。每个位置、每个 head 独立计算，梯度只传给对应 head 的输入。
       normalize:
         text: |
           每个分量乘上自己那一组的 $r$。这个 $r$ 只由同一个位置、同一个 head 的分量算出，所以每个分量只和这些分量有关。
           $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
         backward:
           text: |
-            $$\pfl{\viz{q_norm.r}}={{ q_norm.r.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.r}}={{ k_norm.r.grad | matrix:3 }}$$
+            $$\pfl{\viz{q_norm.rms}}={{ q_norm.rms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.rms}}={{ k_norm.rms.grad | matrix:3 }}$$
       scale:
         title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
         text: |

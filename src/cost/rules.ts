@@ -17,6 +17,7 @@ export const FLOP_RULES: readonly FlopRule[] = [
   { ops: ['sign', 'eq', 'ge', 'greater', 'lt', 'logical_not', 'floor_divide', 'bitwise_xor', 'bitwise_and', 'bitwise_or'], forward: '|y|', backward: '0' },
   { ops: ['exp', 'log', 'cos', 'sin', 'pow', 'rsqrt', 'sqrt', 'reciprocal', 'erf', 'sigmoid', 'silu', 'softplus', 'relu', 'gelu', 'clamp'], forward: '|y|', backward: '2|y|' },
   { ops: ['sum', 'max'], forward: '|x|', backward: '0' },
+  { ops: ['rrms'], forward: '2|x|+3|y|', backward: '|x|+4|y|' },
   { ops: ['mean'], forward: '|x|', backward: '|x|' },
   { ops: ['logsumexp'], forward: '4|x|', backward: '3|x|' },
   { ops: ['softmax', 'log_softmax'], forward: '5|x|', backward: '4|x|' },

@@ -227,13 +227,13 @@ panels:
 写法要点：
 
 - 页面用 `model` 指定根模块，`config` 给根模块的 `args` 取值，`data` 给根模块的输入。模块的 `args`、`inputs`、`outputs` 声明接口，`init` 建子模块、权重和 buffer，`forward` 按 PyTorch 写计算，`steps` 按顺序组织讲解。
-- `forward` 的每一行是 `名字: 表达式`，一行对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。表达式按 Python 的语义计算：`cat([a, b])` 的参数是列表，`1 - x`、`1 / x` 是反射运算，`x[:, None]` 加一维。
+- `forward` 的每一行是 `名字: 表达式`，通常对应 HF 代码的一行，例如 `x @ weight.T`、`x.float()`、`h.view(T, num_heads, d_head).transpose(0, 1)`、`self_attn(x, cos, sin, M)`。调用子模块时返回值按 `outputs` 的顺序解包。表达式按 Python 的语义计算：`cat([a, b])` 的参数是列表，`1 - x`、`1 / x` 是反射运算，`x[:, None]` 加一维。
 - 参数的 dtype 由页面 `config.dtype` 统一设定，根模块声明了 `dtype` 参数时也传给它；输入和权重的 dtype 不一致时由运算报错，有意的转换在 `forward` 里写成 `.float()` 或 `.to(x.dtype)`。
 - `Linear` 的 `bias` 默认是 `True`，与 `nn.Linear` 相同；HF 写了 `bias=False` 的地方页面也写 `bias: False`。自己的模块要可选的权重时写 `{ shape, present: 参数名 }`，参数为假时权重不创建，`forward` 里它是 `None`。
 - `inputs` 的 `shape` 里不是 `args` 的名字从实际输入绑定，`'...'` 可以出现一次，对上任意个维度，`_` 对上一个维度但不绑定名字。绑定的名字在模块的 shape、dtype、`init`、`forward`、步骤的 `show` 以及讲解文本的 `{{ }}` 和 `\viz{}` 里都没有再被引用时编译报错，通常是参数名拼错了；讲解正文里直接写出的名字不算引用。不需要名字的维度写 `_`。
 - `forward` 的每个结果都要被某一步展示，或者是被展示的调用的输入、输出，或者是输入已展示的布局运算（`view`、`reshape`、`transpose`、`permute`、`unsqueeze`、`contiguous`）或类型转换的结果；其余的写进 `unshown`，否则编译报错。
 - tex 由名字推出，`tex: { 名字: ... }` 改写。正文、标签和公式里用 `\viz{名字}` 引用张量，`{{ 表达式 }}` 插入数值，例如 `{{ h | matrix:3 }}`。数学符号一律写成 LaTeX。
-- 3D 布局由库按模块结构自动排布，页面不写布局。
+- 3D 布局由库按模块结构自动排布，页面不写布局。画布右下角显示步骤导航，公式卡片位于导航上方，两者右侧对齐。
 
 目前只有 Qwen3 用到的内置模块按这套写法实现：`Linear`、`Embedding`（内置，不需要导入），以及 `vizflow/nn/` 下的 `rmsnorm`、`glu`、`silu`、`sigmoid`、`log-softmax`、`nll-loss`、`rope`、`gqa`、`rotary-embedding`。其余包内模块和其他示例页面还没有迁移，在新的编译器下会报错。字段的完整列表、规则和每个内置模块的接口见设计文档 `docs/design/pages/dsl.html`（vizflow 页面描述文件）。
 
@@ -305,7 +305,7 @@ label 的 shape 要与使用它的运算一致：
 
 ### 2.3 运算
 
-运算是计算图上的方法，名字和参数顺序与 PyTorch 相同。torch 里按位置传的参数在这里按同样的顺序传；torch 里按关键字传的参数，以及节点的选项，放进最后一个对象：
+运算是计算图上的方法，已有的 PyTorch 运算沿用其名字和参数顺序。torch 里按位置传的参数在这里按同样的顺序传；torch 里按关键字传的参数，以及节点的选项，放进最后一个对象：
 
 ```js
 const z    = g.matmul(h, W.T, { name: 'z' });
@@ -325,6 +325,7 @@ const loss = g.mean(lt, { name: 'loss', tex: '\\ell', elem: '\\ell' });
 |---|---|---|
 | `add` `sub` `mul` `div` | `g.add(a, b)`、`g.add(ms, 1e-6)`、`g.mul(S, 0.5)` | 按 torch 规则广播；第二个参数可以是数 |
 | `neg` `exp` `log` `rsqrt` `sqrt` `reciprocal` `erf` `sigmoid` `silu` `relu` `gelu` `identity` | `g.exp(a)` | 逐元素。`reciprocal` 算 $1/a$，`erf` 是误差函数；`gelu` 是精确的 erf 形式；`identity` 原样输出，用来在图上单独画出一个相同的张量；`rsqrt` 可以写 `{ eps }`，算 $1/\sqrt{a+\epsilon}$。内置模块和示例页面不用 `sigmoid`、`silu`、`gelu` 和带 `eps` 的 `rsqrt`，而是把它们拆成初等运算画出来，例如 `rsqrt(ms + eps)` |
+| `rrms` | `g.rrms(a, eps)` | 均方根倒数 $1/\sqrt{\operatorname{mean}(a^2)+\epsilon}$，固定沿最后一维计算并保留该维，输入至少一维且最后一维非空，`eps` 必须传入有限的非负数。DSL 写 `rrms(x, eps)`；在计算图中是一个节点，RMSNorm 每行画一个输出圆盘，正向与反向各一步 |
 | `softplus` | `g.softplus(a)` | 逐元素 $\log(1+e^{x})$；$x>20$ 时直接输出 $x$，与 torch 的默认值相同 |
 | `rotate_half` | `g.rotate_half(a)` | 最后一维前后两半 $(a_1, a_2)$ 变成 $(-a_2, a_1)$，最后一维必须是偶数 |
 | `clamp` | `g.clamp(a, { min, max })` | 与 `torch.clamp` 相同，可以只给一个界；界内局部导数是 1，界上和界外是 0。DSL 里写 `clamp(x, max=L)` |
@@ -669,7 +670,7 @@ mountPanels('#side', g, [ ...面板 ], { steps });
 
 ### 5.1 mountSteps
 
-`mountSteps(el, steps)` 在容器里画出步骤条（前向、反向两组按钮，左右箭头）和当前步骤的标题与正文。步骤带模块时步骤条是分段进度条，指针移到一段上会弹出这一段的段名、进度和最多 5 个步骤。键盘左右方向键切换步骤；焦点在输入框、滑块或步骤条以外的按钮上时不响应。`el` 可以是选择器字符串或元素，找不到时抛错。
+`mountSteps(el, steps)` 在容器里画出步骤条（前向、反向两组按钮，左右箭头）和当前步骤的标题与正文。步骤带模块时，上方显示分段进度条，下面显示当前段的主要阶段和当前模块的步骤。面包屑标明所在模块，点击父级可以选择其他子模块；「全部步骤」展开当前方向的完整目录，选择一步后关闭，按 Escape 也可关闭。上一步、下一步跨模块时，导航自动跟随。指针移到进度条的一段上会弹出这一段的段名、进度和最多 5 个步骤。键盘左右方向键切换步骤；焦点在输入框、滑块或步骤条以外的按钮上时不响应。`el` 可以是选择器字符串或元素，找不到时抛错。
 
 ### 5.2 mountPanels
 

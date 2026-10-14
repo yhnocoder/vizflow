@@ -78,7 +78,7 @@ import {
 import { type Reduction, nllLossOp } from './loss';
 import { groupedLinearOp, linearComposite, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
 import { arangeOp, causalMaskOp } from './creation';
-import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp } from './reduce';
+import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp, rrmsOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
 export type { Dim, Reduction };
@@ -148,6 +148,7 @@ export interface BuiltinOps {
   arange(start: number, end: number | string, step?: number, options?: OpOptions): Node;
   causal_mask(size: number | string, dtype: Dtype, options?: OpOptions): Node;
   linear(input: Node, weight: Node, bias?: Node | null, options?: OpOptions): Node;
+  rrms(input: Node, eps: number, options?: OpOptions): Node;
   rsqrt(input: Node, options?: RsqrtOptions): Node;
   sqrt(input: Node, options?: OpOptions): Node;
   reciprocal(input: Node, options?: OpOptions): Node;
@@ -240,6 +241,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   logOp,
   powOp,
   rsqrtOp,
+  rrmsOp,
   sqrtOp,
   reciprocalOp,
   erfOp,

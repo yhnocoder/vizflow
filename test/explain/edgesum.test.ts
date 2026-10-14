@@ -27,6 +27,13 @@ interface Case {
 }
 
 const cases: Case[] = [
+  ...[[4], [2, 3], [2, 3, 4]].map((shape): Case => ({
+    op: 'rrms',
+    build: (g, r) => {
+      const x = g.input('x', shape, randomValues(r, shape));
+      return { out: g.rrms(x, 1e-6), inputs: [x] };
+    },
+  })),
   { op: 'add', build: (g, r) => binary(g, r, 'add', [2, 3], [2, 3]) },
   { op: 'sub', build: (g, r) => binary(g, r, 'sub', [1, 5], [1, 1]) },
   { op: 'sub', build: (g, r) => binary(g, r, 'sub', [3], [2, 3]) },

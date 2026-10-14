@@ -14,7 +14,9 @@ interface OpCase {
   finite?: boolean;
 }
 
-const fixture = loadFixture<OpCase>('ops.json');
+const original = loadFixture<OpCase>('ops.json');
+const rrms = loadFixture<OpCase>('rrms.json');
+const fixture = { ...original, cases: [...original.cases, ...rrms.cases] };
 
 function isTensorRef(arg: unknown): arg is { tensor: number } {
   return typeof arg === 'object' && arg !== null && !Array.isArray(arg);

@@ -17,7 +17,7 @@ inputs:
   cos: [T, d_head]
   sin: [T, d_head]
 outputs:
-  x_out: [T, d_model]
+  out: [T, d_model]
 
 init:
   input_layernorm:
@@ -34,50 +34,50 @@ init:
     args: [d_model, d_ff, { act: SiLU }]
 
 forward:
-  - x1: x
-  - n1: input_layernorm(x1)
-  - att: self_attn(n1, mask=mask, cos=cos, sin=sin)
-  - a: x1 + att
+  - res: x
+  - h: input_layernorm(res)
+  - att: self_attn(h, mask=mask, cos=cos, sin=sin)
+  - a: res + att
   - n: post_attention_layernorm(a)
   - down: mlp(n)
-  - x_out: a + down
+  - out: a + down
 
 tex:
-  x1: '\mathbf{x}_1'
-  n1: '\mathbf{n}_1'
+  res: '\mathbf{h}'
+  h: '\mathbf{h}'
   att: '\mathbf{att}'
-  a: '\mathbf{a}'
+  a: '\mathrm{att}_\mathrm{res}'
   n: '\mathbf{n}'
   down: '\mathbf{down}'
-  x_out: '\mathbf{x}_{\mathrm{out}}'
+  out: '\mathbf{h}_{\mathrm{out}}'
   mlp.a: '\mathbf{s}'
 
 formula: |-
   \begin{aligned}
   \step{res1}{\viz{a}}&
-  \step{res1}{=\viz{x1}+}
+  \step{res1}{=\viz{res}+}
   \step{self_attn.*}{\mathrm{attn}\big(}
   \step{input_layernorm.*}{\mathrm{norm}(\viz{x})}
   \step{self_attn.*}{\big)}\\
-  \step{res2}{\viz{x_out}}&
+  \step{res2}{\viz{out}}&
   \step{res2}{=\viz{a}+}
   \step{mlp.*}{\mathrm{mlp}\big(}
   \step{post_attention_layernorm.*}{\mathrm{norm}(\viz{a})}
   \step{mlp.*}{\big)}
   \end{aligned}
 fold:
-  label: '$\viz{x_out}=\mathrm{layer}(\viz{x})$'
+  label: '$\viz{out}=\mathrm{layer}(\viz{x})$'
   title: Qwen3DecoderLayer
   text: |
     一层是两次「先 norm、再计算、再加回」：
-    $$\viz{a}=\viz{x}+\mathrm{attn}(\mathrm{norm}(\viz{x})),\qquad \viz{x_out}=\viz{a}+\mathrm{mlp}(\mathrm{norm}(\viz{a}))$$
+    $$\viz{a}=\viz{x}+\mathrm{attn}(\mathrm{norm}(\viz{x})),\qquad \viz{out}=\viz{a}+\mathrm{mlp}(\mathrm{norm}(\viz{a}))$$
     位置 $t$ 的输出只依赖 $s\le t$ 的输入，所以整层的 Jacobian 是块下三角的。进一步看对角块：两次残差相加把 $\viz{x}$ 原样带到输出，所以对角块里含有一个单位阵。
-    $$\viz{x_out}={{ x_out | matrix:2 }}$$
+    $$\viz{out}={{ out | matrix:2 }}$$
   backward:
     label: '$\partial$参数, $\partial\viz{x}$'
     title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
     text: |
-      一次反向算出这一层全部参数的梯度和 $\pfl{\viz{x}}$。由上面的展开式，$\pfl{\viz{x}}$ 里有一项就是 $\pfl{\viz{x_out}}$ 本身，它沿两条残差原样传过整层。训练时开启 gradient checkpointing 的话，会先用保存的 $\viz{x}$ 重算整层前向，再做反向。
+      一次反向算出这一层全部参数的梯度和 $\pfl{\viz{x}}$。由上面的展开式，$\pfl{\viz{x}}$ 里有一项就是 $\pfl{\viz{out}}$ 本身，它沿两条残差原样传过整层。训练时开启 gradient checkpointing 的话，会先用保存的 $\viz{x}$ 重算整层前向，再做反向。
       $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
 
 steps:
@@ -92,11 +92,11 @@ steps:
             $\viz{x}$ 除了经过 norm 拿到的梯度，还沿残差直接收到 $\pfl{\viz{a}}$，所以 $\pfl{\viz{x}}$ 是两者之和。
       scale:
         append: |
-          $\viz{n1}$ 是 q_proj、k_proj、v_proj 共同的输入。
+          $\viz{h}$ 是 q_proj、k_proj、v_proj 共同的输入。
     fold:
       text: |
         每一行只和自己有关，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
-        $$\viz{n1}={{ n1 | matrix:2 }}$$
+        $$\viz{h}={{ h | matrix:2 }}$$
       backward:
         text: |
           一步算出 $\viz{input_layernorm.weight}$ 的梯度，以及经过 norm 交给 $\viz{x}$ 的那一份梯度。
@@ -105,11 +105,11 @@ steps:
   - id: res1
     show: a
     brace: true
-    subtitle: '$\viz{x1}+\viz{att}$'
+    subtitle: '$\viz{res}+\viz{att}$'
     notes:
       - at: a
-        text: '残差：$\viz{x1}$ 绕过 attention 直接加到这里'
-    label: '$\viz{a}=\viz{x1}+\viz{att}$'
+        text: '残差：$\viz{res}$ 绕过 attention 直接加到这里'
+    label: '$\viz{a}=\viz{res}+\viz{att}$'
     title: 残差相加
     text: |
       <code>hidden_states = residual + hidden_states</code>。attention 的输出作为增量加到输入上，这就是残差连接。
@@ -130,7 +130,7 @@ steps:
           这是 post_attention_layernorm，在 MLP 之前，计算与 input_layernorm 相同，但参数各自独立。
         backward:
           append: |
-            和 input_layernorm 处的 $\viz{x}$ 一样，$\viz{a}$ 除了经过 norm 拿到的梯度，还沿 MLP 的残差直接收到 $\pfl{\viz{x_out}}$，所以 $\pfl{\viz{a}}$ 是两者之和。
+            和 input_layernorm 处的 $\viz{x}$ 一样，$\viz{a}$ 除了经过 norm 拿到的梯度，还沿 MLP 的残差直接收到 $\pfl{\viz{out}}$，所以 $\pfl{\viz{a}}$ 是两者之和。
       scale:
         append: $\viz{n}$ 是 gate_proj 和 up_proj 共同的输入。
   - id: mlp
@@ -147,18 +147,18 @@ steps:
         MLP 对每个位置单独计算，所以 Jacobian 是 $T$ 个 $d_{\mathrm{model}}\times d_{\mathrm{model}}$ 的对角块。
         $$\viz{down}=\mathrm{mlp}(\viz{n})={{ down | matrix:2 }}$$
   - id: res2
-    show: x_out
+    show: out
     brace: true
     subtitle: '$\viz{a}+\viz{down}$'
-    label: '$\viz{x_out}=\viz{a}+\viz{down}$'
+    label: '$\viz{out}=\viz{a}+\viz{down}$'
     title: 残差相加
     text: |
       <code>hidden_states = residual + hidden_states</code>，MLP 的输出作为增量加到 $\viz{a}$ 上，得到这一层的输出。
-      $$\viz{x_out}=\viz{a}+\viz{down}={{ x_out | matrix:2 }}$$
-      残差路径上一直没有 norm，所以 $\viz{x_out}$ 的尺度随层数累积，因此下一层的 input_layernorm 和最后的 model.norm 要在使用前把它归一化。
+      $$\viz{out}=\viz{a}+\viz{down}={{ out | matrix:2 }}$$
+      残差路径上一直没有 norm，所以 $\viz{out}$ 的尺度随层数累积，因此下一层的 input_layernorm 和最后的 model.norm 要在使用前把它归一化。
     backward:
       label: '$\partial\viz{a},\ \partial\viz{down}$'
       title: '$\pfl{\viz{a}},\ \pfl{\viz{down}}$'
       text: |
         和第一次残差相加一样，梯度复制成两份，一份进入 MLP，一份沿残差直接交给 $\viz{a}$。
-        $$\pfl{\viz{down}}=\pfl{\viz{x_out}}={{ x_out.grad | matrix:3 }}$$
+        $$\pfl{\viz{down}}=\pfl{\viz{out}}={{ out.grad | matrix:3 }}$$

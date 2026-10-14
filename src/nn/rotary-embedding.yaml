@@ -17,8 +17,10 @@ init:
 forward:
   - freqs: position_ids[..., None].float() * inv_freq.float()
   - emb: cat([freqs, freqs], dim=-1)
-  - cos: emb.cos().to(x.dtype)
-  - sin: emb.sin().to(x.dtype)
+  - cos_fp32: emb.cos()
+  - cos: cos_fp32.to(x.dtype)
+  - sin_fp32: emb.sin()
+  - sin: sin_fp32.to(x.dtype)
 tex:
   inv_freq: '\boldsymbol{\omega}'
   freqs: 't\,\boldsymbol{\omega}'
@@ -26,13 +28,11 @@ tex:
   cos: '\cos'
   sin: '\sin'
 formula: '\step{cos_sin}{\viz{cos}=\cos\big(}\step{emb}{\operatorname{cat}\big(}\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}}\step{emb}{,\ \cdot\big)}\step{cos_sin}{\big)}'
-fold:
-  label: '$\viz{cos},\ \viz{sin}$'
-  title: 位置编码表
-  text: |
-    第 $t$ 行第 $c$ 列是 $\cos(t\,\omega_{c\bmod d_h/2})$。
-    $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
 
+layout:
+  place:
+    sin_fp32: {with: cos_fp32}
+    sin: {with: cos}
 steps:
   - id: freqs
     label: '$\viz{freqs}$'
@@ -55,10 +55,14 @@ steps:
       复制的原因在后面的 <code>rotate_half</code>：HF 把第 $c$ 和第 $c+d_h/2$ 个分量配成一对，同一对的两个分量必须用同一个角度，所以第 $c$ 列和第 $c+d_h/2$ 列放同一个角度。拼成 $d_h$ 列以后，表的宽度和每个 head 相同，于是 cos、sin 可以直接和 q、k 逐元素相乘。
       $$\viz{emb}={{ emb | matrix:3 }}$$
   - id: cos_sin
-    show: [cos, sin]
-    label: '$\viz{cos},\ \viz{sin}$'
+    show: [cos_fp32, sin_fp32]
+    label: '$\viz{cos_fp32},\ \viz{sin_fp32}$'
     title: 取 cos 和 sin
     text: |
       <code>cos = emb.cos() * self.attention_scaling</code>，sin 相同。默认的 RoPE 里 <code>attention_scaling</code> 是 1，所以这两张表就是角度的 cos 和 sin。角度和 cos、sin 都在 float32 里算，最后的 <code>cos.to(dtype=x.dtype)</code> 才转成输入的 dtype。
       $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
       这两张表只由位置和 $\theta$ 决定，和输入的内容无关，所以不需要梯度：<code>forward</code> 带 <code>@torch.no_grad()</code>，反向不经过这里。
+  - id: to_dtype
+    show: [cos, sin]
+    label: '$\viz{cos},\ \viz{sin}$'
+    title: to(dtype)

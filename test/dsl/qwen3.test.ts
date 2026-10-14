@@ -60,6 +60,24 @@ describe('qwen3-dsl.yaml as written', () => {
     page = await loadExample(PAGE);
   });
 
+  it('represents each RMSNorm reciprocal RMS as one node and step', () => {
+    const rrmsNodes = page.graph.nodes.filter((node) => node.op === 'rrms');
+    expect(rrmsNodes.length).toBeGreaterThan(0);
+    for (const node of rrmsNodes) {
+      expect(node.inputs).toHaveLength(1);
+      expect(node.inputs[0].name).toBe(node.name.replace(/rms$/, 'xf'));
+      expect(node.dtype).toBe('fp32');
+      expect(node.shape).toEqual([...node.inputs[0].shape.slice(0, -1), 1]);
+      for (const removed of ['sq', 'ms', 'mse']) expect(page.nodes.has(node.name.replace(/rms$/, removed))).toBe(false);
+    }
+    const steps = createSteps(page.graph, page.steps);
+    for (const node of rrmsNodes) {
+      expect(steps.list.filter((step) => step.dir === 'forward' && step.kind === 'op' && step.nodes.includes(node))).toHaveLength(1);
+      expect(steps.list.filter((step) => step.dir === 'backward' && step.kind === 'op' && step.nodes.includes(node))).toHaveLength(1);
+    }
+    steps.dispose();
+  });
+
   it('computes in bf16 and casts the logits to float32 before the loss', () => {
     expect(page.nodes.get('model.e')!.dtype).toBe('bf16');
     expect(page.nodes.get('zf')!.dtype).toBe('fp32');

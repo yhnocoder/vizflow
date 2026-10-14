@@ -468,14 +468,6 @@ data:
 <p><code>formula</code> 里 <code>\step{步骤路径}{公式片段}</code> 标出由哪一步算出的部分：前向走到这一步之前不显示，走到时用正色标出；反向时整条公式显示，当前步骤对应的部分用负色标出。<code>子实例.*</code> 表示子实例的全部步骤，几个路径用逗号隔开。</p>
 <p><code>{{ 表达式 | 格式 }}</code> 插入值。格式有 <code>matrix:位数</code>、<code>join: "分隔符"</code> 和内置小图 <code>lines:...</code>，小图的写法见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</p>
 
-<h2>Panel 与 Section</h2>
-<ul>
-  <li><code>cost</code>：显存与计算量面板。<code>loss: { parts?, hint? }</code>：损失。<code>sequence</code>：序列面板，<code>sgd</code> 给出训练的参数和学习率。<code>attention</code>、<code>matrices</code>、<code>code</code> 分别是注意力、矩阵和代码面板。张量引用按根模块的作用域求值。</li>
-  <li><code>sections</code> 的每一项是 <code>{ title?, src, rope? }</code>，<code>src</code> 是 Markdown 文件，冒号块的写法见 <code>docs/guide.md</code>。</li>
-</ul>
-
-<h2>内置模块</h2>
-<p>Qwen3 用到的内置模块按新写法实现，每一步对应 HF 实现的一行代码：<code>Linear</code>、<code>Embedding</code>（没有步骤）、<code>rmsnorm</code>、<code>glu</code>、<code>silu</code>、<code>sigmoid</code>、<code>log-softmax</code>、<code>nll-loss</code>、<code>rope</code>、<code>gqa</code>、<code>rotary-embedding</code>，位于 <code>src/nn/</code>。<code>rope</code> 用 <code>place</code> 把 k 的每个中间结果和对应的 q 放在同一层。</p>
 
 <h2>编译接口</h2>
 <pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }

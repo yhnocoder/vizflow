@@ -1,6 +1,6 @@
 import { Tensor, normDim, normDims, reduceMap, reducedShape } from '../../tensor';
 import type { OpDef } from '../op';
-import { overInput, pointwise } from './cost';
+import { numel, overInput, pointwise } from './cost';
 
 const LOGSUMEXP_FORWARD = 4;
 const LOGSUMEXP_BACKWARD = 3;
@@ -158,4 +158,43 @@ export const cumsumOp: OpDef<CumsumAttrs> = {
   forward: ([a], attrs) => scan(a, attrs.dim, false),
   backward: (gradOut, _inputs, _out, attrs) => [scan(gradOut, attrs.dim, true)],
   cost: pointwise(1, 1, [[]]),
+};
+
+export interface RrmsAttrs {
+  eps: number;
+}
+
+export const rrmsOp: OpDef<RrmsAttrs> = {
+  name: 'rrms',
+  args: ['input', 'eps'],
+  tensors: ['input'],
+  floating: true,
+  shape: ([a], { eps }) => {
+    if (a.length === 0 || a[a.length - 1] === 0) throw new Error('rrms: input needs a non-empty last dimension');
+    if (typeof eps !== 'number' || !Number.isFinite(eps) || eps < 0) throw new Error('rrms: eps must be a finite non-negative number');
+    return [...a.slice(0, -1), 1];
+  },
+  forward: ([a], { eps }) => {
+    const width = a.shape[a.ndim - 1];
+    const out = new Tensor([...a.shape.slice(0, -1), 1]);
+    for (let row = 0; row < out.size; row++) {
+      let sum = 0;
+      for (let col = 0; col < width; col++) sum += a.data[row * width + col] ** 2;
+      out.data[row] = 1 / Math.sqrt(sum / width + eps);
+    }
+    return out;
+  },
+  backward: (gradOut, [a], out) => {
+    const width = a.shape[a.ndim - 1];
+    const grad = new Tensor(a.shape);
+    for (let row = 0; row < out.size; row++) {
+      const factor = -gradOut.data[row] * out.data[row] ** 3 / width;
+      for (let col = 0; col < width; col++) grad.data[row * width + col] = factor * a.data[row * width + col];
+    }
+    return [grad];
+  },
+  cost: {
+    saves: [[0, 'out']],
+    flops: ([input], out) => ({ forward: [2 * numel(input) + 3 * numel(out)], backward: [[numel(input) + 4 * numel(out)]] }),
+  },
 };

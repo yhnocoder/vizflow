@@ -32,7 +32,7 @@ describe('dtype', () => {
     expect(p.graph.dtype).toBe('bf16');
     expect(['ids', 'y', 'model.embed_tokens.weight', 'model.e', 'model.rotary_emb.inv_freq', 'model.cos', 'model.M'].map(dtype)).toEqual(['int64', 'int64', 'bf16', 'bf16', 'fp32', 'bf16', 'bf16']);
     const norm = 'model.layers[0].input_layernorm';
-    expect(['xf', 'ms', 'r', 'xh', 'xc'].map((n) => dtype(`${norm}.${n}`))).toEqual(['fp32', 'fp32', 'fp32', 'fp32', 'bf16']);
+    expect(['xf', 'rms', 'xh', 'xc'].map((n) => dtype(`${norm}.${n}`))).toEqual(['fp32', 'fp32', 'fp32', 'bf16']);
     const gqa = 'model.layers[0].self_attn.eager_attention_forward';
     expect(['S', 'ex', 'Z', 'P', 'attn_output'].map((n) => dtype(`${gqa}.${n}`))).toEqual(['bf16', 'fp32', 'fp32', 'bf16', 'bf16']);
     expect(['z', 'zf', 'logp', 'loss'].map(dtype)).toEqual(['bf16', 'fp32', 'fp32', 'fp32']);
