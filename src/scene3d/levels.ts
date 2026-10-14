@@ -214,6 +214,7 @@ export interface LevelSpec {
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
   places?: Place[];
+  iterations?: ReadonlyMap<Node, string>;
 }
 
 export const PLACE_GAP = 1.6;
@@ -559,6 +560,7 @@ class Plan implements LevelPlan {
         return n.kind === 'op' && typeof group === 'string' ? `${n.op}:${group}` : undefined;
       },
       rides: (n) => this.ridesBoards(n),
+      iteration: (n) => this.layout.iterations?.get(n),
       places: this.layout.places ?? [],
     }, this.layout.options);
     const moveTo = new Map<Node, Node>();

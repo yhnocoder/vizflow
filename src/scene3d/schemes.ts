@@ -29,6 +29,7 @@ export interface SchemeGraph {
   parent(id: string): string | null;
   pack(n: Node): string | undefined;
   rides(n: Node): boolean;
+  iteration(n: Node): string | undefined;
   places: Place[];
 }
 
@@ -120,39 +121,12 @@ interface Item {
   constant: boolean;
 }
 
-const ITERATION = /\[(\d+)\](\/\d+)?$/;
-
-function iterationOf(n: Node): string | undefined {
-  return ITERATION.exec(n.name.slice(n.name.lastIndexOf('.') + 1))?.[1];
-}
-
-function loopIterations(g: SchemeGraph): Map<Node, string> {
-  const out = new Map<Node, string>();
-  const last = new Map<string | null, { index: number; loop: number } | undefined>();
-  let loops = 0;
-  for (const n of [...g.nodes].sort((p, q) => p.id - q.id)) {
-    const scope = g.scope(n);
-    const index = iterationOf(n);
-    if (index === undefined) {
-      last.set(scope, undefined);
-      continue;
-    }
-    const k = Number(index);
-    const before = last.get(scope);
-    const loop = before !== undefined && k >= before.index ? before.loop : ++loops;
-    last.set(scope, { index: k, loop });
-    out.set(n, `${loop}.${k}`);
-  }
-  return out;
-}
-
 function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
   const members = new Set(g.nodes);
-  const iterations = options.iterations === 'together' ? loopIterations(g) : new Map<Node, string>();
-  const chainOf = (n: Node): (string | null)[] => {
+    const chainOf = (n: Node): (string | null)[] => {
     const out: (string | null)[] = [];
     for (let m = g.scope(n); m !== null; m = g.parent(m)) out.unshift(m);
-    const iteration = iterations.get(n);
+    const iteration = options.iterations === 'together' ? g.iteration(n) : undefined;
     if (iteration !== undefined) out.push(`${out[out.length - 1] ?? ''}#${iteration}`);
     return [null, ...out];
   };

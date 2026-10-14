@@ -15,7 +15,7 @@ const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
 type Placement = (typeof PLACE_KEYS)[number];
 
 export function layoutOf(c: PageCompiler, root: Call, levels: { scheme: LevelScheme; options?: SchemeOptions } = { scheme: 'lines' }): LevelSpec {
-  const spec: Spec = { scheme: levels.scheme, options: levels.options, lines: [], sides: [], merges: [], places: [] };
+  const spec: Spec = { scheme: levels.scheme, options: levels.options, lines: [], sides: [], merges: [], places: [], iterations: c.iterations };
   spec.lines = levelsOf(c, root, spec);
   return spec;
 }

@@ -87,7 +87,9 @@ export abstract class Modules extends Expressions {
   readonly calls: Call[] = [];
   readonly producers = new Map<Node, Call>();
   readonly anon = new Map<Node, Node[]>();
+  readonly iterations = new Map<Node, string>();
   readonly instances: Instance[] = [];
+  private loopRuns = 0;
   private readonly structuralNames = new Map<ModuleDef, Map<string, number>>();
 
   instanceEnv(instance: Instance, where: Where = instance.def.where): Env {
@@ -534,7 +536,7 @@ export abstract class Modules extends Expressions {
     });
   }
 
-  private runItems(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
+  private runItems(call: Call, items: ForwardItem[], loops: { variable: string; index: number; run: number }[]): void {
     const def = call.instance.def;
     for (const item of items) {
       const env = this.callEnv(call, item.where);
@@ -546,10 +548,11 @@ export abstract class Modules extends Expressions {
         const span = combine([start, stop], (a, b) => Math.max(0, b - a));
         const count = span.toy;
         if (count === 0) continue;
+        const loopRun = ++this.loopRuns;
         const run = () => {
           for (let k = start.toy; k < stop.toy; k++) {
             call.values.set(item.variable, num(k));
-            this.runItems(call, item.body, [...loops, { variable: item.variable, index: k }]);
+            this.runItems(call, item.body, [...loops, { variable: item.variable, index: k, run: loopRun }]);
           }
         };
         const real = this.dimSpec(span);
@@ -572,7 +575,9 @@ export abstract class Modules extends Expressions {
       const value = item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, name, env, make);
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
-      call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
+      const own = this.g.nodes.slice(before).filter((n) => !nested.has(n));
+      call.lines.push({ nodes: own, calls: inner });
+      if (inLoop) for (const n of own) this.iterations.set(n, `${loops[loops.length - 1].run}.${loops[loops.length - 1].index}`);
       if (value === null && item.target === undefined && !inLoop) {
         call.values.set(name, null);
         continue;

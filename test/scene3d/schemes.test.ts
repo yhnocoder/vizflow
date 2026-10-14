@@ -8,6 +8,7 @@ interface Toy {
   scope?: string;
   pack?: string;
   rides?: boolean;
+  iteration?: string;
 }
 
 function toyGraph(toys: Toy[], places: { node: string; key: Place['key']; of: string }[] = []): { g: SchemeGraph; node: (name: string) => Node } {
@@ -23,6 +24,7 @@ function toyGraph(toys: Toy[], places: { node: string; key: Place['key']; of: st
     parent: () => null,
     pack: (n) => toyOf.get(n)!.pack,
     rides: (n) => toyOf.get(n)!.rides ?? false,
+    iteration: (n) => toyOf.get(n)!.iteration,
     places: places.map((p) => ({ node: node(p.node), key: p.key, of: node(p.of) })),
   };
   return { g, node };
@@ -91,6 +93,25 @@ describe('nested levels', () => {
         expect(level.get(node(`S[${r}][0]`))).toBe(level.get(node(`K[${r}][0]`))! + 1);
         expect(level.get(node(`S[${r}][0]`))).toBeLessThan(level.get(node(`S[${r}][1]`))!);
         expect(level.get(node(`S[${r}][1]`))).toBe(level.get(node('S[0][1]')));
+      }
+    }
+  });
+
+  it('starts each ring attention round as soon as its own key block is there when rounds are loops over heads', () => {
+    const toys: Toy[] = [{ name: 'x' }, { name: 'kr', inputs: ['x'] }];
+    const round = (r: number, keys: string) => {
+      for (let h = 0; h < 2; h++) toys.push({ name: `K${r}[${h}]`, inputs: [keys], iteration: `${r + 1}.${h}` }, { name: `S${r}[${h}]`, inputs: [`K${r}[${h}]`], iteration: `${r + 1}.${h}` });
+    };
+    round(0, 'kr');
+    toys.push({ name: 'k1', inputs: ['kr'], pack: 'send_recv:cp' });
+    round(1, 'k1');
+    for (let h = 0; h < 2; h++) toys.push({ name: `om[${h}]`, inputs: [`S0[${h}]`, `S1[${h}]`], iteration: `3.${h}` });
+    const { g, node } = toyGraph(toys);
+    for (const iterations of ['overlap', 'together'] as const) {
+      const level = schemeLevels('nested', g, { iterations, width: 8 });
+      for (let h = 0; h < 2; h++) {
+        expect(level.get(node(`K0[${h}]`))).toBe(level.get(node('k1')));
+        expect(level.get(node(`S0[${h}]`))).toBeLessThan(level.get(node(`S1[${h}]`))!);
       }
     }
   });
