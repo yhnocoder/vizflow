@@ -237,34 +237,31 @@ modules:
               {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).cos() | lines:shade=T }}
 
               {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).sin() | lines:shade=T }}
-      - id: head
+      - id: logits
+        label: '$\viz{z}$'
         title: lm_head
-        steps:
-          - id: logits
-            label: '$\viz{z}$'
-            title: lm_head
-            show: lm_head
-            text: |
-              <code>logits = self.lm_head(hidden_states)</code>。$\viz{lm_head.weight}$ 的每一行对应词表里的一个 token，$z_{t,v}=\mathbf{h}_t\cdot W_v$ 是位置 $t$ 的向量与 token $v$ 的那一行的点积，下一步经过 softmax 成为概率。
-              $$\viz{z}=\viz{h_norm}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
-              这一页词表只有 {{ V }} 个 token，而 {{ real['qwen3-8b'].name }} 的词表是 {{ real['qwen3-8b'].V }}，lm_head 有 ${{ real['qwen3-8b'].V }}\times{{ real['qwen3-8b'].d_model }}$ 个参数，logits 是 $T\times{{ real['qwen3-8b'].V }}$。
-            backward:
-              label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{h_norm}}$'
-              text: |
-                $$\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{h_norm}}^{\top}\pfl{\viz{z}},\qquad \pfl{\viz{h_norm}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ h_norm.grad | matrix:3 }}$$
-                代入后面算出的 $\pfl{z_{t,v}}=(p_{t,v}-[v=y_t])/T$，第 $v$ 行的梯度是 $\frac1T\sum_t(p_{t,v}-[v=y_t])\,\mathbf{h}_t$。于是按梯度下降更新时，目标 token 那一行沿 $\mathbf{h}_t$ 方向增加，其他行则沿 $\mathbf{h}_t$ 方向按概率 $p_{t,v}$ 减少。
-          - id: float
-            show: zf
-            label: '$\viz{zf}$'
-            title: 转成 float32
-            text: |
-              HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
-            backward:
-              label: '$\pfl{\viz{z}}$'
-              title: '$\pfl{\viz{z}}$'
-              text: |
-                局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
-                $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
+        show: lm_head
+        text: |
+          <code>logits = self.lm_head(hidden_states)</code>。$\viz{lm_head.weight}$ 的每一行对应词表里的一个 token，$z_{t,v}=\mathbf{h}_t\cdot W_v$ 是位置 $t$ 的向量与 token $v$ 的那一行的点积，下一步经过 softmax 成为概率。
+          $$\viz{z}=\viz{h_norm}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
+          这一页词表只有 {{ V }} 个 token，而 {{ real['qwen3-8b'].name }} 的词表是 {{ real['qwen3-8b'].V }}，lm_head 有 ${{ real['qwen3-8b'].V }}\times{{ real['qwen3-8b'].d_model }}$ 个参数，logits 是 $T\times{{ real['qwen3-8b'].V }}$。
+        backward:
+          label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{h_norm}}$'
+          text: |
+            $$\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{h_norm}}^{\top}\pfl{\viz{z}},\qquad \pfl{\viz{h_norm}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ h_norm.grad | matrix:3 }}$$
+            代入后面算出的 $\pfl{z_{t,v}}=(p_{t,v}-[v=y_t])/T$，第 $v$ 行的梯度是 $\frac1T\sum_t(p_{t,v}-[v=y_t])\,\mathbf{h}_t$。于是按梯度下降更新时，目标 token 那一行沿 $\mathbf{h}_t$ 方向增加，其他行则沿 $\mathbf{h}_t$ 方向按概率 $p_{t,v}$ 减少。
+      - id: float
+        show: zf
+        label: '$\viz{zf}$'
+        title: 转成 float32
+        text: |
+          HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
+        backward:
+          label: '$\pfl{\viz{z}}$'
+          title: '$\pfl{\viz{z}}$'
+          text: |
+            局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
+            $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
       - id: log_softmax
         subtitle: F.cross_entropy 的第一部分：log_softmax
         fold:

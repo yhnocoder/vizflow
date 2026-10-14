@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { For, Index, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from 'solid-js';
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
 import { Rich, plain } from './rich';
@@ -245,27 +245,27 @@ function Timeline(props: {
           </For>
         </div>
         <div class="vf-tl-bar" ref={(el) => (bar = el)} onPointerLeave={closePeek}>
-          <For each={view().segments}>
+          <Index each={view().segments}>
             {(segment) => {
-              const on = () => segment === view().active;
-              const done = () => segment.positions[segment.positions.length - 1] < props.current();
-              const fraction = () => ((segment.positions.indexOf(props.current()) + 1) / segment.positions.length) * 100;
+              const on = () => segment() === view().active;
+              const done = () => segment().positions[segment().positions.length - 1] < props.current();
+              const fraction = () => ((segment().positions.indexOf(props.current()) + 1) / segment().positions.length) * 100;
               return (
                 <button
                   type="button"
                   class="vf-tb"
                   classList={{ 'vf-on': on(), 'vf-done': done() }}
-                  aria-label={plain(segment.name)}
-                  style={{ flex: `${segment.positions.length} 1 0`, ...(on() ? { '--vf-fr': `${fraction().toFixed(0)}%` } : {}) }}
-                  onClick={(ev) => steps.go(segment.positions[ev.detail > 0 ? pointedStep(segment, ev.currentTarget, ev.clientX) : 0])}
-                  onPointerEnter={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
-                  onPointerMove={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
-                  onFocus={(ev) => ev.currentTarget.matches(':focus-visible') && openPeek(segment, ev.currentTarget)}
+                  aria-label={plain(segment().name)}
+                  style={{ flex: `${segment().positions.length} 1 0`, ...(on() ? { '--vf-fr': `${fraction().toFixed(0)}%` } : {}) }}
+                  onClick={(ev) => steps.go(segment().positions[ev.detail > 0 ? pointedStep(segment(), ev.currentTarget, ev.clientX) : 0])}
+                  onPointerEnter={(ev) => openPeek(segment(), ev.currentTarget, ev.clientX)}
+                  onPointerMove={(ev) => openPeek(segment(), ev.currentTarget, ev.clientX)}
+                  onFocus={(ev) => ev.currentTarget.matches(':focus-visible') && openPeek(segment(), ev.currentTarget)}
                   onBlur={closePeek}
                 />
               );
             }}
-          </For>
+          </Index>
           <Show when={peek()}>{(p) => <span class="vf-tb-mark" style={{ left: `${p().center}px` }} />}</Show>
           <Show when={peek()}>{(p) => <SegmentPeek steps={steps} segment={p().segment} center={p().center} hovered={p().hovered} current={props.current()} bar={bar} />}</Show>
         </div>
