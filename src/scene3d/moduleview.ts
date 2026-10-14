@@ -104,8 +104,14 @@ export class ModuleBraces {
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
       const label = this.labels[modules.indexOf(brace.module)];
-      label.pos = braceTip(brace, offset, scale);
+      const tip = braceTip(brace, offset, scale);
+      if (brace.side === 'left') {
+        const covering = this.braces.filter((other) => other.side === 'left' && other.y0 <= tip[1] && tip[1] <= other.y1);
+        tip[0] = Math.min(tip[0], ...covering.map((other) => braceTip(other, offset, scale)[0]));
+      }
+      label.pos = tip;
       label.lane = brace.side;
+      label.anchor = brace.side === 'left' ? 'right-middle' : 'left-middle';
       const points = bracePoints(brace, offset, scale);
       const line = { points, opacity: BRACE_OPACITY };
       if (brace.thick !== true) return [line];

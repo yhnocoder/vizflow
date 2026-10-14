@@ -118,13 +118,28 @@ export function levelBraces(
   bounds: SceneBounds & { z: number; cx: number; cz: number },
   gaps: { left: number; right: number; outer: number },
 ): Brace[] {
-  return modules.flatMap((module): Brace[] => {
-    const range = module.id === undefined ? undefined : ranges.get(module.id);
-    if (range === undefined) return [];
+  const placed: { module: SceneModule; side: 'left' | 'right'; column: number; range: [number, number] }[] = [];
+  const crosses = (p: SceneModule, q: SceneModule, a: [number, number], b: [number, number]) => a[0] < b[1] && b[0] < a[1] && !contains(p, q) && !contains(q, p);
+  const free = (module: SceneModule, side: 'left' | 'right', range: [number, number], from: number) => {
+    let column = from;
+    while (placed.some((other) => other.side === side && other.column === column && crosses(module, other.module, range, other.range))) column++;
+    return column;
+  };
+  const sized = modules.map((module, i) => ({ module, i, range: module.id === undefined ? undefined : ranges.get(module.id) }));
+  sized.sort((p, q) => (p.range === undefined || q.range === undefined ? 0 : q.range[1] - q.range[0] - (p.range[1] - p.range[0])) || p.i - q.i);
+  const out = new Map<SceneModule, Brace>();
+  for (const { module, range } of sized) {
+    if (range === undefined) continue;
     const side = module.side ?? 'left';
-    const x = side === 'left' ? bounds.xMin - gaps.left - MODULE_STEP * (module.column ?? 0) : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
-    return [{ module, side: side === 'left' ? 'left' : 'right', thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz }];
-  });
+    const wanted = side === 'left' ? 'left' : 'right';
+    const moved = wanted === 'right' && free(module, 'right', range, 0) > 0;
+    const lane = moved ? 'left' : wanted;
+    const column = free(module, lane, range, lane === 'left' && !moved ? (module.column ?? 0) : 0);
+    placed.push({ module, side: lane, column, range });
+    const x = lane === 'left' ? bounds.xMin - gaps.left - MODULE_STEP * column : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
+    out.set(module, { module, side: lane, thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz });
+  }
+  return modules.flatMap((module) => out.get(module) ?? []);
 }
 
 function outward(brace: Brace): number {

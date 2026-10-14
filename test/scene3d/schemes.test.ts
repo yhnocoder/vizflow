@@ -98,9 +98,9 @@ describe('nested levels', () => {
   });
 
   it('starts each ring attention round as soon as its own key block is there when rounds are loops over heads', () => {
-    const toys: Toy[] = [{ name: 'x' }, { name: 'kr', inputs: ['x'] }];
+    const toys: Toy[] = [{ name: 'x' }, { name: 'kr', inputs: ['x'] }, { name: 'q', inputs: ['x'] }, { name: 'qs', inputs: ['q'] }];
     const round = (r: number, keys: string) => {
-      for (let h = 0; h < 2; h++) toys.push({ name: `K${r}[${h}]`, inputs: [keys], iteration: `${r + 1}.${h}` }, { name: `S${r}[${h}]`, inputs: [`K${r}[${h}]`], iteration: `${r + 1}.${h}` });
+      for (let h = 0; h < 2; h++) toys.push({ name: `K${r}[${h}]`, inputs: [keys], iteration: `${r + 1}.${h}` }, { name: `S${r}[${h}]`, inputs: ['qs', `K${r}[${h}]`], iteration: `${r + 1}.${h}` });
     };
     round(0, 'kr');
     toys.push({ name: 'k1', inputs: ['kr'], pack: 'send_recv:cp' });

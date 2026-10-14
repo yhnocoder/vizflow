@@ -159,6 +159,7 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
     }
     const preds = new Map<Item, Set<Item>>(items.map((item) => [item, new Set()]));
     const succs = new Map<Item, Set<Item>>(items.map((item) => [item, new Set()]));
+    const lead = new Map<Item, Map<Item, number>>(items.map((item) => [item, new Map()]));
     for (const item of items) {
       for (const n of item.nodes) {
         for (const p of g.preds(n)) {
@@ -166,6 +167,8 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
           if (from === undefined || from === item) continue;
           preds.get(item)!.add(from);
           succs.get(from)!.add(item);
+          const leads = lead.get(item)!;
+          leads.set(from, Math.min(leads.get(from) ?? Infinity, item.local.get(n)!));
         }
       }
     }
@@ -181,7 +184,7 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
     for (const group of groups) for (const other of group.slice(1)) own.push({ kind: 'equal', low: group[0], high: other });
     for (let round = 0, changed = true; changed && round < items.length + 1; round++) {
       changed = false;
-      for (const item of order) start.set(item, Math.max(floor.get(item) ?? 0, ...[...preds.get(item)!].map((p) => start.get(p)! + p.height)));
+      for (const item of order) start.set(item, Math.max(floor.get(item) ?? 0, ...[...preds.get(item)!].map((p) => start.get(p)! + p.height - lead.get(item)!.get(p)!)));
       for (const { kind, low, high } of own) {
         const want = kind === 'equal' ? Math.max(start.get(low)!, start.get(high)!) : start.get(low)! + 1;
         for (const item of kind === 'equal' ? [low, high] : [high]) {
@@ -193,7 +196,7 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
       }
     }
     const pinned = new Set(own.flatMap((r) => [r.low, r.high]));
-    const latest = (item: Item) => Math.min(...[...succs.get(item)!].map((s) => start.get(s)! - item.height));
+    const latest = (item: Item) => Math.min(...[...succs.get(item)!].map((s) => start.get(s)! + lead.get(s)!.get(item)! - item.height));
     for (const item of [...order].reverse()) {
       if (!item.constant || pinned.has(item) || succs.get(item)!.size === 0) continue;
       start.set(item, Math.max(start.get(item)!, latest(item)));
