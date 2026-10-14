@@ -862,6 +862,7 @@ def creation_and_reverse_cases():
         cases.append(op_case("arange", f"arange{args}", lambda args=args: torch.arange(*args), [], list(args)))
     for size, dtype, name in [(4, torch.float32, "fp32"), (3, torch.bfloat16, "bf16")]:
         cases.append(op_case("causal_mask", f"size {size} {name}", lambda size=size, dtype=dtype: torch.full((size, size), torch.finfo(dtype).min, dtype=dtype).triu(1), [], [size, name]))
+    cases.append(op_case("squeeze", "(2, 1, 3) dim 1", lambda x: torch.squeeze(x, 1), [("input", randn(2, 1, 3))], [tensor_arg(0), 1]))
     cases.append(op_case("zeros", "(2, 3)", lambda: torch.zeros(2, 3), [], [2, 3]))
     cases.append(op_case("ones", "(3, 2)", lambda: torch.ones(3, 2), [], [3, 2]))
     cases.append(op_case("eye", "3", lambda: torch.eye(3), [], [3]))

@@ -262,6 +262,14 @@ export const unsqueezeExplain: OpExplain = {
   },
 };
 
+export const squeezeExplain: OpExplain = {
+  ...viewExplain,
+  tex: {
+    forward: (s) => `\\operatorname{squeeze}(${s.in[0]},${(s.attrs as { dim: number }).dim})`,
+    local: () => '1',
+  },
+};
+
 export const padExplain: OpExplain = {
   pattern: 'elementwise',
   local: () => 1,

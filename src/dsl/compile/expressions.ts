@@ -446,7 +446,13 @@ export abstract class Expressions extends CompilerState {
       if (opDef(method) === undefined && compositeDef(method) === undefined) this.fail(env, `tensors have no method '${method}'`, ast.fn.pos);
       return this.apply(method, [target, ...given], options, env, mode, top, at);
     }
-    if (ast.fn.k !== 'name') return this.fail(env, 'only names and methods can be called', at);
+    if (ast.fn.k === 'index') {
+      const callee = this.evaluate(ast.fn, env, mode, false);
+      if (!(callee instanceof Instance)) return this.fail(env, `${describe(callee)} cannot be called`, at);
+      if (mode.k !== 'graph') this.fail(env, 'calling a list item runs a module; only forward can do that', at);
+      return this.callInstance(callee, args(), kwargs(), env, mode.make, top, at);
+    }
+    if (ast.fn.k !== 'name') return this.fail(env, 'only names, list items and methods can be called', at);
     const name = ast.fn.name;
     const callee = env.locals.has(name) ? env.locals.get(name) : (env.call?.values.get(name) ?? env.instance.members.get(name));
     if (callee instanceof Instance || callee instanceof InstanceList) {

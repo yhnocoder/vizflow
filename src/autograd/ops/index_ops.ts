@@ -762,6 +762,27 @@ export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
   cost: VIEW_COST,
 };
 
+export interface SqueezeAttrs {
+  dim: number;
+}
+
+function squeezedShape(input: readonly number[], attrs: SqueezeAttrs): number[] {
+  if (input.length === 0) return [];
+  const dim = normDim(attrs.dim, input.length);
+  return input[dim] === 1 ? input.filter((_, d) => d !== dim) : [...input];
+}
+
+export const squeezeOp: OpDef<SqueezeAttrs> = {
+  name: 'squeeze',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  shape: ([input], attrs) => squeezedShape(input, attrs),
+  int64: true,
+  forward: ([input], attrs) => new Tensor(squeezedShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
+  backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+  cost: VIEW_COST,
+};
+
 export interface PadAttrs {
   pad: number[];
   value: number;

@@ -1,0 +1,79 @@
+module: Qwen3_5TextRotaryEmbedding
+args:
+  d_head: dim
+  partial_rotary_factor: float
+  rope_theta: float
+inputs:
+  x: ['...']
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  cos: [T, d_head * partial_rotary_factor]
+  sin: [T, d_head * partial_rotary_factor]
+init:
+  buffers:
+    inv_freq:
+      shape: [d_head * partial_rotary_factor // 2]
+      dtype: fp32
+      value: 1.0 / rope_theta ** (arange(0, d_head * partial_rotary_factor, 2, dtype=int64).float() / (d_head * partial_rotary_factor))
+forward:
+  - freqs: position_ids[..., None].float() * inv_freq.float()
+  - cos_half: freqs.cos()
+  - sin_half: freqs.sin()
+  - cos_fp32: cat([cos_half, cos_half], dim=-1)
+  - sin_fp32: cat([sin_half, sin_half], dim=-1)
+  - cos: cos_fp32.to(x.dtype)
+  - sin: sin_fp32.to(x.dtype)
+tex:
+  inv_freq: '\boldsymbol{\omega}'
+  freqs: 't\,\boldsymbol{\omega}'
+  cos_half: '\cos(t\,\boldsymbol{\omega})'
+  sin_half: '\sin(t\,\boldsymbol{\omega})'
+  cos_fp32: '\cos_{\mathrm{fp32}}'
+  sin_fp32: '\sin_{\mathrm{fp32}}'
+  cos: '\cos'
+  sin: '\sin'
+formula: 
+  \newcommand{\freqs}{\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}}}
+  \newcommand{\recompose}[1]{\step{recompose}{\operatorname{cat}\big(}#1 \step{recompose}{,\ \cdot\big)}}
+  \begin{aligned}
+  \viz{cos}&=\recompose{\step{cos_sin}{\cos(}\freqs\step{cos_sin}{)}}\step{to_dtype}{_\mathrm{dtype}}\\
+  \viz{sin}&=\recompose{\step{cos_sin}{\sin(}\freqs\step{cos_sin}{)}}\step{to_dtype}{_\mathrm{dtype}}
+  \end{aligned}
+layout:
+  place:
+    sin_half: { with: cos_half }
+    sin_fp32: { with: cos_fp32 }
+    sin: { with: cos }
+steps:
+  - id: freqs
+    label: '$\viz{freqs}$'
+    title: 每个位置、每组频率的角度
+    text: |
+      Qwen3.5 只在每个 head 的前 $r=d_h\cdot\mathrm{partial\_rotary\_factor}={{ d_head * partial_rotary_factor }}$ 维做 RoPE，所以频率只有 $r/2$ 组。<code>compute_default_rope_parameters</code> 里 <code>dim = int(head_dim * partial_rotary_factor)</code>，<code>inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))</code>：
+      $$\omega_i=\theta^{-2i/r},\qquad i=0,\dots,r/2-1,\qquad \viz{inv_freq}={{ inv_freq | matrix:3 }}$$
+      <code>freqs = position_ids[..., None].float() * self.inv_freq</code> 是位置与频率的外积。
+
+      HF 的位置编号比这里多一维。Qwen3.5 是多模态模型，RoPE 是 mRoPE：<code>Qwen3_5TextModel.forward</code> 把 <code>torch.arange</code> 扩成 4 份，第 0 份给 mask，其余 3 份是时间、高、宽三种位置，rotary_emb 里再 <code>position_ids.expand(3, -1, -1)</code>，算出 3 张角度表。只有文本时三份位置相同，三张表也相同，所以这里只画一张。
+      $${\viz{freqs}}_{t,i}=t\,\omega_i,\qquad \viz{freqs}={{ freqs | matrix:3 }}$$
+  - id: cos_sin
+    show: [cos_half, sin_half]
+    label: '$\cos,\ \sin$'
+    title: 取 cos 和 sin
+    text: |
+      <code>cos = freqs.cos() * self.attention_scaling</code>，sin 相同。默认的 RoPE 里 <code>attention_scaling</code> 是 1，乘 1 不改变数值，图上不画。和 Qwen3 的顺序不同，这里先取 cos、sin，再拼成 $r$ 列。
+      $$\viz{cos_half}={{ cos_half | matrix:3 }}$$
+      这两张表只由位置和 $\theta$ 决定，不需要梯度：<code>forward</code> 带 <code>@torch.no_grad()</code>。
+  - id: recompose
+    show: [cos_fp32, sin_fp32]
+    label: '$\viz{cos_fp32},\ \viz{sin_fp32}$'
+    title: recomposition_frequencies：拼成 $r$ 列
+    text: |
+      <code>recomposition_frequencies</code> 先取时间那一份 <code>freqs_thw = freq[0]</code>，再按 <code>mrope_section</code> 把高、宽两份的部分频率交错写进去：第 1、2 份分别覆盖下标 <code>slice(1, length, 3)</code> 和 <code>slice(2, length, 3)</code>，<code>length</code> 是 <code>mrope_section[dim] * 3</code>。只有文本时三份相同，写入不改变数值。最后 <code>torch.cat((freqs_thw, freqs_thw), dim=-1)</code> 左右拼两份，第 $c$ 列和第 $c+r/2$ 列是同一个角度，正好对上 <code>rotate_half</code> 的配对方式。
+      $$\viz{cos_fp32}={{ cos_fp32 | matrix:3 }},\qquad \viz{sin_fp32}={{ sin_fp32 | matrix:3 }}$$
+  - id: to_dtype
+    show: [cos, sin]
+    label: '$\viz{cos},\ \viz{sin}$'
+    title: to(dtype)
+    text: |
+      <code>return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)</code>，转成输入的 dtype 以后交给每个 full_attention 层。
+      $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$

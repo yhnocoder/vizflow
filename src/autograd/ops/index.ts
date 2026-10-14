@@ -72,6 +72,7 @@ import {
   topkIndicesOp,
   topkMaskOp,
   unsqueezeOp,
+  squeezeOp,
   viewOp,
   sortOp,
   indexPutOp,
@@ -217,6 +218,7 @@ export interface BuiltinOps {
   grouped_linear(input: Node, weight: Node, group: Node, options?: OpOptions): Node;
   cumsum(input: Node, dim: number, options?: OpOptions): Node;
   unsqueeze(input: Node, dim: number, options?: OpOptions): Node;
+  squeeze(input: Node, dim: number, options?: OpOptions): Node;
   pad(input: Node, pad: (number | string)[], options?: PadOptions): Node;
   pad(input: Node, ...pad: (number | string)[]): Node;
   triu(input: Node, diagonal?: number | TriuOptions, options?: TriuOptions): Node;
@@ -329,6 +331,7 @@ export const builtinOps: readonly AnyOpDef[] = [
   trilOp,
   selectScatterOp,
   sliceScatterOp,
+  squeezeOp,
 ];
 
 export const builtinComposites: readonly CompositeDef[] = [linearComposite];

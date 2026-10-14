@@ -428,6 +428,13 @@ const cases: Case[] = [
     },
   },
   {
+    op: 'squeeze',
+    build: (g, r) => {
+      const x = g.input('x', [2, 1, 3], randomValues(r, [2, 1, 3]));
+      return { out: g.squeeze(x, 1), inputs: [x] };
+    },
+  },
+  {
     op: 'pad',
     build: (g, r) => {
       const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));

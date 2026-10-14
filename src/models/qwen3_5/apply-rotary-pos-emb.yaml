@@ -1,0 +1,184 @@
+module: apply_rotary_pos_emb
+inputs:
+  q: { type: tensor, shape: [num_heads, T, d_head], dtype: dtype }
+  k: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }
+  cos: { type: tensor, shape: [T, rotary_dim], dtype: dtype }
+  sin: { type: tensor, shape: [T, rotary_dim], dtype: dtype }
+outputs:
+  q_embed: { type: tensor, shape: [num_heads, T, d_head], dtype: dtype }
+  k_embed: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }
+forward:
+  - q_rot: 'q[..., :rotary_dim]'
+  - q_pass: 'q[..., rotary_dim:]'
+  - k_rot: 'k[..., :rotary_dim]'
+  - k_pass: 'k[..., rotary_dim:]'
+  - qc: q_rot * cos
+  - kc: k_rot * cos
+  - q1: 'q_rot[..., : rotary_dim // 2]'
+  - q2: 'q_rot[..., rotary_dim // 2 :]'
+  - k1: 'k_rot[..., : rotary_dim // 2]'
+  - k2: 'k_rot[..., rotary_dim // 2 :]'
+  - nq2: -q2
+  - nk2: -k2
+  - qrh: cat([nq2, q1], dim=-1)
+  - krh: cat([nk2, k1], dim=-1)
+  - qs: qrh * sin
+  - ks: krh * sin
+  - q_emb: qc + qs
+  - k_emb: kc + ks
+  - q_embed: cat([q_emb, q_pass], dim=-1)
+  - k_embed: cat([k_emb, k_pass], dim=-1)
+layout:
+  place:
+    q_pass: { with: q_rot }
+    k_rot: { with: q_rot }
+    k_pass: { with: q_rot }
+    kc: { with: qc }
+    q2: { with: q1 }
+    k1: { with: q1 }
+    k2: { with: q1 }
+    nk2: { with: nq2 }
+    krh: { with: qrh }
+    ks: { with: qs }
+    k_emb: { with: q_emb }
+    k_embed: { with: q_embed }
+tex:
+  q_rot: '{\viz{q}}_{\mathrm{rot}}'
+  q_pass: '{\viz{q}}_{\mathrm{pass}}'
+  k_rot: '{\viz{k}}_{\mathrm{rot}}'
+  k_pass: '{\viz{k}}_{\mathrm{pass}}'
+  qc: '{\viz{q}}_{\mathrm{rot}}\odot\viz{cos}'
+  kc: '{\viz{k}}_{\mathrm{rot}}\odot\viz{cos}'
+  q1: '{\viz{q}}_{1}'
+  q2: '{\viz{q}}_{2}'
+  k1: '{\viz{k}}_{1}'
+  k2: '{\viz{k}}_{2}'
+  nq2: '-{\viz{q}}_{2}'
+  nk2: '-{\viz{k}}_{2}'
+  qrh: '\mathrm{rh}(\viz{q})'
+  krh: '\mathrm{rh}(\viz{k})'
+  qs: '\mathrm{rh}(\viz{q})\odot\viz{sin}'
+  ks: '\mathrm{rh}(\viz{k})\odot\viz{sin}'
+  q_emb: "{\\viz{q}}'_{\\mathrm{rot}}"
+  k_emb: "{\\viz{k}}'_{\\mathrm{rot}}"
+formula: '\step{join}{\viz{q_embed}=\operatorname{cat}\big(}\step{add}{}\step{cos}{{\viz{q}}_{\mathrm{rot}}\odot\viz{cos}}\step{add}{+}\step{sin}{\step{rh}{\operatorname{cat}\big(}\step{neg}{-}\step{half}{{\viz{q}}_{2}}\step{rh}{,}\step{half}{{\viz{q}}_{1}}\step{rh}{\big)}\odot\viz{sin}}\step{join}{,\ {\viz{q}}_{\mathrm{pass}}\big)}'
+fold:
+  label: '$\viz{q_embed},\ \viz{k_embed}$'
+  title: RoPE（前 $r$ 维）
+  text: |
+    每个 head 的前 $r$ 维按位置旋转：第 $c$ 和第 $c+r/2$ 个分量转过 $t\,\omega_c$，其余 $d_h-r$ 维原样拼回。
+    $$\viz{q_embed}={{ q_embed | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{q},\ \partial\viz{k}$'
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+    text: |
+      旋转那段乘旋转矩阵的转置，梯度转回 $-t\,\omega_c$；不旋转的那段梯度原样传回。
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
+
+steps:
+  - id: split
+    show: [q_rot, q_pass, k_rot, k_pass]
+    label: '$\mathrm{rot},\ \mathrm{pass}$'
+    title: 每个 head 切成旋转和不旋转两段
+    text: |
+      <code>rotary_dim = cos.shape[-1]</code>，<code>q_rot, q_pass = q[..., :rotary_dim], q[..., rotary_dim:]</code>，k 相同。Qwen3.5 的 <code>partial_rotary_factor</code> 是 0.25，每个 head 只有前 $r=d_h/4$ 维参与 RoPE，这一页是 $d_h={{ d_head }}$ 维里的前 $r={{ rotary_dim }}$ 维。剩下的维度不带位置信息，q 和 k 在这部分的点积只看内容。
+      $$\viz{q_rot}={{ q_rot | matrix:2 }},\qquad \viz{q_pass}={{ q_pass | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q},\ \partial\viz{k}$'
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+      text: |
+        切片的反向把两段的梯度放回原来的列。
+        $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }},\qquad \frac{\partial\ell}{\partial \viz{k}}={{ k.grad | matrix:3 }}$$
+  - id: cos
+    show: [qc, kc]
+    label: '$\odot\cos$'
+    title: RoPE：乘 cos
+    text: |
+      <code>q_embed = (q_rot * cos) + (rotate_half(q_rot) * sin)</code>，k 相同。这一行把旋转那段里第 $c$ 和第 $c+r/2$ 个分量组成的一对转过角度 $t\,\omega_c$。
+
+      cos 的形状是 $T\times r$，HF 先 <code>cos.unsqueeze(unsqueeze_dim)</code> 加一个 head 维，这一页没有 batch 维，表直接按广播和 $H\times T\times r$ 的 q 相乘，所有 head 用同一张表。cos、sin 是常量，没有梯度。
+      $$\viz{qc}={{ qc | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q},\ \partial\viz{k}$'
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+      text: |
+        直连的局部导数是 $\cos$。这一路和经过 rotate_half 的那一路在 $\viz{q}$ 上相加：
+        $$\frac{\partial\ell}{\partial q_c}=g_c\cos t\omega_c+g_{c+r/2}\sin t\omega_c,\qquad \frac{\partial\ell}{\partial q_{c+r/2}}=g_{c+r/2}\cos t\omega_c-g_c\sin t\omega_c$$
+        其中 $g=\frac{\partial\ell}{\partial \viz{q_emb}}$。这正是把 $(g_c,g_{c+r/2})$ 转过 $-t\,\omega_c$。
+        $$\frac{\partial\ell}{\partial \viz{q_rot}}={{ q_rot.grad | matrix:3 }}$$
+  - id: half
+    show: [q1, q2, k1, k2]
+    label: '$\viz{q1},\ \viz{q2}$'
+    title: rotate_half：切成两半
+    text: |
+      <code>rotate_half(q_rot)</code> 的前两行：<code>x1 = x[..., : x.shape[-1] // 2]</code>、<code>x2 = x[..., x.shape[-1] // 2 :]</code>。HF 把第 $c$ 和第 $c+r/2$ 个分量配成一对，所以把旋转那段的 $r$ 列切成前后两半后，前半是每一对的第一个分量，后半是第二个分量。切片只取出元素，局部导数是 1。
+      $$\viz{q1}={{ q1 | matrix:2 }},\qquad \viz{q2}={{ q2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q},\ \partial\viz{k}$（rotate_half）'
+      title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}}$'
+      text: 切片的反向把梯度放回被切出的列。
+  - id: neg
+    show: [nq2, nk2]
+    label: '$-\viz{q2}$'
+    title: rotate_half：后半取负
+    text: |
+      第三行 <code>torch.cat((-x2, x1), dim=-1)</code> 里的 <code>-x2</code>。
+      $$-\viz{q2}={{ nq2 | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q2},\ \partial\viz{k2}$'
+      title: '$\frac{\partial\ell}{\partial \viz{q2}},\ \frac{\partial\ell}{\partial \viz{k2}}$'
+      text: 局部导数是 $-1$，梯度变号。
+  - id: rh
+    show: [qrh, krh]
+    label: rotate_half
+    title: rotate_half：交换两半拼回
+    text: |
+      取负的后半放到前面，前半放到后面，拼回 $r$ 列：
+      $$\mathrm{rh}(\mathbf{q})_c=-q_{c+r/2},\qquad \mathrm{rh}(\mathbf{q})_{c+r/2}=q_c$$
+      对一对 $(q_c,q_{c+r/2})$ 来说，rotate_half 把它变成 $(-q_{c+r/2},q_c)$，这是把这一对转过 $90^\circ$。拼接只搬动元素，不改变数值。
+      $$\mathrm{rh}(\viz{q})={{ qrh | matrix:2 }}$$
+    backward:
+      label: '$\partial(-\viz{q2}),\ \partial\viz{q1}$'
+      title: '$\frac{\partial\ell}{\partial (-\viz{q2})},\ \frac{\partial\ell}{\partial \viz{q1}}$'
+      text: |
+        拼接的反向把梯度按列切回两段。连同取负一起看：$q_c$ 从 $\mathrm{rh}_{c+r/2}$ 拿到 $+1$ 倍，$q_{c+r/2}$ 从 $\mathrm{rh}_c$ 拿到 $-1$ 倍。
+  - id: sin
+    show: [qs, ks]
+    label: '$\odot\sin$'
+    title: RoPE：乘 sin
+    text: |
+      $\mathrm{rh}(\mathbf{q})$ 逐元素乘 sin。位置 $t=0$ 的角度是 0，$\sin 0=0$，所以第 0 行在这一步全为 0。又因为 $\cos 0=1$，乘 cos 那一项在第 0 行等于 q 本身，所以两项相加后，位置 0 的 q、k 保持不变。
+      $$\mathrm{rh}(\viz{q})\odot\sin={{ qs | matrix:2 }}$$
+    backward:
+      label: '$\partial\,\mathrm{rh}$'
+      title: '$\frac{\partial\ell}{\partial \mathrm{rh}}$'
+      text: |
+        局部导数是对应位置的 sin。
+        $$\frac{\partial\ell}{\partial \mathrm{rh}(\viz{q})}={{ qrh.grad | matrix:3 }}$$
+  - id: add
+    show: [q_emb, k_emb]
+    label: '$\viz{q_emb},\ \viz{k_emb}$'
+    title: 相加：完成旋转
+    text: |
+      把两项相加，按一对分量写开：
+      $$q'_c=q_c\cos t\omega_c-q_{c+r/2}\sin t\omega_c,\qquad q'_{c+r/2}=q_c\sin t\omega_c+q_{c+r/2}\cos t\omega_c$$
+      这就是 $2\times2$ 旋转矩阵乘 $(q_c,q_{c+r/2})$。旋转矩阵满足 $R_t^{\top}R_s=R_{s-t}$，所以 $\mathbf{q}'_t\cdot\mathbf{k}'_s=\mathbf{q}_t^{\top}R_{s-t}\mathbf{k}_s$：分数里的位置只以差 $t-s$ 出现。
+      $$\viz{q_emb}={{ q_emb | matrix:2 }},\qquad \viz{k_emb}={{ k_emb | matrix:2 }}$$
+    backward:
+      label: '$\partial(\cdot\cos),\ \partial(\cdot\sin)$'
+      title: '$\frac{\partial\ell}{\partial (\cdot\cos)},\ \frac{\partial\ell}{\partial (\cdot\sin)}$'
+      text: |
+        相加的两个输入拿到同一份梯度。
+        $$\frac{\partial\ell}{\partial \viz{q_emb}}={{ q_emb.grad | matrix:3 }}$$
+  - id: join
+    show: [q_embed, k_embed]
+    label: '$\viz{q_embed},\ \viz{k_embed}$'
+    title: 拼回整个 head
+    text: |
+      <code>q_embed = torch.cat([q_embed, q_pass], dim=-1)</code>：旋转过的那段和原样的那段按原来的顺序拼回 $d_h$ 列。
+      $$\viz{q_embed}={{ q_embed | matrix:2 }},\qquad \viz{k_embed}={{ k_embed | matrix:2 }}$$
+    backward:
+      label: '$\partial{\viz{q}}''_{\mathrm{rot}},\ \partial{\viz{q}}_{\mathrm{pass}}$'
+      title: 按列切回两段
+      text: |
+        $$\frac{\partial\ell}{\partial \viz{q_embed}}={{ q_embed.grad | matrix:3 }}$$

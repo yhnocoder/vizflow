@@ -1,0 +1,327 @@
+module: Qwen3_5Attention
+import:
+  Qwen3_5RMSNorm: ./rmsnorm.yaml
+  apply_rotary_pos_emb: ./apply-rotary-pos-emb.yaml
+  eager_attention_forward: ../qwen3/eager-attention-forward.yaml
+  Sigmoid: vizflow/nn/sigmoid
+
+args:
+  d_model: dim
+  d_head: dim
+  num_heads: dim
+  num_kv_heads: dim
+inputs:
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, rotary_dim]
+  sin: [T, rotary_dim]
+outputs:
+  att: [T, d_model]
+
+init:
+  q_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_heads * d_head * 2, bias: false }
+  k_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
+  v_proj:
+    use: Linear
+    args: { in_features: d_model, out_features: num_kv_heads * d_head, bias: false }
+  o_proj:
+    use: Linear
+    args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
+  q_norm:
+    use: Qwen3_5RMSNorm
+    args: { hidden_size: d_head }
+  k_norm:
+    use: Qwen3_5RMSNorm
+    args: { hidden_size: d_head }
+  apply_rotary_pos_emb: apply_rotary_pos_emb
+  eager_attention_forward: eager_attention_forward
+  sigmoid: Sigmoid
+
+forward:
+  - q_linear: q_proj(x)
+  - q_gate: q_linear.view(T, num_heads, d_head * 2)
+  - query_states: 'q_gate[..., :d_head]'
+  - gate_heads: 'q_gate[..., d_head:]'
+  - gate: gate_heads.reshape(T, num_heads * d_head)
+  - qn: q_norm(query_states)
+  - qt: qn.transpose(0, 1)
+  - k_linear: k_proj(x)
+  - k: k_linear.view(T, num_kv_heads, d_head)
+  - kn: k_norm(k)
+  - kt: kn.transpose(0, 1)
+  - v_linear: v_proj(x)
+  - v: v_linear.view(T, num_kv_heads, d_head)
+  - vt: v.transpose(0, 1)
+  - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
+  - qr: rotated.q_embed
+  - kr: rotated.k_embed
+  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask)
+  - o: attn_output.reshape(T, num_heads * d_head)
+  - sg: sigmoid(gate)
+  - og: o * sg
+  - att: o_proj(og)
+
+tex:
+  q_linear: '[\mathbf{q}\,|\,\mathbf{g}]'
+  q_gate: '[\mathbf{q}\,|\,\mathbf{g}]'
+  query_states: '\mathbf{q}'
+  gate_heads: '\mathbf{g}'
+  gate: '\mathbf{g}'
+  k_linear: '\mathbf{k}'
+  v_linear: '\mathbf{v}'
+  k: '\mathbf{k}'
+  v: '\mathbf{v}'
+  qn: '\bar{\mathbf{q}}'
+  kn: '\bar{\mathbf{k}}'
+  qt: '\bar{\mathbf{q}}'
+  kt: '\bar{\mathbf{k}}'
+  vt: '\mathbf{v}'
+  attn_output: '\mathbf{o}'
+  qr: "\\mathbf{q}'"
+  kr: "\\mathbf{k}'"
+  o: '\mathbf{o}'
+  sg: '\sigma(\mathbf{g})'
+  og: '\tilde{\mathbf{o}}'
+  att: '\mathbf{att}'
+  mask: 'M'
+  q_proj.weight: 'W_q'
+  k_proj.weight: 'W_k'
+  v_proj.weight: 'W_v'
+  o_proj.weight: 'W_o'
+  q_norm.weight: '\boldsymbol{\gamma}_q'
+  k_norm.weight: '\boldsymbol{\gamma}_k'
+  q_norm.rms: 'r^{q}'
+  k_norm.rms: 'r^{k}'
+
+formula: |-
+  \begin{aligned}
+  \step{q_proj,chunk}{[\viz{query_states}\,|\,\viz{gate}]}&
+  \step{q_proj,chunk}{=\big(\viz{x}{\viz{q_proj.weight}}^{\top}\big).\mathrm{view}(T,H,2d_h)}\\
+  \step{apply_rotary_pos_emb.*}{\viz{qr}}&
+  \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}_{r}\big(}
+  \step{qk_norm.*}{\mathrm{norm}(\viz{query_states})}
+  \step{apply_rotary_pos_emb.*}{\big)}\\
+  \step{apply_rotary_pos_emb.*}{\viz{kr}}&
+  \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}_{r}\big(}
+  \step{qk_norm.*}{\mathrm{norm}(}
+  \step{k_proj}{\big(\viz{x}{\viz{k_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)}
+  \step{qk_norm.*}{)}
+  \step{apply_rotary_pos_emb.*}{\big)}\\
+  \step{v_proj}{\viz{v}}&
+  \step{v_proj}{=\big(\viz{x}{\viz{v_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)}\\
+  \step{o_proj}{\viz{att}}&
+  \step{o_proj}{=\big(}
+  \step{eager_attention_forward.*}{\operatorname{Attn}(\viz{qr},\viz{kr},\viz{v})}
+  \step{output_gate,sigmoid.*}{\odot\sigma(\viz{gate})}
+  \step{o_proj}{\big){\viz{o_proj.weight}}^{\top}}
+  \end{aligned}
+fold:
+  label: '$\viz{att}=\mathrm{self\_attn}(\viz{x})$'
+  title: self_attn
+  text: |
+    位置 $t$ 的输出是 $\sum_{s\le t}P_{t,s}\mathbf{v}_s$ 乘上这个位置的输出门、再经过 o_proj 的结果，因此只依赖 $s\le t$ 的输入，Jacobian 是块下三角的。
+    $$\viz{att}={{ att | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
+    text: |
+      一次反向算出 attention 全部参数的梯度和 $\pfl{\viz{x}}$。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+layout:
+  merge:
+    - [q_norm, k_norm]
+
+steps:
+  - id: q_proj
+    subtitle: nn.Linear
+    label: '$[\viz{query_states}\,|\,\viz{gate}]$'
+    title: q_proj，query 和输出门一起算
+    text: |
+      注意力要回答的问题是：位置 $t$ 应该从哪些位置取信息。做法是给每个位置算一个 query $\mathbf{q}_t$ 和一个 key $\mathbf{k}_s$，用点积衡量匹配程度。
+
+      和 Qwen3 相比，Qwen3.5 的 q_proj 宽了一倍：<code>nn.Linear(config.hidden_size, config.num_attention_heads * self.head_dim * 2, bias=config.attention_bias)</code>，这一页 <code>attention_bias</code> 是 False。<code>.view(*input_shape, -1, self.head_dim * 2)</code> 把每一行切成 {{ num_heads }} 个 head，每个 head $2d_h={{ 2 * d_head }}$ 个数：前 $d_h$ 个是 query，后 $d_h$ 个是这个 head 的输出门。HF 的张量多一个 batch 维，这一页没有，所以轴的编号比 HF 少 1。
+      $$\viz{q_gate}=\big(\viz{x}{\viz{q_proj.weight}}^{\top}\big).\mathrm{view}(T,H,2d_h)={{ q_gate | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{q_proj.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        query 和门两半的梯度拼回 $2d_h$ 列，再对 $\viz{x}W_q^{\top}$ 求两个梯度：
+        $$\pf{\ell}{W_q^{\top}}={\viz{x}}^{\top}\pfl{\viz{q_gate}},\qquad \pfl{\viz{x}}\mathrel{+}=\pfl{\viz{q_gate}}\,W_q$$
+  - id: chunk
+    show: [query_states, gate_heads, gate]
+    label: '$\viz{query_states},\ \viz{gate}$'
+    title: 拆出 query 和输出门
+    text: |
+      <code>query_states, gate = torch.chunk(..., 2, dim=-1)</code> 把每个 head 的 $2d_h$ 列切成两半。query 留在 $T\times H\times d_h$ 继续往下走；<code>gate = gate.reshape(*input_shape, -1)</code> 把门展平成 $T\times Hd_h$，等注意力算完再用。
+      $$\viz{query_states}={{ query_states | matrix:2 }},\qquad \viz{gate}={{ gate | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{q_gate}$'
+      title: '$\pfl{\viz{q_gate}}$'
+      text: 两半的梯度按列拼回。
+  - id: k_proj
+    subtitle: nn.Linear
+    label: '$\viz{k}$'
+    title: k_proj
+    text: |
+      key 由同一个 $\viz{x}$ 投影得到，但只有 $H_{kv}={{ num_kv_heads }}$ 个 head，宽 {{ num_kv_heads * d_head }}，所以几个 query head 共用一个 kv head，这种做法叫 GQA（grouped-query attention）。它的好处是推理时 k、v 的缓存缩小为 $H_{kv}/H$。
+
+      HF 先算完 q 这一路（q_proj、chunk、q_norm、transpose），再算 k 这一路。两路互不依赖，所以先后顺序不影响结果。
+      $$\viz{k}=\big(\viz{x}{\viz{k_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)={{ k | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{k_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{k_proj.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        和 q_proj 相同：$\pf{\ell}{W_k^{\top}}={\viz{x}}^{\top}\pfl{\viz{k}}$，$\viz{x}$ 再加上 $\pfl{\viz{k}}W_k$。
+  - id: v_proj
+    subtitle: nn.Linear
+    label: '$\viz{v}$'
+    title: v_proj
+    text: |
+      value 是被取回的内容，宽度和 k 相同。q_norm、k_norm 和 RoPE 都作用在分数上，而 v 不参与打分，只是加权求和的对象，所以 v 既不做 norm，也不做 RoPE。<code>value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)</code> 一行完成投影、分 head 和换轴。
+      $$\viz{v}=\big(\viz{x}{\viz{v_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)={{ v | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{v_proj.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{v_proj.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        $\viz{x}$ 用在三个投影里，$x_{t,k}$ 影响三个投影的全部 ${{ 2 * num_heads * d_head }}+{{ num_kv_heads * d_head }}+{{ num_kv_heads * d_head }}$ 个输出分量，所以它的梯度是三路之和：
+        $$\pfl{\viz{x}}=\pfl{\viz{q_gate}}W_q+\pfl{\viz{k}}W_k+\pfl{\viz{v}}W_v={{ x.grad | matrix:3 }}$$
+  - id: qk_norm
+    show: zip(q_norm, k_norm)
+    title: q_norm $\cdot$ k_norm
+    subtitle: Qwen3_5RMSNorm，按 head_dim
+    formula: |-
+      \step{scale}{\viz{qn}=(1+\viz{q_norm.weight})\odot}
+      \step{normalize}{\viz{query_states}\odot}
+      \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{query_states}}^{2})+\epsilon}}}
+    fold:
+      label: '$\viz{qn},\ \viz{kn}$'
+      title: q_norm 和 k_norm
+      text: |
+        每个位置、每个 head 各做一次 RMSNorm，所以 Jacobian 是 $d_h\times d_h$ 的小块。
+        $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
+      backward:
+        label: '$\partial\boldsymbol{\gamma},\ \partial\viz{query_states},\ \partial\viz{k}$'
+        title: '$\pfl{\boldsymbol{\gamma}},\ \pfl{\viz{query_states}},\ \pfl{\viz{k}}$'
+        text: |
+          $$\pfl{\viz{query_states}}={{ query_states.grad | matrix:3 }},\qquad \pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }}$$
+    edit:
+      rrms:
+        title: 每个 head 的均方根倒数
+        text: |
+          <code>self.q_norm(query_states.view(hidden_shape))</code>：和 Qwen3 一样，在 RoPE 之前对 q、k 的每个 head 各做一次 RMSNorm，范围是 $d_h$ 个分量；query_states 已经是 $T\times H\times d_h$，这次 view 不改变形状。不同的是这里用以 0 为中心的 <code>Qwen3_5RMSNorm</code>，乘的是 $1+\boldsymbol{\gamma}$。
+
+          它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $1+\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
+          $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|1+\gamma_{q,c}|\,\max_c|1+\gamma_{k,c}|$$
+          后面的 RoPE 只旋转前 $r$ 维，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
+          每个位置、每个 head 沿最后一维计算 $r=(\frac{1}{d_h}\sum_c x_c^2+\epsilon)^{-1/2}$。
+          $$\viz{q_norm.rms}={{ q_norm.rms | matrix:3 }},\qquad \viz{k_norm.rms}={{ k_norm.rms | matrix:3 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.xf}},\ \pfl{\viz{k_norm.xf}}$'
+          text: |
+            均方根倒数对每个分量的局部导数是 $-x_c r^3/d_h$。每个位置、每个 head 独立计算，梯度只传给对应 head 的输入。
+      normalize:
+        text: |
+          每个分量乘上自己那一组的 $r$。这个 $r$ 只由同一个位置、同一个 head 的分量算出，所以每个分量只和这些分量有关。
+          $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
+        backward:
+          text: |
+            $$\pfl{\viz{q_norm.rms}}={{ q_norm.rms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.rms}}={{ k_norm.rms.grad | matrix:3 }}$$
+      scale:
+        title: 乘上 $1+\viz{q_norm.weight}$ 和 $1+\viz{k_norm.weight}$
+        text: |
+          $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，所以每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
+          $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.weight}},\ \pfl{\viz{k_norm.weight}}$'
+          text: |
+            $\viz{q_norm.weight}$ 的梯度把 {{ num_heads }} 个 head、$T$ 个位置的贡献加起来，一共 ${{ num_heads }}\times T$ 组。
+            $$\pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.weight}}={{ k_norm.weight.grad | matrix:3 }}$$
+  - id: apply_rotary_pos_emb
+    subtitle: 只转前 $r$ 维
+    fold:
+      append: |
+        这里的 $\mathbf{q}$ 是 $\viz{qt}$，即 q_norm 之后的 query。
+        $$\viz{qr}={{ qr | matrix:2 }}$$
+      backward:
+        text: |
+          旋转那段的梯度转回 $-t\,\omega_c$，不旋转那段原样传回。
+          $$\pfl{\viz{qt}}={{ qt.grad | matrix:3 }},\qquad \pfl{\viz{kt}}={{ kt.grad | matrix:3 }}$$
+    edit:
+      cos:
+        append: |
+          <code>cos, sin = position_embeddings</code> 是模型开头 rotary_emb 算好的表，每个 full_attention 层用同一组。q 有 {{ num_heads }} 个 head，k 有 {{ num_kv_heads }} 个，都乘同一张表。
+          $$\cos={{ cos | matrix:3 }}$$
+  - id: eager_attention_forward
+    subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$'
+    flat: true
+    edit:
+      krep:
+        append: |
+          这里 $H={{ num_heads }}$，$H_{kv}={{ num_kv_heads }}$，$n_{\mathrm{rep}}={{ num_heads // num_kv_heads }}$。
+      S:
+        append: |
+          $$S^{({{ num_heads - 1 }})}={{ eager_attention_forward.S[num_heads - 1] | matrix:2 }}$$
+      Ssc:
+        append: |
+          这一页 $1/\sqrt{d_h}={{ d_head ** -0.5 }}$，HF 的 <code>self.scaling = self.head_dim**-0.5</code>。q、k 已经过 q_norm、k_norm，把 q_norm 那一步的上界除以 $\sqrt{d_h}$，可知缩放之后分数的绝对值不超过 $\sqrt{d_h}\,\max|1+\gamma_q|\,\max|1+\gamma_k|$。
+      mask:
+        notes:
+          - at: 'mask[0, 2]'
+            side: left
+            text: '$s>t$ 的格子是 dtype 的最小值，取 exp 之后为 0'
+        append: |
+          mask 来自 <code>Qwen3_5TextModel.forward</code> 里的 <code>causal_mask_mapping["full_attention"]</code>，也就是 <code>create_causal_mask</code> 的结果，每个 full_attention 层用同一个。
+      div:
+        notes:
+          - at: 'eager_attention_forward.P[0, 0, 0]'
+            text: '位置 0 只能看到自己，$P_{0,0}=1$'
+        append: |
+          位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3.5 的 <code>attention_dropout</code> 是 0，所以训练时省去 dropout 也不改变结果。
+          $$P^{({{ num_heads - 1 }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
+  - id: reshape
+    show: o
+    label: '$\viz{o}$'
+    title: 拼回 $T\times{{ num_heads * d_head }}$
+    text: |
+      <code>attn_output.reshape(*input_shape, -1).contiguous()</code> 把 $T\times H\times d_h$ 合并成 $T\times H d_h$，{{ num_heads }} 个 head 的输出在每一行里并排：
+      $${\viz{o}}_t=[\,\mathbf{o}^{(0)}_t\,|\,\cdots\,|\,\mathbf{o}^{({{ num_heads - 1 }})}_t\,],\qquad \viz{o}={{ o | matrix:2 }}$$
+      上一步的 contiguous 已经让数据按这个顺序排好，所以 reshape 不再复制，HF 在这里再写一次 <code>.contiguous()</code> 也不复制。局部导数是 1。
+    backward:
+      title: '$\pfl{\viz{attn_output}}$'
+      text: 把梯度按列切回 {{ num_heads }} 个 head。
+  - id: sigmoid
+    subtitle: torch.sigmoid
+    edit:
+      neg:
+        append: 这里算的是输出门 <code>torch.sigmoid(gate)</code>，它决定注意力输出的每个分量放行多少。
+  - id: output_gate
+    show: og
+    label: '$\viz{og}$'
+    title: 输出门
+    text: |
+      <code>attn_output = attn_output * torch.sigmoid(gate)</code>：注意力的输出逐元素乘上 $\sigma(\viz{gate})$。门由当前位置的输入决定，每个 head 的每一维都有自己的门，可以把某个 head 的输出整个关掉。这是 Qwen3.5 的 gated attention：门让模型不必把注意力分给第一个 token 来表示「什么也不取」，训练也更稳定。
+      $$\viz{og}=\viz{o}\odot\sigma(\viz{gate})={{ og | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{o},\ \partial\sigma(\viz{gate})$'
+      title: '$\pfl{\viz{o}},\ \pfl{\sigma(\viz{gate})}$'
+      text: |
+        $\pfl{\viz{o}}=\pfl{\viz{og}}\odot\sigma(\viz{gate})$，门关上的地方，注意力几乎收不到梯度；$\sigma(\viz{gate})$ 收到 $\pfl{\viz{og}}\odot\viz{o}$，再穿过 sigmoid 传到门。
+        $$\pfl{\sigma(\viz{gate})}={{ sg.grad | matrix:3 }}$$
+  - id: o_proj
+    subtitle: nn.Linear
+    label: o_proj
+    title: o_proj
+    text: |
+      各 head 的输出只是并排放着，彼此没有交换信息，所以 <code>self.o_proj(attn_output)</code> 用一个没有 bias 的线性层把乘过门的输出混合，投影回 $d_{\mathrm{model}}$ 维：
+      $$\viz{att}=\viz{og}{\viz{o_proj.weight}}^{\top}={{ att | matrix:2 }},\qquad (T\times{{ num_heads * d_head }})({{ num_heads * d_head }}\times{{ d_model }})$$
+      按 head 把 $W_o$ 的列分块，${\viz{att}}_t=\sum_h\mathbf{o}^{(h)}_tW_o^{(h)\top}$，也就是每个 head 各自投影后相加。
+    backward:
+      label: '$\partial\viz{o_proj.weight},\ \partial\viz{o}$'
+      title: '$\pfl{\viz{o_proj.weight}},\ \pfl{\viz{o}}$'
+      text: |
+        $$\pf{\ell}{W_o^{\top}}={\viz{og}}^{\top}\pfl{\viz{att}},\qquad \pfl{\viz{og}}=\pfl{\viz{att}}W_o={{ og.grad | matrix:3 }}$$

@@ -1,0 +1,112 @@
+module: Qwen3_5RMSNorm
+args:
+  hidden_size: dim
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: ['...', hidden_size]
+outputs:
+  out: ['...', hidden_size]
+init:
+  weights:
+    weight: { shape: [hidden_size], init: zeros }
+forward:
+  - xf: x.float()
+  - rms: rrms(xf, eps)
+  - xh: xf * rms
+  - wf: weight.float()
+  - scale: 1.0 + wf
+  - of: xh * scale
+  - out: of.to(x.dtype)
+tex:
+  weight: '\boldsymbol{\gamma}'
+  xf: '{\viz{x}}_{\mathrm{fp32}}'
+  rms: '\mathrm{rrms}'
+  xh: '\hat{\viz{x}}'
+  scale: '(1+\boldsymbol{\gamma})'
+  of: '\mathbf{o}_{\mathrm{fp32}}'
+formula: 
+  \begin{aligned}
+  \viz{out}=
+  \step{normalize}{\viz{x}_{\mathrm{fp32}}\odot}
+  \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{x}}^{2})+\epsilon}}}
+  \step{scale}{\odot(1+\viz{weight})}
+  \step{cast}{\big|_{\mathrm{dtype}}}
+  \end{aligned}
+fold:
+  label: '$\viz{out}$'
+  title: Qwen3_5RMSNorm
+  text: |
+    每一行只和自己那一行有关，所以 Jacobian 是 $T$ 个 $d\times d$ 的对角块。
+    $$\viz{out}=\hat{\viz{x}}\odot(1+\viz{weight})={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{weight},\ \partial\viz{x}$'
+    title: '$\pfl{\viz{weight}},\ \pfl{\viz{x}}$'
+    text: |
+      $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }},\qquad \pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+steps:
+  - id: float
+    show: xf
+    label: '$\viz{xf}$'
+    title: RMSNorm：转成 float32
+    text: |
+      Qwen3.5 的 RMSNorm 与 Qwen3 有两处不同：权重 $\viz{weight}$ 初始化为 0，乘的是 $1+\viz{weight}$；乘权重在 float32 里做，最后才转回输入的 dtype。
+      $$\viz{out}=\Big(\frac{\viz{x}}{\sqrt{\frac{1}{d}\sum_k {\viz{x}}_k^2+\epsilon}}\odot(1+\viz{weight})\Big)_{\mathrm{dtype}}$$
+      <code>output = self._norm(x.float())</code> 先把输入转成 float32。
+      $$\viz{xf}={{ xf | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x}$'
+      title: '$\pfl{\viz{x}}$'
+      text: |
+        记 $\mathbf{u}=\pfl{\viz{of}}\odot(1+\viz{weight})$，均方根倒数这一路和归一化的直连合起来是
+        $$\pfl{\viz{x}}=r\Big(\mathbf{u}-\hat{\viz{x}}\,\frac{\hat{\viz{x}}\cdot\mathbf{u}}{d}\Big)={{ x.grad | matrix:3 }}$$
+        和 Qwen3 的 RMSNorm 一样，$\epsilon$ 可忽略时梯度与这一行的输入垂直。
+  - id: rrms
+    show: rms
+    label: '$\viz{rms}$'
+    title: 均方根倒数
+    text: |
+      <code>torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)</code>：每一行平方的平均加上 $\epsilon$，再取平方根的倒数，图里合成一个运算 <code>rrms</code>。
+      $$r_t=\frac{1}{\sqrt{\frac{1}{d}\sum_k x_{t,k}^{2}+\epsilon}},\qquad \viz{rms}={{ rms | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{xf}$'
+      title: '$\pfl{\viz{xf}}$'
+      text: |
+        局部导数是 $\frac{\partial r_t}{\partial x_{t,k}}=-\frac{x_{t,k}r_t^3}{d}$，这一路随后与归一化的直连在 $\viz{xf}$ 上相加。
+  - id: normalize
+    show: xh
+    label: '$\viz{xh}$'
+    title: 归一化
+    text: |
+      <code>x * torch.rsqrt(...)</code>：每个分量乘上这一行的 $r_t$。
+      $$\viz{xh}={{ xh | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{rms},\ \partial\viz{xf}$'
+      title: '$\pfl{\viz{rms}},\ \pfl{\viz{xf}}$'
+      text: |
+        $\pfl{r_t}=\sum_k x_{t,k}\,\pfl{\hat x_{t,k}}$，直连一路的局部导数是 $r_t$。
+        $$\pfl{\viz{rms}}={{ rms.grad | matrix:3 }}$$
+  - id: scale
+    show: [weight, wf, scale, of]
+    label: '$\viz{of}$'
+    title: 乘上 $1+\viz{weight}$
+    text: |
+      <code>output = output * (1.0 + self.weight.float())</code>。$\viz{weight}$ 初始化为 0，所以刚初始化时这一层只做归一化；权重衰减把 $\viz{weight}$ 拉向 0，对应的缩放被拉向 1。$\viz{weight}$ 先转成 float32，乘法也在 float32 里做。HF 的注释写明了与 Llama 的差别：Llama 先转回低精度再乘权重，Qwen3.5 乘完再转。
+      $$1+\viz{weight}={{ scale | matrix:3 }},\qquad \viz{of}={{ of | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{weight},\ \partial\viz{xh}$'
+      title: '$\pfl{\viz{weight}},\ \pfl{\viz{xh}}$'
+      text: |
+        $1+\viz{weight}$ 对 $\viz{weight}$ 的导数是 1，所以 $\viz{weight}$ 的梯度是 $T$ 行的 $\pfl{\viz{of}}\odot\viz{xh}$ 之和，与普通 RMSNorm 相同。
+        $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: cast
+    show: out
+    label: '$\viz{out}$'
+    title: 转回输入的 dtype
+    text: |
+      <code>return output.type_as(x)</code> 转回输入的 dtype。
+      $$\viz{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{of}$'
+      title: '$\pfl{\viz{of}}$'
+      text: 类型转换的局部导数是 1，梯度转成 float32。

@@ -14,7 +14,7 @@ const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform'
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
-const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
+const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'optional']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const WRITE = /^([A-Za-z_][A-Za-z0-9_]*)\[(.+)\]$/;
@@ -358,6 +358,11 @@ export abstract class Modules extends Expressions {
     const callEnv = this.callEnv(call, inputsWhere);
     for (const name of names) {
       const value = given.get(name);
+      const optional = isRecord(declared[name]) && (declared[name] as Record<string, unknown>).optional === true;
+      if (optional && (value === undefined || value === null)) {
+        call.values.set(name, null);
+        continue;
+      }
       if (value === undefined) this.fail(env, `input '${name}' of ${def.name} is not given`, at);
       if (!(value instanceof Node)) this.fail(env, `input '${name}' of ${def.name} must be a tensor, got ${describe(value)}`, at);
       const fieldWhere = child(inputsWhere, declared, name);
