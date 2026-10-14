@@ -1,4 +1,4 @@
-module: GLU
+module: Qwen3MLP
 import:
   SiLU: vizflow/nn/silu
 args:

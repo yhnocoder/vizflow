@@ -1,22 +1,33 @@
 import { DTYPES, Node, ProgramBuilder } from '../../autograd';
 import { type Nested, Tensor } from '../../tensor';
-import type { Ast } from '../expr';
+import type { Ast, IndexItem } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
-import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Num, Result, type Value } from './types';
+import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Mode, type Num, Result, type Value } from './types';
 import { templateExpressions, vizReferences } from './template';
-import { checkKeys, fieldSpec, isNum, isRecord, join, record } from './util';
+import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, record } from './util';
 
-const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'dtype', 'module']);
+const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'str', 'list', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
-const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count']);
+const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
 const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
-const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
+const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'optional']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const WRITE = /^([A-Za-z_][A-Za-z0-9_]*)\[(.+)\]$/;
+const LOOP_HEAD = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\((.+)\)\s*$/;
+const RANGE_ARGS = /^([^,]+),([^,]+)$/;
+
+type ForwardItem =
+  | { kind: 'assign'; name: string; target: string | undefined; text: unknown; where: Where }
+  | { kind: 'loop'; variable: string; start: string; stop: string; body: ForwardItem[]; where: Where };
+
+function flatAssignments(items: ForwardItem[]): { name: string; text: unknown; where: Where }[] {
+  return items.flatMap((item) => (item.kind === 'loop' ? flatAssignments(item.body) : [item]));
+}
 
 type Reader = (text: string, where: Where) => void;
 
@@ -46,8 +57,12 @@ function countNames(ast: Ast | undefined, counts: Map<string, number>): void {
       countNames(ast.arg, counts);
       return;
     case 'bin':
+    case 'cmp':
       countNames(ast.a, counts);
       countNames(ast.b, counts);
+      return;
+    case 'cond':
+      for (const part of [ast.test, ast.then, ast.other]) countNames(part, counts);
       return;
     default:
       return;
@@ -192,24 +207,41 @@ export abstract class Modules extends Expressions {
     const env = this.instanceEnv(instance, at);
     const decl: Record<string, unknown> = typeof spec === 'string' ? { use: spec } : record(spec, at, `'${name}'`);
     checkKeys(decl, CHILD_KEYS, at);
+    if (decl.present !== undefined) {
+      const present = this.expression(decl.present, { ...env, where: child(at, decl, 'present') });
+      if (typeof present !== 'boolean') fail(child(at, decl, 'present'), `present must be True or False, got ${describe(present)}`);
+      if (!present) {
+        this.define(instance, name, null, at);
+        return;
+      }
+    }
     const useWhere = typeof spec === 'string' ? at : child(at, decl, 'use');
     if (typeof decl.use !== 'string') fail(useWhere, 'use must name a module');
     const listed = LIST_USE.exec(decl.use);
     const used = this.expression(listed === null ? decl.use : listed[1], { ...env, where: useWhere });
     if (!isModuleRef(used)) fail(useWhere, `'${decl.use}' is ${describe(used)}, not a module`);
-    const given = this.childArgs(decl.args, { ...env, where: child(at, decl, 'args') });
+    const argsEnv = { ...env, where: child(at, decl, 'args') };
     const path = join(instance.path, name);
     if (listed === null) {
       if (decl.count !== undefined) fail(child(at, decl, 'count'), 'count needs use: list[Module]');
+      if (decl.index !== undefined) fail(child(at, decl, 'index'), 'index needs use: list[Module]');
+      const given = this.childArgs(decl.args, argsEnv);
       this.define(instance, name, this.instantiate(used.module, path, name, instance, instance.marks, given, useWhere), at);
       return;
     }
     if (decl.count === undefined) fail(at, `'${name}' is a list, so it needs count`);
     const count = this.number(decl.count, { ...env, where: child(at, decl, 'count') });
     if (!Number.isInteger(count.toy) || count.toy < 1) fail(child(at, decl, 'count'), 'count must be a positive integer');
+    const indexWhere = child(at, decl, 'index');
+    if (decl.index !== undefined && (typeof decl.index !== 'string' || !NAME.test(decl.index))) fail(indexWhere, 'index names the item index, such as index: layer_idx');
+    const indexName = decl.index as string | undefined;
     const list = new InstanceList(path, name, count);
     const make = () => {
-      for (let i = 0; i < count.toy; i++) list.items.push(this.instantiate(used.module, `${path}[${i}]`, name, instance, [...instance.marks, listMark(i)], given, useWhere));
+      for (let i = 0; i < count.toy; i++) {
+        const locals = indexName === undefined ? argsEnv.locals : new Map([...argsEnv.locals, [indexName, num(i)]]);
+        const given = this.childArgs(decl.args, { ...argsEnv, locals });
+        list.items.push(this.instantiate(used.module, `${path}[${i}]`, name, instance, [...instance.marks, listMark(i)], given, useWhere));
+      }
     };
     const real = this.dimSpec(count);
     if (real === count.toy) make();
@@ -326,6 +358,11 @@ export abstract class Modules extends Expressions {
     const callEnv = this.callEnv(call, inputsWhere);
     for (const name of names) {
       const value = given.get(name);
+      const optional = isRecord(declared[name]) && (declared[name] as Record<string, unknown>).optional === true;
+      if (optional && (value === undefined || value === null)) {
+        call.values.set(name, null);
+        continue;
+      }
       if (value === undefined) this.fail(env, `input '${name}' of ${def.name} is not given`, at);
       if (!(value instanceof Node)) this.fail(env, `input '${name}' of ${def.name} must be a tensor, got ${describe(value)}`, at);
       const fieldWhere = child(inputsWhere, declared, name);
@@ -361,6 +398,7 @@ export abstract class Modules extends Expressions {
     const dtypeWhere = child(env.where, field, 'dtype');
     const dtype = field.dtype;
     if (typeof dtype !== 'string') fail(dtypeWhere, 'dtype must be a dtype name or an expression');
+    if (dtype === '_') return;
     if (bind && NAME.test(dtype) && !(DTYPES as readonly string[]).includes(dtype) && !call.instance.args.has(dtype) && !call.bound.has(dtype)) {
       this.checkUsed(call, dtype, dtypeWhere);
       call.bound.set(dtype, { dtype: node.dtype });
@@ -417,9 +455,9 @@ export abstract class Modules extends Expressions {
     for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(fieldSpec(field), at, ['shape', 'dtype']));
     each(decl.init, section('init'), (entry, at) => {
       if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
-      else fields(entry, at, ['args', 'count']);
+      else fields(entry, at, ['args', 'count', 'present']);
     });
-    walk(decl.forward, section('forward'), expression);
+    walk(decl.forward, section('forward'), (text, where) => expression(LOOP_HEAD.exec(text)?.[2] ?? text, where));
     walk(decl.unshown, section('unshown'), expression);
     walk(decl.layout, section('layout'), expression);
     walk(decl.tex, section('tex'), latex);
@@ -432,45 +470,134 @@ export abstract class Modules extends Expressions {
   runForward(call: Call): void {
     const def = call.instance.def;
     const forwardWhere = child(def.where, def.decl, 'forward');
-    const forward = def.decl.forward ?? [];
-    if (!Array.isArray(forward)) fail(forwardWhere, 'forward must be a list of { name: expression }');
-    const items = forward.map((item, i) => {
-      const at = child(forwardWhere, forward, i);
-      if (!isRecord(item) || Object.keys(item).length !== 1) fail(at, 'a forward item must have exactly one name');
-      const name = Object.keys(item)[0];
-      if (!NAME.test(name)) fail(at, `'${name}' is not a valid name`);
-      return { name, text: item[name], where: child(at, item, name) };
-    });
+    const items = this.forwardItems(def.decl.forward ?? [], forwardWhere);
     const seen = new Set<string>();
-    for (const { name, where } of items) {
-      if (seen.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
-      seen.add(name);
+    for (const item of items) {
+      if (item.kind !== 'assign') continue;
+      if (item.target !== undefined) fail(item.where, `'${item.name}[...]' writes into a tensor, which forward does only inside a loop; outside a loop, give the result a new name`);
+      if (seen.has(item.name)) fail(item.where, `name '${item.name}' is already defined in ${def.name}`);
+      seen.add(item.name);
     }
-    this.scanAliases(call, items);
-    for (const { name, text, where } of items) {
-      const env = this.callEnv(call, where);
-      if (call.values.has(name) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
+    this.scanAliases(call, flatAssignments(items));
+    this.runItems(call, items, []);
+    call.finished = true;
+  }
+
+  private forwardItems(forward: unknown, where: Where): ForwardItem[] {
+    if (!Array.isArray(forward)) fail(where, 'forward must be a list of { name: expression }');
+    return forward.map((item, i) => {
+      const at = child(where, forward, i);
+      if (isRecord(item) && 'for' in item) {
+        checkKeys(item, new Set(['for', 'do']), at);
+        const match = typeof item.for === 'string' ? LOOP_HEAD.exec(item.for) : null;
+        if (match === null) fail(child(at, item, 'for'), "for must look like 'i in range(n)'");
+        const bounds = RANGE_ARGS.exec(match[2]);
+        const [start, stop] = bounds === null ? ['0', match[2]] : [bounds[1], bounds[2]];
+        return { kind: 'loop', variable: match[1], start, stop, body: this.forwardItems(item.do, child(at, item, 'do')), where: child(at, item, 'for') };
+      }
+      if (!isRecord(item) || Object.keys(item).length !== 1) fail(at, 'a forward item must have exactly one name, or be a loop { for: i in range(n), do: [...] }');
+      const key = Object.keys(item)[0];
+      const written = WRITE.exec(key);
+      if (!NAME.test(key) && written === null) fail(at, `'${key}' is not a valid name`);
+      return { kind: 'assign', name: written === null ? key : written[1], target: written === null ? undefined : written[2], text: item[key], where: child(at, item, key) };
+    });
+  }
+
+  private runItems(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
+    const def = call.instance.def;
+    for (const item of items) {
+      const env = this.callEnv(call, item.where);
+      if (item.kind === 'loop') {
+        if (call.instance.members.has(item.variable) || call.instance.args.has(item.variable) || call.bound.has(item.variable)) fail(item.where, `name '${item.variable}' is already defined in ${def.name}`);
+        const start = this.number(item.start, env);
+        const stop = this.number(item.stop, env);
+        if (!Number.isInteger(start.toy) || !Number.isInteger(stop.toy)) fail(item.where, `range(${item.start}, ${item.stop}) needs integers, got ${start.toy} and ${stop.toy}`);
+        const span = combine([start, stop], (a, b) => Math.max(0, b - a));
+        const count = span.toy;
+        if (count === 0) continue;
+        const run = () => {
+          for (let k = start.toy; k < stop.toy; k++) {
+            call.values.set(item.variable, num(k));
+            this.runItems(call, item.body, [...loops, { variable: item.variable, index: k }]);
+          }
+        };
+        const real = this.dimSpec(span);
+        if (real === count) run();
+        else this.g.realCopies(count, real, run);
+        continue;
+      }
+      const { name, where } = item;
+      const inLoop = loops.length > 0;
+      const defined = call.values.has(name);
+      if ((!inLoop && defined) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
+      if (item.target !== undefined && !defined) fail(where, `'${name}' must be defined before '${name}[${item.target}]' writes into it`);
+      if (inLoop && defined && loops.some((loop) => loop.variable === name)) fail(where, `'${name}' is the loop variable`);
+      const suffix = loops.map((loop) => `[${loop.index}]`).join('');
       const alias = this.resultAlias(call, name, env);
-      const make: Make = { name, path: alias.path, tex: alias.tex, anon: [] };
+      const tex = loops.reduce((acc, loop) => addMark(acc, `_{${loop.index}}`), alias.tex);
+      const make: Make = { name, path: `${alias.path}${suffix}`, tex, anon: [] };
       const before = this.g.nodes.length;
       const calls = call.children.length;
-      const value = this.expression(text, env, make);
+      const value = item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, name, env, make);
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
       call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
       if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor or a module result, got ${describe(value)}`);
+      const previous = call.values.get(name);
       call.values.set(name, value);
-      call.results.push(name);
+      if (!call.results.includes(name)) call.results.push(name);
+      call.resultValues.push({ name, value, where });
+      if (inLoop) {
+        const loop = loops[loops.length - 1];
+        const iterations = call.iterations.get(name) ?? { variable: loop.variable, values: [], before: previous };
+        iterations.values[loop.index] = value;
+        call.iterations.set(name, iterations);
+      }
       if (value instanceof Node) {
         if (make.anon.length > 0) {
           call.anon.set(value, make.anon);
           this.anon.set(value, [...(this.anon.get(value) ?? []), ...make.anon]);
         }
         for (const node of make.anon) this.nodes.set(node.name, node);
-        this.nodes.set(join(call.prefix, name), value);
+        this.nodes.set(join(call.prefix, `${name}${suffix}`), value);
         this.nodes.set(value.name, value);
       }
     }
+  }
+
+  private write(target: string, text: unknown, name: string, env: Env, make: Make): Value {
+    const index = this.parse(`${name}[${target}]`, env);
+    if (index.k !== 'index') return this.fail(env, `'${name}[${target}]' is not an index`);
+    const pos = index.pos;
+    const ellipsis = index.items.findIndex((item) => item.k === 'ellipsis');
+    if (index.items.filter((item) => item.k === 'ellipsis').length > 1) this.fail(env, `'${name}[${target}]' has more than one '...'`);
+    const full = (item: IndexItem) => item.k === 'slice' && item.start === undefined && item.stop === undefined;
+    const picks = index.items
+      .map((item, d) => ({ item, dim: ellipsis >= 0 && d > ellipsis ? d - index.items.length : d }))
+      .filter(({ item }) => item.k !== 'ellipsis' && !full(item));
+    if (picks.length === 0) this.fail(env, `'${name}[${target}]' writes the whole tensor; give the result a new name instead`);
+    const mode: Mode = { k: 'graph', make };
+    const scalar = (ast: Ast | undefined): Value => (ast === undefined ? null : this.evaluate(ast, env, mode, false));
+    const part = (base: Value, item: IndexItem, dim: number): Value => {
+      const items: IndexItem[] = dim >= 0 ? [...Array.from({ length: dim }, (): IndexItem => ({ k: 'slice' })), item] : [{ k: 'ellipsis' }, item, ...Array.from({ length: -dim - 1 }, (): IndexItem => ({ k: 'slice' }))];
+      const local = { ...env, locals: new Map([...env.locals, [' base', base]]) };
+      return this.evaluate({ k: 'index', obj: { k: 'name', name: ' base', pos }, items, pos }, local, mode, false);
+    };
+    const into = (base: () => Value, rest: { item: IndexItem; dim: number }[], top: boolean): Value => {
+      if (rest.length === 0) return this.evaluate(this.parse(text, env), env, mode, false);
+      const [{ item, dim }, ...others] = rest;
+      const whole = base();
+      if (item.k === 'at') {
+        if (item.value.k === 'name' && item.value.name === 'None') this.fail(env, `'${name}[${target}]' cannot write through None`);
+        const shifted = others.map((o) => ({ ...o, dim: dim >= 0 && o.dim > dim ? o.dim - 1 : o.dim }));
+        const src = into(() => part(whole, item, dim), shifted, false);
+        return this.apply('select_scatter', [whole, src, num(dim), scalar(item.value)], new Map(), env, mode, top, pos);
+      }
+      if (item.k !== 'slice') return this.fail(env, `'${name}[${target}]' has an entry that cannot be written`);
+      const src = into(() => part(whole, item, dim), others, false);
+      return this.apply('slice_scatter', [whole, src, num(dim), scalar(item.start), scalar(item.stop)], new Map(), env, mode, top, pos);
+    };
+    return into(() => this.evaluate({ k: 'name', name, pos }, env, mode, false), picks, true);
   }
 
   private scanAliases(call: Call, items: { name: string; text: unknown; where: Where }[]): void {
@@ -550,6 +677,12 @@ function checkArg(type: string, name: string, value: Value, where: Where): Value
       return value;
     case 'bool':
       if (typeof value !== 'boolean') wrong('True or False');
+      return value;
+    case 'str':
+      if (typeof value !== 'string') wrong('a string');
+      return value;
+    case 'list':
+      if (!Array.isArray(value)) wrong('a list');
       return value;
     case 'dtype':
       if (!isDtype(value)) wrong('a dtype');

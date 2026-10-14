@@ -1,0 +1,120 @@
+module: Qwen3Model
+import:
+  Qwen3RMSNorm: ./rmsnorm.yaml
+  Qwen3RotaryEmbedding: ./rotary-embedding.yaml
+  Qwen3DecoderLayer: ./decoder-layer.yaml
+args:
+  V: dim
+  d_model: dim
+  d_head: dim
+  d_ff: dim
+  num_heads: dim
+  num_kv_heads: dim
+  num_layers: int
+  rope_theta: float
+  dtype: dtype
+inputs:
+  ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  h_norm: [T, d_model]
+
+init:
+  embed_tokens:
+    use: Embedding
+    args: { num_embeddings: V, embedding_dim: d_model }
+  layers:
+    use: list[Qwen3DecoderLayer]
+    count: num_layers
+    args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+  norm:
+    use: Qwen3RMSNorm
+    args: { hidden_size: d_model }
+  rotary_emb:
+    use: Qwen3RotaryEmbedding
+    args: [d_head, rope_theta]
+
+forward:
+  - e: embed_tokens(ids)
+  - position_ids: arange(T)
+  - position_embeddings: rotary_emb(e, position_ids)
+  - M: causal_mask(T, dtype=e.dtype)
+  - cos: position_embeddings.cos
+  - sin: position_embeddings.sin
+  - h_last: layers(e, mask=M, cos=cos, sin=sin)
+  - h_norm: norm(h_last)
+
+tex:
+  e: '\mathbf{e}'
+  h_last: '\mathbf{h}_{\mathrm{last}}'
+  h_norm: '\mathbf{h}_{\mathrm{norm}}'
+  position_ids: '\mathbf{t}'
+  cos: '\cos'
+  sin: '\sin'
+  M: '\mathbf{M}'
+  embed_tokens.weight: 'E'
+
+steps:
+  - id: embed
+    label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
+    title: embedding
+    show: [ids, embed_tokens.weight, e]
+    text: |
+      <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
+      $${\viz{e}}_t=\viz{embed_tokens.weight}[x_t],\qquad \viz{e}={{ e | matrix:2 }}$$
+      把取行写成矩阵乘法是为了反向推导：令 $O_{t,v}=[x_t=v]$ 是 one-hot 矩阵，则 $\viz{e}=O\,\viz{embed_tokens.weight}$。
+    backward:
+      label: '$\pfl{\viz{embed_tokens.weight}}$'
+      text: |
+        由 $\viz{e}=O\,\viz{embed_tokens.weight}$ 得 $\pfl{\viz{embed_tokens.weight}}=O^{\top}\pfl{\viz{e}}$。$O^{\top}$ 的第 $v$ 行只在 $x_t=v$ 的位置为 1，所以：
+        $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
+        也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
+  - id: prepare
+    title: position_and_mask
+    steps:
+      - id: position_ids
+        show: position_ids
+        label: '$\viz{position_ids}$'
+        title: 位置编号
+        text: |
+          调用时没有传 <code>position_ids</code>，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。这里没有 batch 维，训练时也没有 KV cache，<code>past_seen_tokens</code> 是 0，所以位置编号就是 $0,\dots,T-1$：
+          $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
+          位置编号是整数常量，没有梯度，只在 RoPE 里用来算角度。
+      - id: rotary_emb
+        title: rotary_emb
+        subtitle: Qwen3RotaryEmbedding
+        edit:
+          cos_sin:
+            append: |
+              HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
+      - id: mask
+        show: [M, position_ids]
+        label: '$\viz{M}$'
+        title: causal mask
+        text: |
+          训练时 $T$ 个位置同时预测，位置 $t$ 的目标是 $x_{t+1}$。位置 $t+1$ 的输入正是位置 $t$ 的目标，所以如果位置 $t$ 的注意力能看到位置 $t+1$，模型可以直接读出答案。这就像把答案印在试卷上，模型只要学会抄就能把损失降到很低，却什么也没学到。所以位置 $t$ 只能看 $s\le t$。
+
+          做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
+          $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
+          HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
+  - id: layers
+    loop: layer = layers[i]
+
+    defaults:
+      show: layer
+      title: Qwen3DecoderLayer
+      subtitle: 第 {{ i }} 层（layers[{{ i }}]）
+
+    rules:
+      - at: 0
+        subtitle: 第 0 层，输入是 embedding
+      - at: -1
+        subtitle: 最后一层，输出交给 model.norm
+  - id: norm
+    title: model.norm
+    subtitle: Qwen3RMSNorm
+    text: |-
+      <code>hidden_states = self.norm(hidden_states)</code>，在全部 decoder 层之后、lm_head 之前。Pre-Norm 结构里残差路径从不归一化，$\viz{h_last}$ 是 embedding 加上 {{ num_layers }} 层全部增量的和，尺度没有约束，所以要再做一次 RMSNorm，归一化后才交给 lm_head。
+    fold:
+      backward:
+        text: |
+          $$\pfl{\viz{h_last}}={{ h_last.grad | matrix:3 }}$$

@@ -1,0 +1,453 @@
+module: torch_chunk_gated_delta_rule
+import:
+  l2norm: ./l2norm.yaml
+args:
+  chunk_size: { type: dim, default: 64 }
+  use_qk_l2norm_in_kernel: { type: bool, default: False }
+inputs:
+  query: [T, num_v_heads, k_head_dim]
+  key: [T, num_v_heads, k_head_dim]
+  value: [T, num_v_heads, v_head_dim]
+  g: { type: tensor, shape: [T, num_v_heads], dtype: _ }
+  beta: [T, num_v_heads]
+outputs:
+  attn_out: [T, num_v_heads, v_head_dim]
+init:
+  q_l2norm: { use: l2norm, present: use_qk_l2norm_in_kernel }
+  k_l2norm: { use: l2norm, present: use_qk_l2norm_in_kernel }
+
+forward:
+  - query_f: query.transpose(0, 1).float()
+  - key_f: key.transpose(0, 1).float()
+  - value_f: value.transpose(0, 1).float()
+  - beta_f: beta.transpose(0, 1).float()
+  - decay: g.transpose(0, 1).float()
+  - query_n: q_l2norm(query_f) if use_qk_l2norm_in_kernel else query_f
+  - key_n: k_l2norm(key_f) if use_qk_l2norm_in_kernel else key_f
+  - query_s: query_n * k_head_dim ** -0.5
+  - query_p: pad(query_s, 0, 0, 0, (chunk_size - T % chunk_size) % chunk_size)
+  - key_p: pad(key_n, 0, 0, 0, (chunk_size - T % chunk_size) % chunk_size)
+  - value_p: pad(value_f, 0, 0, 0, (chunk_size - T % chunk_size) % chunk_size)
+  - beta_p: pad(beta_f, 0, (chunk_size - T % chunk_size) % chunk_size)
+  - decay_p: pad(decay, 0, (chunk_size - T % chunk_size) % chunk_size)
+  - beta_u: beta_p.unsqueeze(-1)
+  - v_beta: value_p * beta_u
+  - k_beta: key_p * beta_u
+  - query_c: query_p.reshape(num_v_heads, -1, chunk_size, k_head_dim)
+  - key_c: key_p.reshape(num_v_heads, -1, chunk_size, k_head_dim)
+  - k_beta_c: k_beta.reshape(num_v_heads, -1, chunk_size, k_head_dim)
+  - v_beta_c: v_beta.reshape(num_v_heads, -1, chunk_size, v_head_dim)
+  - decay_c: decay_p.reshape(num_v_heads, -1, chunk_size)
+  - strictly_upper_mask: ones(chunk_size, chunk_size, dtype=bool).triu(1)
+  - cum_decay: decay_c.cumsum(2)
+  - pairwise_diff: cum_decay.unsqueeze(3) - cum_decay.unsqueeze(2)
+  - pairwise_masked: pairwise_diff.masked_fill(strictly_upper_mask, float('-inf'))
+  - pairwise_decay: pairwise_masked.exp()
+  - key_t: key_c.transpose(-1, -2)
+  - kk: k_beta_c @ key_t
+  - ut_system: kk * pairwise_decay
+  - qk: query_c @ key_t
+  - intra_chunk_attn: qk * pairwise_decay
+  - cum_exp: cum_decay.exp().unsqueeze(-1)
+  - decayed_k_beta: k_beta_c * cum_exp
+  - new_values: solve_triangular(ut_system, v_beta_c, upper=False, unitriangular=True)
+  - k_cumdecay: solve_triangular(ut_system, decayed_k_beta, upper=False, unitriangular=True)
+  - last_recurrent_state: zeros(num_v_heads, k_head_dim, v_head_dim, dtype=new_values.dtype)
+  - core_attn_out: zeros_like(new_values)
+  - query_d: query_c * cum_exp
+  - cum_last: 'cum_decay[..., -1:]'
+  - to_end: cum_last - cum_decay
+  - to_end_exp: to_end.exp().unsqueeze(-1)
+  - key_d: key_c * to_end_exp
+  - cum_end: 'cum_decay[..., -1]'
+  - chunk_decay: 'cum_end.exp()[..., None, None]'
+  - for: i in range((T + (chunk_size - T % chunk_size) % chunk_size) // chunk_size)
+    do:
+      - v_prime: k_cumdecay[:, i] @ last_recurrent_state
+      - v_new: new_values[:, i] - v_prime
+      - inter_chunk_attn: query_d[:, i] @ last_recurrent_state
+      - intra: intra_chunk_attn[:, i] @ v_new
+      - core_attn_out[:, i]: inter_chunk_attn + intra
+      - state_decayed: last_recurrent_state * chunk_decay[:, i]
+      - state_update: key_d[:, i].transpose(-1, -2) @ v_new
+      - last_recurrent_state: state_decayed + state_update
+  - core_padded: core_attn_out.reshape(num_v_heads, -1, v_head_dim)
+  - core_trimmed: core_padded[:, :T]
+  - attn_out: core_trimmed.transpose(0, 1).to(query.dtype)
+
+tex:
+  query_f: '\mathbf{q}'
+  key_f: '\mathbf{k}'
+  value_f: '\mathbf{v}'
+  beta_f: '\boldsymbol{\beta}'
+  decay: '\mathbf{g}'
+  query_n: '\hat{\mathbf{q}}'
+  key_n: '\hat{\mathbf{k}}'
+  query_s: '\tilde{\mathbf{q}}'
+  query_p: '\tilde{\mathbf{q}}'
+  key_p: '\hat{\mathbf{k}}'
+  value_p: '\mathbf{v}'
+  beta_p: '\boldsymbol{\beta}'
+  decay_p: '\mathbf{g}'
+  beta_u: '\boldsymbol{\beta}^{\downarrow}'
+  v_beta: '\mathbf{v}_{\beta}'
+  k_beta: '\mathbf{k}_{\beta}'
+  query_c: '\tilde{\mathbf{q}}'
+  key_c: '\hat{\mathbf{k}}'
+  k_beta_c: '\mathbf{k}_{\beta}'
+  v_beta_c: '\mathbf{v}_{\beta}'
+  decay_c: '\mathbf{g}'
+  strictly_upper_mask: 'M_{\triangle}'
+  cum_decay: '\mathbf{c}'
+  pairwise_diff: 'C'
+  pairwise_masked: '\bar{C}'
+  pairwise_decay: 'D'
+  key_t: '\hat{\mathbf{k}}^{\top}'
+  kk: 'B'
+  ut_system: 'A'
+  qk: 'Q'
+  intra_chunk_attn: '\mathcal{P}'
+  cum_exp: 'e^{\mathbf{c}}'
+  decayed_k_beta: '\tilde{\mathbf{k}}_{\beta}'
+  new_values: 'U'
+  k_cumdecay: 'W'
+  last_recurrent_state: 'S'
+  core_attn_out: '\mathbf{o}'
+  query_d: '\bar{\mathbf{q}}'
+  cum_last: '\mathbf{c}_{\mathrm{last}}'
+  to_end: '\mathbf{c}_{\mathrm{last}}-\mathbf{c}'
+  to_end_exp: 'e^{\mathbf{c}_{\mathrm{last}}-\mathbf{c}}'
+  key_d: '\bar{\mathbf{k}}'
+  cum_end: '\mathbf{c}_{\mathrm{end}}'
+  chunk_decay: '\boldsymbol{\gamma}'
+  v_prime: 'W S'
+  v_new: '\mathbf{u}'
+  inter_chunk_attn: '\mathbf{o}^{\mathrm{inter}}'
+  intra: '\mathbf{o}^{\mathrm{intra}}'
+  state_decayed: '\gamma S'
+  state_update: '\bar{\mathbf{k}}^{\top}\mathbf{u}'
+  core_padded: '\mathbf{o}_{\mathrm{pad}}'
+  core_trimmed: '\mathbf{o}'
+  attn_out: '\mathbf{o}'
+
+fold:
+  label: '$\viz{attn_out}$'
+  title: torch_chunk_gated_delta_rule
+  text: |
+    序列按 $C={{ chunk_size }}$ 个位置一块切开，块内的递推用一个下三角方程组一次解出，块与块之间按顺序传递每个 value head 的 $d_k\times d_v$ 状态 $S$。结果与逐个位置递推相同：
+    $$S_t=e^{g_t}S_{t-1}+\mathbf{k}_t\big(\beta_t(\mathbf{v}_t-e^{g_t}S_{t-1}^{\top}\mathbf{k}_t)\big)^{\top},\qquad \mathbf{o}_t=S_t^{\top}\mathbf{q}_t$$
+    $$\viz{attn_out}={{ attn_out | matrix:2 }}$$
+  backward:
+    label: '$\partial\mathbf{q},\ \partial\mathbf{k},\ \partial\mathbf{v},\ \partial\mathbf{g},\ \partial\boldsymbol{\beta}$'
+    title: '$\pfl{\mathbf{q}},\ \pfl{\mathbf{k}},\ \pfl{\mathbf{v}},\ \pfl{\mathbf{g}},\ \pfl{\boldsymbol{\beta}}$'
+    text: |
+      $$\pfl{\viz{value}}={{ value.grad | matrix:3 }}$$
+
+steps:
+  - id: transpose
+    show: [query_f, key_f, value_f, beta_f, decay]
+    label: '$\mathrm{transpose}$'
+    title: 转成按 head 排列，转成 float32
+    text: |
+      <code>x.transpose(1, 2).to(torch.float32, memory_format=torch.contiguous_format)</code>：HF 的张量带 batch 维，$(B, T, H, d)$ 换成 $(B, H, T, d)$；这一页没有 batch 维，换的是第 0 维和第 1 维，$(T, H, d)$ 换成 $(H, T, d)$。$\boldsymbol{\beta}$ 和 $\mathbf{g}$ 从 $(T, H)$ 换成 $(H, T)$。之后都在 float32 里算，下面的轴编号都比 HF 少 1。
+      $$\viz{value_f}={{ value_f | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query},\ \partial\viz{key},\ \partial\viz{value},\ \partial\viz{beta},\ \partial\viz{g}$'
+      title: 转回 $(T, H, d)$
+      text: 换轴的反向把梯度换回原来的轴，再转回输入的 dtype。
+  - id: qk_l2norm
+    show: zip(q_l2norm, k_l2norm)
+    title: l2norm
+    subtitle: use_qk_l2norm_in_kernel=True
+    fold:
+      label: '$\viz{query_n},\ \viz{key_n}$'
+      title: query 和 key 的 l2norm
+      text: |
+        <code>query = l2norm(query, dim=-1, eps=1e-6)</code>，key 相同。每个位置、每个 head 的向量除以自己的模长。
+        $$\viz{key_n}={{ key_n | matrix:2 }}$$
+      backward:
+        label: '$\partial\viz{query_f},\ \partial\viz{key_f}$'
+        title: '$\pfl{\viz{query_f}},\ \pfl{\viz{key_f}}$'
+        text: |
+          $$\pfl{\viz{key_f}}={{ key_f.grad | matrix:3 }}$$
+    edit:
+      square:
+        append: |
+          Qwen3_5GatedDeltaNet 调用时写 <code>use_qk_l2norm_in_kernel=True</code>，所以 query 和 key 先各做一次 l2norm（代码注释写「in fp32 to match the FLA library」）。归一化以后 $\hat{\mathbf{k}}_t\cdot\hat{\mathbf{k}}_t\approx1$，delta rule 的写入 $S\leftarrow S+\beta\,\hat{\mathbf{k}}(\mathbf{v}-S^{\top}\hat{\mathbf{k}})^{\top}$ 在 $\beta\le1$ 时不会把状态放大。
+  - id: scale
+    show: query_s
+    label: '$\viz{query_s}$'
+    title: query 乘 $d_k^{-1/2}$
+    text: |
+      <code>scaling = query.shape[-1] ** -0.5</code>，<code>query = query * scaling</code>，代码注释写「always normalize queries by the head dimension」。这一页 $d_k={{ k_head_dim }}$。
+      $$\viz{query_s}={{ query_s | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query_n}$'
+      title: '$\pfl{\viz{query_n}}$'
+      text: 局部导数是 $d_k^{-1/2}$。
+  - id: pad
+    show: [query_p, key_p, value_p, beta_p, decay_p]
+    label: '$\mathrm{pad}$'
+    title: 序列补到块长的整数倍
+    text: |
+      <code>pad_size = (chunk_size - sequence_length % chunk_size) % chunk_size</code>，<code>F.pad(x, (0, 0, 0, pad_size))</code> 在位置维的末尾补 0，$\boldsymbol{\beta}$ 和 $\mathbf{g}$ 用 <code>F.pad(x, (0, pad_size))</code>。
+
+      HF 调用这个函数时不传 <code>chunk_size</code>，用默认值 64。这一页把块长作为参数传入 $C={{ chunk_size }}$，让 $T={{ T }}$ 个位置分成 {{ (T + (chunk_size - T % chunk_size) % chunk_size) // chunk_size }} 块，跨块的状态传递和补位都能画出来；结果与块长无关，块长只改变计算的分组方式，自动测试按块长 1、3、4、64 都与 HF 对照过。这里补了 {{ (chunk_size - T % chunk_size) % chunk_size }} 个位置，多出来的行全是 0：补位的 $\mathbf{k}$、$\mathbf{v}$、$\beta$ 都是 0，什么也不写；$g=0$ 时衰减是 $e^{0}=1$，不改变状态；它们的输出最后被切掉。
+      $$\viz{value_p}={{ value_p | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query_s},\ \partial\viz{key_n},\ \partial\viz{value_f},\ \partial\viz{beta_f},\ \partial\viz{decay}$'
+      title: 去掉补位的梯度
+      text: 补出来的位置不对应任何输入，它们的梯度在这里丢掉，其余位置原样传回。
+  - id: beta
+    show: [beta_u, v_beta, k_beta]
+    label: '$\viz{v_beta},\ \viz{k_beta}$'
+    title: value 和 key 乘写入强度 $\beta$
+    text: |
+      <code>v_beta = value * beta.unsqueeze(-1)</code>，<code>k_beta = key * beta.unsqueeze(-1)</code>：$\beta$ 补一个大小为 1 的维度，每个位置的 $\mathbf{v}$ 和 $\hat{\mathbf{k}}$ 整行乘自己的 $\beta$。代码在两行里各写了一次 <code>beta.unsqueeze(-1)</code>，图里画一次。
+      $$\viz{v_beta}={{ v_beta | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{value_p},\ \partial\viz{key_p},\ \partial\viz{beta_p}$'
+      title: 穿过乘 $\beta$
+      text: $\beta_t$ 的梯度是 $\mathbf{v}_t$、$\hat{\mathbf{k}}_t$ 两行各自与梯度的点积之和。
+  - id: chunks
+    show: [query_c, key_c, k_beta_c, v_beta_c, decay_c]
+    label: '$\mathrm{reshape}$'
+    title: 切成 $C={{ chunk_size }}$ 个位置一块
+    text: |
+      <code>x.reshape(x.shape[0], x.shape[1], -1, chunk_size, x.shape[-1]) for x in (query, key, k_beta, v_beta)</code>：每个 head 的位置维切成 $N$ 块，每块 $C$ 个位置，形状 $(H, N, C, d)$；<code>decay</code> 切成 $(H, N, C)$。下面的块内计算对所有 head、所有块同时做，块之间的递推在最后。
+      $$\viz{decay_c}={{ decay_c | matrix:3 }}$$
+    backward:
+      label: '$\partial(\text{按块})$'
+      title: 按位置拼回
+      text: reshape 只改变形状的解释，梯度按同样的方式拼回。
+  - id: mask
+    show: strictly_upper_mask
+    label: '$\viz{strictly_upper_mask}$'
+    title: 严格上三角的 mask
+    text: |
+      <code>strictly_upper_mask = torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device).triu(1)</code>：$C\times C$，对角线以上是 1，表示块内一个位置不能看到的后面的位置。所有 head、所有块共用。mask 是常量，没有梯度。
+      $$\viz{strictly_upper_mask}={{ strictly_upper_mask | matrix:0 }}$$
+  - id: cumsum
+    show: cum_decay
+    label: '$\viz{cum_decay}$'
+    title: 块内累加对数衰减
+    text: |
+      <code>cum_decay = decay.cumsum(dim=3)</code>（这一页是第 2 维）：在每一块里从块首累加 $g$，$c_{t}=\sum_{s\le t}g_{s}$。$g$ 是衰减的对数，所以 $e^{c_{t}}$ 是从块首到位置 $t$ 的衰减之积。累加只在块内，每块从 0 开始。
+      $$\viz{cum_decay}={{ cum_decay | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{decay_c}$'
+      title: 穿过 cumsum：从块尾往回累加
+      text: |
+        $c_t$ 用到了块内 $s\le t$ 的每个 $g_s$，所以 $\pfl{g_s}=\sum_{t\ge s}\pfl{c_t}$，在块内从后往前累加。
+        $$\pfl{\viz{decay_c}}={{ decay_c.grad | matrix:3 }}$$
+  - id: pairwise
+    show: [pairwise_diff, pairwise_masked, pairwise_decay]
+    label: '$\viz{pairwise_decay}$'
+    title: 两两衰减 $D$
+    text: |
+      <code>pairwise_decay = cum_decay.unsqueeze(4) - cum_decay.unsqueeze(3)</code>：$(H, N, C, 1)$ 减 $(H, N, 1, C)$ 广播成 $(H, N, C, C)$，第 $t$ 行第 $s$ 列是 $c_t-c_s$，也就是从位置 $s$ 到位置 $t$ 的对数衰减。<code>masked_fill(strictly_upper_mask, float("-inf"))</code> 把 $s>t$ 的格子填成 $-\infty$；HF 在取 exp 之前填，代码注释写明这是为了避免这些正数格子取 exp 溢出。最后 <code>pairwise_decay.exp()</code>：$D_{t,s}=e^{c_t-c_s}$ 是位置 $s$ 写入的内容到位置 $t$ 时剩下的比例，上三角变成 0。
+      $$\viz{pairwise_decay}={{ pairwise_decay | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{cum_decay}$'
+      title: 穿过 exp、mask 和两两之差
+      text: |
+        exp 的导数是它自己；被填的格子与输入无关，梯度是 0；$c_t$ 在第 $t$ 行里取正号，在第 $t$ 列里取负号，梯度是这一行之和减这一列之和。
+        $$\pfl{\viz{pairwise_decay}}={{ pairwise_decay.grad | matrix:3 }}$$
+  - id: ut
+    show: [key_t, kk, ut_system]
+    label: '$\viz{ut_system}$'
+    title: 方程组的系数 $A$
+    text: |
+      <code>ut_system = (k_beta @ key.transpose(-1, -2)) * pairwise_decay</code>：每一块做 $(C, d_k)$ 乘 $(d_k, C)$，再乘两两衰减，$A_{t,s}=\beta_t\,e^{c_t-c_s}\,\hat{\mathbf{k}}_t\cdot\hat{\mathbf{k}}_s$。块内逐个位置做 delta rule 的写入，可以合起来写成一个下三角方程组 $(I+\operatorname{tril}(A,-1))U=\mathbf{v}_{\beta}$，下面用 <code>solve_triangular</code> 解它。代码注释把这一步叫 UT transform。
+      $$\viz{ut_system}={{ ut_system | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{k_beta_c},\ \partial\viz{key_c},\ \partial\viz{pairwise_decay}$'
+      title: 穿过矩阵乘法和逐元素相乘
+      text: |
+        $$\pfl{\viz{ut_system}}={{ ut_system.grad | matrix:3 }}$$
+  - id: intra_attn
+    show: [qk, intra_chunk_attn]
+    label: '$\viz{intra_chunk_attn}$'
+    title: 块内注意力 $\mathcal{P}$
+    text: |
+      <code>intra_chunk_attn = (query @ key.transpose(-1, -2)) * pairwise_decay</code>：每一块里 query 和 key 的点积乘上两两衰减，上三角变成 0，对角线保留。它和 softmax 注意力的分数表位置相同，但不做 softmax。代码在这一行和上一行各写了一次 <code>key.transpose(-1, -2)</code>，转置只是换轴，图里两行共用一个 $\hat{\mathbf{k}}^{\top}$。
+      $$\viz{intra_chunk_attn}={{ intra_chunk_attn | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{query_c},\ \partial\viz{pairwise_decay}$'
+      title: 穿过逐元素相乘
+      text: |
+        $D$ 从这里和 $A$ 那一步各收到一份梯度，两份相加后经过 exp、两两之差和 cumsum 传回 $\mathbf{g}$。
+  - id: decayed_k_beta
+    show: [cum_exp, decayed_k_beta]
+    label: '$\viz{decayed_k_beta}$'
+    title: '$\mathbf{k}_{\beta}$ 乘块首到各位置的衰减'
+    text: |
+      <code>decayed_k_beta = k_beta * cum_decay.exp().unsqueeze(-1)</code>：第 $t$ 行乘 $e^{c_t}$。后面 <code>query * cum_decay.exp().unsqueeze(-1)</code> 又算了一次同样的 <code>cum_decay.exp().unsqueeze(-1)</code>，两次的值相同，图里画一次。
+      $$\viz{decayed_k_beta}={{ decayed_k_beta | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{k_beta_c},\ \partial e^{\mathbf{c}}$'
+      title: 穿过逐元素相乘
+      text: 逐元素乘的两个输入互为对方的局部导数。
+  - id: new_values
+    show: new_values
+    label: '$\viz{new_values}$'
+    title: 解下三角方程组，得到 new_values
+    text: |
+      <code>new_values = torch.linalg.solve_triangular(ut_system, v_beta, upper=False, unitriangular=True)</code>：<code>unitriangular=True</code> 把对角线当作 1，<code>upper=False</code> 只用严格下三角，解 $(I+\operatorname{tril}(A,-1))\,U=\mathbf{v}_{\beta}$。按行从上往下代入：$U_t=\mathbf{v}_{\beta,t}-\sum_{s<t}A_{t,s}U_s$，也就是逐个位置做 delta rule 时，块内前面位置的写入对位置 $t$ 的影响被一次扣掉。每块的第 1 行前面没有位置，直接等于 $\mathbf{v}_{\beta}$ 的第 1 行。
+
+      HF 只有在导出模型（<code>is_torchdynamo_exporting()</code>）时才改用逐行的前向代入循环构造逆矩阵，训练和普通推理走的都是这里的 <code>solve_triangular</code>。
+      $$\viz{new_values}={{ new_values | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{ut_system},\ \partial\viz{v_beta_c}$'
+      title: 穿过 solve_triangular
+      text: |
+        记 $L=I+\operatorname{tril}(A,-1)$。$\pfl{\mathbf{v}_{\beta}}=L^{-\top}\pfl{U}$，$L^{\top}$ 是上三角，所以块内后面位置的梯度传给前面的位置；$\pfl{A}=-\operatorname{tril}\big(\pfl{\mathbf{v}_{\beta}}U^{\top},-1\big)$，对角线和上三角是 0。
+        $$\pfl{\viz{v_beta_c}}={{ v_beta_c.grad | matrix:3 }}$$
+  - id: k_cumdecay
+    show: k_cumdecay
+    label: '$\viz{k_cumdecay}$'
+    title: 同一个方程组，右边换成衰减后的 $\mathbf{k}_{\beta}$
+    text: |
+      <code>k_cumdecay = torch.linalg.solve_triangular(ut_system, decayed_k_beta, upper=False, unitriangular=True)</code>：系数还是 $A$。$W$ 在后面乘旧状态，给出旧状态对这一块每个位置的预测。
+      $$\viz{k_cumdecay}={{ k_cumdecay | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{ut_system},\ \partial\viz{decayed_k_beta}$'
+      title: 穿过 solve_triangular
+      text: 与上一步相同，$A$ 从两次求解各收到一份梯度。
+  - id: init_state
+    show: [last_recurrent_state, core_attn_out]
+    label: '$S_0,\ \mathbf{o}$'
+    title: 状态和输出从 0 开始
+    text: |
+      没有缓存时 <code>initial_state</code> 是 None，<code>last_recurrent_state = torch.zeros(recurrent_state_shape, dtype=new_values.dtype, device=new_values.device)</code>，<code>recurrent_state_shape = (batch_size, num_v_heads, k_head_dim, v_head_dim)</code>：每个 value head 一个 $d_k\times d_v$ 的状态。<code>core_attn_out = torch.zeros_like(new_values)</code> 是输出的存放处，下面逐块写入。两者都是常量，没有梯度。
+  - id: query_decay
+    show: query_d
+    label: '$\viz{query_d}$'
+    title: query 乘块首到各位置的衰减
+    text: |
+      <code>query = query * cum_decay.exp().unsqueeze(-1)</code>，代码注释说「Apply decay once rather than in each chunk」：第 $t$ 行乘 $e^{c_t}$，读旧状态时用。
+      $$\viz{query_d}={{ query_d | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{query_c},\ \partial e^{\mathbf{c}}$'
+      title: 穿过逐元素相乘
+      text: 逐元素乘的两个输入互为对方的局部导数。
+  - id: key_decay
+    show: [cum_last, to_end, to_end_exp, key_d]
+    label: '$\viz{key_d}$'
+    title: key 乘各位置到块尾的衰减
+    text: |
+      <code>key = key * (cum_decay[..., -1:] - cum_decay).exp().unsqueeze(-1)</code>：第 $t$ 行乘 $e^{c_C-c_t}$，$c_C$ 是块尾的累计值，用 <code>[..., -1:]</code> 取出并保留这一维，写入状态时用。补出来的位置 $g=0$，不改变累计值。
+      $$\viz{key_d}={{ key_d | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{key_c},\ \partial\viz{cum_decay}$'
+      title: 穿过衰减
+      text: $c_t$ 和块尾的 $c_C$ 都从这里收到梯度，块尾这一项把块内每个位置的梯度都加到最后一个位置上。
+  - id: chunk_decay
+    show: [cum_end, chunk_decay]
+    label: '$\viz{chunk_decay}$'
+    title: 每一块的整块衰减
+    text: |
+      <code>chunk_decay = cum_decay[..., -1].exp()[..., None, None]</code>：取每块最后一个位置的累计值，去掉这一维，取 exp，再补两个大小为 1 的维度，形状 $(H, N, 1, 1)$，后面和 $d_k\times d_v$ 的状态广播相乘。
+      $$\viz{chunk_decay}={{ chunk_decay | matrix:3 }}$$
+    backward:
+      label: '$\partial c_{C}$'
+      title: 穿过 exp 和取最后一个位置
+      text: exp 的导数是它自己，梯度只交给每块最后一个位置的累计值。
+  - id: chunk
+    loop: i in range((T + (chunk_size - T % chunk_size) % chunk_size) // chunk_size)
+    defaults:
+      title: 第 {{ i }} 块
+      subtitle: '<code>for i in range(num_chunks)</code>'
+      steps:
+        - id: v_new
+          show: [v_prime, v_new]
+          label: '$\viz{v_new}$'
+          title: 第 {{ i }} 块：v_new，减去旧状态已经预测到的部分
+          text: |
+            <code>v_new = new_values[:, :, i] - k_cumdecay[:, :, i] @ last_recurrent_state</code>：$W_{ {{ i }} }$（$C\times d_k$）乘进入这一块之前的状态 $S$（$d_k\times d_v$），得到旧状态对这一块每个位置的预测。$W$ 的每一行已经乘过从块首到这个位置的衰减。$U$ 是只考虑块内写入时解出的新 value，减去预测以后，剩下的是这一块真正要写进状态的修正量，这就是 delta rule 的「只写差值」。第 0 块的旧状态是 0，预测全是 0。
+            $$\viz{v_new}={{ v_new | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{new_values},\ \partial\viz{k_cumdecay},\ \partial S$'
+            title: 第 {{ i }} 块：穿过 v_new
+            text: |
+              $\mathbf{u}$ 有两个去处：块内输出 $\mathcal{P}\mathbf{u}$ 和写入新状态 $\bar{\mathbf{k}}^{\top}\mathbf{u}$，梯度是两份之和，再原样交给 $U$、取负交给 $WS$。$S$ 从这里收到 $W^{\top}\pfl{(WS)}$，状态的梯度就是这样从后一块传回前一块的。
+              $$\pfl{\viz{v_new}}={{ v_new.grad | matrix:3 }}$$
+        - id: inter
+          show: inter_chunk_attn
+          label: '$\viz{inter_chunk_attn}$'
+          title: 第 {{ i }} 块：query 读旧状态
+          text: |
+            <code>inter_chunk_attn = query[:, :, i] @ last_recurrent_state</code>：这里的 query 已经乘过块内的累计衰减 $e^{\mathbf{c}}$，所以每个位置读到的是衰减到自己这个位置的旧状态。这一项给出前面各块对这一块输出的贡献。
+            $$\viz{inter_chunk_attn}={{ inter_chunk_attn | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{query_d},\ \partial S$'
+            title: 第 {{ i }} 块：传回 query 和旧状态
+            text: 矩阵乘法的两个输入分别收到「梯度乘另一个输入的转置」。
+        - id: out
+          show: [intra, core_attn_out]
+          label: '$\viz{core_attn_out}$'
+          title: 第 {{ i }} 块：输出 = 旧状态的部分 + 块内的部分
+          text: |
+            <code>core_attn_out[:, :, i] = inter_chunk_attn + intra_chunk_attn[:, :, i] @ v_new</code>。$\mathcal{P}$ 是块内带衰减的 $\mathbf{q}\mathbf{k}^{\top}$，下三角，对角线保留，所以位置 $t$ 用到块内 $s\le t$ 的修正量。HF 原地写进 <code>core_attn_out</code> 的第 {{ i }} 块，图里画成 <code>select_scatter</code>：得到一个新的张量，第 {{ i }} 块换成这次的结果，其余块不变。
+            $$\viz{core_attn_out}={{ core_attn_out | matrix:3 }}$$
+          backward:
+            label: '$\partial\mathbf{o}^{\mathrm{inter}},\ \partial\mathbf{o}^{\mathrm{intra}}$'
+            title: 第 {{ i }} 块：梯度分给这一块的两项
+            text: |
+              写入的那一块的梯度交给两项之和，其余块的梯度交给写入之前的 $\mathbf{o}$。$\mathbf{u}$ 收到 $\mathcal{P}^{\top}$ 乘输出的梯度：块内后面位置的梯度经过这里传给前面的位置。
+        - id: decay
+          show: state_decayed
+          label: '$\viz{state_decayed}$'
+          title: 第 {{ i }} 块：旧状态乘整块的衰减
+          text: |
+            <code>last_recurrent_state * chunk_decay[:, :, i]</code>：$\gamma=e^{c_C}$ 是这一块全部 $C$ 个位置的衰减之积，旧状态经过整块以后乘上它。
+            $$\viz{state_decayed}={{ state_decayed | matrix:3 }}$$
+          backward:
+            label: '$\partial S,\ \partial\gamma$'
+            title: 第 {{ i }} 块：穿过整块的衰减
+            text: 旧状态从这里收到的梯度乘上 $\gamma$，和前面读出的两处一起交给上一块。
+        - id: write
+          show: state_update
+          label: '$\viz{state_update}$'
+          title: 第 {{ i }} 块：把修正量写进状态
+          text: |
+            <code>key[:, :, i].transpose(-1, -2) @ v_new</code>：这里的 key 已经乘过 $e^{c_C-c_t}$，也就是从位置 $t$ 到块尾的衰减，所以每个位置写入的量到块尾时已经衰减到位。$d_k\times C$ 乘 $C\times d_v$，得到 $d_k\times d_v$。
+            $$\viz{state_update}={{ state_update | matrix:3 }}$$
+          backward:
+            label: '$\partial\viz{key_d},\ \partial\viz{v_new}$'
+            title: 第 {{ i }} 块：传回 key 和 v_new
+            text: 矩阵乘法的两个输入分别收到「梯度乘另一个输入的转置」。
+        - id: state
+          show: last_recurrent_state
+          label: '$\viz{last_recurrent_state}$'
+          title: 第 {{ i }} 块：新状态
+          text: |
+            <code>last_recurrent_state = last_recurrent_state * chunk_decay[:, :, i] + key[:, :, i].transpose(-1, -2) @ v_new</code> 的加法。新状态等于逐个位置递推到这一块最后一个位置时的状态，交给下一块。
+            $$\viz{last_recurrent_state}={{ last_recurrent_state | matrix:3 }}$$
+          backward:
+            label: '$\partial S$'
+            title: 第 {{ i }} 块：新状态的梯度分给两项
+            text: |
+              状态的梯度来自下一块的三处使用（预测 value、query 读出、整块衰减），加法把它原样交给两项。最后一块算出的状态 HF 不返回（<code>output_final_state=False</code>），它不影响损失，这一块的衰减与写入也就没有梯度。
+  - id: reshape
+    show: [core_padded, core_trimmed]
+    label: '$\viz{core_trimmed}$'
+    title: 拼回位置，去掉补位
+    text: |
+      <code>core_attn_out = core_attn_out.reshape(padded_output_shape)</code>，<code>padded_output_shape = (batch_size, num_v_heads, -1, v_head_dim)</code>：$N$ 块各 $C$ 行接起来。然后 <code>core_attn_out[:, :, :sequence_length]</code> 只留前 $T={{ T }}$ 个位置。
+      $$\viz{core_trimmed}={{ core_trimmed | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{core_attn_out}$'
+      title: 补位的梯度是 0
+      text: 被切掉的位置不影响损失，梯度补 0，再按块拆开。
+  - id: output
+    show: attn_out
+    label: '$\viz{attn_out}$'
+    title: 转回 $(T, H, d_v)$ 和输入的 dtype
+    text: |
+      <code>core_attn_out = core_attn_out.transpose(1, 2).to(initial_dtype, memory_format=torch.contiguous_format)</code>：换回位置在前，转回输入的 dtype。<code>output_final_state</code> 是 False，函数返回的状态是 None。
+      $$\viz{attn_out}={{ attn_out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{core_trimmed}$'
+      title: 转回按 head 排列
+      text: 换轴与类型转换的局部导数是 1。

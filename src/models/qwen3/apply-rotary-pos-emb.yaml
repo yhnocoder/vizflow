@@ -1,4 +1,4 @@
-module: RoPE
+module: apply_rotary_pos_emb
 inputs:
   q: { type: tensor, shape: [num_heads, T, d_head], dtype: dtype }
   k: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }

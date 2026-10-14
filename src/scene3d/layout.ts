@@ -171,7 +171,7 @@ export interface LayoutContext {
   plan?: LevelPlan;
 }
 
-const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'identity']);
+const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'squeeze', 'contiguous', 'identity']);
 
 export function isLayoutOp(n: Node): boolean {
   return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);
@@ -264,6 +264,7 @@ export function rowsCols(n: Node): [number, number] {
     const { chunk, row, col } = plateAxes(n);
     return [shape[row], shape[chunk] * shape[col]];
   }
+  if (shape.length === 4) return [shape[2], shape[0] * shape[1] * shape[3]];
   return [shape[0], shape[1]];
 }
 
@@ -275,17 +276,19 @@ export function rowCol(n: Node, index: readonly number[]): [number, number] {
     const { chunk, row, col } = plateAxes(n);
     return [index[row], index[chunk] * shape[col] + index[col]];
   }
+  if (shape.length === 4) return [index[2], (index[0] * shape[1] + index[1]) * shape[3] + index[3]];
   return [index[0], index[1]];
 }
 
 export function plates(n: Node): { count: number; width: number } {
+  if (n.shape.length === 4) return { count: n.shape[0] * n.shape[1], width: n.shape[3] };
   if (n.shape.length !== 3) return { count: 1, width: rowsCols(n)[1] };
   const { chunk, col } = plateAxes(n);
   return { count: n.shape[chunk], width: n.shape[col] };
 }
 
 function checkDims(n: Node): void {
-  if (n.shape.length > 3) throw new Error(`scene3d: node '${n.name}' with shape ${formatShape(n.shape)} has more than three dimensions`);
+  if (n.shape.length > 4) throw new Error(`scene3d: node '${n.name}' with shape ${formatShape(n.shape)} has more than four dimensions`);
 }
 
 function elementsOf(n: Node, position: (row: number, col: number) => Vec3): Element[] {

@@ -1,0 +1,319 @@
+module: Qwen3_5GatedDeltaNet
+import:
+  Conv1d: vizflow/nn/conv1d
+  Sigmoid: vizflow/nn/sigmoid
+  causal_conv1d_fn: ./causal-conv1d-fn.yaml
+  torch_chunk_gated_delta_rule: ./chunk-gated-delta-rule.yaml
+  Qwen3_5RMSNormGated: ./rmsnorm-gated.yaml
+
+args:
+  d_model: dim
+  num_k_heads: dim
+  num_v_heads: dim
+  head_k_dim: dim
+  head_v_dim: dim
+  conv_kernel_size: dim
+  chunk_size: { type: dim, default: 64 }
+inputs:
+  x: [T, d_model]
+outputs:
+  out: [T, d_model]
+
+init:
+  conv1d:
+    use: Conv1d
+    args:
+      in_channels: num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim
+      out_channels: num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim
+      kernel_size: conv_kernel_size
+      groups: num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim
+      padding: conv_kernel_size - 1
+      bias: false
+  weights:
+    dt_bias: { shape: [num_v_heads], init: ones }
+    A_log: { shape: [num_v_heads], init: uniform }
+  norm:
+    use: Qwen3_5RMSNormGated
+    args: { hidden_size: head_v_dim }
+  out_proj:
+    use: Linear
+    args: { in_features: num_v_heads * head_v_dim, out_features: d_model, bias: false }
+  in_proj_qkv:
+    use: Linear
+    args: { in_features: d_model, out_features: num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim, bias: false }
+  in_proj_z:
+    use: Linear
+    args: { in_features: d_model, out_features: num_v_heads * head_v_dim, bias: false }
+  in_proj_b:
+    use: Linear
+    args: { in_features: d_model, out_features: num_v_heads, bias: false }
+  in_proj_a:
+    use: Linear
+    args: { in_features: d_model, out_features: num_v_heads, bias: false }
+  causal_conv1d_fn: causal_conv1d_fn
+  sigmoid: Sigmoid
+  chunk_gated_delta_rule:
+    use: torch_chunk_gated_delta_rule
+    args: { chunk_size: chunk_size, use_qk_l2norm_in_kernel: true }
+
+forward:
+  - mixed_qkv: in_proj_qkv(x)
+  - mixed_t: mixed_qkv.transpose(0, 1)
+  - z_linear: in_proj_z(x)
+  - z: z_linear.reshape(T, -1, head_v_dim)
+  - b: in_proj_b(x)
+  - a: in_proj_a(x)
+  - conv_weight: conv1d.weight.squeeze(1)
+  - conv_out: causal_conv1d_fn(mixed_t, conv_weight)
+  - mixed: conv_out.transpose(0, 1)
+  - query_flat: 'mixed[:, :num_k_heads * head_k_dim]'
+  - key_flat: 'mixed[:, num_k_heads * head_k_dim:num_k_heads * head_k_dim * 2]'
+  - value_flat: 'mixed[:, num_k_heads * head_k_dim * 2:]'
+  - query: query_flat.reshape(T, -1, head_k_dim)
+  - key: key_flat.reshape(T, -1, head_k_dim)
+  - value: value_flat.reshape(T, -1, head_v_dim)
+  - beta: sigmoid(b)
+  - A_f: A_log.float()
+  - A_exp: A_f.exp()
+  - A_neg: -A_exp
+  - a_f: a.float()
+  - a_dt: a_f + dt_bias
+  - dt: softplus(a_dt)
+  - g: A_neg * dt
+  - query_r: query.repeat_interleave(num_v_heads // num_k_heads, 1) if num_v_heads // num_k_heads > 1 else query
+  - key_r: key.repeat_interleave(num_v_heads // num_k_heads, 1) if num_v_heads // num_k_heads > 1 else key
+  - core_attn_out: chunk_gated_delta_rule(query=query_r, key=key_r, value=value, g=g, beta=beta)
+  - core_flat: core_attn_out.reshape(-1, head_v_dim)
+  - z_flat: z.reshape(-1, head_v_dim)
+  - normed: norm(core_flat, z_flat)
+  - normed_r: normed.reshape(T, -1)
+  - out: out_proj(normed_r)
+
+tex:
+  mixed_qkv: '\mathbf{u}'
+  mixed_t: '\mathbf{u}^{\top}'
+  z_linear: '\mathbf{z}'
+  z: '\mathbf{z}'
+  b: '\mathbf{b}'
+  a: '\mathbf{a}'
+  conv_weight: 'W_{\mathrm{conv}}'
+  conv_out: '\phi(\mathbf{c})^{\top}'
+  mixed: '\phi(\mathbf{c})'
+  query_flat: '\mathbf{q}'
+  key_flat: '\mathbf{k}'
+  value_flat: '\mathbf{v}'
+  query: '\mathbf{q}'
+  key: '\mathbf{k}'
+  value: '\mathbf{v}'
+  beta: '\boldsymbol{\beta}'
+  A_f: '\mathbf{a}_{\log}'
+  A_exp: 'e^{\mathbf{a}_{\log}}'
+  A_neg: '-e^{\mathbf{a}_{\log}}'
+  a_f: '\mathbf{a}_{\mathrm{fp32}}'
+  a_dt: '\mathbf{a}+\mathbf{b}_{\Delta}'
+  dt: '\Delta'
+  g: '\mathbf{g}'
+  query_r: '\mathbf{q}_{\mathrm{rep}}'
+  key_r: '\mathbf{k}_{\mathrm{rep}}'
+  core_attn_out: '\mathbf{o}'
+  core_flat: '\mathbf{o}'
+  z_flat: '\mathbf{z}'
+  normed: '\bar{\mathbf{o}}'
+  normed_r: '\bar{\mathbf{o}}'
+  out: '\mathbf{att}'
+  dt_bias: '\mathbf{b}_{\Delta}'
+  A_log: '\mathbf{a}_{\log}'
+  in_proj_qkv.weight: 'W_{qkv}'
+  in_proj_z.weight: 'W_z'
+  in_proj_b.weight: 'W_b'
+  in_proj_a.weight: 'W_a'
+  conv1d.weight: 'W_{\mathrm{conv}}'
+  out_proj.weight: 'W_{\mathrm{out}}'
+  norm.weight: '\boldsymbol{\gamma}'
+
+formula: |-
+  \begin{aligned}
+  \step{in_proj_qkv,causal_conv1d_fn.*,split}{[\viz{query}\,|\,\viz{key}\,|\,\viz{value}]}&
+  \step{in_proj_qkv,causal_conv1d_fn.*,split}{=\phi\big(\mathrm{conv}(\viz{x}{\viz{in_proj_qkv.weight}}^{\top})\big)}\\
+  \step{sigmoid.*}{\viz{beta}}&
+  \step{sigmoid.*}{=\sigma(\viz{x}{\viz{in_proj_b.weight}}^{\top})}\\
+  \step{A_log,decay}{\viz{g}}&
+  \step{A_log,decay}{=-e^{\viz{A_log}}\odot\operatorname{softplus}(\viz{x}{\viz{in_proj_a.weight}}^{\top}+\viz{dt_bias})}\\
+  \step{out_proj}{\viz{out}}&
+  \step{out_proj}{=\Big(}
+  \step{norm.*}{\mathrm{norm}\big(}
+  \step{chunk_gated_delta_rule.*}{\operatorname{GDR}(\viz{query},\viz{key},\viz{value},\viz{g},\viz{beta})}
+  \step{norm.*}{,\ \viz{x}{\viz{in_proj_z.weight}}^{\top}\big)}
+  \step{out_proj}{\Big){\viz{out_proj.weight}}^{\top}}
+  \end{aligned}
+fold:
+  label: '$\viz{out}=\mathrm{linear\_attn}(\viz{x})$'
+  title: linear_attn
+  text: |
+    投影、短卷积、gated delta rule、门控 RMSNorm 和 out_proj 都收在这一次 <code>self.linear_attn(...)</code> 调用里。位置 $t$ 的输出只依赖 $s\le t$ 的输入，和 softmax 注意力一样，Jacobian 是块下三角的；但每一步只需要每个 value head 一个固定大小 $d_k\times d_v$ 的状态，计算量随 $T$ 线性增长。
+    $$\viz{out}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial$参数, $\partial\viz{x}$'
+    title: '$\pfl{\theta},\ \pfl{\viz{x}}$'
+    text: |
+      一次反向算出 linear_attn 全部参数的梯度和 $\pfl{\viz{x}}$。
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+
+steps:
+  - id: in_proj_qkv
+    subtitle: nn.Linear
+    label: '$\viz{mixed_qkv}$'
+    title: in_proj_qkv
+    text: |
+      forward 的第一行是 <code>apply_mask_to_padding_states(hidden_states, attention_mask)</code>，它把 padding 位置的输入乘 0。linear_attention 层收到的 attention_mask 来自 <code>create_recurrent_attention_mask</code>，这一页没有 padding，它是 None，这一行不改变输入，图里不画。
+
+      in_proj_qkv 一次算出 q、k、v 三段，宽 $2H_kd_k+H_vd_v={{ num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim }}$，没有 bias。HF 接着用 <code>mixed_qkv.transpose(1, 2)</code> 换成 $(B, C, T)$，交给短卷积。
+      $$\viz{mixed_qkv}=\viz{x}{\viz{in_proj_qkv.weight}}^{\top}={{ mixed_qkv | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{in_proj_qkv.weight},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{in_proj_qkv.weight}},\ \pfl{\viz{x}}$'
+      text: |
+        $\viz{x}$ 还从 in_proj_z、in_proj_b、in_proj_a 收到梯度，四路相加。
+        $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+  - id: transpose
+    show: mixed_t
+    label: '$\viz{mixed_t}$'
+    title: 换成 $(C, T)$
+    text: |
+      <code>mixed_qkv = mixed_qkv.transpose(1, 2)</code>：HF 的卷积按 $(B, C, T)$ 排布，通道在前、位置在后，所以先换轴。
+      $$\viz{mixed_t}={{ mixed_t | matrix:2 }}$$
+    backward:
+      label: '$\pfl{\viz{mixed_qkv}}$'
+      title: 换回 $(T, C)$
+      text: 换轴的局部导数是 1，梯度换回原来的排布。
+  - id: in_proj_z
+    subtitle: nn.Linear
+    label: '$\viz{z}$'
+    title: in_proj_z，按 value head 分组
+    text: |
+      <code>z = self.in_proj_z(hidden_states)</code>，再 <code>z.reshape(batch_size, seq_len, -1, self.head_v_dim)</code> 分成 $H_v={{ num_v_heads }}$ 个 value head，每个宽 $d_v={{ head_v_dim }}$。$\viz{z}$ 是最后门控 RMSNorm 用的输出门。
+      $$\viz{z}={{ z | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{in_proj_z.weight}$'
+      title: '$\pfl{\viz{in_proj_z.weight}}$'
+      text: |
+        $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
+  - id: in_proj_b
+    subtitle: nn.Linear
+    label: '$\viz{b}$'
+    title: in_proj_b
+    text: |
+      <code>b = self.in_proj_b(hidden_states)</code>：每个位置、每个 value head 出一个数，经过 sigmoid 以后是写入强度 $\beta$。没有 bias。
+      $$\viz{b}={{ b | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{in_proj_b.weight}$'
+      title: '$\pfl{\viz{in_proj_b.weight}}$'
+      text: |
+        $$\pfl{\viz{b}}={{ b.grad | matrix:3 }}$$
+  - id: in_proj_a
+    subtitle: nn.Linear
+    label: '$\viz{a}$'
+    title: in_proj_a
+    text: |
+      <code>a = self.in_proj_a(hidden_states)</code>：每个位置、每个 value head 出一个数，它决定这个位置的衰减。没有 bias。
+      $$\viz{a}={{ a | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{in_proj_a.weight}$'
+      title: '$\pfl{\viz{in_proj_a.weight}}$'
+      text: |
+        $$\pfl{\viz{a}}={{ a.grad | matrix:3 }}$$
+  - id: conv_weight
+    show: conv_weight
+    label: '$\viz{conv_weight}$'
+    title: 卷积核去掉中间一维
+    text: |
+      <code>self.conv1d</code> 是 <code>nn.Conv1d(in_channels=self.conv_dim, out_channels=self.conv_dim, bias=False, kernel_size=self.conv_kernel_size, groups=self.conv_dim, padding=self.conv_kernel_size - 1)</code>，权重形状是 $(C, C/\mathrm{groups}, K)=({{ num_k_heads * head_k_dim * 2 + num_v_heads * head_v_dim }}, 1, {{ conv_kernel_size }})$。HF 不调用这个模块的 forward，只取它的权重：<code>self.conv1d.weight.squeeze(1)</code> 去掉中间那一维，得到 $C\times K$ 的矩阵，交给 <code>causal_conv1d_fn</code>。
+      $$\viz{conv_weight}={{ conv_weight | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{conv1d.weight}$'
+      title: '$\pfl{\viz{conv1d.weight}}$'
+      text: squeeze 只去掉长度为 1 的一维，梯度原样传回，加回这一维。
+  - id: causal_conv1d_fn
+    subtitle: 因果深度卷积，核长 $K={{ conv_kernel_size }}$
+    edit:
+      conv:
+        append: |
+          这一段输入是 $\viz{mixed_t}$，即 in_proj_qkv 的输出换轴以后的 $(C, T)$。q、k、v 三段在进入 gated delta rule 之前都先过这个短卷积，让每个位置先混入前 $K-1$ 个位置的信息。
+  - id: split
+    show: [mixed, query_flat, key_flat, value_flat, query, key, value]
+    label: '$\viz{query},\ \viz{key},\ \viz{value}$'
+    title: 切成 q、k、v，按 head 分组
+    text: |
+      <code>mixed_qkv = mixed_qkv.transpose(1, 2)</code> 换回 $(B, T, C)$，<code>torch.split(mixed_qkv, [self.key_dim, self.key_dim, self.value_dim], dim=-1)</code> 按列切成三段，再 reshape 成 head：q 和 k 各有 $H_k={{ num_k_heads }}$ 个 key head，每个宽 $d_k={{ head_k_dim }}$；v 有 $H_v={{ num_v_heads }}$ 个 value head，每个宽 $d_v={{ head_v_dim }}$。
+      $$\viz{query}={{ query | matrix:2 }},\qquad \viz{value}={{ value | matrix:2 }}$$
+    backward:
+      label: '$\partial\phi(\mathbf{c})$'
+      title: '$\pfl{\phi(\mathbf{c})}$'
+      text: 三段的梯度按列拼回，再换回 $(C, T)$。
+  - id: sigmoid
+    subtitle: torch.sigmoid
+    edit:
+      neg:
+        append: |
+          这里算的是 <code>beta = b.sigmoid()</code>：$\beta=\sigma(\mathbf{b})$ 在 0 和 1 之间，是每个位置、每个 value head 写入状态的强度。
+  - id: A_log
+    show: [A_f, A_exp, A_neg]
+    label: '$-e^{\viz{A_log}}$'
+    title: 衰减：$-e^{\mathbf{a}_{\log}}$
+    text: |
+      衰减的对数是 $g=-e^{\mathbf{a}_{\log}}\cdot\operatorname{softplus}(\mathbf{a}+\mathbf{b}_{\Delta})$，对应 <code>g = -self.A_log.float().exp() * F.softplus(a.float() + self.dt_bias)</code>，在 float32 里计算；HF 的注释说明，fp16 下不转 float32 时 $A$ 可能变成 $-\infty$。这和 Mamba2 的离散化相同：$\mathbf{a}_{\log}$ 和 $\mathbf{b}_{\Delta}$ 是每个 value head 一个的参数，$\mathbf{a}$ 由输入决定，所以忘多少因位置而异。参数存的是 $\mathbf{a}_{\log}$，取 exp 以后一定是正数，再取负。
+      $$\viz{A_neg}={{ A_neg | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{A_log}$'
+      title: '$\pfl{\viz{A_log}}$'
+      text: |
+        取负的局部导数是 $-1$，exp 的导数是它自己。$\mathbf{a}_{\log}$ 被所有位置共用，梯度把各位置加起来。
+        $$\pfl{\viz{A_log}}={{ A_log.grad | matrix:3 }}$$
+  - id: decay
+    show: [a_f, a_dt, dt, g]
+    label: '$\viz{g}$'
+    title: 衰减 $g$
+    text: |
+      $\mathbf{a}$ 转成 float32，加上偏置 $\mathbf{b}_{\Delta}$，结果仍是 float32，再经过 <code>F.softplus</code>：$\operatorname{softplus}(x)=\log(1+e^{x})$，输入大于 20 时直接返回 $x$。$\Delta$ 是正数，最后乘上 $-e^{\mathbf{a}_{\log}}$。两者都是正数，所以 $g<0$，$e^{g}$ 在 0 和 1 之间，表示状态每走一个位置保留的比例。$-e^{\mathbf{a}_{\log}}$ 每个 value head 一个，广播到每个位置。
+      $$\viz{g}={{ g | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{a},\ \partial\viz{dt_bias}$'
+      title: '$\pfl{\viz{a}},\ \pfl{\viz{dt_bias}}$'
+      text: |
+        逐元素乘的两个输入互为对方的局部导数；softplus 的导数是 $\sigma(x)$；相加的局部导数是 1。$\mathbf{b}_{\Delta}$ 和 $-e^{\mathbf{a}_{\log}}$ 广播到了每个位置，梯度把各位置加起来。
+        $$\pfl{\viz{dt_bias}}={{ dt_bias.grad | matrix:3 }}$$
+  - id: repeat
+    show: [query_r, key_r]
+    label: '$\mathrm{repeat\_interleave}$'
+    title: 把 key head 复制给 value head
+    text: |
+      value head 比 key head 多：$H_v/H_k={{ num_v_heads // num_k_heads }}$。<code>query.repeat_interleave(self.num_v_heads // self.num_k_heads, dim=2)</code> 把每个 key head 的 q 和 k 连续复制 {{ num_v_heads // num_k_heads }} 份，第 $j$ 个 value head 用第 $\lfloor j/{{ num_v_heads // num_k_heads }}\rfloor$ 个 key head。这和 GQA 里 kv head 少于 query head 的做法方向相反：这里是 value 多、key 少。HF 只在比值大于 1 时复制。
+      $$\viz{key_r}={{ key_r | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{query},\ \partial\viz{key}$'
+      title: '$\pfl{\viz{query}},\ \pfl{\viz{key}}$'
+      text: 复制出的几份梯度加回一份。
+  - id: chunk_gated_delta_rule
+    subtitle: gated delta rule，按块计算
+    edit:
+      transpose:
+        append: |
+          HF 的调用是 <code>torch_chunk_gated_delta_rule(query, key, value, g=g, beta=beta, initial_state=recurrent_state, output_final_state=cache_params is not None, use_qk_l2norm_in_kernel=True, ...)</code>。没有缓存时 <code>recurrent_state</code> 是 None，<code>output_final_state</code> 是 False；只有带缓存、一次一个 token 的 decode 才调用逐个位置递推的 <code>torch_recurrent_gated_delta_rule</code>。
+  - id: norm
+    subtitle: Qwen3_5RMSNormGated，按 head_v_dim
+    edit:
+      float:
+        append: |
+          HF 先把 <code>core_attn_out</code> 和 <code>z</code> 都 reshape 成 $(TH_v, d_v)$，每一行是一个位置的一个 value head，RMSNorm 在每一行的 $d_v={{ head_v_dim }}$ 个分量上计算。
+  - id: out_proj
+    subtitle: nn.Linear
+    label: out_proj
+    title: out_proj
+    text: |
+      <code>core_attn_out.reshape(batch_size, seq_len, -1)</code> 把 $(TH_v, d_v)$ 拼回 $T\times H_vd_v$，各 value head 在每一行里并排，然后 out_proj 投影回 $d_{\mathrm{model}}$ 维，没有 bias。
+      $$\viz{out}=\viz{normed_r}{\viz{out_proj.weight}}^{\top}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{out_proj.weight},\ \partial\viz{normed_r}$'
+      title: '$\pfl{\viz{out_proj.weight}},\ \pfl{\viz{normed_r}}$'
+      text: |
+        $$\pfl{\viz{normed_r}}={{ normed_r.grad | matrix:3 }}$$

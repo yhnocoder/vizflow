@@ -1,0 +1,86 @@
+module: l2norm
+args:
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: ['...', n]
+outputs:
+  out: ['...', n]
+forward:
+  - sq: x * x
+  - ss: sq.sum(-1, keepdim=True)
+  - sse: ss + eps
+  - inv_norm: sse.rsqrt()
+  - out: x * inv_norm
+tex:
+  sq: '\viz{x}\odot\viz{x}'
+  ss: '\lVert\viz{x}\rVert^{2}'
+  sse: '\lVert\viz{x}\rVert^{2}+\epsilon'
+  inv_norm: 'r'
+formula: '\step{mul}{\viz{out}=\viz{x}\odot}\step{rsqrt}{\frac{1}{\sqrt{\step{sum}{\textstyle\sum_c}\step{square}{x_c^{2}}\step{eps}{+\epsilon}}}}'
+fold:
+  label: '$\viz{out}$'
+  title: l2norm
+  text: |
+    每个向量除以自己的 $L_2$ 范数，得到单位向量。
+    $$\viz{out}=\frac{\viz{x}}{\sqrt{\lVert\viz{x}\rVert^{2}+\epsilon}}={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{x}$'
+    title: '$\pfl{\viz{x}}$'
+    text: |
+      $$\pfl{\viz{x}}=r\big(\mathbf{u}-\hat{\viz{x}}\,(\hat{\viz{x}}\cdot\mathbf{u})\big)={{ x.grad | matrix:3 }}$$
+steps:
+  - id: square
+    show: sq
+    label: '$\viz{sq}$'
+    title: l2norm：逐元素平方
+    text: |
+      <code>inv_norm = torch.rsqrt((x * x).sum(dim=dim, keepdim=True) + eps)</code>，<code>return x * inv_norm</code>。与 RMSNorm 的区别是求和而不是求平均，也没有权重，所以结果的模长约为 1。
+      $$\viz{sq}={{ sq | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x}$'
+      title: '$\pfl{\viz{x}}$'
+      text: |
+        平方这一路的局部导数是 $2x$，与相乘那一步的直连相加。合起来减去了梯度沿 $\viz{x}$ 方向的分量，所以 $\pfl{\viz{x}}$ 与 $\viz{x}$ 垂直（忽略 $\epsilon$）。
+        $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+  - id: sum
+    show: ss
+    label: '$\viz{ss}$'
+    title: 平方和
+    text: |
+      $$\viz{ss}={{ ss | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{sq}$'
+      title: '$\pfl{\viz{sq}}$'
+      text: 求和的局部导数是 1，梯度复制给这一行的每个平方。
+  - id: eps
+    show: sse
+    label: '$\viz{sse}$'
+    title: 加上 $\epsilon$
+    text: |
+      $\epsilon={{ eps }}$，避免全零向量除以 0。
+      $$\viz{sse}={{ sse | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{ss}$'
+      title: '$\pfl{\viz{ss}}$'
+      text: 加常数的局部导数是 1。
+  - id: rsqrt
+    show: inv_norm
+    label: '$\viz{inv_norm}$'
+    title: 平方根的倒数
+    text: |
+      $$\viz{inv_norm}={{ inv_norm | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{sse}$'
+      title: '$\pfl{\viz{sse}}$'
+      text: 局部导数是 $-r^{3}/2$。
+  - id: mul
+    show: out
+    label: '$\viz{out}$'
+    title: 乘上 $r$
+    text: |
+      $$\viz{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{inv_norm},\ \partial\viz{x}$'
+      title: '$\pfl{\viz{inv_norm}},\ \pfl{\viz{x}}$'
+      text: |
+        $$\pfl{\viz{inv_norm}}={{ inv_norm.grad | matrix:3 }}$$

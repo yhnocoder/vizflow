@@ -113,18 +113,19 @@ export abstract class Texts extends Modules {
     if (name !== undefined && figureNames.includes(name)) return this.figure(name, expr, arg, source, env);
     const found = this.reference(expr, env);
     if (name === undefined) return this.plain(found, source, env);
-    const view = this.viewOf(found, source, env);
-    if (name === 'matrix') {
-      if (arg !== undefined && !/^\d+$/.test(arg)) this.fail(env, `matrix takes a number of digits, got '${arg}' in '{{${source}}}'`);
-      return this.matrix(view, arg === undefined ? '' : `:${arg}`);
-    }
     if (name === 'join') {
       const separator = arg === undefined ? undefined : /^(["'])(.*)\1$/.exec(arg);
       if (separator === undefined || separator === null) this.fail(env, `join takes a quoted separator, such as join: ", ", in '{{${source}}}'`);
+      if (Array.isArray(found)) return found.map((item) => this.plain(item, source, env)).join(separator[2]);
+      const view = this.viewOf(found, source, env);
       const shape = viewShape(view);
       if (shape.length !== 1) this.fail(env, `join needs a list or a 1-dimensional tensor in '{{${source}}}', got shape (${shape.join(', ')})`);
       const format = this.tokenLists.has(view.node) ? ':token' : '';
       return Array.from({ length: shape[0] }, (_, i) => this.cell(view, [i], format)).join(separator[2]);
+    }
+    if (name === 'matrix') {
+      if (arg !== undefined && !/^\d+$/.test(arg)) this.fail(env, `matrix takes a number of digits, got '${arg}' in '{{${source}}}'`);
+      return this.matrix(this.viewOf(found, source, env), arg === undefined ? '' : `:${arg}`);
     }
     return this.fail(env, `unknown format '${name}' in '{{${source}}}'; formats are matrix, join and ${figureNames.join(', ')}`);
   }

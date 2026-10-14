@@ -451,12 +451,20 @@ export function triuKeeps(index: readonly number[], attrs: TriuAttrs): boolean {
   return index[index.length - 1] - index[index.length - 2] >= attrs.diagonal;
 }
 
-function triuOf(input: Tensor, attrs: TriuAttrs): Tensor {
+export function trilKeeps(index: readonly number[], attrs: TriuAttrs): boolean {
+  return index[index.length - 1] - index[index.length - 2] <= attrs.diagonal;
+}
+
+function keepOf(input: Tensor, attrs: TriuAttrs, keeps: (index: readonly number[], attrs: TriuAttrs) => boolean): Tensor {
   const out = new Tensor(input.shape);
   forEachIndex(input.shape, (index, offset) => {
-    if (triuKeeps(index, attrs)) out.data[offset] = input.data[offset];
+    if (keeps(index, attrs)) out.data[offset] = input.data[offset];
   });
   return out;
+}
+
+function triuOf(input: Tensor, attrs: TriuAttrs): Tensor {
+  return keepOf(input, attrs, triuKeeps);
 }
 
 export const triuOp: OpDef<TriuAttrs> = {
@@ -470,6 +478,20 @@ export const triuOp: OpDef<TriuAttrs> = {
   },
   forward: ([a], attrs) => triuOf(a, attrs),
   backward: (gradOut, _inputs, _out, attrs) => [triuOf(gradOut, attrs)],
+  cost: movement(false, [[]]),
+};
+
+export const trilOp: OpDef<TriuAttrs> = {
+  name: 'tril',
+  args: ['input', 'diagonal'],
+  tensors: ['input'],
+  defaults: { diagonal: 0 },
+  shape: ([a]) => {
+    if (a.length < 2) throw new Error(`tril: input ${formatShape(a)} must have at least two dimensions`);
+    return [...a];
+  },
+  forward: ([a], attrs) => keepOf(a, attrs, trilKeeps),
+  backward: (gradOut, _inputs, _out, attrs) => [keepOf(gradOut, attrs, trilKeeps)],
   cost: movement(false, [[]]),
 };
 

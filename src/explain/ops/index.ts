@@ -29,6 +29,7 @@ import {
   greaterExplain,
   maskedFillExplain,
   triuExplain,
+  trilExplain,
   remainderExplain,
   floorDivideExplain,
   bitwiseXorExplain,
@@ -67,11 +68,14 @@ import {
   topkIndicesExplain,
   topkMaskExplain,
   unsqueezeExplain,
+  squeezeExplain,
   viewExplain,
   sortExplain,
   indexPutExplain,
+  selectScatterExplain,
+  sliceScatterExplain,
 } from './index_ops';
-import { arangeExplain, causalMaskExplain } from './creation';
+import { arangeExplain, causalMaskExplain, eyeExplain, onesExplain, zerosExplain, zerosLikeExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
 import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain, rrmsExplain } from './reduce';
@@ -83,6 +87,10 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   rsub: rsubExplain,
   arange: arangeExplain,
   causal_mask: causalMaskExplain,
+  zeros: zerosExplain,
+  ones: onesExplain,
+  eye: eyeExplain,
+  zeros_like: zerosLikeExplain,
   mul: mulExplain,
   div: divExplain,
   neg: negExplain,
@@ -135,8 +143,10 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   grouped_linear: groupedLinearExplain,
   cumsum: cumsumExplain,
   unsqueeze: unsqueezeExplain,
+  squeeze: squeezeExplain,
   pad: padExplain,
   triu: triuExplain,
+  tril: trilExplain,
   masked_fill: maskedFillExplain,
   solve_triangular: solveTriangularExplain,
   remainder: remainderExplain,
@@ -157,6 +167,8 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   sort: sortExplain,
   scatter: scatterExplain,
   index_put: indexPutExplain,
+  select_scatter: selectScatterExplain,
+  slice_scatter: sliceScatterExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
   repeat_kv: repeatKvExplain,

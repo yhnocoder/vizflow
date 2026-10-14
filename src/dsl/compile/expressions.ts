@@ -120,6 +120,14 @@ export abstract class Expressions extends CompilerState {
     if (env.locals.has(name)) return env.locals.get(name) as Value;
     const call = env.call;
     if (call !== undefined) {
+      const iterations = call.iterations.get(name);
+      const at = iterations === undefined ? undefined : env.locals.get(iterations.variable);
+      if (iterations !== undefined && isNum(at)) {
+        const value = iterations.values[at.toy];
+        if (value === undefined) this.fail(env, `'${name}' is not computed when ${iterations.variable} is ${at.toy}`, at.toy);
+        return value as Value;
+      }
+      if (iterations?.before !== undefined && call.finished) return iterations.before;
       if (call.values.has(name)) return call.values.get(name) as Value;
       const bound = call.bound.get(name);
       if (bound !== undefined) return bound;
@@ -172,6 +180,13 @@ export abstract class Expressions extends CompilerState {
       }
       case 'bin':
         return this.binary(ast, env, mode, top);
+      case 'cmp':
+        return this.compare(ast, env, mode);
+      case 'cond': {
+        const test = this.evaluate(ast.test, env, mode, false);
+        if (typeof test !== 'boolean') return this.fail(env, `the condition is ${describe(test)}, not True or False`, ast.test.pos);
+        return this.evaluate(test ? ast.then : ast.other, env, mode, top);
+      }
       case 'call':
         return this.call(ast, env, mode, top);
     }
@@ -352,6 +367,26 @@ export abstract class Expressions extends CompilerState {
     });
   }
 
+  compare(ast: Extract<Ast, { k: 'cmp' }>, env: Env, mode: Mode): boolean {
+    const a = this.evaluate(ast.a, env, mode, false);
+    const b = this.evaluate(ast.b, env, mode, false);
+    const plain = (v: Value) => (isNum(v) ? v.toy : v);
+    const [x, y] = [plain(a), plain(b)];
+    if (ast.op === '==' || ast.op === '!=') {
+      const comparable = (v: unknown) => v === null || typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean';
+      if (!comparable(x) || !comparable(y)) this.fail(env, `'${ast.op}' compares numbers, strings, booleans and None, not ${describe(comparable(x) ? b : a)}`, ast.pos);
+      return (x === y) === (ast.op === '==');
+    }
+    if (!(typeof x === 'number' && typeof y === 'number') && !(typeof x === 'string' && typeof y === 'string')) this.fail(env, `'${ast.op}' compares two numbers or two strings, not ${describe(a)} and ${describe(b)}`, ast.pos);
+    const [p, q] = [x as number | string, y as number | string];
+    switch (ast.op) {
+      case '<': return p < q;
+      case '<=': return p <= q;
+      case '>': return p > q;
+      default: return p >= q;
+    }
+  }
+
   binary(ast: Extract<Ast, { k: 'bin' }>, env: Env, mode: Mode, top: boolean): Value {
     const a = this.evaluate(ast.a, env, mode, false);
     const b = this.evaluate(ast.b, env, mode, false);
@@ -365,10 +400,12 @@ export abstract class Expressions extends CompilerState {
         case '*': return both((x, y) => x * y);
         case '/': return both((x, y) => x / y);
         case '//': return both((x, y) => Math.floor(x / y));
+        case '%': return both((x, y) => ((x % y) + y) % y);
         case '**': return both((x, y) => x ** y);
         default: return this.fail(env, "'@' needs two tensors", at);
       }
     }
+    if (ast.op === '%') return this.fail(env, "'%' needs two numbers", at);
     const operand = (v: Value) => isTensor(v) || isNum(v);
     if (ast.op === '@') {
       if (!isTensor(a) || !isTensor(b)) this.fail(env, "'@' needs two tensors", at);
@@ -409,7 +446,13 @@ export abstract class Expressions extends CompilerState {
       if (opDef(method) === undefined && compositeDef(method) === undefined) this.fail(env, `tensors have no method '${method}'`, ast.fn.pos);
       return this.apply(method, [target, ...given], options, env, mode, top, at);
     }
-    if (ast.fn.k !== 'name') return this.fail(env, 'only names and methods can be called', at);
+    if (ast.fn.k === 'index') {
+      const callee = this.evaluate(ast.fn, env, mode, false);
+      if (!(callee instanceof Instance)) return this.fail(env, `${describe(callee)} cannot be called`, at);
+      if (mode.k !== 'graph') this.fail(env, 'calling a list item runs a module; only forward can do that', at);
+      return this.callInstance(callee, args(), kwargs(), env, mode.make, top, at);
+    }
+    if (ast.fn.k !== 'name') return this.fail(env, 'only names, list items and methods can be called', at);
     const name = ast.fn.name;
     const callee = env.locals.has(name) ? env.locals.get(name) : (env.call?.values.get(name) ?? env.instance.members.get(name));
     if (callee instanceof Instance || callee instanceof InstanceList) {
@@ -418,8 +461,18 @@ export abstract class Expressions extends CompilerState {
     }
     if (callee instanceof PageFunction) return callee.run(args(), kwargs(), (message) => this.fail(env, message, at));
     if (callee !== undefined) this.fail(env, `${describe(callee)} cannot be called`, at);
+    if (name === 'float' && opDef(name) === undefined) return this.toFloat(args(), env, at);
     if (opDef(name) === undefined && compositeDef(name) === undefined) this.fail(env, `unknown function '${name}'`, at);
     return this.apply(name, args(), kwargs(), env, mode, top, at);
+  }
+
+  private toFloat(args: Value[], env: Env, at: number): Num {
+    const [arg] = args;
+    if (args.length !== 1) this.fail(env, 'float takes one value', at);
+    if (isNum(arg)) return arg;
+    const parsed = typeof arg === 'string' ? Number(arg.trim().replace(/^([+-]?)inf(inity)?$/i, '$1Infinity')) : Number.NaN;
+    if (typeof arg !== 'string' || (Number.isNaN(parsed) && arg.trim().toLowerCase() !== 'nan')) this.fail(env, `float cannot convert ${describe(arg)}`, at);
+    return num(parsed);
   }
 
   apply(op: string, args: Value[], kwargs: Map<string, Value>, env: Env, mode: Mode, top: boolean, at: number, dtype?: Dtype): Value {

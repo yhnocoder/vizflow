@@ -762,6 +762,27 @@ export const unsqueezeOp: OpDef<UnsqueezeAttrs> = {
   cost: VIEW_COST,
 };
 
+export interface SqueezeAttrs {
+  dim: number;
+}
+
+function squeezedShape(input: readonly number[], attrs: SqueezeAttrs): number[] {
+  if (input.length === 0) return [];
+  const dim = normDim(attrs.dim, input.length);
+  return input[dim] === 1 ? input.filter((_, d) => d !== dim) : [...input];
+}
+
+export const squeezeOp: OpDef<SqueezeAttrs> = {
+  name: 'squeeze',
+  args: ['input', 'dim'],
+  tensors: ['input'],
+  shape: ([input], attrs) => squeezedShape(input, attrs),
+  int64: true,
+  forward: ([input], attrs) => new Tensor(squeezedShape(input.shape, attrs), input.data.slice(), input.int64?.slice()),
+  backward: (gradOut, [input]) => [new Tensor(input.shape, gradOut.data.slice())],
+  cost: VIEW_COST,
+};
+
 export interface PadAttrs {
   pad: number[];
   value: number;
@@ -1073,4 +1094,106 @@ export const indexPutOp: OpDef<Record<string, never>> = {
     return [gi, null, unbroadcast(picked, values.shape)];
   },
   cost: movement(true, [[], [], []]),
+};
+
+export function selectScatterTarget(input: readonly number[], src: readonly number[], attrs: SelectAttrs): { dim: number; index: number } {
+  const { dim, index, shape } = selected(input, attrs);
+  if (shape.length !== src.length || shape.some((size, d) => size !== src[d])) {
+    throw new Error(`select_scatter: src ${formatShape(src)} must have the shape ${formatShape(shape)} of input ${formatShape(input)} without dim ${dim}`);
+  }
+  return { dim, index };
+}
+
+export const selectScatterOp: OpDef<SelectAttrs> = {
+  name: 'select_scatter',
+  args: ['input', 'src', 'dim', 'index'],
+  tensors: ['input', 'src'],
+  sameDtype: ['input', 'src'],
+  shape: ([input, src], attrs) => {
+    selectScatterTarget(input, src, attrs);
+    return [...input];
+  },
+  forward: ([input, src], attrs) => {
+    const out = input.clone();
+    forEachIndex(src.shape, (index, offset) => {
+      out.data[offsetOf(input.shape, selectSource(input.shape, attrs, index))] = src.data[offset];
+    });
+    return out;
+  },
+  backward: (gradOut, [input, src], _out, attrs) => {
+    const gi = gradOut.clone();
+    const gs = new Tensor(src.shape);
+    forEachIndex(src.shape, (index, offset) => {
+      const at = offsetOf(input.shape, selectSource(input.shape, attrs, index));
+      gs.data[offset] = gradOut.data[at];
+      gi.data[at] = 0;
+    });
+    return [gi, gs];
+  },
+  cost: movement(false, [[], []]),
+};
+
+export interface SliceScatterAttrs {
+  dim: number;
+  start: number | null;
+  end: number | null;
+  step: number;
+}
+
+export function sliceRange(size: number, attrs: SliceScatterAttrs): { start: number; step: number; length: number } {
+  if (!Number.isInteger(attrs.step) || attrs.step <= 0) throw new Error('slice_scatter: step must be a positive integer');
+  const clamp = (value: number | null, fallback: number) => (value === null ? fallback : Math.min(size, Math.max(0, value < 0 ? value + size : value)));
+  const start = clamp(attrs.start, 0);
+  const end = clamp(attrs.end, size);
+  return { start, step: attrs.step, length: Math.max(0, Math.ceil((end - start) / attrs.step)) };
+}
+
+export function sliceScatterTarget(input: readonly number[], src: readonly number[], attrs: SliceScatterAttrs): { dim: number; start: number; step: number } {
+  if (input.length === 0) throw new Error('slice_scatter: input must have at least one dimension');
+  const dim = normDim(attrs.dim, input.length);
+  const { start, step, length } = sliceRange(input[dim], attrs);
+  const expected = input.map((size, d) => (d === dim ? length : size));
+  if (src.length !== expected.length || src.some((size, d) => size !== expected[d])) {
+    throw new Error(`slice_scatter: src ${formatShape(src)} must have the shape ${formatShape(expected)} of the slice of input ${formatShape(input)}`);
+  }
+  return { dim, start, step };
+}
+
+export function sliceScatterSource(input: readonly number[], src: readonly number[], attrs: SliceScatterAttrs, out: readonly number[]): { arg: number; index: number[] } {
+  const { dim, start, step } = sliceScatterTarget(input, src, attrs);
+  const k = (out[dim] - start) / step;
+  if (Number.isInteger(k) && k >= 0 && k < src[dim]) return { arg: 1, index: out.map((v, d) => (d === dim ? k : v)) };
+  return { arg: 0, index: [...out] };
+}
+
+export const sliceScatterOp: OpDef<SliceScatterAttrs> = {
+  name: 'slice_scatter',
+  args: ['input', 'src', 'dim', 'start', 'end', 'step'],
+  tensors: ['input', 'src'],
+  defaults: { dim: 0, start: null, end: null, step: 1 },
+  sameDtype: ['input', 'src'],
+  shape: ([input, src], attrs) => {
+    sliceScatterTarget(input, src, attrs);
+    return [...input];
+  },
+  forward: ([input, src], attrs) => {
+    const { dim, start, step } = sliceScatterTarget(input.shape, src.shape, attrs);
+    const out = input.clone();
+    forEachIndex(src.shape, (index, offset) => {
+      out.data[offsetOf(input.shape, index.map((v, d) => (d === dim ? start + v * step : v)))] = src.data[offset];
+    });
+    return out;
+  },
+  backward: (gradOut, [input, src], _out, attrs) => {
+    const { dim, start, step } = sliceScatterTarget(input.shape, src.shape, attrs);
+    const gi = gradOut.clone();
+    const gs = new Tensor(src.shape);
+    forEachIndex(src.shape, (index, offset) => {
+      const at = offsetOf(input.shape, index.map((v, d) => (d === dim ? start + v * step : v)));
+      gs.data[offset] = gradOut.data[at];
+      gi.data[at] = 0;
+    });
+    return [gi, gs];
+  },
+  cost: movement(false, [[], []]),
 };

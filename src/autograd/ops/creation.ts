@@ -67,3 +67,85 @@ export const causalMaskOp: OpDef<CausalMaskAttrs> = {
   },
   backward: () => [],
 };
+
+export interface FillAttrs {
+  size: number[];
+  dtype: Dtype | null;
+}
+
+function fillDtype(name: string) {
+  return (attrs: { dtype: Dtype | null }): Dtype => (attrs.dtype === null ? 'fp32' : checkDtype(attrs.dtype, name));
+}
+
+function asDtype(values: Tensor, dtype: Dtype): Tensor {
+  return isIntegerDtype(dtype) ? values.asInt64() : values;
+}
+
+function checkSize(name: string, size: readonly number[]): number[] {
+  if (!size.every((d) => Number.isInteger(d) && d >= 0)) throw new Error(`${name}: size (${size.join(', ')}) must be non-negative integers`);
+  return [...size];
+}
+
+function fillOp(name: 'zeros' | 'ones', value: number): OpDef<FillAttrs> {
+  const dtype = fillDtype(name);
+  return {
+    name,
+    args: ['size', 'dtype'],
+    tensors: [],
+    rest: 'size',
+    sizes: ['size'],
+    defaults: { dtype: null },
+    differentiable: [],
+    dtype,
+    int64: true,
+    cost: CREATION_COST,
+    shape: (_inputs, attrs) => checkSize(name, attrs.size),
+    forward: (_inputs, attrs) => {
+      const shape = checkSize(name, attrs.size);
+      const out = new Tensor(shape);
+      out.data.fill(value);
+      return asDtype(out, dtype(attrs));
+    },
+    backward: () => [],
+  };
+}
+
+export const zerosOp = fillOp('zeros', 0);
+export const onesOp = fillOp('ones', 1);
+
+export interface EyeAttrs {
+  n: number;
+  dtype: Dtype | null;
+}
+
+export const eyeOp: OpDef<EyeAttrs> = {
+  name: 'eye',
+  args: ['n', 'dtype'],
+  tensors: [],
+  sizes: ['n'],
+  defaults: { dtype: null },
+  differentiable: [],
+  dtype: fillDtype('eye'),
+  int64: true,
+  cost: CREATION_COST,
+  shape: (_inputs, { n }) => checkSize('eye', [n, n]),
+  forward: (_inputs, attrs) => {
+    const { n } = attrs;
+    const out = new Tensor(checkSize('eye', [n, n]));
+    for (let i = 0; i < n; i++) out.data[i * n + i] = 1;
+    return asDtype(out, fillDtype('eye')(attrs));
+  },
+  backward: () => [],
+};
+
+export const zerosLikeOp: OpDef<Record<string, never>> = {
+  name: 'zeros_like',
+  args: ['input'],
+  tensors: ['input'],
+  differentiable: [false],
+  int64: true,
+  cost: { saves: [[]], flops: () => ({ forward: NO_FLOPS, backward: [NO_FLOPS] }) },
+  shape: ([input]) => [...input],
+  forward: ([input]) => (input.int64 === undefined ? new Tensor(input.shape) : new Tensor(input.shape).asInt64()),
+  backward: () => [null],
+};

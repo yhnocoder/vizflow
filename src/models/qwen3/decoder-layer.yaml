@@ -1,7 +1,7 @@
 module: Qwen3DecoderLayer
 import:
-  RMSNorm: vizflow/nn/rmsnorm
-  GLU: vizflow/nn/glu
+  Qwen3RMSNorm: ./rmsnorm.yaml
+  Qwen3MLP: ./mlp.yaml
   SiLU: vizflow/nn/silu
   Qwen3Attention: ./attention.yaml
 
@@ -21,16 +21,16 @@ outputs:
 
 init:
   input_layernorm:
-    use: RMSNorm
+    use: Qwen3RMSNorm
     args: { hidden_size: d_model }
   self_attn:
     use: Qwen3Attention
     args: [d_model, d_head, num_heads, num_kv_heads]
   post_attention_layernorm:
-    use: RMSNorm
+    use: Qwen3RMSNorm
     args: { hidden_size: d_model }
   mlp:
-    use: GLU
+    use: Qwen3MLP
     args: [d_model, d_ff, { act: SiLU }]
 
 forward:

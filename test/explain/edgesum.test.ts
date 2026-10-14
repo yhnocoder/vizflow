@@ -114,6 +114,32 @@ const cases: Case[] = [
   },
   { op: 'arange', build: (g) => ({ out: g.arange(1, 7, 2), inputs: [] }) },
   { op: 'causal_mask', build: (g) => ({ out: g.causal_mask(3, 'fp32'), inputs: [] }) },
+  { op: 'zeros', build: (g) => ({ out: g.zeros(2, 3), inputs: [] }) },
+  { op: 'ones', build: (g) => ({ out: g.ones(2, 3), inputs: [] }) },
+  { op: 'eye', build: (g) => ({ out: g.eye(3), inputs: [] }) },
+  {
+    op: 'zeros_like',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.add(g.zeros_like(x), x), inputs: [x] };
+    },
+  },
+  {
+    op: 'select_scatter',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
+      const s = g.input('s', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.select_scatter(x, s, 1, 2), inputs: [x, s] };
+    },
+  },
+  {
+    op: 'slice_scatter',
+    build: (g, r) => {
+      const x = g.input('x', [3, 4], randomValues(r, [3, 4]));
+      const s = g.input('s', [3, 2], randomValues(r, [3, 2]));
+      return { out: g.slice_scatter(x, s, -1, 1, 3), inputs: [x, s] };
+    },
+  },
   {
     op: 'pow',
     build: (g, r) => {
@@ -380,6 +406,56 @@ const cases: Case[] = [
   { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [2, 4, 3]) },
   { op: 'matmul', build: (g, r) => matmul(g, r, [2, 3, 4], [4, 2]) },
   { op: 'matmul', build: (g, r) => matmul(g, r, [3, 4], [2, 1, 4, 2]) },
+  { op: 'matmul', build: (g, r) => matmul(g, r, [2, 2, 3, 4], [2, 2, 4, 3]) },
+  { op: 'add', build: (g, r) => binary(g, r, 'add', [2, 2, 3, 3], [2, 2, 1, 1]) },
+  { op: 'exp', build: (g, r) => unary(g, r, 'exp', [2, 2, 2, 3]) },
+  { op: 'sum', build: (g, r) => reduce(g, r, 'sum', [2, 2, 3, 2], -1, true) },
+  {
+    op: 'cumsum',
+    build: (g, r) => {
+      const x = g.input('x', [2, 2, 3, 2], randomValues(r, [2, 2, 3, 2]));
+      return { out: g.cumsum(x, -2), inputs: [x] };
+    },
+  },
+  {
+    op: 'masked_fill',
+    build: (g, r) => {
+      const mask = g.label('mask', [[0, 1, 1], [0, 0, 1], [0, 0, 0]]);
+      const x = g.input('x', [2, 2, 3, 3], randomValues(r, [2, 2, 3, 3]));
+      return { out: g.masked_fill(x, mask, 0), inputs: [x] };
+    },
+  },
+  {
+    op: 'solve_triangular',
+    build: (g, r) => {
+      const A = g.input('A', [2, 2, 3, 3], randomValues(r, [2, 2, 3, 3]));
+      const B = g.input('B', [2, 2, 3, 2], randomValues(r, [2, 2, 3, 2]));
+      return { out: g.solve_triangular(A, B, { upper: false, unitriangular: true }), inputs: [A, B] };
+    },
+  },
+  {
+    op: 'select',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2, 2], randomValues(r, [2, 3, 2, 2]));
+      return { out: g.select(x, 1, 2), inputs: [x] };
+    },
+  },
+  {
+    op: 'reshape',
+    build: (g, r) => {
+      const x = g.input('x', [2, 6, 2], randomValues(r, [2, 6, 2]));
+      return { out: g.reshape(x, [2, 2, 3, 2]), inputs: [x] };
+    },
+  },
+  {
+    op: 'index_put',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 2, 2], randomValues(r, [2, 3, 2, 2]));
+      const mask = g.label('mask', [[0, 1, 0], [0, 1, 0]]);
+      const v = g.input('v', [2, 2, 2], randomValues(r, [2, 2, 2]));
+      return { out: g.index_put(x, mask, v), inputs: [x, v] };
+    },
+  },
   {
     op: 'cumsum',
     build: (g, r) => {
@@ -402,6 +478,13 @@ const cases: Case[] = [
     },
   },
   {
+    op: 'squeeze',
+    build: (g, r) => {
+      const x = g.input('x', [2, 1, 3], randomValues(r, [2, 1, 3]));
+      return { out: g.squeeze(x, 1), inputs: [x] };
+    },
+  },
+  {
     op: 'pad',
     build: (g, r) => {
       const x = g.input('x', [2, 3, 2], randomValues(r, [2, 3, 2]));
@@ -413,6 +496,13 @@ const cases: Case[] = [
     build: (g, r) => {
       const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
       return { out: g.triu(x, 1), inputs: [x] };
+    },
+  },
+  {
+    op: 'tril',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3, 3], randomValues(r, [2, 3, 3]));
+      return { out: g.tril(x, -1), inputs: [x] };
     },
   },
   {

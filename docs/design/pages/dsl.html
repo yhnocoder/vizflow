@@ -19,7 +19,7 @@
 <p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
 <h1>vizflow 页面描述文件 <span class="tag">第四版</span></h1>
 <p class="lead">由标准模块组成的页面可以只写 YAML 页面描述文件。一个模块对应 PyTorch 里的一个类：<code>init</code> 对应 <code>__init__</code>，<code>forward</code> 对应 <code>forward</code>，参数路径与 <code>state_dict</code> 的键相同。<code>dsl</code> 入口把文件编译成计算图、步骤、布局、面板和讲解段落，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 把它们交给挂载流程。</p>
-<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code> 与它引用的 <code>decoder.yaml</code>、<code>attention.yaml</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。其他模型页面还使用旧写法，迁移之前不能编译。</p>
+<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code>，它导入的模型定义在 <code>src/models/qwen3/</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。其他模型页面还使用旧写法，迁移之前不能编译。</p>
 
 <h2>各部分决定图上的什么</h2>
 <ul>
@@ -66,6 +66,7 @@ export interface TensorField {
   type: 'tensor';
   shape: Dimension[];
   dtype: TensorDtype | Expression;
+  optional?: boolean;
 }
 
 export interface ListField {
@@ -114,7 +115,7 @@ export interface Module {
   inputs: Record&lt;string, Declaration&gt;;
   outputs: Record&lt;string, Declaration&gt;;
   init?: Initializers;
-  forward: Assignment[];
+  forward?: Assignment[];
   tex?: Record&lt;Reference, Latex&gt;;
   formula?: Latex;
   fold?: Fold;
@@ -320,24 +321,24 @@ data:
   tokens: [the, cat, sat, on]
   ids: { expr: 'tokens_to_ids(tokens[:-1])' }</code></pre>
 <ul>
-  <li><code>model</code> 是根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。<code>import</code> 里 <code>vizflow/nn/名字</code> 是包内模块，<code>./x.yaml</code> 相对于当前文件。</li>
+  <li><code>model</code> 是根模块的名字，在 <code>modules</code> 或 <code>import</code> 里查找。<code>import</code> 里 <code>vizflow/nn/名字</code> 是和模型无关的包内模块，<code>vizflow/models/模型/名字</code> 是一个模型的包内定义，<code>./x.yaml</code> 相对于当前文件；包内文件之间也用 <code>./x.yaml</code>、<code>../模型/x.yaml</code> 相对引用。</li>
   <li><code>config</code> 的名字按同名传给根模块的 <code>args</code>；<code>seed</code>、<code>tokenizer</code>、<code>real</code> 只属于页面。<code>config.dtype</code> 是参数的 dtype，相当于 <code>model.to(torch.bfloat16)</code>，默认 <code>fp32</code>。</li>
   <li><code>data</code> 是根模块的输入，需要计算时写 <code>{ expr: ... }</code>。token 列表与 <code>tokens_to_ids</code> 的结果编译成带词表的标签节点，序列面板替换 token 后按原表达式重新计算。</li>
   <li><code>real</code> 的第一个规格用于卡片上的真实形状和显存与计算量面板，不改变示例计算。根模块的模板可以读 <code>{{ real['qwen3-8b'].d_model }}</code>。</li>
-  <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。</li>
+  <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。包内模块用到的宏在 <code>src/models/preamble.sty</code>，每个页面先载入它，页面的 <code>preamble</code> 再追加或覆盖。</li>
 </ul>
 
 <h2>Module</h2>
 <p>模块文件用 <code>module</code> 写模块名，页面文件的 <code>modules</code> 也可以直接写模块。模块只能读取自己的参数、输入，以及 <code>init</code> 和 <code>forward</code> 定义的名字，同一作用域里一个名字只能定义一次。</p>
 
 <h3>args</h3>
-<p>类型是 <code>dim</code>、<code>int</code>、<code>float</code>、<code>bool</code>、<code>dtype</code> 或 <code>module</code>，有默认值时写 <code>{ type: float, default: 1e-6 }</code>。使用处的 <code>args</code> 可以是字典或列表，列表里的裸名字表示传入调用者同名的值。</p>
+<p>类型是 <code>dim</code>、<code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、<code>list</code>、<code>dtype</code> 或 <code>module</code>，有默认值时写 <code>{ type: float, default: 1e-6 }</code>。使用处的 <code>args</code> 可以是字典或列表，列表里的裸名字表示传入调用者同名的值。</p>
 
 <h3>inputs 与 outputs</h3>
 <pre><code class="language-yaml">inputs:
   x: [T, d_model]
   ids: { type: tensor, shape: [T], dtype: int64 }</code></pre>
-<p>dtype 是 <code>dtype</code> 的张量只写形状，<code>[T, d_model]</code> 等于 <code>{ type: tensor, shape: [T, d_model], dtype: dtype }</code>；dtype 不同时写完整。token 列表写 <code>{ type: list, dtype: str }</code>。形状里不是参数的名字从实际输入绑定，已绑定的名字只做检查。从输入绑定的名字在模块里至少还要被引用一次，否则报错，因为只出现一次的名字多半是参数名拼错了。不需要名字的维度写 <code>_</code>，<code>'...'</code> 对上任意个维度。序列长度 <code>T</code> 是数据的维度，根模块输入的维度由显存面板的滑块改变。</p>
+<p>dtype 是 <code>dtype</code> 的张量只写形状，<code>[T, d_model]</code> 等于 <code>{ type: tensor, shape: [T, d_model], dtype: dtype }</code>；dtype 不同时写完整。token 列表写 <code>{ type: list, dtype: str }</code>。形状里不是参数的名字从实际输入绑定，已绑定的名字只做检查。从输入绑定的名字在模块里至少还要被引用一次，否则报错，因为只出现一次的名字多半是参数名拼错了。不需要名字的维度写 <code>_</code>，<code>'...'</code> 对上任意个维度；dtype 写 <code>_</code> 时接受任意 dtype，对应 HF 函数收到参数后自己再转换，例如 <code>torch_chunk_gated_delta_rule</code> 的 <code>g</code>。<code>optional: true</code> 的输入可以不传或传 <code>None</code>，模块里它的名字是 <code>None</code>，对应 HF 的 <code>attention_mask: torch.Tensor | None = None</code>。序列长度 <code>T</code> 是数据的维度，根模块输入的维度由显存面板的滑块改变。</p>
 
 <h3>init</h3>
 <pre><code class="language-yaml">init:
@@ -356,7 +357,8 @@ data:
       dtype: fp32
       value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)</code></pre>
 <ul>
-  <li>子模块写 <code>{ use, args }</code>，没有参数时只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建层列表，第 $i$ 层的路径是 <code>layers[i]</code>。</li>
+  <li>子模块写 <code>{ use, args }</code>，没有参数时只写模块名。<code>use: list[M]</code> 配合 <code>count</code> 建层列表，第 $i$ 层的路径是 <code>layers[i]</code>。层列表写 <code>index: layer_idx</code> 时，<code>args</code> 对每一层单独求值，<code>layer_idx</code> 是这一层的序号，对应 HF 的 <code>Qwen3_5DecoderLayer(config, layer_idx)</code>。不同类型的层用这个序号读 <code>layer_types[layer_idx]</code>，再由模块自己按类型创建子模块。</li>
+  <li>子模块也可以写 <code>present</code>，为假时不创建，名字是 <code>None</code>，对应 HF 里 <code>if</code> 分支只创建其中一个子模块。</li>
   <li><code>weights</code> 和 <code>buffers</code> 的字段相同，区别只在 <code>weights</code> 有梯度。两者都可以写 <code>shape</code>、<code>dtype</code>、<code>present</code>，取值用 <code>init</code> 或 <code>value</code> 二选一。</li>
   <li><code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数。</li>
   <li><code>value</code> 是编译时求值的表达式，不能读张量。</li>
@@ -376,9 +378,25 @@ data:
 <ul>
   <li>每一项一个结果名，函数和方法是 autograd 的运算。运算结果按 torch 的类型提升推导 dtype，matmul 两侧 dtype 不同时报错，有意的转换写成 <code>x.float()</code>、<code>x.to(dtype)</code>。</li>
   <li>调用子模块写 <code>实例(位置参数, 名字=值)</code>。多输出的模块返回具名结果，用 <code>result.名字</code> 取出。调用是赋值的整个表达式时，模块的输出用调用处的名字命名。</li>
+  <li>只持有参数、HF 从不调用其 forward 的模块可以省略 <code>forward</code>，例如 <code>nn.Conv1d</code>：Qwen3.5 只读取 <code>self.conv1d.weight</code>。</li>
   <li>同一个实例可以调用多次，共用参数；第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。层列表依次调用各层，第一个位置参数逐层串联。</li>
   <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算和类型转换不单独画，画在最近的已画出的源节点上。</li>
   <li>每个 <code>forward</code> 结果都要被某一步展示，或由一个被展示的模块调用算出，否则报错。确实不需要展示的结果写进 <code>unshown</code>。</li>
+  <li>表达式支持比较 <code>==</code>、<code>!=</code>、<code>&lt;</code>、<code>&lt;=</code>、<code>&gt;</code>、<code>&gt;=</code>（不能连写），条件表达式 <code>a if 条件 else b</code>（只求值选中的一边，条件必须是 True 或 False），以及数的 <code>%</code>（与 Python 一样，结果与除数同号）。</li>
+</ul>
+<pre><code class="language-yaml">forward:
+  - core_attn_out: zeros_like(value)
+  - for: i in range(num_chunks)
+    do:
+      - q_i: query[:, i]
+      - v_new: v_i - v_prime
+      - core_attn_out[:, i]: attn_inter + attn_i @ v_new
+      - last_recurrent_state: last_recurrent_state * decay_i + update_i</code></pre>
+<ul>
+  <li>循环写 <code>{ for: i in range(n), do: [...] }</code> 或 <code>range(start, stop)</code>，编译时展开，每一轮的节点路径带 <code>[i]</code>，tex 带下标 $_{i}$，例如 <code>q_i[1]</code>。真实规模下轮数不同时，显存与计算量按真实轮数计算。</li>
+  <li><code>layers[i](h, ...)</code> 调用层列表的第 $i$ 层，对应 HF 的 <code>for i, decoder_layer in enumerate(self.layers)</code>，用于每层收到的参数不同的情况，例如按 <code>layer_types[i]</code> 选择 mask。</li>
+  <li>循环里可以重新绑定循环外定义的名字，对应 HF 在循环里改写 <code>last_recurrent_state</code>；循环外同一个名字只能定义一次。</li>
+  <li><code>x[下标]: 表达式</code> 是 HF 的 <code>x[...] = ...</code>，只能写在循环里，得到写入后的新张量，原张量不变。下标里每一维是 <code>:</code>、一个整数或一段切片，可以有一个 <code>...</code>。整数下标编译成 <code>select_scatter</code>，切片编译成 <code>slice_scatter</code>，多个维度从左到右嵌套，例如 <code>attn[..., i, :i]</code> 是 <code>select_scatter(attn, slice_scatter(attn[..., i], 新值, -1, None, i), -2, i)</code>。</li>
 </ul>
 
 <h2>Layout</h2>
@@ -462,11 +480,21 @@ data:
     - at: -1
       subtitle: 最后一层</code></pre>
 <p><code>loop</code> 对列表的每一项生成一步，<code>i</code> 从 0 开始。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则，再求值模板。<code>show</code> 默认是循环变量。</p>
+<pre><code class="language-yaml">- id: chunk
+  loop: i in range(num_chunks)
+  defaults:
+    title: 第 {{ i }} 块
+    steps:
+      - { id: v_new, show: [v_prime, v_new] }
+      - { id: state, show: last_recurrent_state }</code></pre>
+<p><code>loop: i in range(n)</code> 对 forward 循环的每一轮生成一步，步骤的 id 是 <code>chunk[i]</code>，<code>at</code> 按轮的序号匹配。<code>show</code> 必须写。</p>
+<p class="hint">规则 11：在 <code>range</code> 循环步骤里，forward 循环里绑定的名字取第 <code>i</code> 轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
+<p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
 
 <h2>tex 与 formula</h2>
 <p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。</p>
 <p><code>formula</code> 里 <code>\step{步骤路径}{公式片段}</code> 标出由哪一步算出的部分：前向走到这一步之前不显示，走到时用正色标出；反向时整条公式显示，当前步骤对应的部分用负色标出。<code>子实例.*</code> 表示子实例的全部步骤，几个路径用逗号隔开。</p>
-<p><code>{{ 表达式 | 格式 }}</code> 插入值。格式有 <code>matrix:位数</code>、<code>join: "分隔符"</code> 和内置小图 <code>lines:...</code>，小图的写法见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</p>
+<p><code>{{ 表达式 | 格式 }}</code> 插入值。格式有 <code>matrix:位数</code>、<code>join: "分隔符"</code>（张量或 config 里的列表） 和内置小图 <code>lines:...</code>，小图的写法见 <a href="vizflow.html">vizflow 设计</a>的「内置小图」。</p>
 
 
 <h2>编译接口</h2>

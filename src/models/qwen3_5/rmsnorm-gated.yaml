@@ -1,0 +1,125 @@
+module: Qwen3_5RMSNormGated
+import:
+  SiLU: vizflow/nn/silu
+args:
+  hidden_size: dim
+  eps: { type: float, default: 1e-6 }
+inputs:
+  x: ['...', hidden_size]
+  gate: ['...', hidden_size]
+outputs:
+  out: ['...', hidden_size]
+init:
+  weights:
+    weight: { shape: [hidden_size], init: ones }
+  act_fn: SiLU
+forward:
+  - xf: x.float()
+  - rms: rrms(xf, eps)
+  - xh: xf * rms
+  - xc: xh.to(x.dtype)
+  - xw: weight * xc
+  - gf: gate.float()
+  - s: act_fn(gf)
+  - of: xw * s
+  - out: of.to(x.dtype)
+tex:
+  weight: '\boldsymbol{\gamma}'
+  xf: '{\viz{x}}_{\mathrm{fp32}}'
+  rms: '\mathrm{rrms}'
+  xh: '\hat{\viz{x}}_{\mathrm{fp32}}'
+  xc: '\hat{\viz{x}}'
+  xw: '\boldsymbol{\gamma}\odot\hat{\viz{x}}'
+  gf: '{\viz{gate}}_{\mathrm{fp32}}'
+  s: '\mathrm{SiLU}(\viz{gate})'
+  of: '\mathbf{o}_{\mathrm{fp32}}'
+formula: 
+  \begin{aligned}
+  \viz{out}=
+  \step{scale}{\viz{weight}\odot}
+  \step{normalize}{\viz{x}\odot}
+  \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{x}}^{2})+\epsilon}}}
+  \step{gate}{\odot}
+  \step{act_fn.*}{\mathrm{SiLU}(\viz{gate})}
+  \end{aligned}
+fold:
+  label: '$\viz{out}$'
+  title: Qwen3_5RMSNormGated
+  text: |
+    每一行先做 RMSNorm，再逐元素乘上 $\mathrm{SiLU}(\viz{gate})$，行与行互不依赖。
+    $$\viz{out}=\big(\viz{weight}\odot\mathrm{RMSNorm}(\viz{x})\big)\odot\mathrm{SiLU}(\viz{gate})={{ out | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{weight},\ \partial\viz{x},\ \partial\viz{gate}$'
+    title: '$\pfl{\viz{weight}},\ \pfl{\viz{x}},\ \pfl{\viz{gate}}$'
+    text: |
+      $$\pfl{\viz{x}}={{ x.grad | matrix:3 }},\qquad \pfl{\viz{gate}}={{ gate.grad | matrix:3 }}$$
+
+steps:
+  - id: float
+    show: xf
+    label: '$\viz{xf}$'
+    title: 门控 RMSNorm：转成 float32
+    text: |
+      <code>Qwen3_5RMSNormGated</code> 先对每一行做 RMSNorm，乘上权重，再乘上经过 SiLU 的门。它的权重初始化为 1，乘的是 $\viz{weight}$ 本身，这一点和同一模型里以 0 为中心的 <code>Qwen3_5RMSNorm</code> 不同。<code>hidden_states.to(torch.float32)</code> 先转成 float32。
+      $$\viz{xf}={{ xf | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{x}$'
+      title: '$\pfl{\viz{x}}$'
+      text: |
+        均方根倒数这一路与归一化的直连在这里相加，结果与普通 RMSNorm 的形式相同，只是 $\mathbf{u}=\pfl{\viz{xw}}\odot\viz{weight}$ 里已经乘过门。
+        $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
+  - id: rrms
+    show: rms
+    label: '$\viz{rms}$'
+    title: 均方根倒数
+    text: |
+      <code>variance = hidden_states.pow(2).mean(-1, keepdim=True)</code> 与 <code>torch.rsqrt(variance + self.variance_epsilon)</code>，图里合成一个运算 <code>rrms</code>。每个位置、每个 head 各有一个 $r$。
+      $$\viz{rms}={{ rms | matrix:3 }}$$
+    backward:
+      label: '$\partial\viz{xf}$'
+      title: '$\pfl{\viz{xf}}$'
+      text: 局部导数是 $-x_{c}r^3/d$，随后与直连相加。
+  - id: normalize
+    show: [xh, xc]
+    label: '$\viz{xc}$'
+    title: 归一化，转回输入的 dtype
+    text: |
+      <code>hidden_states * torch.rsqrt(...)</code>，然后 <code>hidden_states.to(input_dtype)</code>。这里先转回输入的 dtype 再乘权重，做法与 Llama 的 RMSNorm 相同。
+      $$\viz{xc}={{ xc | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{rms},\ \partial\viz{xf}$'
+      title: '$\pfl{\viz{rms}},\ \pfl{\viz{xf}}$'
+      text: |
+        $$\pfl{\viz{rms}}={{ rms.grad | matrix:3 }}$$
+  - id: scale
+    show: [weight, xw]
+    label: '$\viz{xw}$'
+    title: 乘上权重
+    text: |
+      <code>hidden_states = self.weight * hidden_states.to(input_dtype)</code>。$\viz{weight}$ 长度为 $d_v$，所有位置和所有 head 共用。
+      $$\viz{xw}={{ xw | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{weight},\ \partial\viz{xc}$'
+      title: '$\pfl{\viz{weight}},\ \pfl{\viz{xc}}$'
+      text: |
+        $\viz{weight}$ 被所有行共用，梯度按行相加。
+        $$\pfl{\viz{weight}}={{ weight.grad | matrix:3 }}$$
+  - id: act_fn
+    subtitle: SiLU
+    edit:
+      sigmoid.neg:
+        append: |
+          这里的输入是 <code>gate.to(torch.float32)</code>：门先转成 float32，SiLU 和随后的乘法都在 float32 里做。<code>self.activation</code> 固定是 <code>"silu"</code>。
+  - id: gate
+    show: [of, out]
+    label: '$\viz{out}$'
+    title: 门控相乘
+    text: |
+      <code>hidden_states = hidden_states * ACT2FN[self.activation](gate.to(torch.float32))</code>，然后 <code>return hidden_states.to(input_dtype)</code>。$\viz{xw}$ 是输入 dtype，门是 float32，按 torch 的类型提升，乘积是 float32，最后转回输入的 dtype。门接近 0 的分量被关掉。
+      $$\viz{out}={{ out | matrix:2 }}$$
+    backward:
+      label: '$\partial\viz{xw},\ \partial\viz{s}$'
+      title: '$\pfl{\viz{xw}},\ \pfl{\viz{s}}$'
+      text: |
+        逐元素乘的两个输入互为对方的局部导数。
+        $$\pfl{\viz{s}}={{ s.grad | matrix:3 }}$$
