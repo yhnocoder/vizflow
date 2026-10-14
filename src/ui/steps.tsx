@@ -192,8 +192,7 @@ function Timeline(props: {
       return out;
     };
     const positionsInside = (depth: number) => list.flatMap((info, position) => (inside(depth)(info) ? [position] : []));
-    const nested = chain.length > 0 && list.some((info) => inside(chain.length)(info) && info.groups.length > chain.length);
-    const level = chain.length === 0 ? undefined : nested ? chain.length : chain.length - 1;
+    const level = chain.length === 0 ? undefined : chain.length - 1;
     const pool = (depth: number) => (depth === 0 ? active.positions : positionsInside(depth));
     const siblings: Sibling[] =
       level === undefined
@@ -202,7 +201,7 @@ function Timeline(props: {
             item.kind === 'group' ? { kind: 'group', name: item.name, position: item.position, on: item.run.includes(current) } : { kind: 'step', info: item.info, position: item.position, on: item.position === current },
           );
     const crumbs = level === undefined ? [] : path.slice(0, level);
-    const own = (level === undefined ? itemsAt(0, active.positions) : nested ? [] : itemsAt(chain.length, positionsInside(chain.length))).flatMap((item) => (item.kind === 'step' ? [item] : []));
+    const own = level === undefined ? itemsAt(0, active.positions) : itemsAt(chain.length, positionsInside(chain.length));
     return { dir, segments, all, active, directions, crumbs, siblings, own, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
@@ -296,11 +295,18 @@ function Timeline(props: {
       </div>
       <div class="vf-tl-sub">
         <For each={view().own}>
-          {(item) => (
-            <button type="button" class="vf-st" aria-current={props.current() === item.position ? 'step' : undefined} onClick={() => steps.go(item.position)} ref={props.label(item.info)}>
-              {props.plainLabel(item.info)}
-            </button>
-          )}
+          {(item) =>
+            item.kind === 'step' ? (
+              <button type="button" class="vf-st" aria-current={props.current() === item.position ? 'step' : undefined} onClick={() => steps.go(item.position)} ref={props.label(item.info)}>
+                {props.plainLabel(item.info)}
+              </button>
+            ) : (
+              <button type="button" class="vf-st vf-st-group" onClick={() => steps.go(item.position)}>
+                <Rich text={item.name} />
+                <span class="vf-st-more">›</span>
+              </button>
+            )
+          }
         </For>
       </div>
     </div>

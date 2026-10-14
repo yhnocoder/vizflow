@@ -84,9 +84,9 @@ describe('mountSteps timeline', () => {
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
     steps.go(2);
-    expect(crumbs()).toEqual(['self_attn', 'a*', 'q_norm $\\cdot$ k_norm']);
-    expect(el.querySelector('.vf-tl-sub')!.children.length).toBe(0);
-    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[1].click();
+    expect(crumbs()).toEqual(['self_attn*']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-group:q_norm $\\cdot$ k_norm›']);
+    el.querySelectorAll<HTMLButtonElement>('.vf-st-group')[0].click();
     expect(steps.current).toBe(3);
     el.querySelectorAll<HTMLButtonElement>('.vf-tl-crumb')[0].click();
     expect(steps.current).toBe(2);
