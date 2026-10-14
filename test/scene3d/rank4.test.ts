@@ -141,3 +141,66 @@ describe('rank-4 tensors', () => {
     for (const op of [n.xc, n.back]) expect(drawn.filter((d) => d.edge.op === op)).toHaveLength(H * N * C * D);
   });
 });
+
+describe('a right operand shared by two matmuls', () => {
+  function shared() {
+    const g = graph({ dims: {} });
+    const q = g.input('q', [H, N, C, D], values([H, N, C, D], 3));
+    const k = g.input('k', [H, N, C, D], values([H, N, C, D], 4));
+    const kt = g.transpose(k, -1, -2, { name: 'kt' });
+    const kk = g.matmul(k, kt, { name: 'kk' });
+    const qk = g.matmul(q, kt, { name: 'qk' });
+    const a = g.input('a', [H, C, D], values([H, C, D], 5));
+    const sv = g.exp(g.input('s0', [H, D, D], values([H, D, D], 6)), { name: 'sv' });
+    const u = g.matmul(a, sv, { name: 'u' });
+    const w = g.matmul(a, sv, { name: 'w' });
+    const sums = [kk, qk, u, w].map((m) => g.sum(m, null, { name: `sum_${m.name}` }));
+    const loss = g.loss(g.add(g.add(sums[0], sums[1], { name: 'l01' }), g.add(sums[2], sums[3], { name: 'l23' }), { name: 'loss' }));
+    const spec: StepsSpec = {
+      forward: [
+        { title: 'inputs', show: [q, k, a] },
+        { title: 'kt', show: [kt] },
+        { title: 'kk', show: [kk] },
+        { title: 'qk', show: [qk] },
+        { title: 'sv', show: [sv] },
+        { title: 'u', show: [u] },
+        { title: 'w', show: [w] },
+        { title: 'loss', show: [loss] },
+      ],
+      backward: 'reverse',
+    };
+    return { g, spec, nodes: { kt, kk, qk, sv, u, w } };
+  }
+
+  it('gives every board its own tile of the shared operand and keeps the shared operand on its own level', () => {
+    const { g, spec, nodes: n } = shared();
+    const layout = resolve(spec);
+    for (const [b, ops] of [
+      [n.kt, [n.kk, n.qk]],
+      [n.sv, [n.u, n.w]],
+    ] as const) {
+      const boards = ops.map((op) => layout.boards.find((board) => board.op === op)!);
+      const tiles = boards.map((board) => board.b);
+      expect(tiles.map((t) => [t.node, t.shape])).toEqual([
+        [b, 'tile'],
+        [b, 'tile'],
+      ]);
+      expect(new Set(tiles.map((t) => t.key)).size).toBe(2);
+      for (const board of boards) expect(board.b.elements[0].y).toBe(board.out.elements[0].y);
+      const own = blockOf(layout, b);
+      expect(own.shape).toBe('bar');
+      expect(own.elements[0].y).toBeLessThan(tiles[0].elements[0].y);
+    }
+    const drawn = buildEdges(sceneOf(g, layout));
+    for (const op of [n.kk, n.qk, n.u, n.w]) {
+      const board = layout.boards.find((b) => b.op === op)!;
+      const sums = drawn.filter((d) => d.edge.op === op && d.edge.arg === -1);
+      expect(sums.length).toBeGreaterThan(0);
+      for (const d of sums) {
+        const index = 'cell' in d.edge.from ? d.edge.from.cell.index : [];
+        const tile = elementAt(board.b, [...index.slice(0, -3), ...index.slice(-2)]);
+        expect(d.endpoints()[0][0]).toBeCloseTo(tile.x, 9);
+      }
+    }
+  });
+});

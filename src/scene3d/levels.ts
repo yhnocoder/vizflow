@@ -225,6 +225,7 @@ class Plan implements LevelPlan {
   private readonly drawnOn = new Map<Node, Node[]>();
   private readonly columns = new Set<Node>();
   private readonly boards = new Map<Node, BoardRef>();
+  private readonly tiles = new Map<Node, Entry>();
   private readonly tables = new Map<Node, Node>();
   private readonly rowGroups = new Map<Node, Node>();
   private readonly labelledGroups = new Set<Node>();
@@ -437,17 +438,17 @@ class Plan implements LevelPlan {
     return result;
   }
 
-  private entry(node: Node, level: Level): Entry {
+  private entry(node: Node, level: Level, key = `node:${node.id}`): Entry {
     const [rows, cols] = this.shapeOf(node);
     const leaf = isLeafLike(node);
     let kind: Kind = 'plate';
     if (node.shape.length === 0) kind = 'box';
     else if (leaf && node.shape.length === 1) kind = 'vector';
     else if (this.isDisc(node)) kind = 'disc';
-    const e: Entry = { key: `node:${node.id}`, node, kind, level, rows, cols, lane: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined };
+    const e: Entry = { key, node, kind, level, rows, cols, lane: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined };
     level.entries.push(e);
     this.entries.push(e);
-    this.entryOf.set(node, e);
+    if (!this.entryOf.has(node) || key === `node:${node.id}`) this.entryOf.set(node, e);
     return e;
   }
 
@@ -464,7 +465,7 @@ class Plan implements LevelPlan {
     const moveTo = new Map<Node, Node>();
     for (const board of this.boards.values()) {
       if (!board.linear) {
-        if (this.computed.has(board.b)) moveTo.set(board.b, board.op);
+        if (this.computed.has(board.b) && this.consumers(board.b).length === 1) moveTo.set(board.b, board.op);
         continue;
       }
       const a = board.a;
@@ -482,7 +483,11 @@ class Plan implements LevelPlan {
         const level = levels[depth.get(n)!];
         for (const [moved, target] of moveTo) if (target === n && !this.entryOf.has(moved) && this.boards.get(n)?.a === moved) this.entry(moved, level);
         const board = this.boards.get(n);
-        if (board !== undefined && !this.entryOf.has(board.b)) this.entry(board.b, level).kind = 'tile';
+        if (board !== undefined) {
+          const tile = this.entry(board.b, level, this.entryOf.has(board.b) ? `tile:${n.id}` : `node:${board.b.id}`);
+          tile.kind = 'tile';
+          this.tiles.set(n, tile);
+        }
         const table = this.tables.get(n);
         if (table !== undefined) {
           const t = this.entry(table, level);
@@ -727,6 +732,17 @@ class Plan implements LevelPlan {
       }
       if (need > 0) shift(rightEntries, need);
     });
+    for (const level of this.levels) {
+      const plates = level.entries.filter((e) => e.kind === 'plate' && e.xs !== undefined);
+      plates.forEach((e, i) => {
+        const earlier = plates.slice(0, i).filter((o) => o.lane !== e.lane);
+        for (let blocking = this.overlapping(e, earlier); blocking.length > 0; blocking = this.overlapping(e, earlier)) {
+          const [lo] = span([e])!;
+          const [, hi] = span(blocking)!;
+          shift([e], hi + facing(blocking, [e]) - lo);
+        }
+      });
+    }
   }
 
   private tracedOffsets(e: Entry, lane: Lane): number[] | undefined {
@@ -753,7 +769,7 @@ class Plan implements LevelPlan {
   private placeBatchedBoard(board: BoardRef, level: Level, done: Set<Entry>): void {
     const a = this.drawnA(board);
     const out = this.entryOf.get(board.op)!;
-    const tile = level.entries.find((e) => e.node === board.b && e.kind === 'tile')!;
+    const tile = this.tiles.get(board.op)!;
     const aXs = a.xs ?? (a.lane === undefined ? [0] : a.offsets.map((o) => position(a.lane!, o)));
     const lane = this.lane(a.level === level ? Math.max(...aXs) + BOARD_GAP : Math.min(...aXs), a.lane?.spacing ?? STREAM_SPACING);
     this.setLane(out, lane, consecutive(0, out.cols));
@@ -791,7 +807,7 @@ class Plan implements LevelPlan {
       if (i > 0 && same) lane.breaks.add(offset);
       const offsets = Array.from({ length: n }, (_, k) => (same ? offset + k : (this.drawnA(b).offsets[boardStart(b.op)] ?? 0) + k));
       const out = this.entryOf.get(b.op)!;
-      const tile = level.entries.find((e) => e.node === b.b && e.kind === 'tile')!;
+      const tile = this.tiles.get(b.op)!;
       this.setLane(out, lane, offsets);
       this.setLane(tile, lane, offsets);
         done.add(out);
@@ -1056,11 +1072,11 @@ class Plan implements LevelPlan {
     const boards: BoardGeometry[] = [];
     for (const board of this.boards.values()) {
       const out = this.entryOf.get(board.op)!;
-      const tile = out.level.entries.find((e) => e.node === board.b && e.kind === 'tile')!;
+      const tile = this.tiles.get(board.op)!;
       const a = this.drawnA(board);
       const siblings = [...this.boards.values()].filter((b) => this.entryOf.get(b.op)?.level === out.level && this.drawnA(b) === a && a.level === out.level).sort((p, q) => p.op.id - q.op.id);
       const at = siblings.findIndex((b) => b === board);
-      const previous = at > 0 ? out.level.entries.find((e) => e.node === siblings[at - 1].b && e.kind === 'tile') : undefined;
+      const previous = at > 0 ? this.tiles.get(siblings[at - 1].op) : undefined;
       boards.push({ op: board.op, a: blockOf.get(a)!, sharedA: a.level !== out.level, b: blockOf.get(tile)!, out: blockOf.get(out)!, y: out.level.y, previous: previous === undefined ? undefined : blockOf.get(previous) });
     }
 
