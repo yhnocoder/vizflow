@@ -125,9 +125,6 @@ function StepsView(props: { steps: Steps }) {
   );
 }
 
-type TimelineInfo = StepInfo & { kind?: 'overview' | 'inputs' | 'op' | 'module'; segment?: string; sub?: string; module?: string };
-
-
 interface Segment {
   name: string;
   positions: number[];
@@ -151,16 +148,21 @@ function Timeline(props: {
   const steps = props.steps;
   const view = createMemo(() => {
     props.version();
-    const list = steps.list as readonly TimelineInfo[];
+    const list = steps.list;
     const current = steps.current;
     const dir = list[current].dir;
+    const titles = new Map(steps.groups.map((g) => [g.id, g.title]));
     const segments: Segment[] = [];
+    let lastKey: string | undefined;
     list.forEach((info, position) => {
       if (info.dir !== dir) return;
-      const name = info.segment ?? '';
+      const top = info.groups[0];
+      const key = top ?? `step:${info.forwardId ?? info.id}`;
+      const name = top === undefined ? info.label : (titles.get(top) ?? '');
       const last = segments[segments.length - 1];
-      if (last !== undefined && last.name === name) last.positions.push(position);
+      if (last !== undefined && lastKey === key) last.positions.push(position);
       else segments.push({ name, positions: [position], folded: info.kind === 'module' });
+      lastKey = key;
     });
     const all = segments.flatMap((s) => s.positions);
     const active = segments.find((s) => s.positions.includes(current)) ?? segments[0];
@@ -170,9 +172,10 @@ function Timeline(props: {
     let previous: string | undefined;
     const items = active.positions.map((position) => {
       const info = list[position];
-      const sub = info.sub !== undefined && info.sub !== active.name ? info.sub : undefined;
-      const heading = sub !== undefined && sub !== previous ? sub : undefined;
-      previous = sub;
+      const inner = info.groups.length > 1 ? info.groups[info.groups.length - 1] : undefined;
+      const sub = inner === undefined ? undefined : titles.get(inner);
+      const heading = sub !== undefined && inner !== previous ? sub : undefined;
+      previous = inner;
       return { info, position, heading };
     });
     return { dir, segments, all, active, directions, showName, items, position: all.indexOf(current) + 1 };
@@ -262,7 +265,7 @@ function Timeline(props: {
 }
 
 function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; current: number; bar: HTMLElement }) {
-  const list = props.steps.list as readonly TimelineInfo[];
+  const list = props.steps.list;
   const positions = () => props.segment.positions;
   const index = () => positions().indexOf(props.current);
   const start = () => Math.max(0, Math.min(index() - Math.floor(SEGMENT_PREVIEW_STEPS / 2), positions().length - SEGMENT_PREVIEW_STEPS));

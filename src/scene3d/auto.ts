@@ -15,7 +15,7 @@ import {
   stack,
 } from './layout';
 import type { StepsSpec } from '../steps';
-import { type LevelPlan, levelPlan } from './levels';
+import { type LevelPlan, type LevelSpec, levelPlan } from './levels';
 import type { SceneModule } from './modules';
 
 export type LayoutEntry = { kind: 'node'; node: Node } | LayoutTree | { kind: 'parallel'; branches: LayoutTree[] };
@@ -88,9 +88,9 @@ function boardReach(b: Node, aPlaced: boolean): [number, number] {
   return [aPlaced ? left : Math.max(left, aLeft), rightReach(cols)];
 }
 
-export function autoLayout(tree: LayoutTree, steps?: StepsSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan } {
-  if (steps !== undefined && (steps.modules?.length ?? 0) > 0 && steps.backward === 'reverse') {
-    const levels = levelPlan(steps);
+export function autoLayout(tree: LayoutTree, steps?: StepsSpec, spec?: LevelSpec): { layout: LayoutItem[]; modules: SceneModule[]; levels?: LevelPlan } {
+  if (steps !== undefined && spec !== undefined && steps.backward === 'reverse') {
+    const levels = levelPlan(steps, spec);
     return { layout: [], modules: levels.modules, levels };
   }
   const all = treeNodes(tree.children);

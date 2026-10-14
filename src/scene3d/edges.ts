@@ -16,8 +16,6 @@ export const SPLIT_JACOBIAN_BOW = 1.4;
 
 const SAME_LEVEL = 0.05;
 const JACOBIAN_EPSILON = 1e-12;
-const LINK_REVEALED = 0.32;
-const LINK_HIDDEN = 0.06;
 
 export interface DrawnEdge {
   edge: FlowEdge;
@@ -31,7 +29,6 @@ export interface DrawnEdge {
   screen: number[];
   bow?: number;
   jac?: { module: StepModule; value: number };
-  link?: boolean;
   backRow?: boolean;
 }
 
@@ -75,7 +72,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   if (c.lod) return drawn;
   const levels = c.levelLayout;
   const backward = c.state.dir === 'backward';
-  const overview = c.state.dir === 'forward' && c.state.index === 0;
+  const overview = c.state.dir === 'forward' && c.state.kind === 'overview';
   const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
   const push = (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => {
     const style = edgeStyle({
@@ -142,8 +139,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     const from = edge.from;
     const to = edge.to;
     if (backward && edge.constant) continue;
-    const copy = levels?.copyFor(from.node, to.node);
-    const fromR = copy === undefined ? renderableOf(c, from.node) : renderableFor(c, copy);
+    const fromR = renderableOf(c, from.node);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
     const fromElement = elementOf(fromR.block, from.node, from.index);
@@ -197,29 +193,6 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
           jac: { module: pair.module, value },
         };
         push(entry, inR, outR, [rowOf(inR, fromElement.index), rowOf(outR, toElement.index)], (grad === null ? 0 : grad.data[oi]) === 0);
-      });
-    });
-  }
-  for (const link of levels.links) {
-    const origR = renderableFor(c, link.original);
-    const copyR = renderableFor(c, link.copy);
-    if (origR === undefined || copyR === undefined || !shown(link.original) || !shown(link.copy) || (origR.far && copyR.far)) continue;
-    const node = link.original.node;
-    const opacity = c.state.revealed(node) ? LINK_REVEALED : LINK_HIDDEN;
-    link.copy.elements.forEach((element, i) => {
-      const index = link.original.elements[i].index;
-      const edge: FlowEdge = { id: `link:${link.copy.key}:${element.index.join(',')}`, op: node, arg: 0, from: { node, index }, to: { node, index } };
-      drawn.push({
-        edge,
-        fromNode: node,
-        toNode: node,
-        contract: false,
-        endpoints: () => [anchorOut(c, node, index, origR)!, anchorIn(c, link.copy.node, element.index, copyR)!],
-        flat: false,
-        link: true,
-        points: [],
-        style: { opacity },
-        screen: [],
       });
     });
   }

@@ -211,7 +211,7 @@ export abstract class Expressions extends CompilerState {
 
   onlyCall(instance: Instance, env: Env, at: number) {
     if (instance.calls.length === 0) this.fail(env, `'${instance.path}' is never called, so it has no results`, at);
-    if (instance.calls.length > 1) this.fail(env, `'${instance.path}' is called ${instance.calls.length} times; name the call with { producer_of: <result> }`, at);
+    if (instance.calls.length > 1) this.fail(env, `'${instance.path}' is called ${instance.calls.length} times, so the name does not pick one call`, at);
     return instance.calls[0];
   }
 

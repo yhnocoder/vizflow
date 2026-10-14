@@ -12,7 +12,6 @@ import { type Renderable, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
-export const LINK_CARD_NOTE = '同一个张量画了两次，这条虚线连接原处与它在下一个模块入口的复制。';
 
 const TIP_DIGITS = 3;
 function texTitle(title: string): string {
@@ -170,7 +169,7 @@ export class ScenePopups {
   }
 
   showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
-    this.pop.replaceChildren(d.link === true ? this.linkCard(d) : d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
+    this.pop.replaceChildren(d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;
     const rect = this.c.root.getBoundingClientRect();
     placePop(this.c.root, this.pop, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -194,21 +193,5 @@ export class ScenePopups {
       note: JACOBIAN_CARD_NOTE,
     };
     return edgeCardElement(card, d.edge.id, d.fromNode.dtype);
-  }
-
-  private linkCard(d: DrawnEdge): DocumentFragment {
-    const fragment = document.createDocumentFragment();
-    const title = document.createElement('h4');
-    title.className = 'vf-pop-title';
-    title.dataset.edgeId = d.edge.id;
-    title.appendChild(render(d.fromNode.tex));
-    const note = document.createElement('p');
-    note.className = 'vf-nt';
-    note.textContent = LINK_CARD_NOTE;
-    const dtype = document.createElement('div');
-    dtype.className = 'vf-dtype';
-    dtype.textContent = `dtype ${d.fromNode.dtype}`;
-    fragment.append(title, note, dtype);
-    return fragment;
   }
 }

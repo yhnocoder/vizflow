@@ -3,9 +3,9 @@ args:
   hidden_size: dim
   eps: { type: float, default: 1e-6 }
 inputs:
-  x: { type: tensor, shape: ['...', hidden_size], dtype: dtype }
+  x: ['...', hidden_size]
 outputs:
-  out: { type: tensor, shape: ['...', hidden_size], dtype: dtype }
+  out: ['...', hidden_size]
 init:
   weights:
     weight: { shape: [hidden_size], init: ones }

@@ -4,9 +4,9 @@ args:
   out_features: dim
   bias: { type: bool, default: True }
 inputs:
-  x: { type: tensor, shape: ['...', in_features], dtype: dtype }
+  x: ['...', in_features]
 outputs:
-  y: { type: tensor, shape: ['...', out_features], dtype: dtype }
+  y: ['...', out_features]
 init:
   weights:
     weight: { shape: [out_features, in_features], init: uniform }

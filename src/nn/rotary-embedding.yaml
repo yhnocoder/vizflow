@@ -3,18 +3,17 @@ args:
   d_head: dim
   rope_theta: float
 inputs:
-  x: { type: tensor, shape: ['...'], dtype: dtype }
+  x: ['...']
   position_ids: { type: tensor, shape: [T], dtype: int64 }
 outputs:
-  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
-  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
+  cos: [T, d_head]
+  sin: [T, d_head]
 init:
   buffers:
     inv_freq:
-      type: tensor
       shape: [d_head // 2]
       dtype: fp32
-      value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=fp32) / d_head)
+      value: 1.0 / rope_theta ** (arange(0, d_head, 2, dtype=int64).float() / d_head)
 forward:
   - freqs: position_ids[..., None].float() * inv_freq.float()
   - emb: cat([freqs, freqs], dim=-1)

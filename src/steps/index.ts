@@ -11,6 +11,8 @@ export {
   type BackwardSpec,
   type PageModule,
   type StepModule,
+  type StepGroup,
+  type StepBrace,
   type StepKind,
   type StepNote,
   type NoteSide,

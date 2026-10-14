@@ -12,12 +12,12 @@ args:
   num_heads: dim
   num_kv_heads: dim
 inputs:
-  x: { type: tensor, shape: [T, d_model], dtype: dtype }
-  mask: { type: tensor, shape: [T, T], dtype: dtype }
-  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
-  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, d_head]
+  sin: [T, d_head]
 outputs:
-  x_out: { type: tensor, shape: [T, d_model], dtype: dtype }
+  x_out: [T, d_model]
 
 init:
   input_layernorm:
@@ -81,7 +81,7 @@ fold:
 steps:
   - id: input_layernorm
     subtitle: Qwen3RMSNorm
-    steps:
+    edit:
       float:
         append: |
           这是 input_layernorm，在 attention 之前。Qwen3 是 Pre-Norm 结构：残差路径上的 $\viz{x}$ 本身不做 norm，只有送进 attention 的那一份做。
@@ -102,11 +102,11 @@ steps:
   - id: self_attn
   - id: res1
     show: a
+    brace: true
+    subtitle: '$\viz{x}+\viz{att}$'
     notes:
       - at: a
         text: '残差：$\viz{x}$ 绕过 attention 直接加到这里'
-    segment: 残差
-    brace: { title: 残差相加, subtitle: '$\viz{x}+\viz{att}$' }
     label: '$\viz{a}=\viz{x}+\viz{att}$'
     title: 残差相加
     text: |
@@ -122,7 +122,7 @@ steps:
         由上面的展开式，embedding 的梯度 $\pfl{\mathbf{e}}$ 里始终有一项等于 $\pfl{\mathbf{h}_{\mathrm{last}}}$。这一项不经过任何权重，没有连乘，所以层数增加时梯度不会因为连乘而消失。因此可以把残差看成梯度的直达通道：网络再深，底层也能直接收到来自损失的信号。
   - id: post_attention_layernorm
     subtitle: Qwen3RMSNorm
-    steps:
+    edit:
       float:
         append: |
           这是 post_attention_layernorm，在 MLP 之前，计算与 input_layernorm 相同，但参数各自独立。
@@ -133,7 +133,7 @@ steps:
         append: $\viz{n}$ 是 gate_proj 和 up_proj 共同的输入。
   - id: mlp
     subtitle: Qwen3MLP
-    steps:
+    edit:
       gate_proj:
         append: |
           这一页 $d_{\mathrm{ff}}={{ d_ff }}$，是 $d_{\mathrm{model}}={{ d_model }}$ 的 {{ d_ff / d_model }} 倍。
@@ -146,8 +146,8 @@ steps:
         $$\viz{down}=\mathrm{mlp}(\viz{n})={{ down | matrix:2 }}$$
   - id: res2
     show: x_out
-    segment: 残差
-    brace: { title: 残差相加, subtitle: '$\viz{a}+\viz{down}$' }
+    brace: true
+    subtitle: '$\viz{a}+\viz{down}$'
     label: '$\viz{x_out}=\viz{a}+\viz{down}$'
     title: 残差相加
     text: |

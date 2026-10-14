@@ -243,7 +243,7 @@ export class SceneController implements EditHost {
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
-    const overview = dir === 'forward' && this.state.index === 0;
+    const overview = dir === 'forward' && this.state.kind === 'overview';
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
     markFar(this);

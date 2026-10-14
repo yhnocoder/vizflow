@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { type CompiledPage, loadPage, parseYaml } from '../../src/dsl';
 import { runProgram } from '../../src/core';
+import { levelPlan } from '../../src/scene3d/levels';
 import { createSteps } from '../../src/steps';
 import { decodeProgram } from '../../src/ui/figure-spec';
 
@@ -154,7 +155,7 @@ c: { use: Scale, args: [n] }`,
   it('checks input shapes and keeps init to the args', async () => {
     const yaml = (inputs: string, init = '') => page(root({ inputs, init: init || undefined, forward: '- l: x.mean()', steps: '- id: l' }));
     await expect(yaml('x: { type: tensor, shape: [T, 3], dtype: fp32 }')).rejects.toThrow(/page\.yaml:5:6 data\.x: node 'x': expected shape \(3, 3\)/);
-    await expect(yaml('x: { type: tensor, shape: [T, d], dtype: fp32 }', 'weights: { w: { shape: [T] } }')).rejects.toThrow(/name 'T' is not defined/);
+    await expect(yaml('x: { type: tensor, shape: [T, d], dtype: fp32 }', 'weights: { w: { shape: [T], init: ones } }')).rejects.toThrow(/name 'T' is not defined/);
   });
 });
 
@@ -165,7 +166,7 @@ describe('forward', () => {
         init: 's: { use: Scale, args: [{ n: d }] }',
         extra: 'import: { Scale: ./scale.yaml }',
         forward: '- y: s(x)\n- z: s(y)\n- l: z.mean()',
-        steps: '- id: first\n  show: { producer_of: y }\n- id: second\n  show: { producer_of: z }\n- id: l',
+        steps: '- id: y\n- id: z\n- id: l',
       }),
       { [SCALE_FILE]: SCALE },
     );
@@ -233,7 +234,7 @@ describe('steps', () => {
         init: 's: { use: Scale, args: [{ n: d }] }',
         extra: 'import: { Scale: ./scale.yaml }',
         forward: '- y: s(x)\n- l: y.mean()',
-        steps: '- id: s\n  title: outer\n  steps:\n    double: { append: more, title: twice }\n- id: l',
+        steps: '- id: s\n  title: outer\n  edit:\n    double: { append: more, title: twice }\n- id: l',
       }),
       { [SCALE_FILE]: SCALE },
     );
@@ -242,23 +243,31 @@ describe('steps', () => {
     expect(p.steps.forward[0].text).toMatch(/^h = \\begin\{pmatrix\} \{\{s\.h\[0, 0\]:1\}\} .*\\end\{pmatrix\}\nmore$/);
     expect(p.modules[0].title).toBe('outer');
     await expect(
-      page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n  steps:\n    nope: { text: x }\n- id: l' }), { [SCALE_FILE]: SCALE }),
+      page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n  edit:\n    nope: { text: x }\n- id: l' }), { [SCALE_FILE]: SCALE }),
     ).rejects.toThrow(/there is no step 'nope'; the steps here are double, mul/);
   });
 
   it('marks the formula of a module call with the steps it names', async () => {
     const p = await page(root({ init: 's: { use: Scale, args: [{ n: d }] }', extra: 'import: { Scale: ./scale.yaml }', forward: '- y: s(x)\n- l: y.mean()', steps: '- id: s\n- id: l' }), { [SCALE_FILE]: SCALE });
-    expect(p.modules[0].formula).toBe('\\htmlData{vf-step=s0}{\\mathbf{y}=w\\odot}\\htmlData{vf-step=s1}{2\\mathbf{x}}');
+    expect(p.steps.forward[0].formula?.tex).toBe('\\htmlData{vf-step=s0}{\\mathbf{y}=w\\odot}\\htmlData{vf-step=s1}{2\\mathbf{x}}');
     expect(p.steps.forward.map((s) => s.marks)).toEqual([['s1'], ['s0'], undefined]);
   });
 
   it('builds the overview and the inputs step and runs forward and backward', async () => {
-    const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- { id: overview, show: { all: true }, title: all, text: "T is {{ T }}" }\n- { id: in, show: { inputs: true, parameters: true }, title: inputs }\n- id: y\n- id: l' }));
-    expect(p.steps.overview).toEqual({ title: 'all', text: 'T is 3' });
-    expect(p.steps.forward[0]).toMatchObject({ kind: 'inputs', title: 'inputs' });
+    const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- { id: overview, show: all(), title: all, text: "T is {{ T }}" }\n- { id: in, show: inputs() + parameters(), title: inputs }\n- id: y\n- id: l' }));
+    expect(p.steps.forward[0]).toMatchObject({ title: 'all', text: 'T is 3' });
     const steps = createSteps(p.graph, p.steps);
+    expect(steps.list.slice(0, 2).map((s) => s.kind)).toEqual(['overview', 'inputs']);
     expect(steps.list.filter((s) => s.dir === 'backward').length).toBeGreaterThan(0);
     steps.dispose();
+  });
+});
+
+describe('layout', () => {
+  it('places a tensor that several steps show once', async () => {
+    const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- { id: again, show: [y, l] }' }));
+    const { blocks } = levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
+    expect(blocks.filter((b) => b.node === p.nodes.get('y')).length).toBe(1);
   });
 });
 
@@ -319,7 +328,7 @@ describe('templates and tex', () => {
   });
 
   it('evaluates buffer values with ops and broadcasting', async () => {
-    const p = await page(root({ init: "buffers:\n  b: { type: tensor, shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
+    const p = await page(root({ init: "buffers:\n  b: { shape: [2, d], dtype: fp32, value: 'exp(arange(2)[:, None] * arange(d))' }", forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- id: l' }));
     expect([...p.nodes.get('b')!.value.data]).toEqual([1, 1, 1, Math.E]);
   });
 

@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { type CompiledPage, type PageFile, compilePage, parseYaml } from '../../src/dsl';
+import { type CompiledPage, type Page, compilePage, parseYaml } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import { type EncodedTensor, expectTensor, loadFixture, nested } from '../torch/fixtures';
 import { examplesUrl, loadExample, readFileUrl } from './load';
@@ -55,7 +55,7 @@ describe('qwen3_5-dsl.yaml against transformers Qwen3_5TextModel in float64', ()
 describe('qwen3_5-dsl.yaml with other chunk sizes', () => {
   it.each([1, 3, 4, 64])('gives the same loss, hidden states and gradients with chunk %i', async (chunk) => {
     const url = new URL('qwen3_5-dsl.yaml', examplesUrl).href;
-    const spec = parseYaml(await readFileUrl(url), url) as PageFile & { dims: Record<string, number> };
+    const spec = parseYaml(await readFileUrl(url), url) as Page & { dims: Record<string, number> };
     spec.dims.chunk = chunk;
     const page = await compilePage(spec, { base: url, read: readFileUrl });
     for (const [path, tensor] of Object.entries(fixture.weights)) page.nodes.get(path)!.set(nested(tensor));

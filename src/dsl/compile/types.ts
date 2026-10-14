@@ -98,6 +98,7 @@ export class Call {
   readonly children: Call[] = [];
   readonly outputs = new Map<string, Node>();
   readonly results: string[] = [];
+  readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
   created: Node[] = [];
 
   constructor(

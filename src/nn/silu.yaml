@@ -28,7 +28,7 @@ fold:
 steps:
   - id: sigmoid
     subtitle: sigmoid
-    steps:
+    edit:
       neg:
         text: |
           $\operatorname{SiLU}(x)=x\,\sigma(x)$。$x$ 很大时 $\sigma(x)\to1$，输出接近 $x$；$x$ 很小时 $\sigma(x)\to0$，输出接近 0；中间平滑过渡，最小值约 $-0.28$，在 $x\approx-1.28$ 处取得。先算 $\sigma(x)$，再乘回 $x$。算 $\sigma(x)$ 的第一步是取负。

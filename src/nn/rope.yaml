@@ -22,6 +22,16 @@ forward:
   - ks: krh * sin
   - q_embed: qc + qs
   - k_embed: kc + ks
+layout:
+  place:
+    kc: { with: qc }
+    q2: { with: q1 }
+    k1: { with: q1 }
+    k2: { with: q1 }
+    nk2: { with: nq2 }
+    krh: { with: qrh }
+    ks: { with: qs }
+    k_embed: { with: q_embed }
 tex:
   qc: '\viz{q}\odot\viz{cos}'
   kc: '\viz{k}\odot\viz{cos}'

@@ -6,9 +6,9 @@ args:
   d_ff: dim
   act: { type: module, default: SiLU }
 inputs:
-  x: { type: tensor, shape: ['...', d_model], dtype: dtype }
+  x: ['...', d_model]
 outputs:
-  down: { type: tensor, shape: ['...', d_model], dtype: dtype }
+  down: ['...', d_model]
 init:
   gate_proj:
     use: Linear

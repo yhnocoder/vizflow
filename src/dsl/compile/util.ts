@@ -42,3 +42,7 @@ export function record(value: unknown, where: Where, what: string): Record<strin
   if (!isRecord(value)) fail(where, `${what} must be a mapping`);
   return value;
 }
+
+export function fieldSpec(spec: unknown): unknown {
+  return Array.isArray(spec) ? { type: 'tensor', shape: spec, dtype: 'dtype' } : spec;
+}

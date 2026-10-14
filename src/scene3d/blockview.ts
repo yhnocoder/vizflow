@@ -113,7 +113,7 @@ function covers(box: ScreenBox, target: ScreenBox): boolean {
 }
 
 export function markSeeThrough(c: SceneController): boolean {
-  const enabled = c.seeThroughOn && !c.lod && c.options.steps !== undefined && !(c.state.dir === 'forward' && (c.state.index === 0 || c.state.kind === 'inputs'));
+  const enabled = c.seeThroughOn && !c.lod && c.options.steps !== undefined && !(c.state.dir === 'forward' && (c.state.kind === 'overview' || c.state.kind === 'inputs'));
   const boxes = new Map<Renderable, ScreenBox>();
   if (enabled) {
     const direction = c.camera.getWorldDirection(new Vector3());

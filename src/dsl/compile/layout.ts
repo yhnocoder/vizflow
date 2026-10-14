@@ -1,0 +1,98 @@
+import { Node } from '../../autograd';
+import type { LevelSpec } from '../../scene3d/levels';
+import { type Where, child, fail } from '../source';
+import { describe } from './expressions';
+import type { PageCompiler } from './page';
+import { type Call, Instance } from './types';
+import { checkKeys, record } from './util';
+
+const LAYOUT_KEYS: ReadonlySet<string> = new Set(['place', 'merge']);
+const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
+
+type Placement = (typeof PLACE_KEYS)[number];
+
+export function layoutOf(c: PageCompiler, root: Call): LevelSpec {
+  const spec: LevelSpec = { lines: [], sides: [], merges: [] };
+  spec.lines = levelsOf(c, root, spec);
+  return spec;
+}
+
+function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
+  const def = call.instance.def;
+  const where = child(def.where, def.decl, 'layout');
+  const layout = record(def.decl.layout, where, 'layout');
+  checkKeys(layout, LAYOUT_KEYS, where);
+  const mergeWhere = child(where, layout, 'merge');
+  const mergeList = layout.merge ?? [];
+  if (!Array.isArray(mergeList)) fail(mergeWhere, 'merge must be a list of [a, b] pairs of module calls');
+  const pairs = mergeList.map((pair, i) => {
+    const at = child(mergeWhere, mergeList, i);
+    if (!Array.isArray(pair) || pair.length !== 2) fail(at, 'each merge entry is a pair of module calls, such as [q_norm, k_norm]');
+    const calls = pair.map((ref, k) => callIn(c, call, ref, child(at, pair, k))) as [Call, Call];
+    if (calls[0].instance.def !== calls[1].instance.def) fail(at, `merge needs two calls of the same module; ${calls[0].instance.name} is ${calls[0].instance.def.name} and ${calls[1].instance.name} is ${calls[1].instance.def.name}`);
+    return calls;
+  });
+  const lineOf = (target: Call) => call.lines.findIndex((line) => line.calls.includes(target));
+  const later = new Map<Call, [Call, Call]>();
+  const deferred = new Set<Call>();
+  for (const pair of pairs) {
+    const [a, b] = lineOf(pair[0]) <= lineOf(pair[1]) ? pair : [pair[1], pair[0]];
+    deferred.add(a);
+    later.set(b, pair);
+  }
+  const levels: Node[][] = [];
+  for (const line of call.lines) {
+    for (const inner of line.calls) {
+      if (deferred.has(inner)) continue;
+      const pair = later.get(inner);
+      if (pair === undefined) {
+        levels.push(...levelsOf(c, inner, spec));
+        continue;
+      }
+      const left = levelsOf(c, pair[0], spec);
+      const right = levelsOf(c, pair[1], spec);
+      spec.merges.push({ left: left.flat(), right: right.flat() });
+      for (let i = 0; i < Math.max(left.length, right.length); i++) levels.push([...(left[i] ?? []), ...(right[i] ?? [])]);
+    }
+    if (line.nodes.length > 0) levels.push([...line.nodes]);
+  }
+  const placeWhere = child(where, layout, 'place');
+  const place = record(layout.place, placeWhere, 'place');
+  for (const [name, value] of Object.entries(place)) {
+    const at = child(placeWhere, place, name);
+    const node = nodeIn(c, call, name, at);
+    const placement = record(value, at, `place '${name}'`);
+    checkKeys(placement, new Set(PLACE_KEYS), at);
+    const keys = Object.keys(placement) as Placement[];
+    if (keys.length !== 1) fail(at, `place '${name}' takes one of ${PLACE_KEYS.join(', ')}`);
+    const key = keys[0];
+    const target = nodeIn(c, call, placement[key], child(at, placement, key));
+    const from = levels.findIndex((level) => level.includes(node));
+    if (from < 0) fail(at, `'${name}' is not computed in the forward of ${def.name}`);
+    if (levels.findIndex((level) => level.includes(target)) < 0) fail(child(at, placement, key), `'${String(placement[key])}' is not computed in the forward of ${def.name}`);
+    if (node === target) fail(at, `'${name}' cannot be placed relative to itself`);
+    levels[from] = levels[from].filter((n) => n !== node);
+    const to = levels.findIndex((level) => level.includes(target));
+    if (key === 'before') levels.splice(to, 0, [node]);
+    else if (key === 'after') levels.splice(to + 1, 0, [node]);
+    else {
+      levels[to].push(node);
+      spec.sides.push({ node, side: key, of: target });
+    }
+  }
+  return levels.filter((level) => level.length > 0);
+}
+
+function callIn(c: PageCompiler, call: Call, ref: unknown, where: Where): Call {
+  const value = c.reference(ref, c.callEnv(call, where));
+  if (!(value instanceof Instance)) fail(where, `'${String(ref)}' is ${describe(value)}; merge takes module calls`);
+  const found = call.children.filter((inner) => inner.instance === value);
+  if (found.length !== 1) fail(where, `'${String(ref)}' is called ${found.length} times in this forward; merge needs a module called once`);
+  return found[0];
+}
+
+function nodeIn(c: PageCompiler, call: Call, ref: unknown, where: Where): Node {
+  const value = c.reference(ref, c.callEnv(call, where));
+  if (!(value instanceof Node)) fail(where, `'${String(ref)}' is ${describe(value)}; place takes tensors computed in this forward`);
+  return value;
+}

@@ -26,13 +26,25 @@ export interface ForwardStep {
   title: string;
   text?: string;
   label?: string;
-  kind?: 'inputs' | 'op';
-  segment?: string;
-  sub?: string;
+  groups?: string[];
   module?: string;
-  brace?: { title: string; subtitle?: string; formula?: string };
+  formula?: { title: string; tex: string };
   backward?: BackwardOverride;
   marks?: string[];
+}
+
+export interface StepGroup {
+  id: string;
+  title: string;
+}
+
+export interface StepBrace {
+  id: string;
+  title: string;
+  subtitle?: string;
+  nodes: Node[];
+  depth: number;
+  module?: string;
 }
 
 export type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };
@@ -51,14 +63,15 @@ export interface PageModule {
 }
 
 export interface StepModule extends PageModule {
-  segment: string;
-  sub?: string;
+  foldable: boolean;
   forward: BackwardOverride;
   backward: BackwardOverride;
 }
 
 export interface StepsSpec {
   forward: ForwardStep[];
+  groups?: StepGroup[];
+  braces?: StepBrace[];
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
   backward?: BackwardSpec;
   modules?: StepModule[];
@@ -73,8 +86,7 @@ export interface StepInfo {
   title: string;
   text: string;
   nodes: Node[];
-  segment: string;
-  sub?: string;
+  groups: string[];
   module?: string;
   forwardId?: string;
   notes?: StepNote[];
@@ -96,6 +108,7 @@ export interface Steps {
   readonly list: readonly StepInfo[];
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
+  readonly groups: readonly StepGroup[];
   readonly current: number;
   readonly focus: number;
   go(i: number): void;
@@ -125,7 +138,7 @@ function unique(nodes: Iterable<Node>): Node[] {
 
 function withMarks(info: StepInfo, step: ForwardStep): StepInfo {
   if (step.marks !== undefined) info.marks = step.marks;
-  if (step.brace?.formula !== undefined) info.formula = { title: step.brace.title, tex: step.brace.formula };
+  if (step.formula !== undefined) info.formula = step.formula;
   return info;
 }
 
@@ -191,7 +204,7 @@ function backwardEntries(g: Graph, visible: readonly Node[], spec: Exclude<Backw
       label: override.label ?? `$\\partial ${subject.tex}$`,
       text: override.text ?? card.tex.map((tex) => `$$${tex}$$`).join(''),
       nodes,
-      segment: title,
+      groups: [],
     };
   });
   for (const key of Object.keys(resolved.override ?? {})) {
@@ -214,6 +227,7 @@ function usesOf(prod: readonly Node[]): Node[] {
 interface Unit {
   index: number;
   step: ForwardStep;
+  kind: StepKind;
   prod: Node[];
   use: Node[];
   active: Node[];
@@ -222,6 +236,7 @@ interface Unit {
 class StepsImpl implements Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
+  readonly groups: readonly StepGroup[];
   current = 0;
   focus = 0;
   private entries: Entry[] = [];
@@ -239,6 +254,7 @@ class StepsImpl implements Steps {
   ) {
     this.reverse = spec.backward === 'reverse';
     this.modules = Object.freeze([...(spec.modules ?? [])]);
+    this.groups = Object.freeze([...(spec.groups ?? [])]);
     for (const module of spec.modules ?? []) {
       this.byModule.set(module.id, module);
       this.foldState.set(module.id, module.folded);
@@ -246,12 +262,12 @@ class StepsImpl implements Steps {
     this.visible = Object.freeze(byId(spec.forward.flatMap((step) => toList(step.show))));
     if (this.reverse) {
       spec.forward.forEach((step, index) => {
-        if (step.kind === 'inputs') return;
         const show = toList(step.show);
+        const kind: StepKind = show.length > 0 && this.visible.every((n) => show.includes(n)) ? 'overview' : show.length > 0 && show.every(isLeafLike) ? 'inputs' : 'op';
         const computed = show.filter((n) => !isLeafLike(n));
-        const prod = computed.length > 0 ? computed : show;
-        const use = usesOf(prod).filter((n) => !prod.includes(n));
-        this.units.push({ index, step, prod, use, active: step.active === undefined ? unique([...prod, ...use]) : toList(step.active) });
+        const prod = kind === 'op' && computed.length > 0 ? computed : show;
+        const use = kind === 'op' ? usesOf(prod).filter((n) => !prod.includes(n)) : [];
+        this.units.push({ index, step, kind, prod, use, active: step.active === undefined ? unique([...prod, ...use]) : toList(step.active) });
       });
       this.rebuild();
     } else {
@@ -276,7 +292,7 @@ class StepsImpl implements Steps {
     const entries: Entry[] = [];
     const overview = this.overviewSpec();
     const all = new Set(this.visible);
-    entries.push(this.entry(withNotes({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, overview.notes), all, all));
+    entries.push(this.entry(withNotes({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], groups: [] }, overview.notes), all, all));
     const shown = new Set<Node>();
     spec.forward.forEach((step, k) => {
       const show = toList(step.show);
@@ -286,14 +302,13 @@ class StepsImpl implements Steps {
         dir: 'forward',
         index: k + 1,
         id: `f:${k}`,
-        kind: step.kind ?? 'op',
+        kind: 'op',
         title: step.title,
         label: step.label ?? step.title,
         text: step.text ?? '',
         nodes: show,
-        segment: step.segment ?? step.label ?? step.title,
+        groups: step.groups ?? [],
       };
-      if (step.sub !== undefined) info.sub = step.sub;
       if (step.module !== undefined) info.module = step.module;
       entries.push(this.entry(withNotes(withMarks(info, step), step.notes), new Set(shown), active));
     });
@@ -316,40 +331,32 @@ class StepsImpl implements Steps {
   }
 
   private rebuild(): void {
-    const spec = this.spec;
     const g = this.graph;
     const explainer = explain(g);
     const loss = g.findLoss();
     const all = new Set(this.visible);
-    const overview = this.overviewSpec();
     const entries: Entry[] = [];
-    entries.push(this.entry(withNotes({ dir: 'forward', index: 0, id: 'f:overview', kind: 'overview', title: overview.title, label: overview.label, text: overview.text, nodes: [...this.visible], segment: overview.label }, overview.notes), all, all));
     const revealed = new Set<Node>();
-    const inputs = spec.forward.find((step) => step.kind === 'inputs');
-    if (inputs !== undefined) {
-      const show = toList(inputs.show);
-      show.forEach((n) => revealed.add(n));
-      const label = inputs.label ?? inputs.title;
-      entries.push(this.entry(withNotes({ dir: 'forward', index: 1, id: 'f:inputs', kind: 'inputs', title: inputs.title, label, text: inputs.text ?? '', nodes: show, segment: inputs.segment ?? label }, inputs.notes), new Set(revealed), new Set(show)));
-    }
     const groups: { unit?: Unit; module?: StepModule }[] = [];
     for (const unit of this.units) {
-      const folded = this.outerFolded(unit.step.module);
+      const folded = unit.kind === 'op' ? this.outerFolded(unit.step.module) : undefined;
       if (folded === undefined) groups.push({ unit });
       else if (groups[groups.length - 1]?.module !== folded) groups.push({ module: folded });
     }
     const moduleUse = (m: StepModule) => unique([...m.inputs, ...m.params]);
     const forwardIds = new Map<(typeof groups)[number], string>();
+    const groupsOf = (m: StepModule): string[] => {
+      const first = this.units.find((u) => this.outerFolded(u.step.module) === m)?.step.groups ?? [];
+      const own = first.indexOf(m.id);
+      return own < 0 ? first : first.slice(0, own + 1);
+    };
     for (const group of groups) {
       const index = entries.length;
-      let info: StepInfo;
-      let prod: Node[];
-      let active: Node[];
       if (group.module !== undefined) {
         const m = group.module;
-        prod = m.outputs;
-        active = unique([...prod, ...moduleUse(m)]);
-        info = {
+        const prod = m.outputs;
+        const active = unique([...prod, ...moduleUse(m)]);
+        const info: StepInfo = {
           dir: 'forward',
           index,
           id: `F:${m.id}`,
@@ -358,36 +365,40 @@ class StepsImpl implements Steps {
           label: m.forward.label ?? m.title,
           text: m.forward.text ?? '',
           nodes: prod,
-          segment: m.segment,
+          groups: groupsOf(m),
           module: m.id,
         };
-        if (m.sub !== undefined) info.sub = m.sub;
         const marks = this.units.filter((u) => this.outerFolded(u.step.module) === m).flatMap((u) => u.step.marks ?? []);
         if (marks.length > 0) info.marks = marks;
-      } else {
-        const unit = group.unit as Unit;
-        const step = unit.step;
-        prod = unit.prod;
-        active = unit.active;
-        info = {
-          dir: 'forward',
-          index,
-          id: `f:${unit.index}`,
-          kind: 'op',
-          title: step.title,
-          label: step.label ?? step.title,
-          text: step.text ?? '',
-          nodes: prod,
-          segment: step.segment ?? step.label ?? step.title,
-        };
-        if (step.sub !== undefined) info.sub = step.sub;
-        if (step.module !== undefined) info.module = step.module;
-        withNotes(withMarks(info, step), step.notes);
+        prod.forEach((n) => revealed.add(n));
+        active.filter(isLeafLike).forEach((n) => revealed.add(n));
+        forwardIds.set(group, info.id);
+        entries.push(this.entry(info, new Set(revealed), new Set(active)));
+        continue;
       }
-      prod.forEach((n) => revealed.add(n));
-      active.filter(isLeafLike).forEach((n) => revealed.add(n));
+      const unit = group.unit as Unit;
+      const step = unit.step;
+      const info: StepInfo = {
+        dir: 'forward',
+        index,
+        id: `f:${unit.index}`,
+        kind: unit.kind,
+        title: step.title,
+        label: step.label ?? step.title,
+        text: step.text ?? '',
+        nodes: unit.kind === 'overview' ? [...this.visible] : unit.prod,
+        groups: step.groups ?? [],
+      };
+      if (step.module !== undefined) info.module = step.module;
+      withNotes(withMarks(info, step), step.notes);
       forwardIds.set(group, info.id);
-      entries.push(this.entry(info, new Set(revealed), new Set(active)));
+      if (unit.kind === 'overview') {
+        entries.push(this.entry(info, all, all));
+        continue;
+      }
+      unit.prod.forEach((n) => revealed.add(n));
+      unit.active.filter(isLeafLike).forEach((n) => revealed.add(n));
+      entries.push(this.entry(info, new Set(revealed), new Set(unit.active)));
     }
     const received = new Set<Node>();
     let position = 0;
@@ -403,25 +414,28 @@ class StepsImpl implements Steps {
         const m = group.module;
         const recv = moduleUse(m).filter(hasGrad);
         if ((recv.length === 0 || !m.outputs.some(hasGrad)) && position > 0) continue;
-        const info: Omit<StepInfo, 'index' | 'dir'> = {
-          id: `B:${m.id}`,
-          forwardId: forwardIds.get(group),
-          kind: 'module',
-          title: m.backward.title ?? `穿过 ${m.title}（已折叠）`,
-          label: m.backward.label ?? `$\\partial$ ${m.title}`,
-          text: m.backward.text ?? '',
-          nodes: [],
-          segment: m.segment,
-          module: m.id,
-        };
-        if (m.sub !== undefined) info.sub = m.sub;
-        pushBackward(info, recv);
+        pushBackward(
+          {
+            id: `B:${m.id}`,
+            forwardId: forwardIds.get(group),
+            kind: 'module',
+            title: m.backward.title ?? `穿过 ${m.title}（已折叠）`,
+            label: m.backward.label ?? `$\\partial$ ${m.title}`,
+            text: m.backward.text ?? '',
+            nodes: [],
+            groups: groupsOf(m),
+            module: m.id,
+          },
+          recv,
+        );
         continue;
       }
       const unit = group.unit as Unit;
+      if (unit.kind !== 'op') continue;
       const recv = unit.use.filter(hasGrad);
       if ((recv.length === 0 || !unit.prod.some(hasGrad)) && position > 0) continue;
       const subject = recv[0] ?? unit.prod[0];
+      if (subject === undefined) continue;
       const override = unit.step.backward ?? {};
       const title = override.title ?? `$\\partial\\ell/\\partial ${subject.tex}$`;
       const info: Omit<StepInfo, 'index' | 'dir'> = {
@@ -432,21 +446,17 @@ class StepsImpl implements Steps {
         label: override.label ?? `$\\partial ${subject.tex}$`,
         text: override.text ?? (override.title === undefined ? explainer.nodeCard(subject, 'backward').tex.map((tex) => `$$${tex}$$`).join('') : ''),
         nodes: [],
-        segment: unit.step.segment ?? unit.step.label ?? unit.step.title,
+        groups: unit.step.groups ?? [],
       };
-      if (unit.step.sub !== undefined) info.sub = unit.step.sub;
       if (unit.step.module !== undefined) info.module = unit.step.module;
       pushBackward(info, recv);
     }
-    const back = spec.overview?.backward;
-    if (back !== undefined) {
-      const backLabel = back.label ?? overview.label;
+    for (const unit of this.units) {
+      const back = unit.step.backward;
+      if (unit.kind !== 'overview' || back === undefined) continue;
+      const label = back.label ?? unit.step.label ?? unit.step.title;
       entries.push(
-        this.entry(
-          { dir: 'backward', index: position + 1, id: 'b:overview', kind: 'overview', title: back.title ?? overview.title, label: backLabel, text: back.text ?? '', nodes: [...this.visible], segment: backLabel },
-          all,
-          all,
-        ),
+        this.entry({ dir: 'backward', index: ++position, id: `b:${unit.index}`, forwardId: `f:${unit.index}`, kind: 'overview', title: back.title ?? unit.step.title, label, text: back.text ?? '', nodes: [...this.visible], groups: [] }, all, all),
       );
     }
     this.setEntries(entries);
@@ -540,7 +550,7 @@ class StepsImpl implements Steps {
   setAllFolded(folded: boolean): void {
     let changed = false;
     for (const module of this.byModule.values()) {
-      if (this.foldState.get(module.id) === folded) continue;
+      if (!module.foldable || this.foldState.get(module.id) === folded) continue;
       this.foldState.set(module.id, folded);
       changed = true;
     }

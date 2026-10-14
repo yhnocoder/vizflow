@@ -1,5 +1,7 @@
 import { DTYPES, type Dtype, type Graph, Node, ProgramBuilder } from '../../autograd';
 import type { CameraOptions, LayoutTree } from '../../scene3d';
+import type { LevelSpec } from '../../scene3d/levels';
+import { layoutOf } from './layout';
 import { isLayoutOp } from '../../scene3d/layout';
 import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
@@ -13,12 +15,13 @@ import { StepCompiler } from './steps';
 import { Texts } from './texts';
 import { describe } from './expressions';
 import { Call, Eager, type Env, Instance, type Num, PageFunction, Result, type Value } from './types';
-import { checkKeys, isNum, isRecord, num, record } from './util';
+import { checkKeys, fieldSpec, isNum, isRecord, num, record } from './util';
 
 export interface CompiledPage {
   graph: Graph;
   steps: StepsSpec;
   tree: LayoutTree;
+  levels: LevelSpec;
   modules: PageModule[];
   panels: PanelItem[];
   sections: SectionItem[];
@@ -216,7 +219,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   const bound = new Map<string, Num>();
   for (const [name, spec] of Object.entries(inputs)) {
     const at = child(inputsWhere, inputs, name);
-    const field = record(spec, at, `input '${name}'`);
+    const field = record(fieldSpec(spec), at, `input '${name}'`);
     const entry = c.data.get(name);
     if (entry === undefined) fail(dataWhere, `data needs '${name}', an input of ${root.name}`);
     if (field.type !== 'tensor' || !Array.isArray(field.shape)) continue;
@@ -238,7 +241,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   for (const [name, value] of bound) call.bound.set(name, value);
   for (const [name, spec] of Object.entries(inputs)) {
     const at = child(inputsWhere, inputs, name);
-    const field = record(spec, at, `input '${name}'`);
+    const field = record(fieldSpec(spec), at, `input '${name}'`);
     const entry = c.data.get(name) as DataEntry;
     const node = rootInput(c, name, field, entry, at);
     c.rootInputs.add(node);
@@ -254,19 +257,23 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   c.checkOutputs(call);
 
   const sc = new StepCompiler(c);
-  const entries = sc.compileCall(call);
-  const { forward, modules } = sc.flatten(entries);
+  const trees = sc.compileCall(call);
+  const { forward, groups, braces } = sc.flatten(trees);
   placeLeaves(c, forward);
-  sc.markFormulas(entries, modules);
+  const others = forward.filter((s) => !sc.allSteps.has(s));
+  const drawn = [...new Set(others.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])))];
+  for (const step of sc.allSteps) step.show = [...new Set([...drawn, ...(Array.isArray(step.show) ? step.show : [step.show])])];
+  sc.markFormulas(trees);
   checkShown(c, sc, forward);
-  const inputsStep = sc.special.inputs;
-  const steps: StepsSpec = { forward: inputsStep === undefined ? forward : [inputsStep, ...forward], backward: 'reverse', modules };
-  if (sc.special.overview !== undefined) steps.overview = sc.special.overview;
+  const visible = new Set(forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])));
+  const modules = sc.modules(visible);
+  const steps: StepsSpec = { forward, groups, braces, backward: 'reverse', modules };
   const env = c.rootEnv();
   const compiled: CompiledPage = {
     graph: c.g,
     steps,
-    tree: { kind: 'module', children: c.g.nodes.filter((n) => steps.forward.some((s) => (Array.isArray(s.show) ? s.show : [s.show]).includes(n))).map((node) => ({ kind: 'node', node })) },
+    tree: { kind: 'module', children: c.g.nodes.filter((n) => visible.has(n)).map((node) => ({ kind: 'node', node })) },
+    levels: layoutOf(c, call),
     modules,
     panels: compilePanels(c, env),
     sections: compileSections(c, env, sectionSources),

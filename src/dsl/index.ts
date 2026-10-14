@@ -2,7 +2,7 @@ import '../autograd/ops';
 import { type CompiledPage, compileSpec } from './compile';
 import { defaultRead } from './load';
 import { parseYaml } from './source';
-import type { PageFile } from './types';
+import type { Page } from './types';
 
 export interface CompileOptions {
   base?: string;
@@ -13,7 +13,7 @@ export type { CompiledPage } from './compile';
 export { DslError, parseYaml } from './source';
 export type * from './types';
 
-export function compilePage(spec: PageFile, options: CompileOptions = {}): Promise<CompiledPage> {
+export function compilePage(spec: Page, options: CompileOptions = {}): Promise<CompiledPage> {
   return compileSpec(spec, options.base ?? '<page>', options);
 }
 

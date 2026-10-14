@@ -10,12 +10,12 @@ args:
   num_heads: dim
   num_kv_heads: dim
 inputs:
-  x: { type: tensor, shape: [T, d_model], dtype: dtype }
-  mask: { type: tensor, shape: [T, T], dtype: dtype }
-  cos: { type: tensor, shape: [T, d_head], dtype: dtype }
-  sin: { type: tensor, shape: [T, d_head], dtype: dtype }
+  x: [T, d_model]
+  mask: [T, T]
+  cos: [T, d_head]
+  sin: [T, d_head]
 outputs:
-  att: { type: tensor, shape: [T, d_model], dtype: dtype }
+  att: [T, d_model]
 
 init:
   q_proj:
@@ -88,15 +88,15 @@ formula: |-
   \begin{aligned}
   \step{apply_rotary_pos_emb.*}{\viz{qr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
-  \step{q_norm.*}{\mathrm{norm}(}
+  \step{qk_norm.*}{\mathrm{norm}(}
   \step{q_proj}{\viz{x}{\viz{q_proj.weight}}^{\top}}
-  \step{q_norm.*}{)}
+  \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{apply_rotary_pos_emb.*}{\viz{kr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
-  \step{k_norm.*}{\mathrm{norm}(}
+  \step{qk_norm.*}{\mathrm{norm}(}
   \step{k_proj}{\viz{x}{\viz{k_proj.weight}}^{\top}}
-  \step{k_norm.*}{)}
+  \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{v_proj}{\viz{v}}&
   \step{v_proj}{=\viz{x}{\viz{v_proj.weight}}^{\top}}\\
@@ -118,10 +118,13 @@ fold:
       一次反向算出 attention 全部参数的梯度和 $\pfl{\viz{x}}$。反向乘的是 Jacobian 的转置，块下三角转置以后是块上三角，所以位置 $s$ 的输入从所有 $t\ge s$ 的输出收到梯度。
       $$\pfl{\viz{x}}={{ x.grad | matrix:3 }}$$
 
+layout:
+  merge:
+    - [q_norm, k_norm]
+
 steps:
   - id: q_proj
-    brace: { title: q_proj, subtitle: nn.Linear }
-    show: q_proj
+    subtitle: nn.Linear
     label: '$\viz{q}$'
     title: q_proj
     text: |
@@ -137,8 +140,7 @@ steps:
         $$\pf{\ell}{W_q^{\top}}={\viz{x}}^{\top}\pfl{\viz{q}},\qquad \pfl{\viz{x}}\mathrel{+}=\pfl{\viz{q}}\,W_q$$
         第一个式子展开是 $\sum_t\mathbf{x}_t^{\top}\pfl{\mathbf{q}_t}$，每个位置贡献一个外积，矩阵乘法把它们加在一起。view 的反向只是把形状改回去。
   - id: k_proj
-    brace: { title: k_proj, subtitle: nn.Linear }
-    show: k_proj
+    subtitle: nn.Linear
     label: '$\viz{k}$'
     title: k_proj
     text: |
@@ -152,8 +154,7 @@ steps:
       text: |
         和 q_proj 相同：$\pf{\ell}{W_k^{\top}}={\viz{x}}^{\top}\pfl{\viz{k}}$，$\viz{x}$ 再加上 $\pfl{\viz{k}}W_k$。
   - id: v_proj
-    brace: { title: v_proj, subtitle: nn.Linear }
-    show: v_proj
+    subtitle: nn.Linear
     label: '$\viz{v}$'
     title: v_proj
     text: |
@@ -166,14 +167,14 @@ steps:
         $\viz{x}$ 用在三个投影里，$x_{t,k}$ 影响三个投影的全部 ${{ num_heads * d_head }}+{{ num_kv_heads * d_head }}+{{ num_kv_heads * d_head }}$ 个输出分量，所以它的梯度是三路之和：
         $$\pfl{\viz{x}}=\pfl{\viz{q}}W_q+\pfl{\viz{k}}W_k+\pfl{\viz{v}}W_v={{ x.grad | matrix:3 }}$$
   - id: qk_norm
-    show: [q_norm, k_norm]
+    show: zip(q_norm, k_norm)
     title: q_norm $\cdot$ k_norm
     subtitle: Qwen3RMSNorm，按 head_dim
     formula: |-
-      \step{q_norm.scale}{\viz{qn}=\viz{q_norm.weight}\odot}
-      \step{q_norm.normalize}{\viz{q}\big/}
-      \step{q_norm.rms}{\sqrt{\operatorname{mean}\big(
-      \step{q_norm.square}{ {\viz{q}}^{2}}\big)+\epsilon}}
+      \step{scale}{\viz{qn}=\viz{q_norm.weight}\odot}
+      \step{normalize}{\viz{q}\big/}
+      \step{rms}{\sqrt{\operatorname{mean}\big(
+      \step{square}{ {\viz{q}}^{2}}\big)+\epsilon}}
     fold:
       label: '$\viz{qn},\ \viz{kn}$'
       title: q_norm 和 k_norm
@@ -185,55 +186,51 @@ steps:
         title: '$\pfl{\boldsymbol{\gamma}},\ \pfl{\viz{q}},\ \pfl{\viz{k}}$'
         text: |
           $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }}$$
-    steps:
-      q_norm:
-        steps:
-          square:
-            title: q_norm、k_norm：逐元素平方
-            text: |
-              <code>self.q_norm(... .view(hidden_shape))</code>：Qwen3 在 RoPE 之前对 q、k 的每个 head 各做一次 RMSNorm，范围是 $d_h$ 个分量。这是 Qwen3 相对 Qwen2 新增的一步。
+    edit:
+      square:
+        title: q_norm、k_norm：逐元素平方
+        text: |
+          <code>self.q_norm(... .view(hidden_shape))</code>：Qwen3 在 RoPE 之前对 q、k 的每个 head 各做一次 RMSNorm，范围是 $d_h$ 个分量。这是 Qwen3 相对 Qwen2 新增的一步。
 
-              它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
-              $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|\gamma_{q,c}|\,\max_c|\gamma_{k,c}|$$
-              后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
-              $${\viz{q}}^{2}={{ q_norm.sq | matrix:2 }},\qquad {\viz{k}}^{2}={{ k_norm.sq | matrix:2 }}$$
-            backward:
-              title: '$\pfl{\viz{q}},\ \pfl{\viz{k}}$'
-              text: |
-                两路相加后，每个 head 交回的梯度和这个 head 的输入垂直（$\epsilon$ 可忽略时），推导与 RMSNorm 的一般情形相同，只是 $d$ 换成 $d_h$。
-                $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{k}}={{ k.grad | matrix:3 }}$$
-          mean:
-            text: |
-              每个位置、每个 head 对 $d_h$ 个平方取平均。q 有 {{ num_heads }} 个 head，所以每个位置有 {{ num_heads }} 个 $\mathrm{ms}^{q}$，k 相应地有 {{ num_kv_heads }} 个。
-              $$\viz{q_norm.ms}={{ q_norm.ms | matrix:3 }},\qquad \viz{k_norm.ms}={{ k_norm.ms | matrix:3 }}$$
-          rms:
-            title: 每个 head 的均方根倒数
-            text: |
-              $$\viz{q_norm.r}={{ q_norm.r | matrix:3 }},\qquad \viz{k_norm.r}={{ k_norm.r | matrix:3 }}$$
-            backward:
-              title: '$\pfl{\viz{q_norm.ms}},\ \pfl{\viz{k_norm.ms}}$'
-              text: |
-                局部导数是 $-r^3/2$，下一步再除以 $d_h$ 分给这一组的每个平方。
-                $$\pfl{\viz{q_norm.ms}}={{ q_norm.ms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.ms}}={{ k_norm.ms.grad | matrix:3 }}$$
-          normalize:
-            text: |
-              每个分量乘上自己那一组的 $r$。这个 $r$ 只由同一个位置、同一个 head 的分量算出，所以每个分量只和这些分量有关。
-              $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
-            backward:
-              text: |
-                $$\pfl{\viz{q_norm.r}}={{ q_norm.r.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.r}}={{ k_norm.r.grad | matrix:3 }}$$
-          scale:
-            title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
-            text: |
-              $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，所以每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
-              $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
-            backward:
-              title: '$\pfl{\viz{q_norm.weight}},\ \pfl{\viz{k_norm.weight}}$'
-              text: |
-                $\viz{q_norm.weight}$ 的梯度把 {{ num_heads }} 个 head、$T$ 个位置的贡献加起来，一共 ${{ num_heads }}\times T$ 组。
-                $$\pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.weight}}={{ k_norm.weight.grad | matrix:3 }}$$
-      k_norm:
-        beside: q_norm
+          它的作用要从分数的大小看。归一化后每个 head 的 $\hat{\mathbf{q}}$ 模长约为 $\sqrt{d_h}$，乘上 $\viz{q_norm.weight}$ 以后，由 Cauchy 不等式：
+          $$|\bar{\mathbf{q}}\cdot\bar{\mathbf{k}}|\le\|\bar{\mathbf{q}}\|\,\|\bar{\mathbf{k}}\|\le d_h\,\max_c|\gamma_{q,c}|\,\max_c|\gamma_{k,c}|$$
+          后面的 RoPE 是旋转，不改变模长，所以这个上界在 RoPE 之后仍然成立。也就是说，无论投影权重变得多大，进入 softmax 的分数都有一个由 $\boldsymbol{\gamma}$ 控制的上界，所以 softmax 不会因为 q、k 变大而饱和。
+          $${\viz{q}}^{2}={{ q_norm.sq | matrix:2 }},\qquad {\viz{k}}^{2}={{ k_norm.sq | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{q}},\ \pfl{\viz{k}}$'
+          text: |
+            两路相加后，每个 head 交回的梯度和这个 head 的输入垂直（$\epsilon$ 可忽略时），推导与 RMSNorm 的一般情形相同，只是 $d$ 换成 $d_h$。
+            $$\pfl{\viz{q}}={{ q.grad | matrix:3 }},\qquad \pfl{\viz{k}}={{ k.grad | matrix:3 }}$$
+      mean:
+        text: |
+          每个位置、每个 head 对 $d_h$ 个平方取平均。q 有 {{ num_heads }} 个 head，所以每个位置有 {{ num_heads }} 个 $\mathrm{ms}^{q}$，k 相应地有 {{ num_kv_heads }} 个。
+          $$\viz{q_norm.ms}={{ q_norm.ms | matrix:3 }},\qquad \viz{k_norm.ms}={{ k_norm.ms | matrix:3 }}$$
+      rms:
+        title: 每个 head 的均方根倒数
+        text: |
+          $$\viz{q_norm.r}={{ q_norm.r | matrix:3 }},\qquad \viz{k_norm.r}={{ k_norm.r | matrix:3 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.ms}},\ \pfl{\viz{k_norm.ms}}$'
+          text: |
+            局部导数是 $-r^3/2$，下一步再除以 $d_h$ 分给这一组的每个平方。
+            $$\pfl{\viz{q_norm.ms}}={{ q_norm.ms.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.ms}}={{ k_norm.ms.grad | matrix:3 }}$$
+      normalize:
+        text: |
+          每个分量乘上自己那一组的 $r$。这个 $r$ 只由同一个位置、同一个 head 的分量算出，所以每个分量只和这些分量有关。
+          $$\hat{\mathbf{q}}={{ q_norm.xh | matrix:2 }}$$
+        backward:
+          text: |
+            $$\pfl{\viz{q_norm.r}}={{ q_norm.r.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.r}}={{ k_norm.r.grad | matrix:3 }}$$
+      scale:
+        title: 乘上 $\viz{q_norm.weight}$ 和 $\viz{k_norm.weight}$
+        text: |
+          $\viz{q_norm.weight}$ 长度为 $d_h$，被 {{ num_heads }} 个 query head 和 $T$ 个位置共用，所以每个分量作用于 ${{ num_heads }}\times T$ 个元素。之后 <code>.transpose(1, 2)</code> 把 head 维换到位置维前面，形状变成 $H\times T\times d_h$，这样后面的运算可以按 head 分批进行。
+          $$\viz{qn}={{ qn | matrix:2 }},\qquad \viz{kn}={{ kn | matrix:2 }}$$
+        backward:
+          title: '$\pfl{\viz{q_norm.weight}},\ \pfl{\viz{k_norm.weight}}$'
+          text: |
+            $\viz{q_norm.weight}$ 的梯度把 {{ num_heads }} 个 head、$T$ 个位置的贡献加起来，一共 ${{ num_heads }}\times T$ 组。
+            $$\pfl{\viz{q_norm.weight}}={{ q_norm.weight.grad | matrix:3 }},\qquad \pfl{\viz{k_norm.weight}}={{ k_norm.weight.grad | matrix:3 }}$$
   - id: apply_rotary_pos_emb
     fold:
       append: |
@@ -243,7 +240,7 @@ steps:
         text: |
           反向乘的是旋转矩阵的转置，它也是旋转，所以梯度的模长不变，方向转回 $-t\,\omega_c$。
           $$\pfl{\viz{qn}}={{ qn.grad | matrix:3 }},\qquad \pfl{\viz{kn}}={{ kn.grad | matrix:3 }}$$
-    steps:
+    edit:
       cos:
         append: |
           <code>cos, sin = position_embeddings</code> 是模型开头 rotary_emb 算好的表，每一层用同一组。q 有 {{ num_heads }} 个 head，k 有 {{ num_kv_heads }} 个，都乘同一张表。HF 的表带 batch 维，要先 <code>cos.unsqueeze(1)</code> 加一个 head 维才能和 q 广播。而这一页没有 batch 维，所以表直接按广播相乘。
@@ -253,9 +250,9 @@ steps:
           - at: 'sin[0, 1]'
             text: '$t=0$ 时 $\sin 0=0$，这一行全为 0'
   - id: eager_attention_forward
-    inline: true
-    brace: { title: eager_attention_forward, subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$' }
-    steps:
+    subtitle: 'repeat_kv $\cdot$ softmax $\cdot$ $P\mathbf{v}$'
+    flat: true
+    edit:
       krep:
         append: |
           这里 $H={{ num_heads }}$，$H_{kv}={{ num_kv_heads }}$，$n_{\mathrm{rep}}={{ num_heads // num_kv_heads }}$。
@@ -291,8 +288,7 @@ steps:
       title: '$\pfl{\viz{attn_output}}$'
       text: 把梯度按列切回 {{ num_heads }} 个 head。
   - id: o_proj
-    brace: { title: o_proj, subtitle: nn.Linear }
-    show: o_proj
+    subtitle: nn.Linear
     label: o_proj
     title: o_proj
     text: |

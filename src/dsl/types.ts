@@ -1,20 +1,20 @@
 export type Expression = string;
 export type Reference = string;
+export type Path = string;
 export type TemplateText = string;
 export type Latex = string;
-export type ModuleList = `list[${string}]`;
-export type LoopBinding = `${string} = ${string}[${string}]`;
 export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64' | 'fp8_e4m3' | 'fp8_e5m2' | 'fp16' | 'bf16' | 'fp32' | 'fp64';
 export type Scalar = string | number | boolean;
 export type Value = Scalar | Value[] | ExpressionValue;
 export type Dimension = number | Expression;
 export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
 export type ArgDeclaration = ArgType | ArgField;
+export type ModuleList = `list[${string}]`;
+export type LoopBinding = `${string} = ${string}[${string}]`;
 export type ArgValue = Expression | number | boolean;
 export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>)[];
-export type InputDeclaration = TensorField | ListField;
+export type Declaration = Dimension[] | TensorField | ListField;
 export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
-export type Show = Reference | Reference[] | ShowAll | ShowInputs | ShowProducer;
 export type Step = NamedStep | LoopStep;
 export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel;
 
@@ -38,7 +38,7 @@ export interface ListField {
   dtype: 'str' | TensorDtype | Expression;
 }
 
-export interface PageFile {
+export interface Page {
   title: string;
   camera?: Camera;
   import?: Record<string, string>;
@@ -46,7 +46,7 @@ export interface PageFile {
   model: string;
   config: PageConfig;
   data: Record<string, Value>;
-  modules?: Record<string, Module>;
+  modules: Record<string, Module>;
   panels?: Panel[];
   sections?: Section[];
 }
@@ -76,13 +76,14 @@ export interface Camera {
 export interface Module {
   import?: Record<string, string>;
   args?: Record<string, ArgDeclaration>;
-  inputs: Record<string, InputDeclaration>;
-  outputs: Record<string, InputDeclaration>;
+  inputs: Record<string, Declaration>;
+  outputs: Record<string, Declaration>;
   init?: Initializers;
   forward: Assignment[];
   tex?: Record<Reference, Latex>;
   formula?: Latex;
   fold?: Fold;
+  layout?: Layout;
   steps?: Step[];
   unshown?: Reference[];
 }
@@ -92,19 +93,17 @@ export interface ModuleFile extends Module {
 }
 
 export interface Initializers {
-  [name: string]: ModuleInitializer | Record<string, Weight | Buffer> | undefined;
-  weights?: Record<string, Weight>;
-  buffers?: Record<string, Buffer>;
+  [name: string]: ModuleInitializer | Record<string, TensorInit> | undefined;
+  weights?: Record<string, TensorInit>;
+  buffers?: Record<string, TensorInit>;
 }
 
-export interface Weight {
+export interface TensorInit {
   shape: Dimension[];
+  dtype?: TensorDtype | Expression;
   init?: 'ones' | 'zeros' | 'normal' | 'uniform';
+  value?: Expression;
   present?: Expression;
-}
-
-export interface Buffer extends TensorField {
-  value: Expression;
 }
 
 export interface ModuleInstance {
@@ -120,52 +119,53 @@ export interface ModuleListInstance {
 }
 
 export interface Assignment {
-  [resultName: string]: Expression;
+  [name: string]: Expression;
 }
 
-export interface ShowAll {
-  all: true;
+export interface Layout {
+  place?: Record<Reference, Placement>;
+  merge?: Reference[][];
 }
 
-export interface ShowInputs {
-  inputs?: boolean;
-  parameters?: boolean;
-}
-
-export interface ShowProducer {
-  producer_of: Reference;
+export interface Placement {
+  with?: Reference;
+  before?: Reference;
+  after?: Reference;
+  left?: Reference;
+  right?: Reference;
 }
 
 export interface Explanation {
   label?: TemplateText;
   title?: TemplateText;
-  subtitle?: TemplateText;
   text?: TemplateText;
   append?: TemplateText;
 }
 
-export type Backward = Omit<Explanation, 'subtitle'>;
+export interface Backward extends Explanation {
+  notes?: Note[];
+}
 
-export interface Fold extends Backward {
+export interface Fold extends Explanation {
   backward?: Backward;
 }
 
 export interface StepOptions extends Explanation {
-  show?: Show;
-  segment?: TemplateText;
-  brace?: Brace;
-  notes?: Note[];
+  show?: Expression | Expression[];
+  subtitle?: TemplateText;
+  expand?: boolean | Expression;
+  flat?: boolean;
+  brace?: boolean;
   formula?: Latex;
-  folded?: boolean;
-  beside?: Reference;
-  inline?: boolean;
+  notes?: Note[];
   fold?: Fold;
   backward?: Backward;
-  steps?: Record<string, StepOptions>;
+  edit?: Record<Path, StepOptions>;
 }
 
 export interface NamedStep extends StepOptions {
   id: string;
+  steps?: Step[];
   loop?: never;
 }
 
@@ -173,22 +173,17 @@ export interface LoopStep {
   id: string;
   loop: LoopBinding;
   defaults: StepOptions;
-  rules?: StepRule[];
+  rules?: LoopRule[];
 }
 
-export interface StepRule extends StepOptions {
+export interface LoopRule extends StepOptions {
   at: number;
-}
-
-export interface Brace {
-  title: TemplateText;
-  subtitle?: TemplateText;
 }
 
 export interface Note {
   at: Reference;
   text: TemplateText;
-  side?: 'left' | 'right' | 'above' | 'below';
+  side?: 'left' | 'right';
 }
 
 export interface PanelText {
@@ -260,7 +255,7 @@ export interface RopeDisplay {
   k: Reference;
   rows: [number, number];
   head: number;
-  theta: Expression | number;
+  theta: number;
   d_head: Expression | number;
   positions: number;
 }

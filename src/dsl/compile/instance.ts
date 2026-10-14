@@ -1,5 +1,5 @@
 import { DTYPES, Node, ProgramBuilder } from '../../autograd';
-import { Tensor } from '../../tensor';
+import { type Nested, Tensor } from '../../tensor';
 import type { Ast } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
@@ -7,15 +7,13 @@ import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
 import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, ListCall, type Make, type Member, type Num, Result, type Value } from './types';
 import { templateExpressions, vizReferences } from './template';
-import { checkKeys, isNum, isRecord, join, record } from './util';
+import { checkKeys, fieldSpec, isNum, isRecord, join, record } from './util';
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
-const DEFAULT_INIT = 'uniform';
-const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'steps', 'unshown']);
+const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count']);
-const WEIGHT_KEYS: ReadonlySet<string> = new Set(['shape', 'init', 'present']);
-const BUFFER_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'value']);
+const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'value', 'present']);
 const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -120,9 +118,9 @@ export abstract class Modules extends Expressions {
     for (const [key, spec] of Object.entries(init)) {
       const at = child(initWhere, init, key);
       if (key === 'weights') {
-        for (const [weight, decl] of Object.entries(record(spec, at, 'weights'))) this.weight(instance, weight, decl, child(at, spec as object, weight));
+        for (const [weight, decl] of Object.entries(record(spec, at, 'weights'))) this.tensorMember(instance, weight, decl, child(at, spec as object, weight), 'param');
       } else if (key === 'buffers') {
-        for (const [buffer, decl] of Object.entries(record(spec, at, 'buffers'))) this.buffer(instance, buffer, decl, child(at, spec as object, buffer));
+        for (const [buffer, decl] of Object.entries(record(spec, at, 'buffers'))) this.tensorMember(instance, buffer, decl, child(at, spec as object, buffer), 'buffer');
       } else {
         this.childMember(instance, key, spec, at);
       }
@@ -144,9 +142,9 @@ export abstract class Modules extends Expressions {
     });
   }
 
-  private weight(instance: Instance, name: string, decl: unknown, at: Where): void {
-    const spec = record(decl, at, `weight '${name}'`);
-    checkKeys(spec, WEIGHT_KEYS, at);
+  private tensorMember(instance: Instance, name: string, decl: unknown, at: Where, kind: 'param' | 'buffer'): void {
+    const spec = record(decl, at, `'${name}'`);
+    checkKeys(spec, TENSOR_KEYS, at);
     if (spec.present !== undefined) {
       const present = this.expression(spec.present, this.instanceEnv(instance, child(at, spec, 'present')));
       if (typeof present !== 'boolean') fail(child(at, spec, 'present'), `present must be True or False, got ${describe(present)}`);
@@ -155,42 +153,34 @@ export abstract class Modules extends Expressions {
         return;
       }
     }
+    if ((spec.init === undefined) === (spec.value === undefined)) fail(at, `'${name}' needs exactly one of init or value`);
     const env = this.instanceEnv(instance, child(at, spec, 'shape'));
     const shape = this.shape(spec.shape, env);
-    const init = spec.init ?? DEFAULT_INIT;
-    if (typeof init !== 'string' || !INITS.has(init)) fail(child(at, spec, 'init'), `init must be one of ${[...INITS].join(', ')}`);
-    const path = join(instance.path, name);
-    const tex = this.memberTex(instance, name);
-    let node: Node;
-    try {
-      node = this.g.param(path, shape.map((d) => this.dimSpec(d)), this.initValues(init, shape.map((d) => d.toy)), { tex, elem: elemOf(tex) });
-    } catch (error) {
-      return fail(at, (error as Error).message);
+    let dtype = this.g.dtype;
+    if (spec.dtype !== undefined) {
+      const declared = this.expression(spec.dtype, { ...env, where: child(at, spec, 'dtype') });
+      if (!isDtype(declared)) fail(child(at, spec, 'dtype'), `dtype must be one of ${DTYPES.join(', ')}`);
+      dtype = declared.dtype;
     }
-    this.define(instance, name, node, at);
-    this.nodes.set(path, node);
-  }
-
-  private buffer(instance: Instance, name: string, decl: unknown, at: Where): void {
-    const spec = record(decl, at, `buffer '${name}'`);
-    checkKeys(spec, BUFFER_KEYS, at);
-    if (spec.type !== 'tensor') fail(child(at, spec, 'type'), "a buffer needs type: tensor");
-    const env = this.instanceEnv(instance, child(at, spec, 'shape'));
-    const shape = this.shape(spec.shape, env);
-    const dtype = this.expression(spec.dtype, { ...env, where: child(at, spec, 'dtype') });
-    if (!isDtype(dtype)) fail(child(at, spec, 'dtype'), `dtype must be one of ${DTYPES.join(', ')}`);
-    const valueWhere = child(at, spec, 'value');
-    const computed = this.computed(spec.value, { ...env, where: valueWhere }, new ProgramBuilder(), false);
-    if (!(computed instanceof Eager) && !isNum(computed)) fail(valueWhere, `the value is ${describe(computed)}, not a tensor`);
-    const values = computed instanceof Eager ? computed.value : new Tensor([], [computed.toy]);
-    if (computed instanceof Eager && computed.dtype !== dtype.dtype) fail(valueWhere, `the value has dtype ${computed.dtype}, but the buffer declares ${dtype.dtype}`);
-    const actual = values.shape;
-    if (actual.join(',') !== shape.map((d) => d.toy).join(',')) fail(valueWhere, `the value has shape (${actual.join(', ')}), but the buffer declares (${shape.map((d) => d.toy).join(', ')})`);
+    let values: Nested;
+    if (spec.init !== undefined) {
+      if (typeof spec.init !== 'string' || !INITS.has(spec.init)) fail(child(at, spec, 'init'), `init must be one of ${[...INITS].join(', ')}`);
+      values = this.initValues(spec.init, shape.map((d) => d.toy));
+    } else {
+      const valueWhere = child(at, spec, 'value');
+      const computed = this.computed(spec.value, { ...env, where: valueWhere }, new ProgramBuilder(), false);
+      if (!(computed instanceof Eager) && !isNum(computed)) fail(valueWhere, `the value is ${describe(computed)}, not a tensor`);
+      const tensor = computed instanceof Eager ? computed.value : new Tensor([], [computed.toy]);
+      if (computed instanceof Eager && computed.dtype !== dtype) fail(valueWhere, `the value has dtype ${computed.dtype}, but '${name}' declares ${dtype}`);
+      if (tensor.shape.join(',') !== shape.map((d) => d.toy).join(',')) fail(valueWhere, `the value has shape (${tensor.shape.join(', ')}), but '${name}' declares (${shape.map((d) => d.toy).join(', ')})`);
+      values = tensor.toNested();
+    }
     const path = join(instance.path, name);
     const tex = this.memberTex(instance, name);
     let node: Node;
     try {
-      node = this.g.buffer(path, shape.map((d) => this.dimSpec(d)), values.toNested(), { dtype: dtype.dtype, tex, elem: elemOf(tex) });
+      const make = kind === 'param' ? this.g.param.bind(this.g) : this.g.buffer.bind(this.g);
+      node = make(path, shape.map((d) => this.dimSpec(d)), values, { dtype, tex, elem: elemOf(tex) });
     } catch (error) {
       return fail(at, (error as Error).message);
     }
@@ -346,7 +336,7 @@ export abstract class Modules extends Expressions {
   }
 
   bindField(call: Call, name: string, node: Node, spec: unknown, env: Env, mismatch: (message: string) => never, bind: boolean): void {
-    const field = record(spec, env.where, `'${name}'`);
+    const field = record(fieldSpec(spec), env.where, `'${name}'`);
     checkKeys(field, FIELD_KEYS, env.where);
     if (field.type === 'list') return;
     if (field.type !== 'tensor') fail(child(env.where, field, 'type'), 'type must be tensor or list');
@@ -409,27 +399,29 @@ export abstract class Modules extends Expressions {
     const options = (value: unknown, where: Where): void => {
       each(value, where, (item, at) => {
         const key = at.key as string;
-        if (key === 'steps') each(item, at, options);
+        if (key === 'steps' && Array.isArray(item)) item.forEach((step, i) => options(step, child(at, item, i)));
+        else if (key === 'edit') each(item, at, options);
         else if (key === 'rules' && Array.isArray(item)) item.forEach((rule, i) => options(rule, child(at, item, i)));
-        else if (key === 'defaults' || key === 'fold' || key === 'backward' || key === 'brace') options(item, at);
+        else if (key === 'defaults' || key === 'fold' || key === 'backward') options(item, at);
+        else if (key === 'flat' || key === 'brace') return;
         else if (key === 'notes' && Array.isArray(item)) item.forEach((note, i) => {
           fields(note, child(at, item, i), ['at']);
           if (isRecord(note)) walk(note.text, child(child(at, item, i), note, 'text'), template);
         });
-        else if (key === 'show' || key === 'beside') walk(item, at, expression);
+        else if (key === 'show' || key === 'expand') walk(item, at, expression);
         else if (key === 'formula') walk(item, at, latex);
         else if (key !== 'id' && key !== 'loop' && key !== 'side') walk(item, at, template);
       });
     };
     each(decl.args, section('args'), (arg, at) => fields(arg, at, ['default']));
-    for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(field, at, ['shape', 'dtype']));
+    for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(fieldSpec(field), at, ['shape', 'dtype']));
     each(decl.init, section('init'), (entry, at) => {
-      if (at.key === 'weights') each(entry, at, (weight, w) => fields(weight, w, ['shape', 'present']));
-      else if (at.key === 'buffers') each(entry, at, (buffer, b) => fields(buffer, b, ['shape', 'dtype', 'value']));
+      if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
       else fields(entry, at, ['args', 'count']);
     });
     walk(decl.forward, section('forward'), expression);
     walk(decl.unshown, section('unshown'), expression);
+    walk(decl.layout, section('layout'), expression);
     walk(decl.tex, section('tex'), latex);
     walk(decl.formula, section('formula'), latex);
     options(decl.fold, section('fold'));
@@ -460,7 +452,12 @@ export abstract class Modules extends Expressions {
       if (call.values.has(name) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
       const alias = this.resultAlias(call, name, env);
       const make: Make = { name, path: alias.path, tex: alias.tex, anon: [] };
+      const before = this.g.nodes.length;
+      const calls = call.children.length;
       const value = this.expression(text, env, make);
+      const inner = call.children.slice(calls);
+      const nested = new Set(inner.flatMap((c) => c.created));
+      call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
       if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor or a module result, got ${describe(value)}`);
       call.values.set(name, value);
       call.results.push(name);

@@ -5,10 +5,14 @@ import { explain } from '../../src/explain';
 import type { SceneController } from '../../src/scene3d/controller';
 import { buildEdges } from '../../src/scene3d/edges';
 import { chunkAxis, elementAt, rowCol } from '../../src/scene3d/layout';
-import { type LevelLayout, levelPlan } from '../../src/scene3d/levels';
+import { type LevelLayout, type LevelSpec, levelPlan } from '../../src/scene3d/levels';
 import type { Renderable } from '../../src/scene3d/renderable';
 import type { StepsSpec } from '../../src/steps';
 import { forEachIndex } from '../../src/tensor';
+
+function linesOf(spec: StepsSpec): LevelSpec {
+  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [] };
+}
 
 const T = 3;
 const H = 2;
@@ -69,10 +73,10 @@ function attention(showTranspose = false) {
   const o = g.reshape(back, [T, H * D], { name: 'o' });
   const att = g.matmul(o, Wo.T, { name: 'att' });
   const loss = g.loss(g.sum(att, null, { name: 'loss' }));
-  const step = (title: string, show: Node[]) => ({ title, segment: 'attn', show });
+  const step = (title: string, show: Node[]) => ({ title, show });
   const spec: StepsSpec = {
     forward: [
-      { title: 'inputs', kind: 'inputs', show: [x, Wq, Wk, Wv, Wo, gq, gk, cos, sin, mask] },
+      { title: 'inputs', show: [x, Wq, Wk, Wv, Wo, gq, gk, cos, sin, mask] },
       step('q_proj', [Wq.T, q_linear]),
       step('k_proj', [Wk.T, k_linear]),
       step('v_proj', [Wv.T, v_linear]),
@@ -96,7 +100,7 @@ function attention(showTranspose = false) {
       step('pv', [pv]),
       step('reshape', [o]),
       step('o_proj', [Wo.T, att]),
-      { title: 'loss', segment: 'loss', show: [loss] },
+      { title: 'loss', show: [loss] },
     ],
     backward: 'reverse',
   };
@@ -105,7 +109,7 @@ function attention(showTranspose = false) {
 }
 
 function resolve(spec: StepsSpec): LevelLayout {
-  return levelPlan(spec).resolve({ folded: () => false, aligned: new Map() });
+  return levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
 }
 
 const blockOf = (layout: LevelLayout, node: Node) => layout.blocks.find((b) => b.node === node && b.copyOf === undefined);
