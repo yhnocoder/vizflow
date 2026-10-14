@@ -132,7 +132,7 @@ interface Segment {
   folded: boolean;
 }
 
-type Item = { kind: 'step'; info: StepInfo; position: number; inner?: boolean } | { kind: 'group'; id: string; name: string; position: number; run: number[]; inner?: boolean };
+type Item = { kind: 'step'; info: StepInfo; position: number } | { kind: 'group'; id: string; name: string; position: number; run: number[] };
 
 export const SEGMENT_PREVIEW_STEPS = 5;
 export const PEEK_ARROW_INSET = 18;
@@ -190,11 +190,13 @@ function Timeline(props: {
       return out;
     };
     const positionsInside = (depth: number) => list.flatMap((info, position) => (inside(depth)(info) ? [position] : []));
-    const items =
+    const items = itemsAt(chain.length, chain.length === 0 ? active.positions : positionsInside(chain.length));
+    const siblings =
       chain.length < 2
-        ? itemsAt(chain.length, chain.length === 0 ? active.positions : positionsInside(chain.length))
-        : itemsAt(chain.length - 1, positionsInside(chain.length - 1)).flatMap((item) => (item.kind === 'group' && item.run.includes(current) ? itemsAt(chain.length, item.run).map((own) => ({ ...own, inner: true })) : [item]));
-    return { dir, segments, all, active, directions, path, items, position: all.indexOf(current) + 1 };
+        ? []
+        : itemsAt(chain.length - 1, positionsInside(chain.length - 1)).flatMap((item) => (item.kind === 'group' ? [{ name: item.name, position: item.position, on: item.run.includes(current) }] : []));
+    const crumbs = siblings.length > 1 ? path.slice(0, -1) : path;
+    return { dir, segments, all, active, directions, crumbs, siblings: siblings.length > 1 ? siblings : [], items, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
   const [peek, setPeek] = createSignal<{ segment: Segment; center: number } | undefined>();
@@ -256,7 +258,7 @@ function Timeline(props: {
         </span>
       </div>
       <div class="vf-tl-path">
-        <For each={view().path}>
+        <For each={view().crumbs}>
           {(crumb, i) => (
             <>
               <Show when={i() > 0}>
@@ -268,6 +270,16 @@ function Timeline(props: {
             </>
           )}
         </For>
+        <Show when={view().siblings.length > 0}>
+          <span class="vf-tl-crumbsep">›</span>
+          <For each={view().siblings}>
+            {(sibling) => (
+              <button type="button" class="vf-tl-crumb vf-tl-sib" aria-current={sibling.on ? 'location' : undefined} onClick={() => steps.go(sibling.position)}>
+                <Rich text={sibling.name} />
+              </button>
+            )}
+          </For>
+        </Show>
       </div>
       <div class="vf-tl-sub">
         <For each={view().items}>
@@ -276,7 +288,6 @@ function Timeline(props: {
               <button
                 type="button"
                 class="vf-st"
-                classList={{ 'vf-st-in': item.inner === true }}
                 aria-current={props.current() === item.position ? 'step' : undefined}
                 onClick={() => steps.go(item.position)}
                 ref={props.label(item.info)}
@@ -284,7 +295,7 @@ function Timeline(props: {
                 {props.plainLabel(item.info)}
               </button>
             ) : (
-              <button type="button" class="vf-st vf-st-group" classList={{ 'vf-st-in': item.inner === true }} onClick={() => steps.go(item.position)}>
+              <button type="button" class="vf-st vf-st-group" onClick={() => steps.go(item.position)}>
                 <Rich text={item.name} />
                 <span class="vf-st-more">›</span>
               </button>

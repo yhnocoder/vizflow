@@ -78,7 +78,7 @@ describe('mountSteps timeline', () => {
     expect(bars[2].style.getPropertyValue('--vf-fr')).toBe('67%');
     expect(bars[1].classList.contains('vf-done')).toBe(true);
     expect([...el.querySelectorAll('.vf-tl-crumb')].map(text)).toEqual(['self_attn', 'q_norm $\\cdot$ k_norm']);
-    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-in:b', 'vf-st vf-st-in:c']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:b', 'vf-st:c']);
     expect(el.querySelector('.vf-tl-sub [aria-current="step"]')!.textContent).toBe('b');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
@@ -160,6 +160,27 @@ describe('mountSteps timeline', () => {
     expect(steps.list[steps.current].forwardId).toBe(steps.list[forward].id);
     tabs[0].click();
     expect(steps.current).toBe(forward);
+  });
+
+  it('lists the sibling modules in the last level of the path', () => {
+    const steps = timelineSteps();
+    const groups: string[][] = [[], [], ['layer', 'norm'], ['layer', 'norm'], ['layer'], ['layer', 'attn']];
+    steps.list.forEach((info: StepInfo, i) => Object.assign(info, { groups: info.dir === 'forward' ? (groups[i] ?? []) : [] }));
+    Object.assign(steps, {
+      groups: [
+        { id: 'layer', title: 'layer' },
+        { id: 'norm', title: 'norm' },
+        { id: 'attn', title: 'attn' },
+      ],
+    });
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    steps.go(3);
+    expect([...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}:${n.getAttribute('aria-current') ?? ''}`)).toEqual(['layer:', 'norm:location', 'attn:']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map(text)).toEqual(['a', 'b']);
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[1].click();
+    expect(steps.current).toBe(5);
   });
 
   it('keeps the flat track when the steps have no modules', () => {
