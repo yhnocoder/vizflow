@@ -183,11 +183,6 @@
   background: linear-gradient(to right, var(--pos) var(--vf-fr), color-mix(in srgb, var(--pos) 30%, var(--line)) var(--vf-fr));
 }
 
-.vf-tb:hover {
-  outline: 1px solid var(--ink);
-  outline-offset: 1px;
-}
-
 .vf-tl-pos {
   flex: none;
   margin-left: auto;
@@ -964,16 +959,17 @@ vf-figure {
   bottom: calc(100% + 12px);
   z-index: 5;
   width: max-content;
-  min-width: 160px;
-  max-width: min(300px, 100%);
-  padding: 10px 12px 11px;
+  min-width: 180px;
+  max-width: min(320px, 100%);
+  padding: 9px 5px 5px;
   background: var(--surface);
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(20, 20, 19, 0.12);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 1px 2px rgba(20, 20, 19, 0.06), 0 12px 32px rgba(20, 20, 19, 0.14);
   font-size: 12.5px;
   line-height: 1.45;
   pointer-events: none;
+  transition: left 90ms ease-out;
   animation: vf-peek-in 120ms ease-out;
 }
 
@@ -982,11 +978,12 @@ vf-figure {
   position: absolute;
   top: calc(100% + 0.5px);
   left: var(--vf-peek-arrow, 50%);
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   background: var(--surface);
-  border-right: 1px solid var(--line-strong);
-  border-bottom: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  border-bottom-right-radius: 2px;
   transform: translate(-50%, -50%) rotate(45deg);
 }
 
@@ -1000,7 +997,8 @@ vf-figure {
 .vf-peek-head {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 12px;
+  padding: 0 9px 7px;
 }
 
 .vf-peek-name {
@@ -1022,16 +1020,17 @@ vf-figure {
 
 .vf-peek-steps {
   list-style: none;
-  margin: 7px 0 0;
-  padding: 7px 0 0;
+  margin: 0;
+  padding: 4px 0 0;
   border-top: 1px solid var(--line);
   display: grid;
-  gap: 3px;
+  gap: 1px;
 }
 
 .vf-peek-steps li {
   position: relative;
-  padding-left: 14px;
+  padding: 3px 9px 3px 24px;
+  border-radius: 7px;
   color: var(--muted);
   white-space: nowrap;
   overflow: hidden;
@@ -1041,12 +1040,13 @@ vf-figure {
 .vf-peek-steps li::before {
   content: "";
   position: absolute;
-  left: 2px;
-  top: 0.62em;
+  left: 10px;
+  top: 50%;
   width: 5px;
   height: 5px;
   border-radius: 50%;
   border: 1px solid var(--line-strong);
+  transform: translateY(-50%);
 }
 
 .vf-peek-steps li.vf-done::before {
@@ -1063,12 +1063,31 @@ vf-figure {
   border-color: var(--pos);
 }
 
+.vf-peek-steps li.vf-hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--ink) 7%, var(--surface));
+}
+
 .vf-peek-steps li.vf-peek-more {
-  font-size: 11.5px;
+  padding-top: 1px;
+  padding-bottom: 1px;
+  font-size: 11px;
 }
 
 .vf-peek-steps li.vf-peek-more::before {
   display: none;
+}
+
+.vf-tb-mark {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--ink);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  transition: left 90ms ease-out;
 }
 
 .vf-cost {

@@ -205,12 +205,22 @@ function Timeline(props: {
     return { dir, segments, all, active, directions, crumbs, siblings, own, position: all.indexOf(current) + 1 };
   });
   const dirName = () => (view().dir === 'forward' ? '前向' : '反向');
-  const [peek, setPeek] = createSignal<{ segment: Segment; center: number } | undefined>();
+  const [peek, setPeek] = createSignal<{ segment: Segment; center: number; hovered: number } | undefined>();
   let bar!: HTMLDivElement;
-  const openPeek = (segment: Segment, el: HTMLElement) => {
+  const pointedStep = (segment: Segment, el: HTMLElement, clientX: number | undefined) => {
+    const own = el.getBoundingClientRect();
+    const count = segment.positions.length;
+    if (clientX === undefined || own.width <= 0) return Math.max(0, segment.positions.indexOf(props.current()));
+    return Math.min(count - 1, Math.max(0, Math.floor(((clientX - own.left) / own.width) * count)));
+  };
+  const openPeek = (segment: Segment, el: HTMLElement, clientX?: number) => {
     const box = bar.getBoundingClientRect();
     const own = el.getBoundingClientRect();
-    setPeek({ segment, center: own.left + own.width / 2 - box.left });
+    const hovered = pointedStep(segment, el, clientX);
+    const center = own.left + ((hovered + 0.5) / segment.positions.length) * own.width - box.left;
+    const open = peek();
+    if (open !== undefined && open.segment === segment && open.hovered === hovered && open.center === center) return;
+    setPeek({ segment, center, hovered });
   };
   const closePeek = () => setPeek(undefined);
 
@@ -247,15 +257,17 @@ function Timeline(props: {
                   classList={{ 'vf-on': on(), 'vf-done': done() }}
                   aria-label={plain(segment.name)}
                   style={{ flex: `${segment.positions.length} 1 0`, ...(on() ? { '--vf-fr': `${fraction().toFixed(0)}%` } : {}) }}
-                  onClick={() => steps.go(segment.positions[0])}
-                  onPointerEnter={(ev) => openPeek(segment, ev.currentTarget)}
+                  onClick={(ev) => steps.go(segment.positions[ev.detail > 0 ? pointedStep(segment, ev.currentTarget, ev.clientX) : 0])}
+                  onPointerEnter={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
+                  onPointerMove={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
                   onFocus={(ev) => openPeek(segment, ev.currentTarget)}
                   onBlur={closePeek}
                 />
               );
             }}
           </For>
-          <Show when={peek()}>{(p) => <SegmentPeek steps={steps} segment={p().segment} center={p().center} current={props.current()} bar={bar} />}</Show>
+          <Show when={peek()}>{(p) => <span class="vf-tb-mark" style={{ left: `${p().center}px` }} />}</Show>
+          <Show when={peek()}>{(p) => <SegmentPeek steps={steps} segment={p().segment} center={p().center} hovered={p().hovered} current={props.current()} bar={bar} />}</Show>
         </div>
         <span class="vf-tl-pos" title={`${dirName()}第 ${view().position} 步，共 ${view().all.length} 步`}>
           {view().position}
@@ -313,11 +325,11 @@ function Timeline(props: {
   );
 }
 
-function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; current: number; bar: HTMLElement }) {
+function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; hovered: number; current: number; bar: HTMLElement }) {
   const list = props.steps.list;
   const positions = () => props.segment.positions;
   const index = () => positions().indexOf(props.current);
-  const start = () => Math.max(0, Math.min(index() - Math.floor(SEGMENT_PREVIEW_STEPS / 2), positions().length - SEGMENT_PREVIEW_STEPS));
+  const start = () => Math.max(0, Math.min(props.hovered - Math.floor(SEGMENT_PREVIEW_STEPS / 2), positions().length - SEGMENT_PREVIEW_STEPS));
   const shown = () => positions().slice(start(), start() + SEGMENT_PREVIEW_STEPS);
   const rest = () => positions().length - start() - shown().length;
   const state = () => {
@@ -353,7 +365,7 @@ function SegmentPeek(props: { steps: Steps; segment: Segment; center: number; cu
           </Show>
           <For each={shown()}>
             {(position) => (
-              <li classList={{ 'vf-on': position === props.current, 'vf-done': position < props.current }}>
+              <li classList={{ 'vf-on': position === props.current, 'vf-done': position < props.current, 'vf-hover': position === positions()[props.hovered] }}>
                 <Rich text={list[position].label} />
               </li>
             )}

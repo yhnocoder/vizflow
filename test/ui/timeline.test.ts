@@ -107,12 +107,26 @@ describe('mountSteps timeline', () => {
     const peek = el.querySelector('.vf-peek')!;
     expect(text(peek.querySelector('.vf-peek-name'))).toBe('self_attn');
     expect(text(peek.querySelector('.vf-peek-count'))).toBe('第 2 / 3 步');
-    expect([...peek.querySelectorAll('li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on:b', ':c']);
+    expect([...peek.querySelectorAll('li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on vf-hover:b', ':c']);
     bars[3].dispatchEvent(new Event('pointerenter'));
     expect(text(el.querySelector('.vf-peek-name'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
     expect(text(el.querySelector('.vf-peek-count'))).toBe('1 步');
     el.querySelector('.vf-tl-bar')!.dispatchEvent(new Event('pointerleave'));
     expect(el.querySelector('.vf-peek')).toBeNull();
+  });
+
+  it('follows the pointer inside a segment and jumps to the pointed step on click', () => {
+    const steps = timelineSteps();
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    steps.go(3);
+    const bar = [...el.querySelectorAll<HTMLButtonElement>('.vf-tb')][2];
+    bar.getBoundingClientRect = () => ({ left: 0, right: 90, width: 90, top: 0, bottom: 6, height: 6, x: 0, y: 0, toJSON: () => ({}) });
+    bar.dispatchEvent(new MouseEvent('pointermove', { clientX: 80, bubbles: true }));
+    expect([...el.querySelectorAll('.vf-peek li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on:b', 'vf-hover:c']);
+    bar.dispatchEvent(new MouseEvent('click', { clientX: 80, detail: 1, bubbles: true }));
+    expect(steps.current).toBe(4);
   });
 
   it('switches direction with the tabs and counts positions inside a direction', () => {
