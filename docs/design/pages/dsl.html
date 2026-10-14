@@ -361,7 +361,7 @@ data:
   <li><code>init</code> 是 <code>ones</code>、<code>zeros</code>、<code>normal</code> 或 <code>uniform</code>。<code>uniform</code> 取 $U(-1,1)$，<code>normal</code> 取标准正态，都保留两位小数。</li>
   <li><code>value</code> 是编译时求值的表达式，不能读张量。</li>
   <li><code>present</code> 是一个 bool 参数，为假时不创建这个张量，<code>forward</code> 里它的名字是 <code>None</code>，对应 HF 的 <code>self.bias = None</code>。</li>
-  <li>参数路径沿 <code>init</code> 树拼接，与 <code>state_dict</code> 的键一致，例如 <code>model.layers[0].self_attn.q_proj.weight</code>。</li>
+  <li>参数路径沿 <code>init</code> 树拼接，与 <code>state_dict</code> 的键一致，例如 <code>model.<wbr>layers[0].<wbr>self_attn.<wbr>q_proj.<wbr>weight</code>。</li>
 </ul>
 <p class="hint">规则 10：<code>weights</code> 和 <code>buffers</code> 没写 <code>dtype</code> 时用页面的 <code>config.dtype</code>；写了 <code>value</code> 时，它的 dtype 和形状要和声明一致，不做隐式转换。<code>init</code> 的随机数按 <code>config.seed</code>，默认 0。</p>
 
