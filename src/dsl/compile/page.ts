@@ -2,6 +2,7 @@ import { DTYPES, type Dtype, type Graph, Node, ProgramBuilder } from '../../auto
 import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
+import { LEVEL_SCHEMES, type LevelScheme } from '../../scene3d/levels';
 import { isLayoutOp } from '../../scene3d/layout';
 import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
@@ -37,7 +38,7 @@ export interface PageSequence {
   set(ids: number[]): void;
 }
 
-export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections']);
+export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections', 'layout']);
 const PAGE_ONLY = new Set(['seed', 'tokenizer', 'real', 'dtype']);
 const DEFAULT_PAGE_DTYPE: Dtype = 'fp32';
 const DEFAULT_SEED = 0;
@@ -278,7 +279,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     graph: c.g,
     steps,
     tree: { kind: 'module', children: c.g.nodes.filter((n) => visible.has(n)).map((node) => ({ kind: 'node', node })) },
-    levels: layoutOf(c, call),
+    levels: layoutOf(c, call, levelSchemeOf(c)),
     modules,
     panels: compilePanels(c, env),
     sections: compileSections(c, env, sectionSources),
@@ -289,6 +290,16 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   const sequence = pageSequence(c, root, env);
   if (sequence !== undefined) compiled.sequence = sequence;
   return compiled;
+}
+
+function levelSchemeOf(c: PageCompiler): LevelScheme {
+  if (c.page.layout === undefined) return 'lines';
+  const where = child(c.pageWhere, c.page, 'layout');
+  const layout = record(c.page.layout, where, 'layout');
+  checkKeys(layout, new Set(['levels']), where);
+  const levels = layout.levels ?? 'lines';
+  if (typeof levels !== 'string' || !(LEVEL_SCHEMES as readonly string[]).includes(levels)) fail(child(where, layout, 'levels'), `layout.levels is one of ${LEVEL_SCHEMES.join(', ')}`);
+  return levels as LevelScheme;
 }
 
 function rootInput(c: PageCompiler, name: string, field: Record<string, unknown>, entry: DataEntry, at: Where): Node {

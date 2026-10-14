@@ -1,5 +1,8 @@
 import { Node } from '../../autograd';
-import type { LevelSpec } from '../../scene3d/levels';
+import type { LevelScheme, LevelSpec } from '../../scene3d/levels';
+import type { Place } from '../../scene3d/schemes';
+
+type Spec = LevelSpec & { places: Place[] };
 import { type Where, child, fail } from '../source';
 import { describe } from './expressions';
 import type { PageCompiler } from './page';
@@ -11,13 +14,13 @@ const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
 
 type Placement = (typeof PLACE_KEYS)[number];
 
-export function layoutOf(c: PageCompiler, root: Call): LevelSpec {
-  const spec: LevelSpec = { lines: [], sides: [], merges: [] };
+export function layoutOf(c: PageCompiler, root: Call, scheme: LevelScheme = 'lines'): LevelSpec {
+  const spec: Spec = { scheme, lines: [], sides: [], merges: [], places: [] };
   spec.lines = levelsOf(c, root, spec);
   return spec;
 }
 
-function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
+function levelsOf(c: PageCompiler, call: Call, spec: Spec): Node[][] {
   const def = call.instance.def;
   const where = child(def.where, def.decl, 'layout');
   const layout = record(def.decl.layout, where, 'layout');
@@ -67,6 +70,7 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
     if (keys.length !== 1) fail(at, `place '${name}' takes one of ${PLACE_KEYS.join(', ')}`);
     const key = keys[0];
     const target = nodeIn(c, call, placement[key], child(at, placement, key));
+    spec.places.push({ node, key, of: target });
     const from = levels.findIndex((level) => level.includes(node));
     if (levels.findIndex((level) => level.includes(target)) < 0) fail(child(at, placement, key), `'${String(placement[key])}' is not computed in the forward of ${def.name}`);
     if (node === target) fail(at, `'${name}' cannot be placed relative to itself`);
