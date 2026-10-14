@@ -388,10 +388,12 @@ data:
     M: { with: position_ids }       # 和 position_ids 同一层，左右自动排
     x: { left: y }                  # 同一层，在 y 左边；还有 right
     z: { after: w }                 # 在 w 后面一层；还有 before
+    weight: { right: y }            # weight 和 buffer 也可以放，只能用 with、left、right
   merge:
     - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画</code></pre>
 <ul>
-  <li><code>place</code> 的键和值都是这个模块 <code>forward</code> 里算出的张量，每项只写一个方向。<code>left</code>、<code>right</code>、<code>with</code> 放进目标所在的层，横向位置与已有的张量重叠时向外挪开。</li>
+  <li><code>place</code> 的值是这个模块 <code>forward</code> 里算出的张量；键是算出的张量，或者 <code>init</code> 里的 weight、buffer。每项只写一个方向。<code>left</code>、<code>right</code>、<code>with</code> 放进目标所在的层，横向位置与已有的张量重叠时向外挪开。</li>
+  <li>weight 和 buffer 没有自己的层，只能用 <code>with</code>、<code>left</code>、<code>right</code>。没写 <code>place</code> 时，它们画在第一次用到它们的那一层。做 matmul 的权重画成这个 matmul 的矩阵，<code>place</code> 不能移动它，写了会报错。</li>
   <li><code>merge</code> 的两个调用必须是同一个模块、各调用一次。两边的第 $k$ 层合成一层，左边的调用画在左侧，合并后的层放在后调用的那一行的位置。</li>
 </ul>
 <p class="hint">规则 4：<code>merge</code> 只影响位置，不会让两边的步骤一起亮；一起亮要在 <code>steps</code> 里写 <code>zip</code>。</p>

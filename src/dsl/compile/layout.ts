@@ -68,9 +68,14 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
     const key = keys[0];
     const target = nodeIn(c, call, placement[key], child(at, placement, key));
     const from = levels.findIndex((level) => level.includes(node));
-    if (from < 0) fail(at, `'${name}' is not computed in the forward of ${def.name}`);
     if (levels.findIndex((level) => level.includes(target)) < 0) fail(child(at, placement, key), `'${String(placement[key])}' is not computed in the forward of ${def.name}`);
     if (node === target) fail(at, `'${name}' cannot be placed relative to itself`);
+    if (from < 0 && node.kind !== 'op') {
+      if (key === 'before' || key === 'after') fail(at, `'${name}' is a ${node.kind}; place it on a level with with, left or right`);
+      spec.sides.push({ node, side: key, of: target });
+      continue;
+    }
+    if (from < 0) fail(at, `'${name}' is not computed in the forward of ${def.name}`);
     levels[from] = levels[from].filter((n) => n !== node);
     const to = levels.findIndex((level) => level.includes(target));
     if (key === 'before') levels.splice(to, 0, [node]);
@@ -93,6 +98,6 @@ function callIn(c: PageCompiler, call: Call, ref: unknown, where: Where): Call {
 
 function nodeIn(c: PageCompiler, call: Call, ref: unknown, where: Where): Node {
   const value = c.reference(ref, c.callEnv(call, where));
-  if (!(value instanceof Node)) fail(where, `'${String(ref)}' is ${describe(value)}; place takes tensors computed in this forward`);
+  if (!(value instanceof Node)) fail(where, `'${String(ref)}' is ${describe(value)}; place takes tensors, weights and buffers`);
   return value;
 }

@@ -39,6 +39,7 @@ interface Root {
   config?: string;
   data?: string;
   extra?: string;
+  layout?: string;
 }
 
 function root(spec: Root): string {
@@ -61,6 +62,7 @@ ${spec.init === undefined ? '' : `    init:\n${indent(spec.init, 6)}`}
 ${indent(spec.forward, 6)}
 ${spec.tex === undefined ? '' : `    tex:\n${indent(spec.tex, 6)}`}
 ${spec.unshown === undefined ? '' : `    unshown: ${spec.unshown}`}
+${spec.layout === undefined ? '' : `    layout:\n${indent(spec.layout, 6)}`}
     steps:
 ${indent(spec.steps, 6)}
 `;
@@ -268,6 +270,17 @@ describe('layout', () => {
     const p = await page(root({ forward: '- y: x * 2\n- l: y.mean()', steps: '- id: y\n- { id: again, show: [y, l] }' }));
     const { blocks } = levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
     expect(blocks.filter((b) => b.node === p.nodes.get('y')).length).toBe(1);
+  });
+
+  it('places a weight on the level of the tensor that place names', async () => {
+    const init = 'weights:\n  g: { shape: [d], init: ones }';
+    const forward = '- y: x * g\n- z: y * 2\n- l: z.mean()';
+    const p = await page(root({ init, forward, layout: 'place:\n  g: { right: z }', steps: '- id: y\n- id: z\n- id: l' }));
+    const { blocks } = levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
+    const at = (name: string) => blocks.find((b) => b.node === p.nodes.get(name))!;
+    expect(at('g').elements[0].y).toBeCloseTo(at('z').elements[0].y);
+    expect(Math.min(...at('g').elements.map((e) => e.x))).toBeGreaterThan(Math.max(...at('z').elements.map((e) => e.x)));
+    await expect(page(root({ init, forward, layout: 'place:\n  g: { after: z }', steps: '- id: y\n- id: z\n- id: l' }))).rejects.toThrow(/with, left or right/);
   });
 });
 

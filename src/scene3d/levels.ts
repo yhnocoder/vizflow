@@ -513,14 +513,25 @@ class Plan implements LevelPlan {
     const transposed = new Set(this.visible.filter((n) => n.kind === 'op' && n.op === 'transpose' && isLeafLike(n)).map((n) => n.inputs[0]));
     for (const n of this.visible) {
       if (this.computed.has(n) || this.entryOf.has(n) || n.kind === 'label' || transposed.has(n)) continue;
+      const placed = this.layout.sides.find((s) => s.node === n);
+      if (placed !== undefined) {
+        const of = this.entryOf.get(placed.of);
+        if (of !== undefined) this.entry(n, of.level);
+        continue;
+      }
       const user = this.consumers(n)[0];
       if (user === undefined) continue;
-      const main = this.source(user.inputs[0]) === n ? user : user.inputs[0];
+      const main = user.inputs.find((i) => this.source(i) !== n) ?? user;
       const host = this.entryOf.get(main);
       if (host === undefined) continue;
       const target = this.entryOf.get(user);
       const apart = target !== undefined && this.levels.indexOf(target.level) - this.levels.indexOf(host.level) > 1;
       this.entry(n, apart ? target.level : host.level);
+    }
+    for (const { node, of } of this.layout.sides) {
+      if (node.kind === 'op') continue;
+      const drawn = this.entryOf.get(node) ?? this.visible.map((v) => this.entryOf.get(v)).find((e) => e !== undefined && transposed.has(node) && e.node.inputs[0] === node);
+      if (drawn !== undefined && drawn.level !== this.entryOf.get(of)?.level) throw new Error(`place cannot move '${node.name}': it is drawn as the matrix of the matmul that uses it`);
     }
   }
 
@@ -576,7 +587,8 @@ class Plan implements LevelPlan {
         if (e.kind === 'vector') {
           const user = this.consumers(n)[0];
           const target = this.entryOf.get(user);
-          const host = target?.level === e.level ? target : this.entryOf.get(this.source(user.inputs[0]) === n ? user : user.inputs[0])!;
+          const placed = this.layout.sides.find((side) => side.node === n);
+          const host = placed !== undefined ? this.entryOf.get(placed.of)! : target?.level === e.level ? target : this.entryOf.get(user.inputs.find((i) => this.source(i) !== n) ?? user)!;
           if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.length >= e.cols ? host.offsets.slice(0, e.cols) : consecutive(host.offsets[0] ?? 0, e.cols));
           continue;
         }
