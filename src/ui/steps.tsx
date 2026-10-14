@@ -260,7 +260,7 @@ function Timeline(props: {
                   onClick={(ev) => steps.go(segment.positions[ev.detail > 0 ? pointedStep(segment, ev.currentTarget, ev.clientX) : 0])}
                   onPointerEnter={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
                   onPointerMove={(ev) => openPeek(segment, ev.currentTarget, ev.clientX)}
-                  onFocus={(ev) => openPeek(segment, ev.currentTarget)}
+                  onFocus={(ev) => ev.currentTarget.matches(':focus-visible') && openPeek(segment, ev.currentTarget)}
                   onBlur={closePeek}
                 />
               );

@@ -109,7 +109,8 @@ export class ScenePopups {
   showNodeCard(node: Node, el: HTMLElement): void {
     const c = this.c;
     this.pinned = { node, el };
-    const card = nodeCardElement(c.explainer.nodeCard(node, c.state.dir), this.gridOf(node));
+    const view = c.levelLayout?.drawnAs.get(node);
+    const card = view === undefined ? nodeCardElement(c.explainer.nodeCard(node, c.state.dir), this.gridOf(node)) : nodeCardElement(c.explainer.nodeCard(view, c.state.dir, node), this.gridOf(view));
     this.pop.replaceChildren(card);
     this.pop.hidden = false;
     this.tip.hidden = true;

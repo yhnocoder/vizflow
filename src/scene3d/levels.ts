@@ -146,6 +146,7 @@ export interface LevelLayout {
   lo: number;
   top: number;
   sourceOf: ReadonlyMap<Node, Node>;
+  drawnAs: ReadonlyMap<Node, Node>;
 }
 
 export interface Chip {
@@ -1129,6 +1130,7 @@ class Plan implements LevelPlan {
       lo: 0,
       top,
       sourceOf: this.sourceOf,
+      drawnAs: new Map(this.entries.flatMap((e) => (e.node.shape.length === 3 ? [] : (this.drawnOn.get(e.node) ?? []).filter((v) => v.shape.length === 3).slice(0, 1).map((v) => [e.node, v] as const)))),
     };
   }
 
