@@ -11,11 +11,16 @@ args:
   d_ff: dim
   num_heads: dim
   num_kv_heads: dim
+  attn_implementation: { type: str, default: "'eager'" }
+  num_pages: { type: int, default: None }
+  page_size: { type: int, default: None }
 inputs:
   x: [T, d_model]
   mask: [T, T]
   cos: [T, d_head]
   sin: [T, d_head]
+  write_index: { type: tensor, shape: [T], dtype: int64, optional: true }
+  read_index: { type: tensor, shape: [T], dtype: int64, optional: true }
 outputs:
   out: [T, d_model]
 
@@ -25,7 +30,7 @@ init:
     args: { hidden_size: d_model }
   self_attn:
     use: Qwen3Attention
-    args: [d_model, d_head, num_heads, num_kv_heads]
+    args: [d_model, d_head, num_heads, num_kv_heads, attn_implementation, num_pages, page_size]
   post_attention_layernorm:
     use: Qwen3RMSNorm
     args: { hidden_size: d_model }
@@ -36,7 +41,7 @@ init:
 forward:
   - res: x
   - h: input_layernorm(res)
-  - att: self_attn(h, mask=mask, cos=cos, sin=sin)
+  - att: self_attn(h, mask=mask, cos=cos, sin=sin, write_index=write_index, read_index=read_index)
   - a: res + att
   - n: post_attention_layernorm(a)
   - down: mlp(n)

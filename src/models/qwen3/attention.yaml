@@ -3,21 +3,29 @@ import:
   Qwen3RMSNorm: ./rmsnorm.yaml
   apply_rotary_pos_emb: ./apply-rotary-pos-emb.yaml
   eager_attention_forward: ./eager-attention-forward.yaml
+  eager_paged_attention_forward: ./eager-paged-attention-forward.yaml
 
 args:
   d_model: dim
   d_head: dim
   num_heads: dim
   num_kv_heads: dim
+  attn_implementation: { type: str, default: "'eager'" }
+  num_pages: { type: int, default: None }
+  page_size: { type: int, default: None }
 inputs:
   x: [T, d_model]
   mask: [T, T]
   cos: [T, d_head]
   sin: [T, d_head]
+  write_index: { type: tensor, shape: [T], dtype: int64, optional: true }
+  read_index: { type: tensor, shape: [T], dtype: int64, optional: true }
 outputs:
   att: [T, d_model]
 
-cache: [kr, vt]
+cache:
+  nodes: [kr, vt]
+  if: attn_implementation == 'eager'
 
 init:
   q_proj:
@@ -36,7 +44,13 @@ init:
     use: Qwen3RMSNorm
     args: { hidden_size: d_head }
   apply_rotary_pos_emb: apply_rotary_pos_emb
-  eager_attention_forward: eager_attention_forward
+  eager_attention_forward:
+    use: eager_attention_forward
+    present: attn_implementation == 'eager'
+  eager_paged_attention_forward:
+    use: eager_paged_attention_forward
+    args: [num_pages, page_size]
+    present: attn_implementation == 'paged|eager'
   o_proj:
     use: Linear
     args: { in_features: num_heads * d_head, out_features: d_model, bias: false }
@@ -56,7 +70,7 @@ forward:
   - rotated: apply_rotary_pos_emb(q=qt, k=kt, cos=cos, sin=sin)
   - qr: rotated.q_embed
   - kr: rotated.k_embed
-  - attn_output: eager_attention_forward(q=qr, k=kr, v=vt, mask=mask)
+  - attn_output: "eager_attention_forward(q=qr, k=kr, v=vt, mask=mask) if attn_implementation == 'eager' else eager_paged_attention_forward(q=qr, k=kr, v=vt, mask=mask, write_index=write_index, read_index=read_index)"
   - o: attn_output.reshape(T, num_heads * d_head)
   - att: o_proj(o)
 
@@ -105,7 +119,7 @@ formula: |-
   \step{v_proj}{=\big(\viz{x}{\viz{v_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)}\\
   \step{o_proj}{\viz{att}}&
   \step{o_proj}{=}
-  \step{eager_attention_forward.*}{\operatorname{Attn}(\viz{qr},\viz{kr},\viz{v})}
+  \step{eager_attention_forward.*,eager_paged_attention_forward.*}{\operatorname{Attn}(\viz{qr},\viz{kr},\viz{v})}
   \step{o_proj}{ {\viz{o_proj.weight}}^{\top}}
   \end{aligned}
 fold:
@@ -265,6 +279,8 @@ steps:
         append: |
           位置 0 只能看到自己，所以 $P_{0,0}=1$，它的注意力输出就是 $\mathbf{v}_0$。Qwen3 的 <code>attention_dropout</code> 是 0，所以训练时省去 dropout 也不改变结果。
           $$P^{({{ num_heads - 1 }})}={{ eager_attention_forward.P[num_heads - 1] | matrix:3 }}$$
+  - id: eager_paged_attention_forward
+    subtitle: 'paged|eager：先写缓存，再按位置读出'
   - id: reshape
     show: o
     label: '$\viz{o}$'

@@ -4,6 +4,7 @@ import:
   Qwen3RotaryEmbedding: ./rotary-embedding.yaml
   Qwen3DecoderLayer: ./decoder-layer.yaml
   create_causal_mask: vizflow/nn/create-causal-mask
+  paged_attention_indices: vizflow/nn/paged-attention-indices
 args:
   V: dim
   d_model: dim
@@ -14,9 +15,13 @@ args:
   num_layers: int
   rope_theta: float
   dtype: dtype
+  attn_implementation: { type: str, default: "'eager'" }
+  num_pages: { type: int, default: None }
+  page_size: { type: int, default: None }
 inputs:
   ids: { type: tensor, shape: [T], dtype: int64 }
   position_ids: { type: tensor, shape: [T], dtype: int64, optional: true }
+  block_table: { type: tensor, shape: [_], dtype: int64, optional: true }
 outputs:
   h_norm: [T, d_model]
 
@@ -27,7 +32,7 @@ init:
   layers:
     use: list[Qwen3DecoderLayer]
     count: num_layers
-    args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+    args: [d_model, d_head, d_ff, num_heads, num_kv_heads, attn_implementation, num_pages, page_size]
   norm:
     use: Qwen3RMSNorm
     args: { hidden_size: d_model }
@@ -37,6 +42,10 @@ init:
   create_causal_mask:
     use: create_causal_mask
     args: [dtype]
+  paged_attention_indices:
+    use: paged_attention_indices
+    args: [page_size]
+    present: attn_implementation == 'paged|eager'
 
 forward:
   - e: embed_tokens(ids)
@@ -45,7 +54,10 @@ forward:
   - position_embeddings: rotary_emb(e, position_ids)
   - cos: position_embeddings.cos
   - sin: position_embeddings.sin
-  - h_last: layers(e, mask=M, cos=cos, sin=sin)
+  - indices: "paged_attention_indices(block_table, position_ids) if attn_implementation == 'paged|eager' else None"
+  - write_index: indices.write_index if indices is not None else None
+  - read_index: indices.read_index if indices is not None else None
+  - h_last: layers(e, mask=M, cos=cos, sin=sin, write_index=write_index, read_index=read_index)
   - h_norm: norm(h_last)
 
 tex:
@@ -104,6 +116,9 @@ steps:
       - id: create_causal_mask
         title: create_causal_mask
         subtitle: 按 position_ids 分开打包的序列
+      - id: paged_attention_indices
+        title: 缓存的槽位
+        subtitle: 由块表算出写入和读出的位置
   - id: layers
     loop: layer = layers[i]
 

@@ -1,0 +1,66 @@
+module: paged_attention_indices
+args:
+  page_size: int
+inputs:
+  block_table: { type: tensor, shape: [_], dtype: int64 }
+  position_ids: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  write_index: { type: tensor, shape: [T], dtype: int64 }
+  read_index: { type: tensor, shape: [T], dtype: int64 }
+forward:
+  - write_page: position_ids // page_size
+  - write_offset: position_ids % page_size
+  - write_block: block_table[write_page]
+  - write_index: write_block * page_size + write_offset
+  - read_positions: arange(T)
+  - read_page: read_positions // page_size
+  - read_offset: read_positions % page_size
+  - read_block: block_table[read_page]
+  - read_index: read_block * page_size + read_offset
+tex:
+  block_table: '\mathbf{b}'
+  write_page: '\lfloor t/P\rfloor'
+  write_offset: 't\bmod P'
+  write_block: '\mathbf{b}[\lfloor t/P\rfloor]'
+  write_index: '\mathbf{w}'
+  read_positions: 'j'
+  read_page: '\lfloor j/P\rfloor'
+  read_offset: 'j\bmod P'
+  read_block: '\mathbf{b}[\lfloor j/P\rfloor]'
+  read_index: '\mathbf{r}'
+formula: '\step{write}{\viz{write_index}_t=\viz{block_table}[\lfloor t/P\rfloor]\,P+(t\bmod P)}\quad\step{read}{\viz{read_index}=\big(\viz{block_table}[\lfloor j/P\rfloor]\,P+(j\bmod P)\big)_{j=0}^{T-1}}'
+fold:
+  label: '$\viz{write_index},\ \viz{read_index}$'
+  title: 槽位编号
+  text: |
+    按块表把每个位置换成缓存里的槽位编号。
+    $$\viz{write_index}={{ write_index | matrix:0 }},\qquad \viz{read_index}={{ read_index | matrix:0 }}$$
+  backward:
+    label: '$\viz{write_index}$'
+    title: 槽位编号没有梯度
+    text: 整数常量，没有梯度。
+
+steps:
+  - id: write
+    show: [block_table, write_page, write_offset, write_block, write_index]
+    label: '$\viz{write_index}$'
+    title: 写入的槽位
+    text: |
+      缓存按块（page）分配，每块存 $P={{ page_size }}$ 个位置的 k 和 v。一个请求占哪几块记在它的块表 $\viz{block_table}$ 里，第 $i$ 项是它的第 $i$ 块对应的物理块编号。位置 $t$ 在第 $\lfloor t/P\rfloor$ 块的第 $t\bmod P$ 格，所以它的槽位是
+      $$\viz{write_index}_t=\viz{block_table}[\lfloor t/P\rfloor]\cdot P+(t\bmod P),\qquad \viz{block_table}={{ block_table | matrix:0 }},\qquad \viz{write_index}={{ write_index | matrix:0 }}$$
+      HF 的 <code>FullAttentionCacheAllocator.get_write_indices(request_id, past_length, query_length)</code> 在 CPU 上按同样的规则算出这一步要写的槽位，只包含这一步新送进来的位置：prefill 是 prompt 的全部位置，decode 只有 1 个。
+    backward:
+      label: '$\viz{write_index}$'
+      title: 槽位编号没有梯度
+      text: 整数常量，没有梯度。
+  - id: read
+    show: [read_positions, read_page, read_offset, read_block, read_index]
+    label: '$\viz{read_index}$'
+    title: 读出的槽位
+    text: |
+      <code>get_read_indices(request_id, past_length, query_length)</code> 给出这个请求从位置 0 到当前位置的全部槽位，顺序就是位置的顺序。注意力读出这些槽位以后，k 和 v 又排回位置顺序，后面的计算看不出缓存是分块存放的。
+      $$\viz{read_index}={{ read_index | matrix:0 }}$$
+    backward:
+      label: '$\viz{read_index}$'
+      title: 槽位编号没有梯度
+      text: 整数常量，没有梯度。

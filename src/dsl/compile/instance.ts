@@ -11,7 +11,7 @@ import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, record } fro
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'str', 'list', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
-const CACHE_KEYS: ReadonlySet<string> = new Set(['nodes', 'note']);
+const CACHE_KEYS: ReadonlySet<string> = new Set(['nodes', 'note', 'if']);
 const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown', 'cache']);
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
 const BRANCH_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
@@ -376,6 +376,11 @@ export abstract class Modules extends Expressions {
     const at = child(def.where, decl, 'cache');
     const spec = Array.isArray(decl.cache) ? { nodes: decl.cache } : record(decl.cache, at, 'cache');
     if (!Array.isArray(decl.cache)) checkKeys(spec, CACHE_KEYS, at);
+    if (spec.if !== undefined) {
+      const test = this.expression(spec.if, { ...this.callEnv(call, child(at, spec, 'if')), where: child(at, spec, 'if') });
+      if (typeof test !== 'boolean') fail(child(at, spec, 'if'), `if must be True or False, got ${describe(test)}`);
+      if (!test) return;
+    }
     const listAt = Array.isArray(decl.cache) ? at : child(at, spec, 'nodes');
     if (!Array.isArray(spec.nodes) || spec.nodes.length === 0) fail(listAt, 'cache must be a list of forward names, or { nodes, note }');
     const names = spec.nodes as unknown[];

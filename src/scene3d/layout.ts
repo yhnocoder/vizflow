@@ -221,7 +221,8 @@ const chunkAxes = new WeakMap<Node, number>();
 function derivedChunkAxis(n: Node): number {
   if (n.kind !== 'op') return 0;
   const input = n.inputs[0];
-  const inherited = n.inputs.find((i) => i.shape.length === 3);
+  const cubes = n.inputs.filter((i) => i.shape.length === 3);
+  const inherited = cubes.find((i) => i.kind !== 'op' || i.inputs.length > 0) ?? cubes[0];
   switch (n.op) {
     case 'view':
     case 'reshape':

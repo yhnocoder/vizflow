@@ -1,0 +1,84 @@
+module: eager_paged_attention_forward
+import:
+  eager_attention_forward: ./eager-attention-forward.yaml
+args:
+  num_pages: int
+  page_size: int
+inputs:
+  q: { type: tensor, shape: [num_heads, T, d_head], dtype: dtype }
+  k: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }
+  v: { type: tensor, shape: [num_kv_heads, T, d_head], dtype: dtype }
+  mask: { type: tensor, shape: [T, T], dtype: dtype }
+  write_index: { type: tensor, shape: [T], dtype: int64 }
+  read_index: { type: tensor, shape: [T], dtype: int64 }
+outputs:
+  o: { type: tensor, shape: [T, num_heads, d_head], dtype: dtype }
+
+cache:
+  nodes: [k_cache, v_cache]
+  note: 缓存是按槽位存放的 k_cache 和 v_cache，每个槽位存一个位置在各个 kv head 上的 k 或 v。
+
+init:
+  eager_attention_forward: eager_attention_forward
+
+forward:
+  - key_states: k.transpose(0, 1)
+  - value_states: v.transpose(0, 1)
+  - k_cache: zeros(num_pages * page_size, num_kv_heads, d_head, dtype=k.dtype).index_copy(0, write_index, key_states)
+  - v_cache: zeros(num_pages * page_size, num_kv_heads, d_head, dtype=v.dtype).index_copy(0, write_index, value_states)
+  - key_states_with_cache: k_cache.index_select(0, read_index)
+  - value_states_with_cache: v_cache.index_select(0, read_index)
+  - key: key_states_with_cache.transpose(0, 1)
+  - value: value_states_with_cache.transpose(0, 1)
+  - o: eager_attention_forward(q=q, k=key, v=value, mask=mask)
+
+tex:
+  key_states: '\mathbf{k}'
+  value_states: '\mathbf{v}'
+  k_cache: '\mathbf{K}_{\mathrm{cache}}'
+  v_cache: '\mathbf{V}_{\mathrm{cache}}'
+  key_states_with_cache: '\mathbf{K}_{\mathrm{cache}}[\mathbf{r}]'
+  value_states_with_cache: '\mathbf{V}_{\mathrm{cache}}[\mathbf{r}]'
+  key: '\mathbf{k}'
+  value: '\mathbf{v}'
+  o: '\mathbf{o}'
+
+formula: '\step{write}{\viz{k_cache}[\viz{write_index}]\leftarrow\viz{k}}\quad\step{read}{\viz{key}=\viz{k_cache}[\viz{read_index}]}\quad\step{eager_attention_forward.*}{\viz{o}=\operatorname{softmax}\Big(\frac{\viz{q}{\viz{key}}^{\top}}{\sqrt{d_h}}+\viz{mask}\Big)\viz{value}}'
+fold:
+  label: '$\viz{o}$'
+  title: 分页缓存的注意力
+  text: |
+    先把这一步的 k、v 写进缓存的槽位，再按位置顺序读出这个请求的全部 k、v，然后做普通的注意力。
+    $$\viz{o}={{ o | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{q},\ \partial\viz{k},\ \partial\viz{v}$'
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}},\ \frac{\partial\ell}{\partial \viz{v}}$'
+    text: 推理不求梯度。
+
+steps:
+  - id: layout
+    show: [key_states, value_states]
+    label: '$\viz{key_states}$'
+    title: 换成按位置排列
+    text: |
+      HF 的 <code>eager_paged_attention_forward</code> 第一步调用 <code>cache.update(key_states=key, value_states=value, layer_idx=module.layer_idx, kwargs=kwargs)</code>。<code>PagedAttentionCache.update</code> 先用 <code>x.squeeze(0).transpose(0, 1)</code> 把 k、v 从 $H_{kv}\times T\times d_h$ 换成 $T\times H_{kv}\times d_h$，因为缓存的第 0 维是槽位，一个槽位存一个位置的全部 kv head。
+  - id: write
+    show: [k_cache, v_cache]
+    label: '$\viz{k_cache}[\viz{write_index}]\leftarrow\viz{key_states}$'
+    title: 写入缓存
+    text: |
+      <code>FullAttentionCacheAllocator.update</code> 执行 <code>k_cache.index_copy_(0, write_index, key_states)</code> 和 <code>v_cache.index_copy_(0, write_index, value_states)</code>：第 $i$ 行写到第 ${\viz{write_index}}_i$ 个槽位。缓存在启动时一次分配好，共 {{ num_pages }} 块 $\times$ {{ page_size }} 个槽位，所有请求共用；一个请求的块不必相邻，新的位置写到哪里只由块表决定。
+      $$\viz{write_index}={{ write_index | matrix:0 }}$$
+      这一页只运行一个请求，块表里没有的块在这里一直是 0；实际运行时它们属于同时运行的其他请求，或者空闲。HF 的缓存张量还把同一组各层的 K、V 交错放在同一块里，这一页只画一层的 K 和 V，槽位编号是块号乘 {{ page_size }} 加块内偏移。
+  - id: read
+    show: [key_states_with_cache, value_states_with_cache, key, value]
+    label: '$\viz{k_cache}[\viz{read_index}]$'
+    title: 按位置读出
+    text: |
+      <code>key_states_with_cache = torch.index_select(k_cache, 0, read_index)</code>，value 也一样，然后 <code>transpose(0, 1)</code> 换回 $H_{kv}\times T\times d_h$。读出的第 $j$ 行就是位置 $j$ 的 k，所以后面的注意力和不分页时完全相同。
+
+      prefill 时请求还没有旧的缓存，HF 的 <code>read_index</code> 是空的，<code>update</code> 写完就直接返回这一步算出的 k、v，不再读一遍；decode 时才从缓存读出全部位置。两种做法得到的 k、v 相同，这一页统一画成先写后读。
+  - id: eager_attention_forward
+    title: eager_attention_forward
+    text: |
+      读出以后，HF 的 <code>eager_paged_attention_forward</code> 接着做 <code>repeat_kv</code>、<code>torch.matmul(query, key.transpose(2, 3)) * scaling</code>、加 mask、float32 的 softmax 和 <code>torch.matmul(attn_weights, value)</code>，和 <code>eager_attention_forward</code> 的计算相同，这一页直接调用 eager 的模块。

@@ -15,11 +15,15 @@ args:
   rope_theta: float
   dtype: dtype
   ignore_index: { type: int, default: None }
+  attn_implementation: { type: str, default: "'eager'" }
+  num_pages: { type: int, default: None }
+  page_size: { type: int, default: None }
 inputs:
   tokens: { type: list, dtype: str }
   ids: { type: tensor, shape: [T], dtype: int64 }
   y: { type: tensor, shape: [T], dtype: int64 }
   position_ids: { type: tensor, shape: [T], dtype: int64, optional: true }
+  block_table: { type: tensor, shape: [_], dtype: int64, optional: true }
 outputs:
   z: [T, V]
   loss: { type: tensor, shape: [], dtype: fp32 }
@@ -27,7 +31,7 @@ outputs:
 init:
   model:
     use: Qwen3Model
-    args: [V, d_model, d_head, d_ff, num_heads, num_kv_heads, num_layers, rope_theta, dtype]
+    args: [V, d_model, d_head, d_ff, num_heads, num_kv_heads, num_layers, rope_theta, dtype, attn_implementation, num_pages, page_size]
   lm_head:
     use: Linear
     args: { in_features: d_model, out_features: V, bias: False }
@@ -40,7 +44,7 @@ init:
       args: [ignore_index]
 
 forward:
-  - h_norm: model(ids, position_ids=position_ids)
+  - h_norm: model(ids, position_ids=position_ids, block_table=block_table)
   - hidden_states: h_norm
   - z: lm_head(hidden_states)
   - zf: z.float()
@@ -51,6 +55,8 @@ forward:
 
 tex:
   ids: 'x'
+  block_table: '\mathbf{b}'
+  position_ids: '\mathbf{t}'
   h_norm: '\mathbf{h}_{\mathrm{norm}}'
   hidden_states: '\mathbf{h}'
   z: '\mathbf{z}'

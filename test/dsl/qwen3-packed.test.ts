@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { type CompiledPage, compilePage, parseYaml } from '../../src/dsl';
 import { createSteps } from '../../src/steps';
 import type { Tensor } from '../../src/tensor';
-import { type EncodedTensor, loadFixture, nested } from '../torch/fixtures';
+import { type EncodedTensor, decode, loadFixture, nested } from '../torch/fixtures';
 import { examplesUrl, loadExample, readFileUrl } from './load';
 
 interface PackedFixture {
@@ -45,7 +45,7 @@ describe('qwen3-packed-dsl.yaml against transformers DataCollatorWithFlattening 
   it('matches the logits, the loss and the gradient of every parameter up to the float32 rotary tables', () => {
     const close = (actual: Tensor | null, expected: EncodedTensor, what: string) => {
       expect([...(actual as Tensor).shape], what).toEqual(expected.shape);
-      const far = expected.values.flatMap((e, i) => (Math.abs((actual as Tensor).data[i] - e) <= FLOAT32_TABLES * (1 + Math.abs(e)) ? [] : [`[${i}] ${(actual as Tensor).data[i]} vs ${e}`]));
+      const far = decode(expected.values).flatMap((e, i) => (Math.abs((actual as Tensor).data[i] - e) <= FLOAT32_TABLES * (1 + Math.abs(e)) ? [] : [`[${i}] ${(actual as Tensor).data[i]} vs ${e}`]));
       expect(far, what).toEqual([]);
     };
     close(page.nodes.get('z')!.value, fixture.logits, 'logits');

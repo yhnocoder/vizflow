@@ -594,6 +594,16 @@ class StepsImpl implements Steps {
       const offset = horizons(n).indexOf(h);
       return offset < 0 ? undefined : firstIndex(n, offset);
     };
+    const slotsOf = (n: Node): (number[] & { axis: number }) | undefined => {
+      const firsts = Array.from({ length: T }, (_, h) => at(n, h));
+      if (firsts.some((i) => i === undefined)) return undefined;
+      const known = firsts as number[][];
+      const axis = n.shape.findIndex((_, k) => known.some((i) => i[k] !== known[0][k]));
+      if (axis < 0) return undefined;
+      const slots = known.map((i) => i[axis]);
+      if (slots.every((slot, h) => slot === h)) return undefined;
+      return Object.assign(slots, { axis });
+    };
     const rowStart = (n: Node, row: number) => {
       if (n.shape.length < 2) return undefined;
       const offset = horizons(n).findIndex((h, o) => h === row && o % n.shape[n.shape.length - 1] === 0);
@@ -679,6 +689,15 @@ class StepsImpl implements Steps {
           : `${tex(previous)} 是上一个位置留下的状态，本步只读它一次，算出新的状态 ${tex(latest)} 替换它。状态有 ${sizeOf(c)} 个数，不随序列变长，所以这部分每一步的计算量相同。`;
       }
       const nodes = tex(c.nodes);
+      const slots = slotsOf(c.nodes[0]);
+      if (kind === 'rows' && slots !== undefined) {
+        if (phase === 'prefill') {
+          const written = Array.from({ length: P }, (_, h) => slots[h]).join('、');
+          return `${nodes} 写入缓存。缓存一共 ${c.nodes[0].shape[slots.axis]} 个槽位，prompt 的 ${P} 个位置依次写到第 ${written} 号槽位（从 0 数），同一个请求的槽位不必相邻。之后每个位置都要读前面所有位置的这些值，有了缓存就不必再算。每个 token 在这一层缓存 ${sizeOf(c)} 个数，一个请求占的槽位随序列长度线性增长。`;
+        }
+        const jump = slots[t] !== slots[t - 1] + 1 ? `上一个位置在第 ${slots[t - 1]} 号槽位，这个位置的槽位和它不相邻。` : '';
+        return `前 ${t} 个位置的 ${nodes} 已经在缓存里（暗色），本步只把刚算出的第 ${t + 1} 个位置写到第 ${slots[t]} 号槽位（亮色），其他槽位不变。${jump}这个请求现在占 ${t + 1} 个槽位，每个位置在这一层缓存 ${sizeOf(c)} 个数。`;
+      }
       if (kind === 'window') {
         const width = cache.window(c, T - 1).length;
         return phase === 'prefill'
@@ -706,7 +725,9 @@ class StepsImpl implements Steps {
         const newest = at(node, t);
         const oldest = at(node, decode ? (cache.window(c, t)[0] ?? 0) : 0);
         if (decode && oldest !== undefined) notes.push({ nodes: [node], index: oldest, text: '从缓存读出', side: 'right' });
-        if (newest !== undefined) notes.push({ nodes: [node], index: newest, text: decode ? '本步新算，追加' : '写入缓存', side: 'left' });
+        const slots = slotsOf(node);
+        const written = slots === undefined ? (decode ? '本步新算，追加' : '写入缓存') : `${decode ? '本步新算，' : ''}写入第 ${slots[t]} 号槽位`;
+        if (newest !== undefined) notes.push({ nodes: [node], index: newest, text: written, side: 'left' });
       }
       return notes.slice(0, 4);
     };
@@ -921,7 +942,7 @@ class StepsImpl implements Steps {
               id: `d:${row}:${k}:read`,
               title: `${phase}：从缓存恢复`,
               label: '读缓存',
-              text: `这几步（${readParts.map((part) => part.info.title).join('、')}）只用到缓存中的 ${tex(sources)}，和本步的 query 无关，所以缓存的 ${pos} 行全部参与，每个 decode 步都要把整个缓存读一遍。${weights ? `其中要乘权重矩阵，相当于每一步都对缓存的全部 ${pos} 行重做一次投影。注意力对 key、value 是线性的，推理框架通常把这个权重合并进 query 和输出投影（权重吸收），直接在缓存上计算，省掉这次重算。` : ''}`,
+              text: `这几步（${readParts.map((part) => part.info.title).join('、')}）只用到缓存中的 ${tex(sources)}，和本步的 query 无关，所以缓存中这个序列的 ${pos} 个位置全部参与，每个 decode 步都要把它们读一遍。${weights ? `其中要乘权重矩阵，相当于每一步都对缓存的全部 ${pos} 行重做一次投影。注意力对 key、value 是线性的，推理框架通常把这个权重合并进 query 和输出投影（权重吸收），直接在缓存上计算，省掉这次重算。` : ''}`,
               nodes: unique(readParts.flatMap((part) => part.prod)),
               groups: within(phaseId, readParts),
             },
