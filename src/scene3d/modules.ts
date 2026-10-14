@@ -8,7 +8,7 @@ export interface SceneModule {
   subtitle?: string;
   nodes: Node[];
   side?: 'left' | 'right' | 'outer';
-  inner?: boolean;
+  depth?: number;
   column?: number;
 }
 
@@ -20,6 +20,7 @@ export const BRACE_RADIUS = 0.45;
 export const BRACE_MIN_RADIUS = 0.05;
 export const BRACE_OPACITY = 0.55;
 export const BRACE_LABEL_GAP = 0.6;
+export const BRACE_MIN_ZOOM = 0.1;
 export const BRACE_MIN_SLOPE = 0.2;
 const BRACE_SEGMENTS = 14;
 
@@ -135,16 +136,20 @@ export function braceOffset(brace: Brace, view: Vec3): number {
   return (bx * by * (brace.x - brace.cx) + bz * by * (brace.z - brace.cz)) / Math.max(BRACE_MIN_SLOPE, 1 - by * by);
 }
 
-export function braceTip(brace: Brace, offset = 0): Vec3 {
-  return [brace.x + BRACE_LABEL_GAP * outward(brace), (brace.y0 + brace.y1) / 2 + offset, brace.z];
+export function braceTip(brace: Brace, offset = 0, scale = 1): Vec3 {
+  return [brace.x + BRACE_LABEL_GAP * scale * outward(brace), (brace.y0 + brace.y1) / 2 + offset, brace.z];
 }
 
-export function bracePoints(brace: Brace, offset = 0): number[] {
-  const w = BRACE_WIDTH * outward(brace);
+export function braceScale(zoom: number): number {
+  return 1 / Math.min(1, Math.max(BRACE_MIN_ZOOM, zoom));
+}
+
+export function bracePoints(brace: Brace, offset = 0, scale = 1): number[] {
+  const w = BRACE_WIDTH * scale * outward(brace);
   const y0 = brace.y0 + offset;
   const y1 = brace.y1 + offset;
   const ym = (y0 + y1) / 2;
-  const r = Math.min(BRACE_RADIUS, Math.max(BRACE_MIN_RADIUS, (y1 - y0) / 4));
+  const r = Math.min(BRACE_RADIUS * scale, Math.max(BRACE_MIN_RADIUS, (y1 - y0) / 4));
   const points: number[] = [];
   const segment = (p0: [number, number], c1: [number, number], c2: [number, number], p1: [number, number]) => {
     for (let s = 0; s <= BRACE_SEGMENTS; s++) {

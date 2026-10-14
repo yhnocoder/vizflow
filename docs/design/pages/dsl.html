@@ -438,7 +438,7 @@ data:
 <p>括号框住的张量在布局里不连续时编译报错，报错列出夹在中间的张量：<code>steps: the brace of 'res1' (残差相加) frames tensors that are not next to each other; ... lies between them</code>。这时用 <code>layout</code> 调整位置，或改变步骤的分组。括号按嵌套深度排列：最外层画在右侧，第二层也在右侧更靠近图，更深的画在左侧。</p>
 
 <h3>步骤条</h3>
-<p class="hint">规则 9：步骤条的分组就是步骤树：有子步骤的步骤成为一组，<code>flat: true</code> 的除外。有子步骤的步骤写了 <code>text</code> 时，它自己也是一步，排在子步骤前面。没写 <code>text</code> 时它不占一步。</p>
+<p class="hint">规则 9：步骤条的分组就是步骤树：有子步骤的步骤成为一组，<code>flat: true</code> 的除外。有子步骤的步骤写了 <code>text</code> 时，它自己也是一步，排在子步骤前面。没写 <code>text</code> 时它不占一步。这一步自己不 show 张量，它高亮从外面流进这组步骤的激活：子步骤 show 的张量所读取的、在这组之外、此前已经出现过的计算结果，不含参数、buffer 和输入这类叶子。相机框住这些张量。例如 model.norm 的这一步高亮 $\mathbf{h}_{\mathrm{last}}$，不高亮 $\gamma$。</p>
 <p><code>flat: true</code> 的步骤把子步骤直接放在上一级，步骤条不单独成组，图上不画括号。步骤条第一级的分组是分段，分段内显示最内层分组的标题。</p>
 
 <h3>折叠</h3>

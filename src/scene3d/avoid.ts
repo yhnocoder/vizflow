@@ -59,11 +59,7 @@ export function avoidOverlaps(items: Placement[], bounds?: Box): Adjustment[] {
           }
         }
       }
-      if (found === undefined) {
-        result[i].hidden = true;
-        continue;
-      }
-      const [dx, dy] = found;
+      const [dx, dy] = found ?? [0, 0];
       result[i] = { dx, dy, hidden: false };
       placed.push({ box: shifted(item.box, dx, dy) });
     } else if (item.hideOnOverlap) {

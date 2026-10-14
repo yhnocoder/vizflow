@@ -134,12 +134,19 @@ export class Label {
     this.el.style.transform = transform;
   }
 
+  hasFlag(className: string): boolean {
+    return this.el.classList.contains(className);
+  }
+
   setFlag(className: string, on: boolean): void {
     if (this.el.classList.contains(className) === on) return;
     this.el.classList.toggle(className, on);
     this.size = undefined;
   }
 }
+
+export const IDLE_FLAG = 'vf-idle';
+export const IDLE_YIELD = 0.5;
 
 const projected = new Vector3();
 
@@ -194,7 +201,7 @@ export class LabelLayer {
         box,
         movable: label.movable,
         hideOnOverlap: label.hideOnOverlap,
-        priority: label.priority,
+        priority: label.hasFlag(IDLE_FLAG) ? label.priority - IDLE_YIELD : label.priority,
       };
     });
     const lanes = new Map<string, number[]>();

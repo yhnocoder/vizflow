@@ -13,7 +13,7 @@ export interface Explainer {
   zeroGrad(e: FlowEdge): boolean;
   cellValue(c: CellRef): number;
   outEdges(ref: ElemRef): FlowEdge[];
-  nodeCard(node: Node, dir: 'forward' | 'backward'): NodeCard;
+  nodeCard(node: Node, dir: 'forward' | 'backward', drawnFrom?: Node): NodeCard;
   edgeCard(e: FlowEdge): EdgeCard;
   elemTex(ref: ElemRef | CellRef): string;
 }
@@ -78,8 +78,8 @@ class ExplainerImpl implements Explainer {
     return [...(this.current().outgoing.get(refKey(ref)) ?? [])];
   }
 
-  nodeCard(node: Node, dir: 'forward' | 'backward'): NodeCard {
-    return nodeCardOf(this.g, node, dir, (n) => this.reachesLoss(n));
+  nodeCard(node: Node, dir: 'forward' | 'backward', drawnFrom?: Node): NodeCard {
+    return nodeCardOf(this.g, node, dir, (n) => this.reachesLoss(n), drawnFrom);
   }
 
   edgeCard(e: FlowEdge): EdgeCard {

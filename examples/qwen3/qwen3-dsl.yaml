@@ -68,8 +68,8 @@ modules:
     forward:
       - e: embed_tokens(ids)
       - position_ids: arange(T)
-      - M: causal_mask(T, dtype=e.dtype)
       - position_embeddings: rotary_emb(e, position_ids)
+      - M: causal_mask(T, dtype=e.dtype)
       - cos: position_embeddings.cos
       - sin: position_embeddings.sin
       - h_last: layers(e, mask=M, cos=cos, sin=sin)
@@ -79,20 +79,16 @@ modules:
       e: '\mathbf{e}'
       h_last: '\mathbf{h}_{\mathrm{last}}'
       h_norm: '\mathbf{h}_{\mathrm{norm}}'
-      position_ids: 't'
+      position_ids: '\mathbf{t}'
       cos: '\cos'
       sin: '\sin'
-      M: 'M'
+      M: '\mathbf{M}'
       embed_tokens.weight: 'E'
-
-    layout:
-      place:
-        M: { with: position_ids }
 
     steps:
       - id: embed
         label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
-        title: embedding：按编号取行
+        title: embedding
         show: [ids, embed_tokens.weight, e]
         text: |
           <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
@@ -105,7 +101,7 @@ modules:
             $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
             也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
       - id: prepare
-        title: 位置和 mask
+        title: position_and_mask
         steps:
           - id: position_ids
             show: position_ids
@@ -115,6 +111,13 @@ modules:
               调用时没有传 <code>position_ids</code>，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。这里没有 batch 维，训练时也没有 KV cache，<code>past_seen_tokens</code> 是 0，所以位置编号就是 $0,\dots,T-1$：
               $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
               位置编号是整数常量，没有梯度，只在 RoPE 里用来算角度。
+          - id: rotary_emb
+            title: rotary_emb
+            subtitle: Qwen3RotaryEmbedding
+            edit:
+              cos_sin:
+                append: |
+                  HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
           - id: mask
             show: [M, position_ids]
             label: '$\viz{M}$'
@@ -125,13 +128,6 @@ modules:
               做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
               $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
               HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
-          - id: rotary_emb
-            title: rotary_emb
-            subtitle: Qwen3RotaryEmbedding
-            edit:
-              cos_sin:
-                append: |
-                  HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
       - id: layers
         loop: layer = layers[i]
 
@@ -186,7 +182,8 @@ modules:
 
     forward:
       - h_norm: model(ids)
-      - z: lm_head(h_norm)
+      - hidden_states: h_norm
+      - z: lm_head(hidden_states)
       - zf: z.float()
       - logp: log_softmax(zf)
       - result: nll_loss(logp=logp, y=y)
@@ -196,6 +193,7 @@ modules:
     tex:
       ids: 'x'
       h_norm: '\mathbf{h}_{\mathrm{norm}}'
+      hidden_states: '\mathbf{h}'
       z: '\mathbf{z}'
       zf: '\mathbf{z}_{\mathrm{fp32}}'
       loss: '\ell'
@@ -241,34 +239,31 @@ modules:
               {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).cos() | lines:shade=T }}
 
               {{ (arange(24)[:, None] * model.rotary_emb.inv_freq).sin() | lines:shade=T }}
-      - id: head
+      - id: logits
+        label: '$\viz{z}$'
         title: lm_head
-        steps:
-          - id: logits
-            label: '$\viz{z}$'
-            title: lm_head
-            show: lm_head
-            text: |
-              <code>logits = self.lm_head(hidden_states)</code>。$\viz{lm_head.weight}$ 的每一行对应词表里的一个 token，$z_{t,v}=\mathbf{h}_t\cdot W_v$ 是位置 $t$ 的向量与 token $v$ 的那一行的点积，下一步经过 softmax 成为概率。
-              $$\viz{z}=\viz{h_norm}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
-              这一页词表只有 {{ V }} 个 token，而 {{ real['qwen3-8b'].name }} 的词表是 {{ real['qwen3-8b'].V }}，lm_head 有 ${{ real['qwen3-8b'].V }}\times{{ real['qwen3-8b'].d_model }}$ 个参数，logits 是 $T\times{{ real['qwen3-8b'].V }}$。
-            backward:
-              label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{h_norm}}$'
-              text: |
-                $$\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{h_norm}}^{\top}\pfl{\viz{z}},\qquad \pfl{\viz{h_norm}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ h_norm.grad | matrix:3 }}$$
-                代入后面算出的 $\pfl{z_{t,v}}=(p_{t,v}-[v=y_t])/T$，第 $v$ 行的梯度是 $\frac1T\sum_t(p_{t,v}-[v=y_t])\,\mathbf{h}_t$。于是按梯度下降更新时，目标 token 那一行沿 $\mathbf{h}_t$ 方向增加，其他行则沿 $\mathbf{h}_t$ 方向按概率 $p_{t,v}$ 减少。
-          - id: float
-            show: zf
-            label: '$\viz{zf}$'
-            title: 转成 float32
-            text: |
-              HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
-            backward:
-              label: '$\pfl{\viz{z}}$'
-              title: '$\pfl{\viz{z}}$'
-              text: |
-                局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
-                $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
+        show: lm_head
+        text: |
+          <code>hidden_states = outputs.last_hidden_state</code> 取出 model 的输出 $\viz{h_norm}$，<code>logits = self.lm_head(hidden_states)</code>。$\viz{lm_head.weight}$ 的每一行对应词表里的一个 token，$z_{t,v}=\mathbf{h}_t\cdot W_v$ 是位置 $t$ 的向量与 token $v$ 的那一行的点积，下一步经过 softmax 成为概率。
+          $$\viz{z}=\viz{hidden_states}{\viz{lm_head.weight}}^{\top}={{ z | matrix:2 }}$$
+          这一页词表只有 {{ V }} 个 token，而 {{ real['qwen3-8b'].name }} 的词表是 {{ real['qwen3-8b'].V }}，lm_head 有 ${{ real['qwen3-8b'].V }}\times{{ real['qwen3-8b'].d_model }}$ 个参数，logits 是 $T\times{{ real['qwen3-8b'].V }}$。
+        backward:
+          label: '$\pfl{\viz{lm_head.weight}},\ \pfl{\viz{hidden_states}}$'
+          text: |
+            $$\pf{\ell}{{\viz{lm_head.weight}}^{\top}}={\viz{hidden_states}}^{\top}\pfl{\viz{z}},\qquad \pfl{\viz{hidden_states}}=\pfl{\viz{z}}\viz{lm_head.weight}={{ hidden_states.grad | matrix:3 }}$$
+            代入后面算出的 $\pfl{z_{t,v}}=(p_{t,v}-[v=y_t])/T$，第 $v$ 行的梯度是 $\frac1T\sum_t(p_{t,v}-[v=y_t])\,\mathbf{h}_t$。于是按梯度下降更新时，目标 token 那一行沿 $\mathbf{h}_t$ 方向增加，其他行则沿 $\mathbf{h}_t$ 方向按概率 $p_{t,v}$ 减少。
+      - id: float
+        show: zf
+        label: '$\viz{zf}$'
+        title: 转成 float32
+        text: |
+          HF 的 <code>ForCausalLMLoss</code> 第一行是 <code>logits = logits.float()</code>，然后调用 <code>F.cross_entropy</code>。cross_entropy 就是 log_softmax 接 nll_loss，后面的步骤按这两部分展开。转成 float32 是因为 log_softmax 要对整行求 exp 之和，词表很大时低精度的累加误差明显。bfloat16 的每个值都能在 float32 里精确表示，所以这次转换不改变数值。
+        backward:
+          label: '$\pfl{\viz{z}}$'
+          title: '$\pfl{\viz{z}}$'
+          text: |
+            局部导数是 1。反向时梯度从 float32 转回 bfloat16，不能在 bfloat16 里精确表示的值舍入到最近的 bfloat16 值，相对误差不超过 $2^{-8}$。
+            $$\pfl{\viz{z}}={{ z.grad | matrix:3 }}$$
       - id: log_softmax
         subtitle: F.cross_entropy 的第一部分：log_softmax
         fold:
@@ -300,7 +295,8 @@ panels:
       for layer in layers:
           h_last = layer(h_last)
       h_norm = norm(h_last)
-      z = lm_head(h_norm)
+      hidden_states = h_norm
+      z = lm_head(hidden_states)
       zf = z.float()
       logp = F.log_softmax(zf, dim=-1)
       lt = F.nll_loss(logp, y, reduction='none')

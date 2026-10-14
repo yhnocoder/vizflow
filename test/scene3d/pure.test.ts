@@ -170,22 +170,16 @@ describe('label avoidance', () => {
     expect(result[3].hidden).toBe(false);
   });
 
-  it('hides a movable label when no offset is free and leaves its spot to later labels', () => {
+  it('keeps a movable label in place when no offset is free', () => {
     const result = avoidOverlaps([
       { box: box(-200, -200, 400, 400), movable: false, hideOnOverlap: false, priority: 4 },
       { box: box(0, 0), movable: true, hideOnOverlap: false, priority: 3 },
       { box: box(300, 0), movable: true, hideOnOverlap: false, priority: 2 },
       { box: box(305, 5), movable: true, hideOnOverlap: false, priority: 1 },
     ]);
-    expect(result[1].hidden).toBe(true);
+    expect(result[1]).toEqual({ dx: 0, dy: 0, hidden: false });
     expect(result[2]).toEqual({ dx: 0, dy: 0, hidden: false });
     expect(result[3].hidden).toBe(false);
-    const ghost = avoidOverlaps([
-      { box: box(300, -40), movable: true, hideOnOverlap: false, priority: 3 },
-      { box: box(60, 0), movable: false, hideOnOverlap: true, priority: 1 },
-    ], box(0, 0, 100, 100));
-    expect(ghost[0].hidden).toBe(true);
-    expect(ghost[1].hidden).toBe(false);
   });
 
   it('keeps a label with a user offset visible where it overlaps', () => {
@@ -209,9 +203,9 @@ describe('label avoidance', () => {
     expect(result[2].hidden).toBe(false);
   });
 
-  it('hides a movable label that cannot be moved into the bounds', () => {
+  it('keeps a movable label that cannot be moved into the bounds', () => {
     const result = avoidOverlaps([{ box: box(300, -40), movable: true, hideOnOverlap: false, priority: 3 }], box(0, 0, 100, 100));
-    expect(result[0].hidden).toBe(true);
+    expect(result[0]).toEqual({ dx: 0, dy: 0, hidden: false });
   });
 });
 
@@ -229,7 +223,7 @@ describe('edge style', () => {
   };
 
   it('follows the forward rules', () => {
-    expect(edgeStyle({ ...base, revealedTo: false })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...base, revealedTo: false })).toBeNull();
     expect(edgeStyle({ ...base, overview: true })).toEqual({ opacity: 0.35 });
     expect(edgeStyle({ ...base, overview: true, contract: true })).toEqual({ opacity: 0.2 });
     expect(edgeStyle({ ...base, current: true })).toEqual({ opacity: 0.85 });
@@ -240,8 +234,8 @@ describe('edge style', () => {
 
   it('follows the backward rules', () => {
     const backward = { ...base, dir: 'backward' as const };
-    expect(edgeStyle({ ...backward, revealedFrom: false })).toEqual({ opacity: 0.06 });
-    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toEqual({ opacity: 0.06 });
+    expect(edgeStyle({ ...backward, revealedFrom: false })).toBeNull();
+    expect(edgeStyle({ ...backward, revealedFrom: false, zeroGrad: true })).toBeNull();
     expect(edgeStyle({ ...backward, zeroGrad: true, current: true })).toEqual({ opacity: 0.35 });
     expect(edgeStyle({ ...backward, current: true })).toEqual({ opacity: 0.9 });
     expect(edgeStyle({ ...backward, current: true, contract: true })).toEqual({ opacity: 0.65 });

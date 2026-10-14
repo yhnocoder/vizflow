@@ -203,8 +203,8 @@ export class CameraRig {
     const lo = Math.min(...ys);
     const hi = Math.max(...ys);
     const labelPad = Math.max(0, ...c.labels.labels.filter((l) => l.kind === 'mod' && l.visible && l.pos !== undefined).map((l) => l.frameSize()[1] / 2));
-    const marginTop = Math.max(chromeEdge(c, '.vf-stage-tools', 'bottom'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
-    const marginBottom = Math.max(chromeEdge(c, '.vf-ovnav', 'top'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
+    const marginTop = Math.max(chromeBottom(c, '.vf-stage-tools'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
+    const marginBottom = 2 * LABEL_SAFE_MARGIN + labelPad;
     const perUnit = c.height / (2 * this.halfHeight());
     const room = Math.max(1, c.height - marginTop - marginBottom);
     const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit));
@@ -260,8 +260,8 @@ export class CameraRig {
   }
 }
 
-function chromeEdge(c: SceneController, selector: string, edge: 'top' | 'bottom'): number {
+function chromeBottom(c: SceneController, selector: string): number {
   const el = c.root.querySelector<HTMLElement>(selector);
   if (el === null || el.offsetHeight === 0) return 0;
-  return edge === 'bottom' ? el.offsetTop + el.offsetHeight : c.height - el.offsetTop;
+  return el.offsetTop + el.offsetHeight;
 }

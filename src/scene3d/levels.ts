@@ -2,7 +2,7 @@ import type { Node } from '../autograd';
 import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plateAxes, plates, rowCol, rowsCols, sourceIndex } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -16,6 +16,7 @@ export const STREAM_X = -7.2;
 export const STREAM_SPACING = 0.95;
 export const BOARD_GAP = 1.45;
 export const COLUMN_BREAK = 0.6;
+export const TITLE_ROOM = 3.5;
 export const SPACING_MAX = 1.45;
 export const SPACING_MIN = 0.74;
 export const SPACING_SPAN = 11.4;
@@ -145,6 +146,7 @@ export interface LevelLayout {
   lo: number;
   top: number;
   sourceOf: ReadonlyMap<Node, Node>;
+  drawnAs: ReadonlyMap<Node, Node>;
 }
 
 export interface Chip {
@@ -249,6 +251,7 @@ class Plan implements LevelPlan {
     this.placeSides();
     this.assignColumns();
     this.assignTitles();
+    this.makeTitleRoom();
     this.placeApart();
     this.assignTitles();
     this.buildModules();
@@ -660,6 +663,27 @@ class Plan implements LevelPlan {
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
   }
 
+  private makeTitleRoom(): void {
+    const crowded = (): { at: number; need: number } | undefined => {
+      let found: { at: number; need: number } | undefined;
+      for (const level of this.levels) {
+        const group = level.entries.filter((e) => e.xs !== undefined && e.title === 'left' && e.kind !== 'tile' && e.kind !== 'disc' && e.kind !== 'box');
+        group.sort((p, q) => Math.min(...p.xs!) - Math.min(...q.xs!));
+        group.forEach((e, i) => {
+          if (i === 0) return;
+          const at = Math.min(...e.xs!);
+          const gap = at - Math.max(...group[i - 1].xs!);
+          if (gap > 0 && gap < TITLE_ROOM - 1e-9 && (found === undefined || at < found.at)) found = { at, need: TITLE_ROOM - gap };
+        });
+      }
+      return found;
+    };
+    for (let cut = crowded(); cut !== undefined; cut = crowded()) {
+      const { at, need } = cut;
+      for (const e of this.entries) if (e.xs !== undefined && Math.min(...e.xs) >= at - 1e-9) e.xs = e.xs.map((x) => x + need);
+    }
+  }
+
   private overlapping(e: Entry, others: Entry[]): Entry[] {
     const xs = e.xs ?? [];
     return others.filter((o) => (o.xs ?? []).some((x) => xs.some((own) => Math.abs(own - x) < COLUMN_BREAK)));
@@ -867,7 +891,6 @@ class Plan implements LevelPlan {
   private assignTitles(): void {
     for (const e of this.entries) e.title = 'none';
     for (const level of this.levels) {
-      const lanes = new Map<Lane | undefined, Entry[]>();
       for (const e of level.entries) {
         if (e.kind === 'disc' || e.kind === 'box') {
           e.title = 'left';
@@ -887,13 +910,7 @@ class Plan implements LevelPlan {
           e.title = 'below';
           continue;
         }
-        lanes.set(e.lane, [...(lanes.get(e.lane) ?? []), e]);
-      }
-      for (const group of lanes.values()) {
-        group.sort((p, q) => p.xs![0] - q.xs![0]).forEach((e, i) => {
-          if (i === 0) e.title = 'left';
-          else if (e.lane !== undefined && isLeafLike(e.node) && Math.min(...e.offsets) > Math.max(...group[i - 1].offsets) + 1) e.title = 'below';
-        });
+        e.title = 'left';
       }
       const vectors = level.entries.filter((e) => e.kind === 'vector').sort((p, q) => p.xs![0] - q.xs![0]);
       if (vectors.length > 0) vectors[vectors.length - 1].title = 'right';
@@ -923,7 +940,7 @@ class Plan implements LevelPlan {
       }
       const nested = this.braces.some((other) => other !== brace && other.nodes.length < brace.nodes.length && other.nodes.every((n) => brace.nodes.includes(n)));
       const side = brace.depth >= 2 ? 'left' : brace.depth === 0 && nested ? 'outer' : 'right';
-      const module: SceneModule = { id: brace.module ?? brace.id, title: brace.title, subtitle: brace.subtitle, nodes: brace.nodes, side, inner: side === 'left' };
+      const module: SceneModule = { id: brace.module ?? brace.id, title: brace.title, subtitle: brace.subtitle, nodes: brace.nodes, side, depth: brace.depth };
       if (side === 'left') module.column = brace.depth - 2;
       this.modules.push(module);
     }
@@ -1113,6 +1130,7 @@ class Plan implements LevelPlan {
       lo: 0,
       top,
       sourceOf: this.sourceOf,
+      drawnAs: new Map(this.entries.flatMap((e) => (e.node.shape.length === 3 ? [] : (this.drawnOn.get(e.node) ?? []).filter((v) => v.shape.length === 3).slice(0, 1).map((v) => [e.node, v] as const)))),
     };
   }
 
@@ -1153,6 +1171,11 @@ class Plan implements LevelPlan {
 
   private rowsOf(): number {
     return Math.max(1, ...this.entries.filter((e) => e.kind === 'plate').map((e) => e.rows));
+  }
+
+  private headsOf(n: Node): { count: number; width: number } {
+    const view = n.shape.length === 3 ? n : this.drawnOn.get(n)?.find((v) => v.shape.length === 3);
+    return view === undefined ? { count: 1, width: rowsCols(n)[1] } : plates(view);
   }
 
   private block(e: Entry, hidden: boolean, aligned: ReadonlyMap<Node, Node>): Block {
@@ -1201,7 +1224,7 @@ class Plan implements LevelPlan {
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
     const slabs = this.slabsOf(e, elements, footprint, y);
-    const chunks = slabs === undefined && !scalar ? chunksOf(n, elements, footprint, y) : undefined;
+    const chunks = slabs === undefined && !scalar ? chunksOf(this.headsOf(n), elements, footprint, y) : undefined;
     const slabGroup = this.slabbed.get(n);
     const slabLabels = slabGroup === undefined ? undefined : slabs!.map((slab, g) => ({ text: groupText(slabGroup, g), col: g, x: x1 + ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: slab.plate.z, anchor: 'right' as const }));
     const classLabels = (named ?? []).slice(0, e.cols).map((text, col) =>
@@ -1247,12 +1270,11 @@ function groupText(group: Node, value: number): string {
   return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;
 }
 
-function chunksOf(n: Node, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
-  const { count } = plates(n);
-  if (n.shape.length !== 3 || count < 2) return undefined;
-  const { chunk } = plateAxes(n);
+function chunksOf(heads: { count: number; width: number }, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
+  const { count, width } = heads;
+  if (count < 2) return undefined;
   return Array.from({ length: count }, (_, p) => {
-    const members = elements.filter((el) => el.index[chunk] === p);
+    const members = elements.filter((el) => Math.floor(el.col / width) === p);
     const xs = members.map((el) => el.x);
     const zs = members.map((el) => el.z);
     const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];

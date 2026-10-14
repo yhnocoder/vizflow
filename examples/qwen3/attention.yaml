@@ -59,6 +59,9 @@ forward:
   - att: o_proj(o)
 
 tex:
+  q_linear: '\mathbf{q}'
+  k_linear: '\mathbf{k}'
+  v_linear: '\mathbf{v}'
   q: '\mathbf{q}'
   k: '\mathbf{k}'
   v: '\mathbf{v}'
@@ -87,17 +90,17 @@ formula: |-
   \step{apply_rotary_pos_emb.*}{\viz{qr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
   \step{qk_norm.*}{\mathrm{norm}(}
-  \step{q_proj}{\viz{x}{\viz{q_proj.weight}}^{\top}}
+  \step{q_proj}{\big(\viz{x}{\viz{q_proj.weight}}^{\top}\big).\mathrm{view}(T,H,d_h)}
   \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{apply_rotary_pos_emb.*}{\viz{kr}}&
   \step{apply_rotary_pos_emb.*}{=\mathrm{RoPE}\big(}
   \step{qk_norm.*}{\mathrm{norm}(}
-  \step{k_proj}{\viz{x}{\viz{k_proj.weight}}^{\top}}
+  \step{k_proj}{\big(\viz{x}{\viz{k_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)}
   \step{qk_norm.*}{)}
   \step{apply_rotary_pos_emb.*}{\big)}\\
   \step{v_proj}{\viz{v}}&
-  \step{v_proj}{=\viz{x}{\viz{v_proj.weight}}^{\top}}\\
+  \step{v_proj}{=\big(\viz{x}{\viz{v_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)}\\
   \step{o_proj}{\viz{att}}&
   \step{o_proj}{=}
   \step{eager_attention_forward.*}{\operatorname{Attn}(\viz{qr},\viz{kr},\viz{v})}
@@ -129,14 +132,14 @@ steps:
       注意力要回答的问题是：位置 $t$ 应该从哪些位置取信息。做法是给每个位置算一个 query $\mathbf{q}_t$ 和一个 key $\mathbf{k}_s$，用点积 $\mathbf{q}_t\cdot\mathbf{k}_s$ 衡量匹配程度。
 
       query 由线性投影得到：<code>self.q_proj(hidden_states)</code> 是一次没有 bias 的线性投影，宽度 $H\,d_h={{ num_heads }}\times{{ d_head }}={{ num_heads * d_head }}$。接着 <code>.view(hidden_shape)</code> 把每一行切成 {{ num_heads }} 个 head，每个 head 宽 $d_h={{ d_head }}$，形状变成 $T\times H\times d_h$。view 只改变形状的解释，不移动数据。HF 的张量多一个 batch 维，这一页没有，所以轴的编号比 HF 少 1。
-      $$\viz{q}=\viz{x}{\viz{q_proj.weight}}^{\top}={{ q | matrix:2 }}$$
+      $$\viz{q}=\big(\viz{x}{\viz{q_proj.weight}}^{\top}\big).\mathrm{view}(T,H,d_h)={{ q | matrix:2 }}$$
     backward:
       label: '$\partial\viz{q_proj.weight},\ \partial\viz{x}$'
       title: '$\pfl{\viz{q_proj.weight}},\ \pfl{\viz{x}}$'
       text: |
-        对 $\viz{q}=\viz{x}W_q^{\top}$，两个梯度是：
+        view 的反向把 $\pfl{\viz{q}}$ 的形状改回 $T\times Hd_h$，然后对 $\viz{x}W_q^{\top}$ 求两个梯度：
         $$\pf{\ell}{W_q^{\top}}={\viz{x}}^{\top}\pfl{\viz{q}},\qquad \pfl{\viz{x}}\mathrel{+}=\pfl{\viz{q}}\,W_q$$
-        第一个式子展开是 $\sum_t\mathbf{x}_t^{\top}\pfl{\mathbf{q}_t}$，每个位置贡献一个外积，矩阵乘法把它们加在一起。view 的反向只是把形状改回去。
+        第一个式子展开是 $\sum_t\mathbf{x}_t^{\top}\pfl{\mathbf{q}_t}$，每个位置贡献一个外积，矩阵乘法把它们加在一起。
   - id: k_proj
     subtitle: nn.Linear
     label: '$\viz{k}$'
@@ -145,7 +148,7 @@ steps:
       key 由同一个 $\viz{x}$ 投影得到，但只有 $H_{kv}={{ num_kv_heads }}$ 个 head，宽 {{ num_kv_heads * d_head }}，所以几个 query head 共用一个 kv head，这种做法叫 GQA（grouped-query attention）。它的好处是推理时 k、v 的缓存缩小为 $H_{kv}/H$。
 
       HF 先算完 q 这一路（q_proj、view、q_norm、transpose），再算 k 这一路。两路互不依赖，所以先后顺序不影响结果。
-      $$\viz{k}=\viz{x}{\viz{k_proj.weight}}^{\top}={{ k | matrix:2 }}$$
+      $$\viz{k}=\big(\viz{x}{\viz{k_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)={{ k | matrix:2 }}$$
     backward:
       label: '$\partial\viz{k_proj.weight},\ \partial\viz{x}$'
       title: '$\pfl{\viz{k_proj.weight}},\ \pfl{\viz{x}}$'
@@ -157,7 +160,7 @@ steps:
     title: v_proj
     text: |
       value 是被取回的内容，宽度和 k 相同。q_norm、k_norm 和 RoPE 都作用在分数上，而 v 不参与打分，只是加权求和的对象，所以 v 既不做 norm，也不做 RoPE。<code>value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)</code> 一行完成投影、分 head 和换轴。
-      $$\viz{v}=\viz{x}{\viz{v_proj.weight}}^{\top}={{ v | matrix:2 }}$$
+      $$\viz{v}=\big(\viz{x}{\viz{v_proj.weight}}^{\top}\big).\mathrm{view}(T,H_{kv},d_h)={{ v | matrix:2 }}$$
     backward:
       label: '$\partial\viz{v_proj.weight},\ \partial\viz{x}$'
       title: '$\pfl{\viz{v_proj.weight}},\ \pfl{\viz{x}}$'

@@ -448,6 +448,13 @@ export class StepCompiler {
     const braces: StepBrace[] = [];
     const shows = (list: Tree[]) => unique(leaves(list).flatMap((rec) => rec.step.show));
     const framed = (nodes: Node[], call: Call | undefined) => nodes.filter((n) => !(call === undefined ? [] : (this.carried.get(call) ?? [])).includes(n));
+    const everShown = new Set(shows(trees));
+    const lightEntering = (tree: Tree, intro: Rec) => {
+      if (intro.step.show.length > 0 || intro.step.active !== undefined) return;
+      const inside = new Set(shows([tree]));
+      const entering = unique([...inside].flatMap((n) => n.inputs).filter((n) => !inside.has(n) && !isLeafLike(n) && everShown.has(n)));
+      if (entering.length > 0) intro.step.active = entering;
+    };
     const walk = (list: Tree[], path: string[], key: string, depth: number) => {
       for (const tree of list) {
         const id = key === '' ? tree.id : `${key}.${tree.id}`;
@@ -463,6 +470,7 @@ export class StepCompiler {
         }
         if (tree.flat) {
           if (tree.intro !== undefined) {
+            lightEntering(tree, tree.intro);
             tree.intro.step.groups = path;
             forward.push(tree.intro.step);
           }
@@ -476,6 +484,7 @@ export class StepCompiler {
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;
         braces.push(brace);
         if (tree.intro !== undefined) {
+          lightEntering(tree, tree.intro);
           tree.intro.step.groups = [...path, id];
           forward.push(tree.intro.step);
         }
@@ -511,8 +520,8 @@ export class StepCompiler {
         outputs: outputs.length > 0 ? outputs : nodes.slice(-1),
         nodes,
         params: unique(used.flatMap((n) => (isLeafLike(n) && n.kind === 'op' ? [n, n.inputs[0]] : [n])).filter((n) => isLeafLike(n) && n.kind !== 'label')).sort((a, b) => a.id - b.id),
-        folded: shown === undefined ? false : !shown.expand,
-        foldable: shown !== undefined && !shown.flat,
+        folded: false,
+        foldable: false,
         forward: shown?.fold.forward ?? {},
         backward: shown?.fold.backward ?? {},
       });

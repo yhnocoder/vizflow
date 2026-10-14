@@ -69,7 +69,7 @@ describe('mountSteps timeline', () => {
     expect(bars[0].classList.contains('vf-on')).toBe(true);
     expect(bars[0].style.getPropertyValue('--vf-fr')).toBe('100%');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`1/${forwardCount}`);
-    expect(el.querySelector('.vf-tl-inner')).toBeNull();
+    expect(el.querySelector('.vf-tl-crumb')).toBeNull();
     expect([...el.querySelectorAll('.vf-tl-sub .vf-st')].map(text)).toEqual(['总览']);
 
     steps.go(3);
@@ -77,18 +77,19 @@ describe('mountSteps timeline', () => {
     expect(bars[2].classList.contains('vf-on')).toBe(true);
     expect(bars[2].style.getPropertyValue('--vf-fr')).toBe('67%');
     expect(bars[1].classList.contains('vf-done')).toBe(true);
-    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual([
-      'vf-tl-inner:self_attn',
-      'vf-st:a',
-      'vf-tl-inner vf-sub:q_norm $\\cdot$ k_norm',
-      'vf-st:b',
-      'vf-st:c',
-    ]);
+    const crumbs = () => [...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}${n.getAttribute('aria-current') === 'location' ? '*' : ''}`);
+    expect(crumbs()).toEqual(['self_attn', 'a', 'q_norm $\\cdot$ k_norm*']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:b', 'vf-st:c']);
     expect(el.querySelector('.vf-tl-sub [aria-current="step"]')!.textContent).toBe('b');
     expect(text(el.querySelector('.vf-tl-pos'))).toBe(`4/${forwardCount}`);
 
-    steps.go(5);
-    expect(text(el.querySelector('.vf-tl-inner'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
+    steps.go(2);
+    expect(crumbs()).toEqual(['self_attn*']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map((n) => `${n.className}:${text(n)}`)).toEqual(['vf-st:a', 'vf-st vf-st-group:q_norm $\\cdot$ k_norm›']);
+    el.querySelectorAll<HTMLButtonElement>('.vf-st-group')[0].click();
+    expect(steps.current).toBe(3);
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-crumb')[0].click();
+    expect(steps.current).toBe(2);
 
     barsOf()[1].click();
     expect(steps.current).toBe(1);
@@ -106,12 +107,26 @@ describe('mountSteps timeline', () => {
     const peek = el.querySelector('.vf-peek')!;
     expect(text(peek.querySelector('.vf-peek-name'))).toBe('self_attn');
     expect(text(peek.querySelector('.vf-peek-count'))).toBe('第 2 / 3 步');
-    expect([...peek.querySelectorAll('li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on:b', ':c']);
+    expect([...peek.querySelectorAll('li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on vf-hover:b', ':c']);
     bars[3].dispatchEvent(new Event('pointerenter'));
     expect(text(el.querySelector('.vf-peek-name'))).toBe('$\\cdots$ 第 1 到 $N-1$ 层（已折叠）');
     expect(text(el.querySelector('.vf-peek-count'))).toBe('1 步');
     el.querySelector('.vf-tl-bar')!.dispatchEvent(new Event('pointerleave'));
     expect(el.querySelector('.vf-peek')).toBeNull();
+  });
+
+  it('follows the pointer inside a segment and jumps to the pointed step on click', () => {
+    const steps = timelineSteps();
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    steps.go(3);
+    const bar = [...el.querySelectorAll<HTMLButtonElement>('.vf-tb')][2];
+    bar.getBoundingClientRect = () => ({ left: 0, right: 90, width: 90, top: 0, bottom: 6, height: 6, x: 0, y: 0, toJSON: () => ({}) });
+    bar.dispatchEvent(new MouseEvent('pointermove', { clientX: 80, bubbles: true }));
+    expect([...el.querySelectorAll('.vf-peek li')].map((li) => `${li.className}:${text(li)}`)).toEqual(['vf-done:a', 'vf-on:b', 'vf-hover:c']);
+    bar.dispatchEvent(new MouseEvent('click', { clientX: 80, detail: 1, bubbles: true }));
+    expect(steps.current).toBe(4);
   });
 
   it('switches direction with the tabs and counts positions inside a direction', () => {
@@ -130,6 +145,57 @@ describe('mountSteps timeline', () => {
     expect(el.querySelectorAll('.vf-dirseg button')[1].getAttribute('aria-selected')).toBe('true');
     tabs[1].click();
     expect(steps.current).toBe(first);
+  });
+
+  it('switches direction to the matching step of the other direction', () => {
+    const g = graph({ dims: { V: 3 } });
+    const x = g.param('x', ['V'], [1, 2, 3]);
+    const a = g.exp(x, { name: 'a' });
+    const b = g.log(a, { name: 'b' });
+    const loss = g.sum(b, -1, { name: 'loss' });
+    const steps = createSteps(g, {
+      backward: 'reverse',
+      forward: [
+        { show: [x, a, b, loss], title: '总览' },
+        { show: a, title: 'a', groups: ['blk'] },
+        { show: b, title: 'b', groups: ['blk'] },
+        { show: loss, title: 'loss' },
+      ],
+      groups: [{ id: 'blk', title: 'blk' }],
+    });
+    Object.assign(steps, { modules: [{ id: 'blk' }] });
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    const forward = steps.list.findIndex((s) => s.dir === 'forward' && s.title === 'b');
+    steps.go(forward);
+    const tabs = [...el.querySelectorAll<HTMLButtonElement>('.vf-dirseg button')];
+    tabs[1].click();
+    expect(steps.list[steps.current].dir).toBe('backward');
+    expect(steps.list[steps.current].forwardId).toBe(steps.list[forward].id);
+    tabs[0].click();
+    expect(steps.current).toBe(forward);
+  });
+
+  it('lists the sibling modules and steps in the last level of the path', () => {
+    const steps = timelineSteps();
+    const groups: string[][] = [[], [], ['layer', 'norm'], ['layer', 'norm'], ['layer'], ['layer', 'attn']];
+    steps.list.forEach((info: StepInfo, i) => Object.assign(info, { groups: info.dir === 'forward' ? (groups[i] ?? []) : [] }));
+    Object.assign(steps, {
+      groups: [
+        { id: 'layer', title: 'layer' },
+        { id: 'norm', title: 'norm' },
+        { id: 'attn', title: 'attn' },
+      ],
+    });
+    const el = document.createElement('div');
+    document.body.append(el);
+    mounted.push(mountSteps(el, steps));
+    steps.go(3);
+    expect([...el.querySelectorAll('.vf-tl-crumb')].map((n) => `${text(n)}:${n.getAttribute('aria-current') ?? ''}`)).toEqual(['layer:', 'norm:location', 'c:', 'attn:']);
+    expect([...el.querySelectorAll('.vf-tl-sub > *')].map(text)).toEqual(['a', 'b']);
+    el.querySelectorAll<HTMLButtonElement>('.vf-tl-sib')[2].click();
+    expect(steps.current).toBe(5);
   });
 
   it('keeps the flat track when the steps have no modules', () => {
