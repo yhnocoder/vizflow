@@ -21,7 +21,14 @@ tex:
   rms: '\mathrm{rrms}'
   xh: '\hat{\viz{x}}_{\mathrm{fp32}}'
   xc: '\hat{\viz{x}}'
-formula: '\step{scale}{\viz{out}=\viz{weight}\odot}\step{normalize}{\viz{x}\odot}\step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{x}}^{2})+\epsilon}}}'
+formula: 
+  \newcommand{\normalize}[1]{\step{normalize}{\viz{x}#1 \odot}}
+  \begin{aligned}
+  \viz{out}=
+  \normalize{\step{cast}{_{\mathrm{dtype}}}}
+  \step{rrms}{\frac{1}{\sqrt{\operatorname{mean}({\viz{x}}^{2})+\epsilon}}}
+  \step{scale}{\odot\viz{weight}}
+  \end{aligned}
 fold:
   label: '$\viz{out}$'
   title: RMSNorm

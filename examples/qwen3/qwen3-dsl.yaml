@@ -68,8 +68,8 @@ modules:
     forward:
       - e: embed_tokens(ids)
       - position_ids: arange(T)
-      - M: causal_mask(T, dtype=e.dtype)
       - position_embeddings: rotary_emb(e, position_ids)
+      - M: causal_mask(T, dtype=e.dtype)
       - cos: position_embeddings.cos
       - sin: position_embeddings.sin
       - h_last: layers(e, mask=M, cos=cos, sin=sin)
@@ -79,20 +79,16 @@ modules:
       e: '\mathbf{e}'
       h_last: '\mathbf{h}_{\mathrm{last}}'
       h_norm: '\mathbf{h}_{\mathrm{norm}}'
-      position_ids: 't'
+      position_ids: '\mathbf{t}'
       cos: '\cos'
       sin: '\sin'
-      M: 'M'
+      M: '\mathbf{M}'
       embed_tokens.weight: 'E'
-
-    layout:
-      place:
-        M: { with: position_ids }
 
     steps:
       - id: embed
         label: '$\viz{e}=\viz{embed_tokens.weight}[\viz{ids}]$'
-        title: embedding：按编号取行
+        title: embedding
         show: [ids, embed_tokens.weight, e]
         text: |
           <code>inputs_embeds = self.embed_tokens(input_ids)</code>。编号本身只是类别，大小没有意义，所以每个编号对应 embedding 表 $\viz{embed_tokens.weight}$ 的一行，取出这一行作为这个位置的向量：
@@ -105,7 +101,7 @@ modules:
             $$\pfl{\viz{embed_tokens.weight}[v]}=\sum_{t:\,x_t=v}\pfl{{\viz{e}}_t},\qquad \pfl{\viz{embed_tokens.weight}}={{ embed_tokens.weight.grad | matrix:3 }}$$
             也就是说，梯度加回被取到的行（scatter-add），于是没出现的 token 那一行是 0，出现几次就累加几次。推导用到 $O$，实际实现则直接按编号累加，不构造 $O$。
       - id: prepare
-        title: 位置和 mask
+        title: position_and_mask
         steps:
           - id: position_ids
             show: position_ids
@@ -115,6 +111,13 @@ modules:
               调用时没有传 <code>position_ids</code>，<code>Qwen3Model.forward</code> 用 <code>torch.arange(inputs_embeds.shape[1]) + past_seen_tokens</code> 生成位置编号，再用 <code>unsqueeze(0)</code> 加上 batch 维。这里没有 batch 维，训练时也没有 KV cache，<code>past_seen_tokens</code> 是 0，所以位置编号就是 $0,\dots,T-1$：
               $$\viz{position_ids}={{ position_ids | matrix:0 }}$$
               位置编号是整数常量，没有梯度，只在 RoPE 里用来算角度。
+          - id: rotary_emb
+            title: rotary_emb
+            subtitle: Qwen3RotaryEmbedding
+            edit:
+              cos_sin:
+                append: |
+                  HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
           - id: mask
             show: [M, position_ids]
             label: '$\viz{M}$'
@@ -125,13 +128,6 @@ modules:
               做法是在 softmax 之前给分数加上 $\viz{M}$，$s>t$ 的格子加一个很大的负数，取 exp 以后是 0：
               $$P_{t,s}=\frac{e^{\bar S_{t,s}}}{\sum_{s'}e^{\bar S_{t,s'}}}=\frac{e^{S_{t,s}}\,[s\le t]}{\sum_{s'\le t}e^{S_{t,s'}}},\qquad \viz{M}={{ M | matrix:2 }}$$
               HF 在 <code>Qwen3Model.forward</code> 里用 <code>create_causal_mask</code> 生成一次，传给每一层。填的是 dtype 能表示的最小值 <code>torch.finfo(dtype).min</code>，没有用 $-\infty$，原因如下。causal mask 下每一行至少能看到自己，但和 padding mask 合并后，padding 位置的一整行可能全部被 mask。考虑到这种情况，填 $-\infty$ 时 softmax 减去行最大值会算出 $-\infty-(-\infty)$，这一行变成 NaN，所以用有限值来避免这种情况。mask 是常量，没有梯度。
-          - id: rotary_emb
-            title: rotary_emb
-            subtitle: Qwen3RotaryEmbedding
-            edit:
-              cos_sin:
-                append: |
-                  HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
       - id: layers
         loop: layer = layers[i]
 

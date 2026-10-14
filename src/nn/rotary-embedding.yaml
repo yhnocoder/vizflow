@@ -27,7 +27,15 @@ tex:
   emb: '\boldsymbol{\theta}'
   cos: '\cos'
   sin: '\sin'
-formula: '\step{cos_sin}{\viz{cos}=\cos\big(}\step{emb}{\operatorname{cat}\big(}\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}}\step{emb}{,\ \cdot\big)}\step{cos_sin}{\big)}'
+formula: 
+  \newcommand{\freqs}{\step{freqs}{\viz{position_ids}\,{\viz{inv_freq}}^{\top}_\mathrm{fp32}}}
+  \newcommand{\emb}[1]{\step{emb}{\operatorname{cat}\big(}#1 \step{emb}{,\ \cdot\big)}}
+  \newcommand{\vcos}[1]{\step{cos_sin}{\viz{cos}=\cos\big(}#1 \step{cos_sin}{\big)}}
+  \newcommand{\vsin}[1]{\step{cos_sin}{\viz{sin}=\sin\big(}#1 \step{cos_sin}{\big)}}
+  \begin{aligned}
+  \vcos{\emb{\freqs}}\step{to_dtype}{_\mathrm{dtype}}\\
+  \vsin{\emb{\freqs}}\step{to_dtype}{_\mathrm{dtype}}
+  \end{aligned}
 
 layout:
   place:
