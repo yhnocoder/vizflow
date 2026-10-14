@@ -4,9 +4,9 @@ import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../
 import { forEachIndex, indexOf } from '../tensor';
 import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
-import { type LevelScheme, type Place, schemeLevels } from './schemes';
+import { type LevelScheme, type Place, type SchemeOptions, schemeLevels } from './schemes';
 
-export { LEVEL_SCHEMES, type LevelScheme } from './schemes';
+export { DEFAULT_SCHEME_OPTIONS, ITERATION_MODES, LEVEL_SCHEMES, type LevelScheme, type SchemeOptions } from './schemes';
 
 export const LEVEL_FRONT = 2.9;
 export const LEVEL_ROW = 1.0;
@@ -208,6 +208,7 @@ const list = (nodes: Node | Node[]): Node[] => (Array.isArray(nodes) ? nodes : [
 
 export interface LevelSpec {
   scheme?: LevelScheme;
+  options?: SchemeOptions;
   lines: Node[][];
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
@@ -279,9 +280,14 @@ class Plan implements LevelPlan {
   private findSources(): void {
     const shown = new Set(this.visible);
     const operands = new Set([...this.computed].filter((u) => u.kind === 'op' && (u.op === 'matmul' || u.op === 'select_matmul')).map((u) => u.inputs[1]));
-    for (const n of this.visible[0]?.graph.nodes ?? []) {
+    const nodes = this.visible[0]?.graph.nodes ?? [];
+    const users = new Map<Node, Node[]>();
+    for (const n of nodes) for (const i of n.inputs) users.set(i, [...(users.get(i) ?? []), n]);
+    const undone = (n: Node) => isTranspose(n) && !isLeafLike(n) && (users.get(n) ?? []).length > 0 && users.get(n)!.every((u) => isTranspose(u) && sameAxes(u, n));
+    const roundTrip = new Set(nodes.filter(undone).flatMap((n) => [n, ...users.get(n)!]));
+    for (const n of nodes) {
       if (n.kind === 'op' && n.op === 'unsqueeze' && n.shape.length === 2 && n.shape[1] === 1) this.columns.add(n.inputs[0]);
-      if (!isLayoutOp(n) || shown.has(n) || isLeafLike(n) || operands.has(n)) continue;
+      if (!isLayoutOp(n) || (shown.has(n) && !roundTrip.has(n)) || isLeafLike(n) || operands.has(n)) continue;
       const source = this.source(n.inputs[0]);
       this.sourceOf.set(n, source);
       if (n.shape.length >= 3 && drawnAlike(n, source)) this.drawnOn.set(source, [...(this.drawnOn.get(source) ?? []), n]);
@@ -543,11 +549,11 @@ class Plan implements LevelPlan {
     const index = schemeLevels(scheme, {
       nodes,
       preds,
-      constant,
+      constant: (n) => constant(n) || (n.kind === 'op' && n.op === 'alias'),
       scope: (n) => this.innermost(n)?.id ?? null,
       parent: (id) => this.byId.get(id)?.parent ?? null,
       places: this.layout.places ?? [],
-    });
+    }, this.layout.options);
     const moveTo = new Map<Node, Node>();
     for (const board of this.boards.values()) {
       if (!board.linear) {
@@ -657,6 +663,11 @@ class Plan implements LevelPlan {
     return sides.size === 1 ? [...sides][0] : undefined;
   }
 
+  private order(e: Entry): number {
+    const fed = this.computed.has(e.node) && e.node.inputs.some((i) => this.computed.has(this.source(i)) || this.sourceOf.has(i));
+    return rank(e) + (this.computed.has(e.node) && !fed && e.kind === 'plate' ? 1 : 0);
+  }
+
   private setLane(e: Entry, lane: Lane, offsets: number[]): void {
     e.lane = lane;
     e.offsets = offsets;
@@ -671,7 +682,7 @@ class Plan implements LevelPlan {
     const done = new Set<Entry>();
     const beside: [Entry, Entry][] = [];
     for (const level of this.levels) {
-      const ordered = [...level.entries].sort((p, q) => rank(p) - rank(q));
+      const ordered = [...level.entries].sort((p, q) => this.order(p) - this.order(q));
       for (const e of ordered) {
         if (done.has(e)) continue;
         done.add(e);
@@ -764,6 +775,7 @@ class Plan implements LevelPlan {
         return f.xs![f.offsets.indexOf(o)] + extra * COLUMN_BREAK;
       });
     }
+    for (const [op, tile] of this.kernelTiles) tile.xs = this.entryOf.get(op)?.xs ?? tile.xs;
     for (const [e, main] of beside) e.xs = this.sideXs(e, main);
     for (const e of this.entries) if (e.xs === undefined) e.xs = this.sideXs(e, this.entryOf.get(e.node.inputs[0]) ?? e);
   }
@@ -834,7 +846,7 @@ class Plan implements LevelPlan {
     });
     const companions = (e: Entry): Entry[] => [e, ...[this.tiles.get(e.node), this.kernelTiles.get(e.node)].filter((t): t is Entry => t !== undefined && t.lane === e.lane && !this.stacked.has(e.node))];
     for (const level of this.levels) {
-      const plates = level.entries.filter((e) => e.kind === 'plate' && e.xs !== undefined && !this.stacked.has(e.node));
+      const plates = level.entries.filter((e) => (e.kind === 'plate' || e.kind === 'disc') && e.xs !== undefined && !this.stacked.has(e.node));
       plates.forEach((e, i) => {
         const group = companions(e);
         const earlier = plates.slice(0, i).filter((o) => o.lane !== e.lane).flatMap(companions);
@@ -916,11 +928,21 @@ class Plan implements LevelPlan {
       const start = boardStart(board.op);
       offset = a.offsets[start] ?? 0;
     }
+    const used = new Set<number>();
     group.forEach((b, i) => {
       const n = b.b.shape[1];
       if (i > 0 && same) lane.breaks.add(offset);
-      const offsets = Array.from({ length: n }, (_, k) => (same ? offset + k : (this.drawnA(b).offsets[boardStart(b.op)] ?? 0) + k));
       const out = this.entryOf.get(b.op)!;
+      let offsets = Array.from({ length: n }, (_, k) => (same ? offset + k : (this.drawnA(b).offsets[boardStart(b.op)] ?? 0) + k));
+      if (!same) {
+        const taken = new Set([...used, ...this.occupied(level, lane, out)]);
+        if (offsets.some((o) => taken.has(o))) {
+          const start = Math.max(...taken) + 1;
+          lane.breaks.add(start);
+          offsets = consecutive(start, n);
+        }
+        offsets.forEach((o) => used.add(o));
+      }
       const tile = this.tiles.get(b.op)!;
       this.setLane(out, lane, offsets);
       this.setLane(tile, lane, offsets);
@@ -1420,6 +1442,19 @@ function chunksOf(heads: { count: number; width: number }, elements: Element[], 
     const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];
     return { x: (x0 + x1) / 2, y, z: (z0 + z1) / 2, w: x1 - x0 + footprint[0] + PLATE_MARGIN, d: z1 - z0 + footprint[1] + PLATE_MARGIN };
   });
+}
+
+function isTranspose(n: Node): boolean {
+  return n.kind === 'op' && n.op === 'transpose';
+}
+
+function sameAxes(p: Node, q: Node): boolean {
+  const axes = (n: Node) => {
+    const { dim0, dim1 } = n.attrs as { dim0: number; dim1: number };
+    const rank = n.shape.length;
+    return [(dim0 + rank) % rank, (dim1 + rank) % rank].sort().join();
+  };
+  return axes(p) === axes(q);
 }
 
 function drawnAlike(n: Node, source: Node): boolean {
