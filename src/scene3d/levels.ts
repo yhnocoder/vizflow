@@ -271,7 +271,7 @@ class Plan implements LevelPlan {
       if (!isLayoutOp(n) || shown.has(n) || isLeafLike(n) || operands.has(n)) continue;
       const source = this.source(n.inputs[0]);
       this.sourceOf.set(n, source);
-      if (n.shape.length === 3 && drawnAlike(n, source)) this.drawnOn.set(source, [...(this.drawnOn.get(source) ?? []), n]);
+      if (n.shape.length >= 3 && drawnAlike(n, source)) this.drawnOn.set(source, [...(this.drawnOn.get(source) ?? []), n]);
     }
   }
 
@@ -423,7 +423,7 @@ class Plan implements LevelPlan {
     const cols = this.shapeOf(n)[1];
     const result =
       !this.boards.has(n) && !isLeafLike(n) && n.inputs.length > 0 &&
-      (n.shape.length === 2 || (n.shape.length === 3 && plates(n).width === 1)) &&
+      (n.shape.length === 2 || (n.shape.length >= 3 && plates(n).width === 1)) &&
       n.shape[n.shape.length - 1] === 1 &&
       this.consumers(n).some((u) => {
         const main = u.inputs[0];
@@ -835,7 +835,7 @@ class Plan implements LevelPlan {
     let size = 0;
     for (const node of [m.node, ...(this.drawnOn.get(m.node) ?? [])]) {
       const { count, width } = plates(node);
-      if (node.shape.length === 3 && count > 1 && width > 1 && (size === 0 || width < size)) size = width;
+      if (node.shape.length >= 3 && count > 1 && width > 1 && (size === 0 || width < size)) size = width;
       for (const u of this.computed) {
         if (u.kind !== 'op' || !u.inputs.includes(node)) continue;
         const attrs = u.attrs as { size?: number; length?: number; dim?: number };
@@ -1130,7 +1130,7 @@ class Plan implements LevelPlan {
       lo: 0,
       top,
       sourceOf: this.sourceOf,
-      drawnAs: new Map(this.entries.flatMap((e) => (e.node.shape.length === 3 ? [] : (this.drawnOn.get(e.node) ?? []).filter((v) => v.shape.length === 3).slice(0, 1).map((v) => [e.node, v] as const)))),
+      drawnAs: new Map(this.entries.flatMap((e) => (e.node.shape.length >= 3 ? [] : (this.drawnOn.get(e.node) ?? []).filter((v) => v.shape.length >= 3).slice(0, 1).map((v) => [e.node, v] as const)))),
     };
   }
 
@@ -1174,7 +1174,7 @@ class Plan implements LevelPlan {
   }
 
   private headsOf(n: Node): { count: number; width: number } {
-    const view = n.shape.length === 3 ? n : this.drawnOn.get(n)?.find((v) => v.shape.length === 3);
+    const view = n.shape.length >= 3 ? n : this.drawnOn.get(n)?.find((v) => v.shape.length >= 3);
     return view === undefined ? { count: 1, width: rowsCols(n)[1] } : plates(view);
   }
 
