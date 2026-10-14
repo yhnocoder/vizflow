@@ -20,9 +20,17 @@ args:
   topk_group: dim
   n_shared_experts: dim
   routed_scaling_factor: float
+  norm_topk_prob: bool
   num_layers: int
   first_k_dense_replace: int
   rope_theta: float
+  rope_type: str
+  factor: float
+  original_max_position_embeddings: int
+  beta_fast: float
+  beta_slow: float
+  mscale: float
+  mscale_all_dim: float
   dtype: dtype
 inputs:
   tokens: { type: list, dtype: str }
@@ -35,7 +43,7 @@ outputs:
 init:
   model:
     use: DeepseekV3Model
-    args: [V, d_model, d_ff, d_moe, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor, num_layers, first_k_dense_replace, rope_theta, dtype]
+    args: [V, d_model, d_ff, d_moe, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor, norm_topk_prob, num_layers, first_k_dense_replace, rope_theta, rope_type, factor, original_max_position_embeddings, beta_fast, beta_slow, mscale, mscale_all_dim, dtype]
   lm_head:
     use: Linear
     args: { in_features: d_model, out_features: V, bias: False }

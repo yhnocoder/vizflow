@@ -30,6 +30,7 @@ DIMS = {
 }
 ROPE_THETA = 10.0
 ROUTED_SCALING_FACTOR = 2.5
+YARN = {"factor": 40.0, "original_max_position_embeddings": 16, "beta_fast": 32.0, "beta_slow": 1.0, "mscale": 1.0, "mscale_all_dim": 1.0}
 SEQUENCE = [2, 4, 3, 0]
 
 
@@ -83,7 +84,8 @@ def config():
         qk_nope_head_dim=DIMS["qk_nope_head_dim"],
         qk_rope_head_dim=DIMS["qk_rope_head_dim"],
         v_head_dim=DIMS["v_head_dim"],
-        rope_parameters={"rope_type": "default", "rope_theta": ROPE_THETA},
+        rope_parameters={"rope_type": "yarn", "rope_theta": ROPE_THETA, **YARN},
+        max_position_embeddings=YARN["original_max_position_embeddings"] * int(YARN["factor"]),
         rope_interleave=True,
         rms_norm_eps=1e-6,
         tie_word_embeddings=False,

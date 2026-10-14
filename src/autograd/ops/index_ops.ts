@@ -1175,6 +1175,7 @@ export const sliceScatterOp: OpDef<SliceScatterAttrs> = {
   name: 'slice_scatter',
   args: ['input', 'src', 'dim', 'start', 'end', 'step'],
   tensors: ['input', 'src'],
+  sizes: ['start', 'end'],
   defaults: { dim: 0, start: null, end: null, step: 1 },
   sameDtype: ['input', 'src'],
   shape: ([input, src], attrs) => {

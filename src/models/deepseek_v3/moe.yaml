@@ -12,6 +12,7 @@ args:
   topk_group: dim
   n_shared_experts: dim
   routed_scaling_factor: float
+  norm_topk_prob: bool
 inputs:
   hidden_states: [T, d_model]
 outputs:
@@ -22,7 +23,7 @@ init:
     args: [d_model, d_moe, n_routed_experts]
   gate:
     use: DeepseekV3TopkRouter
-    args: [d_model, n_routed_experts, num_experts_per_tok, n_group, topk_group, routed_scaling_factor]
+    args: [d_model, n_routed_experts, num_experts_per_tok, n_group, topk_group, routed_scaling_factor, norm_topk_prob]
   shared_experts:
     use: DeepseekV3MLP
     args: { d_model: d_model, d_ff: d_moe * n_shared_experts }

@@ -6,6 +6,7 @@ args:
   n_group: dim
   topk_group: dim
   routed_scaling_factor: float
+  norm_topk_prob: bool
 inputs:
   hidden_states: [T, d_model]
 outputs:
@@ -33,9 +34,9 @@ forward:
   - masked_scores: scores_for_choice.masked_fill(~score_mask.bool(), float('-inf'))
   - topk_indices: topk(masked_scores, k=num_experts_per_tok, dim=-1, sorted=False)[1]
   - topk_w: scores.gather(1, topk_indices)
-  - denominator: topk_w.sum(dim=-1, keepdim=True) + 1e-20
-  - normed: topk_w / denominator
-  - topk_weights: normed * routed_scaling_factor
+  - denominator: topk_w.sum(dim=-1, keepdim=True) + 1e-20 if norm_topk_prob else None
+  - normed: topk_w / denominator if norm_topk_prob else None
+  - topk_weights: (normed if norm_topk_prob else topk_w) * routed_scaling_factor
 layout:
   place:
     w32: { with: x32 }
@@ -57,7 +58,7 @@ tex:
   masked_scores: '\tilde{\mathbf{s}}^{\mathrm{cand}}'
   topk_indices: '\mathbf{i}'
   topk_w: '\mathbf{w}'
-  denominator: '(\textstyle\sum\mathbf{w}+10^{-20})'
+  denominator: '\textstyle\sum\mathbf{w}+10^{-20}'
   normed: '\bar{\mathbf{w}}'
   topk_weights: '\mathbf{p}'
 formula: |-
@@ -192,7 +193,7 @@ steps:
     label: '$\viz{denominator}$'
     title: 选中的亲和度求和
     text: |
-      DeepSeek V3 的配置里 <code>norm_topk_prob</code> 是 True，<code>if self.norm_topk_prob:</code> 成立，执行 <code>denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20</code>。每个位置一个和，加上 $10^{-20}$ 防止和为 0 时除以 0。sigmoid 的值都大于 0，所以和总是正的，加上的数不改变显示的数值。
+      DeepSeek-V3 的配置里 <code>norm_topk_prob</code> 是 True，<code>if self.norm_topk_prob:</code> 成立，执行 <code>denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20</code>。每个位置一个和，加上 $10^{-20}$ 防止和为 0 时除以 0。sigmoid 的值都大于 0，所以和总是正的，加上的数不改变显示的数值。
       $$\viz{denominator}={{ denominator | matrix:3 }}$$
     backward:
       label: '$\partial\viz{topk_w}$'
@@ -213,14 +214,14 @@ steps:
         $$\pfl{\viz{normed}}={{ normed.grad | matrix:3 }}$$
   - id: scale
     show: topk_weights
-    label: '$\viz{topk_weights}=\rho\,\viz{normed}$'
+    label: "$\\viz{topk_weights}=\\rho\\,\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}$"
     title: 乘 routed_scaling_factor
     text: |
-      <code>topk_weights = topk_weights * self.routed_scaling_factor</code>，$\rho={{ routed_scaling_factor }}$。gate 返回 <code>router_logits, topk_weights, topk_indices</code>，MoE 只用后两个。
+      <code>topk_weights = topk_weights * self.routed_scaling_factor</code>，$\rho={{ routed_scaling_factor }}$。{{ '这里的 topk_weights 是上一步归一化后的权重。' if norm_topk_prob else '这一页的 norm_topk_prob 是 False，HF 跳过归一化，这里的 topk_weights 是 gather 取出的亲和度。' }}gate 返回 <code>router_logits, topk_weights, topk_indices</code>，MoE 只用后两个。
       $$\viz{topk_weights}={{ topk_weights | matrix:3 }}$$
     backward:
-      label: '$\partial\viz{normed}$'
-      title: '$\pfl{\viz{normed}}$'
+      label: "$\\partial\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}$"
+      title: "$\\pfl{\\viz{{{ 'normed' if norm_topk_prob else 'topk_w' }}}}$"
       text: |
         乘常数的局部导数是 $\rho$。
         $$\pfl{\viz{topk_weights}}={{ topk_weights.grad | matrix:3 }}$$

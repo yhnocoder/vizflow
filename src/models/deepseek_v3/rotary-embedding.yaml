@@ -2,6 +2,13 @@ module: DeepseekV3RotaryEmbedding
 args:
   qk_rope_head_dim: dim
   rope_theta: float
+  rope_type: str
+  factor: float
+  original_max_position_embeddings: int
+  beta_fast: float
+  beta_slow: float
+  mscale: float
+  mscale_all_dim: float
 inputs:
   x: ['...']
   position_ids: { type: tensor, shape: [T], dtype: int64 }
@@ -9,17 +16,23 @@ outputs:
   cos: [T, qk_rope_head_dim]
   sin: [T, qk_rope_head_dim]
 init:
+  constants:
+    pos_freqs: rope_theta ** (arange(0, qk_rope_head_dim, 2, dtype=int64).float() / qk_rope_head_dim)
+    low: "max(math.floor(qk_rope_head_dim * math.log(original_max_position_embeddings / (beta_fast * 2 * math.pi)) / (2 * math.log(rope_theta))), 0) if rope_type == 'yarn' else 0"
+    high: "min(math.ceil(qk_rope_head_dim * math.log(original_max_position_embeddings / (beta_slow * 2 * math.pi)) / (2 * math.log(rope_theta))), qk_rope_head_dim - 1) if rope_type == 'yarn' else 0"
+    inv_freq_extrapolation_factor: "1 - clamp((arange(qk_rope_head_dim // 2, dtype=int64).float() - low) / (high + (0.001 if low == high else 0) - low), 0, 1)"
+    attention_scaling: "(0.1 * mscale * math.log(factor) + 1.0) / (0.1 * mscale_all_dim * math.log(factor) + 1.0) if rope_type == 'yarn' and factor > 1 and mscale != 0 and mscale_all_dim != 0 else 0.1 * math.log(factor) + 1.0 if rope_type == 'yarn' and factor > 1 else 1.0"
   buffers:
     inv_freq:
       shape: [qk_rope_head_dim // 2]
       dtype: fp32
-      value: 1.0 / rope_theta ** (arange(0, qk_rope_head_dim, 2, dtype=int64).float() / qk_rope_head_dim)
+      value: "1.0 / pos_freqs if rope_type == 'default' else 1.0 / (factor * pos_freqs) * (1 - inv_freq_extrapolation_factor) + 1.0 / pos_freqs * inv_freq_extrapolation_factor"
 forward:
   - freqs: position_ids[..., None].float() * inv_freq.float()
   - emb: cat([freqs, freqs], dim=-1)
-  - cos_fp32: emb.cos()
+  - cos_fp32: emb.cos() * attention_scaling
   - cos: cos_fp32.to(x.dtype)
-  - sin_fp32: emb.sin()
+  - sin_fp32: emb.sin() * attention_scaling
   - sin: sin_fp32.to(x.dtype)
 tex:
   inv_freq: '\boldsymbol{\omega}'
@@ -48,9 +61,14 @@ steps:
     text: |
       RoPE 把 q、k 的分量两两配对，每一对按位置转一个角度（原理见 section「RoPE：用旋转来编码位置」）。这一步算出所有角度。
 
-      频率 <code>inv_freq</code> 在 <code>__init__</code> 里算好，是一个 buffer：
-      $$\omega_i=\theta^{-2i/d_r},\qquad i=0,\dots,d_r/2-1,\qquad \viz{inv_freq}={{ inv_freq | matrix:3 }}$$
-      代码是 <code>1.0 / (base ** (torch.arange(0, dim, 2, dtype=torch.float) / dim))</code>，<code>arange(0, dim, 2)</code> 给出的正是 $2i$。$i$ 越大，$\omega_i$ 越小，转得越慢。
+      频率 <code>inv_freq</code> 在 <code>__init__</code> 里由 <code>rope_init_fn(self.config)</code> 算好，是一个 buffer。默认的 RoPE 用 <code>1.0 / (base ** (torch.arange(0, dim, 2) / dim))</code>：
+      $$\omega_i=\theta^{-2i/d_r},\qquad i=0,\dots,d_r/2-1$$
+      <code>arange(0, dim, 2)</code> 给出的正是 $2i$。$i$ 越大，$\omega_i$ 越小，转得越慢。
+
+      DeepSeek-V3 的配置是 <code>rope_type: yarn</code>，<code>rope_init_fn</code> 是 <code>_compute_yarn_parameters</code>。YaRN 把训练时的上下文 $L_0$（<code>original_max_position_embeddings</code>，DeepSeek-V3 是 {{ original_max_position_embeddings | real }}）扩大 $\kappa$ 倍（<code>factor</code>，这一页是 {{ factor }}）。它按每组频率在 $L_0$ 个位置里转过的圈数分三类：转得快的组（圈数超过 <code>beta_fast</code> $={{ beta_fast }}$）保持原频率，转得慢的组（圈数不到 <code>beta_slow</code> $={{ beta_slow }}$）频率除以 $\kappa$，两者之间线性过渡：
+      $$\omega_i=\frac{\theta^{-2i/d_r}}{\kappa}\,r_i+\theta^{-2i/d_r}\,(1-r_i),\qquad r_i=\operatorname{clamp}\Big(\frac{i-\mathit{low}}{\mathit{high}-\mathit{low}},0,1\Big)$$
+      $\mathit{low}$、$\mathit{high}$ 是圈数等于 <code>beta_fast</code>、<code>beta_slow</code> 的组号，由 <code>find_correction_range</code> 算出并取整。这一页 $d_r={{ qk_rope_head_dim }}$、$\theta={{ rope_theta }}$、$L_0={{ original_max_position_embeddings }}$，得到 $\mathit{low}={{ low }}$、$\mathit{high}={{ high }}$，代码里的 <code>inv_freq_extrapolation_factor</code> 是 $1-r_i$。组号 $i\le\mathit{low}$ 的组 $r_i=0$，保持原频率；$i\ge\mathit{high}$ 的组 $r_i=1$，频率除以 {{ factor }}。
+      $$\viz{inv_freq}={{ inv_freq | matrix:3 }}$$
 
       有了频率，再乘上位置就得到角度：<code>freqs = position_ids[..., None].float() * self.inv_freq.to(device=x.device, dtype=torch.float)</code> 是位置与频率的外积，得到 $T\times d_r/2$ 的表：
       $${\viz{freqs}}_{t,i}=t\,\omega_i,\qquad \viz{freqs}={{ freqs | matrix:3 }}$$
@@ -67,7 +85,7 @@ steps:
     label: '$\viz{cos_fp32},\ \viz{sin_fp32}$'
     title: 取 cos 和 sin
     text: |
-      <code>cos = emb.cos() * self.attention_scaling</code>，sin 相同。默认的 RoPE 里 <code>attention_scaling</code> 是 1，所以这两张表就是角度的 cos 和 sin。角度和 cos、sin 都在 float32 里算，最后的 <code>cos.to(dtype=x.dtype)</code> 才转成输入的 dtype。
+      <code>cos = emb.cos() * self.attention_scaling</code>，sin 相同。<code>attention_scaling</code> 是 <code>_compute_yarn_parameters</code> 返回的 <code>attention_factor</code>：配置同时给了 <code>mscale</code> 和 <code>mscale_all_dim</code> 时，它是 $\frac{0.1\,m\ln\kappa+1}{0.1\,m_{\mathrm{all}}\ln\kappa+1}$。DeepSeek-V3 的两者都是 1，所以它等于 {{ attention_scaling }}，这两张表就是角度的 cos 和 sin。YaRN 对注意力的放大放在 attention 的 <code>self.scaling</code> 里。角度和 cos、sin 都在 float32 里算，最后的 <code>cos.to(dtype=x.dtype)</code> 才转成输入的 dtype。
       $$\viz{cos}={{ cos | matrix:3 }},\qquad \viz{sin}={{ sin | matrix:3 }}$$
       这两张表只由位置和 $\theta$ 决定，和输入的内容无关，所以不需要梯度：<code>forward</code> 带 <code>@torch.no_grad()</code>，反向不经过这里。
   - id: to_dtype

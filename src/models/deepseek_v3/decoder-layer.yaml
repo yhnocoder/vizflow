@@ -22,6 +22,10 @@ args:
   topk_group: dim
   n_shared_experts: dim
   routed_scaling_factor: float
+  norm_topk_prob: bool
+  rope_type: str
+  factor: float
+  mscale_all_dim: float
 inputs:
   x: [T, d_model]
   mask: [T, T]
@@ -32,12 +36,12 @@ outputs:
 init:
   self_attn:
     use: DeepseekV3Attention
-    args: [d_model, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim]
+    args: [d_model, num_heads, q_lora_rank, kv_lora_rank, qk_nope_head_dim, qk_rope_head_dim, v_head_dim, rope_type, factor, mscale_all_dim]
   mlp:
     if: layer_idx >= first_k_dense_replace
     then:
       use: DeepseekV3MoE
-      args: [d_model, d_moe, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor]
+      args: [d_model, d_moe, n_routed_experts, num_experts_per_tok, n_group, topk_group, n_shared_experts, routed_scaling_factor, norm_topk_prob]
     else:
       use: DeepseekV3MLP
       args: [d_model, d_ff]

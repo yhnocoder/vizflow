@@ -20,11 +20,15 @@ const fixture = loadFixture<never>('deepseek_v3.json') as unknown as DeepseekV3F
 const PAGE = 'deepseek_v3/deepseek_v3-dsl.yaml';
 const MOE = 'model.layers[1].mlp';
 
-async function loadInFloat64(): Promise<CompiledPage> {
+async function loadWith(config: Record<string, unknown>): Promise<CompiledPage> {
   const url = new URL(PAGE, examplesUrl).href;
   const spec = parseYaml(await readFileUrl(url), url) as { config: Record<string, unknown> };
-  spec.config.dtype = 'fp64';
+  Object.assign(spec.config, config);
   return compilePage(spec as never, { base: url, read: readFileUrl });
+}
+
+function loadInFloat64(): Promise<CompiledPage> {
+  return loadWith({ dtype: 'fp64' });
 }
 
 describe('deepseek_v3-dsl.yaml against transformers DeepseekV3ForCausalLM in float64', () => {
@@ -103,5 +107,24 @@ describe('deepseek_v3-dsl.yaml as written', () => {
       renders(elemTexOf(n, n.shape.map(() => 0)), `${n.name} elem`);
     }
     expect([...failures]).toEqual([]);
+  });
+});
+
+describe('deepseek_v3-dsl.yaml with norm_topk_prob set to False', () => {
+  it('skips the normalisation like HF and drops its steps', async () => {
+    const page = await loadWith({ norm_topk_prob: false });
+    const gate = `${MOE}.gate`;
+    expect(page.nodes.has(`${gate}.denominator`)).toBe(false);
+    expect(page.nodes.has(`${gate}.normed`)).toBe(false);
+    const w = page.nodes.get(`${gate}.topk_w`)!.value.data;
+    const p = page.nodes.get(`${gate}.topk_weights`)!.value.data;
+    Array.from(w).forEach((x, i) => expect(p[i]).toBeCloseTo(x * 2.5, 6));
+    const steps = createSteps(page.graph, page.steps);
+    const titles = steps.list.map((_, i) => steps.text(i).title);
+    const scale = steps.list[titles.indexOf('乘 routed_scaling_factor')];
+    steps.dispose();
+    expect(titles).not.toContain('选中的亲和度求和');
+    expect(scale.formula).toBeDefined();
+    expect(() => katex.renderToString(scale.formula!.tex, { throwOnError: true, trust: true })).not.toThrow();
   });
 });

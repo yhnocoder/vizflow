@@ -7,6 +7,10 @@ import { CompilerState } from './state';
 import { type DtypeValue, Eager, type Env, Instance, InstanceList, type Make, type Mode, type ModuleRef, type Num, PageFunction, type RealSizeEntry, type RealSizes, Result, type TensorView, type Value, type ViewIndex } from './types';
 import { combine, isNum, isRecord, num } from './util';
 
+const MATH_FUNCTIONS: Record<string, (...values: number[]) => number> = { log: Math.log, exp: Math.exp, sqrt: Math.sqrt, floor: Math.floor, ceil: Math.ceil };
+const MATH_CONSTANTS: Record<string, number> = { pi: Math.PI, e: Math.E, inf: Infinity };
+const SCALAR_BUILTINS: Record<string, (...values: number[]) => number> = { max: Math.max, min: Math.min, abs: Math.abs };
+
 const METHOD_CASTS: Record<string, Dtype> = { float: 'fp32', double: 'fp64', half: 'fp16', bfloat16: 'bf16', bool: 'bool', long: 'int64', int: 'int32' };
 const REF: Mode = { k: 'ref' };
 const COMPARE_TENSOR_OPS: Partial<Record<string, string>> = { '==': 'eq', '>=': 'ge', '<': 'lt', '>': 'greater' };
@@ -206,6 +210,10 @@ export abstract class Expressions extends CompilerState {
   }
 
   member(ast: Extract<Ast, { k: 'member' }>, env: Env, mode: Mode): Value {
+    if (this.isMath(ast.obj, env)) {
+      if (!(ast.name in MATH_CONSTANTS)) this.fail(env, `math has no constant '${ast.name}'; it has ${Object.keys(MATH_CONSTANTS).join(', ')}`, ast.pos);
+      return num(MATH_CONSTANTS[ast.name]);
+    }
     const base = this.evaluate(ast.obj, env, mode, false);
     if (base instanceof Instance) {
       if (base.members.has(ast.name)) return base.members.get(ast.name) as Value;
@@ -515,6 +523,11 @@ export abstract class Expressions extends CompilerState {
     const at = ast.pos;
     const args = (): Value[] => ast.args.map((arg) => this.evaluate(arg, env, mode, false));
     const kwargs = (): Map<string, Value> => new Map(ast.kwargs.map(([key, arg]) => [key, this.evaluate(arg, env, mode, false)]));
+    if (ast.fn.k === 'member' && this.isMath(ast.fn.obj, env)) {
+      const fn = MATH_FUNCTIONS[ast.fn.name];
+      if (fn === undefined) this.fail(env, `math has no function '${ast.fn.name}'; it has ${Object.keys(MATH_FUNCTIONS).join(', ')}`, ast.fn.pos);
+      return this.scalarCall(`math.${ast.fn.name}`, fn, args(), kwargs(), env, at);
+    }
     if (ast.fn.k === 'member') {
       const target = this.evaluate(ast.fn.obj, env, mode, false);
       const method = ast.fn.name;
@@ -532,6 +545,10 @@ export abstract class Expressions extends CompilerState {
         }
         if (dtype === target.dtype) return target;
         return this.apply('identity', [target], new Map(), env, mode, top, at, dtype);
+      }
+      if (method === 'new_empty' || method === 'new_zeros') {
+        if (given.length === 0 || options.size > 0) this.fail(env, `'.${method}' takes the sizes, such as x.${method}(T, d)`, at);
+        return this.apply('zeros', given, new Map([['dtype', { dtype: target.dtype }]]), env, mode, top, at);
       }
       if (opDef(method) === undefined && compositeDef(method) === undefined) this.fail(env, `tensors have no method '${method}'`, ast.fn.pos);
       return this.apply(method, [target, ...given], options, env, mode, top, at);
@@ -553,8 +570,24 @@ export abstract class Expressions extends CompilerState {
     if (callee instanceof PageFunction) return callee.run(args(), kwargs(), (message) => this.fail(env, message, at));
     if (callee !== undefined) this.fail(env, `${describe(callee)} cannot be called`, at);
     if (name === 'float' && opDef(name) === undefined) return this.toFloat(args(), env, at);
+    if (name in SCALAR_BUILTINS) {
+      const given = args();
+      if (given.length > 0 && given.every(isNum)) return this.scalarCall(name, SCALAR_BUILTINS[name], given, kwargs(), env, at);
+      if (opDef(name) === undefined) this.fail(env, `${name} takes numbers, got ${given.map(describe).join(', ')}`, at);
+      return this.apply(name, given, kwargs(), env, mode, top, at);
+    }
     if (opDef(name) === undefined && compositeDef(name) === undefined) this.fail(env, `unknown function '${name}'`, at);
     return this.apply(name, args(), kwargs(), env, mode, top, at);
+  }
+
+  private isMath(ast: Ast, env: Env): boolean {
+    if (ast.k !== 'name' || ast.name !== 'math') return false;
+    return !env.locals.has('math') && !(env.call?.values.has('math') ?? false) && !env.instance.members.has('math') && !env.instance.args.has('math');
+  }
+
+  private scalarCall(name: string, fn: (...values: number[]) => number, given: Value[], options: Map<string, Value>, env: Env, at: number): Num {
+    if (options.size > 0 || given.length === 0 || !given.every(isNum)) this.fail(env, `${name} takes numbers, got ${given.map(describe).join(', ')}`, at);
+    return combine(given as Num[], fn);
   }
 
   private toFloat(args: Value[], env: Env, at: number): Num {

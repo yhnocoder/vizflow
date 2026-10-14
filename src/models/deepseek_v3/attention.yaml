@@ -11,6 +11,9 @@ args:
   qk_nope_head_dim: dim
   qk_rope_head_dim: dim
   v_head_dim: dim
+  rope_type: str
+  factor: float
+  mscale_all_dim: float
 inputs:
   x: [T, d_model]
   mask: [T, T]
@@ -19,6 +22,8 @@ inputs:
 outputs:
   att: [T, d_model]
 init:
+  constants:
+    scaling: "(qk_nope_head_dim + qk_rope_head_dim) ** -0.5 * ((0.1 * mscale_all_dim * math.log(factor) + 1.0) ** 2 if rope_type != 'default' and mscale_all_dim != 0 and factor > 1 else 1.0)"
   q_a_proj:
     use: Linear
     args: { in_features: d_model, out_features: q_lora_rank, bias: false }
@@ -43,7 +48,7 @@ init:
   apply_rotary_pos_emb_interleave: apply_rotary_pos_emb_interleave
   eager_attention_forward:
     use: eager_attention_forward
-    args: { scaling: (qk_nope_head_dim + qk_rope_head_dim) ** -0.5 }
+    args: [scaling]
 forward:
   - q_a: q_a_proj(x)
   - q_an: q_a_layernorm(q_a)
@@ -66,7 +71,9 @@ forward:
   - k_nope: 'kv_heads[..., : qk_nope_head_dim]'
   - value_states: 'kv_heads[..., qk_nope_head_dim :]'
   - k_rot_e: k_emb.expand(num_heads, -1, -1)
-  - key_states: cat([k_nope, k_rot_e], dim=-1)
+  - key_empty: kv_heads.new_empty(num_heads, T, qk_nope_head_dim + qk_rope_head_dim)
+  - key_pass: slice_scatter(key_empty, k_nope, dim=-1, start=0, end=qk_nope_head_dim)
+  - key_states: slice_scatter(key_pass, k_rot_e, dim=-1, start=qk_nope_head_dim)
   - attn_output: eager_attention_forward(q=query_states, k=key_states, v=value_states, mask=mask)
   - o: attn_output.reshape(T, num_heads * v_head_dim)
   - att: o_proj(o)
@@ -92,6 +99,8 @@ tex:
   k_nope: '\mathbf{k}_{\mathrm{pass}}'
   value_states: '\mathbf{v}'
   k_rot_e: "\\mathrm{expand}(\\mathbf{k}_{\\mathrm{rot}}')"
+  key_empty: "\\mathbf{k}'_{\\mathrm{empty}}"
+  key_pass: "\\mathbf{k}'_{\\mathrm{pass}}"
   key_states: "\\mathbf{k}'"
   attn_output: '\mathbf{o}'
   o: '\mathbf{o}'
@@ -115,11 +124,11 @@ formula: |-
   \step{q_b_proj}{\viz{q_b}=\mathrm{norm}(}
   \step{q_a_proj}{\viz{x}{\viz{q_a_proj.weight}}^{\top}}
   \step{q_b_proj}{){\viz{q_b_proj.weight}}^{\top}}\\
-  \step{expand_kv.k_cat}{\viz{key_states}}&
-  \step{expand_kv.k_cat}{=\big[}
+  \step{expand_kv.k_copy_rot}{\viz{key_states}}&
+  \step{expand_kv.k_copy_rot}{=\big[}
   \step{expand_kv.kv_split}{\viz{k_nope},\ }
   \step{expand_kv.k_expand}{\mathrm{RoPE}(\viz{k_rot})}
-  \step{expand_kv.k_cat}{\big]},\quad
+  \step{expand_kv.k_copy_rot}{\big]},\quad
   \step{expand_kv.kv_b_proj}{[\viz{k_nope}\,|\,\viz{value_states}]=\mathrm{norm}(}
   \step{kv_split}{\viz{kv_nope}}
   \step{expand_kv.kv_b_proj}{){\viz{kv_b_proj.weight}}^{\top}}\\
@@ -319,17 +328,34 @@ steps:
           text: |
             {{ num_heads }} 个 head 用的是同一个 $\viz{k_emb}$，反向时 {{ num_heads }} 份梯度加回这一份：
             $$\pfl{\viz{k_emb}}=\sum_h\pfl{\viz{k_rot_e}{}^{(h)}}={{ k_emb.grad | matrix:3 }}$$
-      - id: k_cat
+      - id: k_empty
+        show: key_empty
+        label: "$\\viz{key_empty}$"
+        title: 建一个空的 key
+        text: |
+          <code>key_states = kv_nope.new_empty(*kv_nope.shape[:-1], self.qk_nope_head_dim + self.qk_rope_head_dim)</code>：HF 不用 <code>torch.cat</code>，先建一个 $H\times T\times(d_n+d_r)$ 的张量，形状是 ${{ num_heads }}\times{{ T }}\times{{ qk_nope_head_dim + qk_rope_head_dim }}$，dtype 与 <code>kv_nope</code> 相同。<code>new_empty</code> 只分配内存，不写初值，里面是内存里原有的数；接下来两步会把每个元素都改写，所以这里画成 0。它是常量，没有梯度。
+      - id: k_copy_pass
+        show: key_pass
+        label: "$\\viz{key_pass}$"
+        title: 写入不带位置的部分
+        text: |
+          <code>key_states[..., : self.qk_nope_head_dim].copy_(k_nope)</code>：把 $\viz{k_nope}$ 写进前 $d_n={{ qk_nope_head_dim }}$ 列，后 $d_r$ 列还是空的。这是原地写入，计算图里等价于 <code>torch.slice_scatter</code>：输出的前 $d_n$ 列取 $\viz{k_nope}$，其余列取原来的张量。
+          $$\viz{key_pass}={{ key_pass | matrix:2 }}$$
+        backward:
+          label: "$\\partial\\viz{k_nope}$"
+          title: "$\\pfl{\\viz{k_nope}}$"
+          text: 被写入的前 $d_n$ 列的梯度交给 $\viz{k_nope}$，局部导数是 1。空张量是常量，不接收梯度。
+      - id: k_copy_rot
         show: key_states
         label: "$\\viz{key_states}$"
-        title: 拼回 key
+        title: 写入带位置的部分
         text: |
-          HF 先用 <code>kv_nope.new_empty(...)</code> 建一个 $H\times T\times(d_n+d_r)$ 的张量，再用两次 <code>copy_</code> 把 $\viz{k_nope}$ 写进前 $d_n$ 列、$\viz{k_rot_e}$ 写进后 $d_r$ 列，结果和 <code>torch.cat</code> 相同，这里画成拼接。和 query 一样，不带位置的在前，带位置的在后，所以 $\mathbf{q}'\cdot\mathbf{k}'$ 分成两部分：前 $d_n$ 维只看内容，后 $d_r$ 维带相对位置。
+          <code>key_states[..., self.qk_nope_head_dim :].copy_(k_rot)</code>：把 $\viz{k_rot_e}$ 写进后 $d_r={{ qk_rope_head_dim }}$ 列，key 就完整了。和 query 一样，不带位置的在前，带位置的在后，所以 $\mathbf{q}'\cdot\mathbf{k}'$ 分成两部分：前 $d_n$ 维只看内容，后 $d_r$ 维带相对位置。
           $$\viz{key_states}={{ key_states | matrix:2 }}$$
         backward:
-          label: "$\\partial\\viz{k_nope},\\ \\partial\\viz{k_rot_e}$"
-          title: "$\\pfl{\\viz{k_nope}},\\ \\pfl{\\viz{k_rot_e}}$"
-          text: 梯度按列切回两段。
+          label: "$\\partial\\viz{k_rot_e},\\ \\partial\\viz{key_pass}$"
+          title: "$\\pfl{\\viz{k_rot_e}},\\ \\pfl{\\viz{key_pass}}$"
+          text: 后 $d_r$ 列的梯度交给 $\viz{k_rot_e}$；前 $d_n$ 列没有被这一步改写，梯度原样交给 $\viz{key_pass}$。
   - id: eager_attention_forward
     subtitle: 'softmax $\cdot$ $P\mathbf{v}$，每个 head 各算一次'
     flat: true
@@ -339,7 +365,7 @@ steps:
           MLA 的 <code>num_key_value_heads</code> 等于 head 数 {{ num_heads }}，所以 $n_{\mathrm{rep}}=1$。<code>repeat_kv</code> 在 $n_{\mathrm{rep}}=1$ 时直接返回输入，k 原样交给下一步。
       Ssc:
         append: |
-          MLA 的 <code>self.scaling = self.qk_head_dim ** (-0.5)</code>，$d_{qk}=d_n+d_r={{ qk_nope_head_dim + qk_rope_head_dim }}$，这一页是 ${{ (qk_nope_head_dim + qk_rope_head_dim) ** -0.5 }}$。DeepSeek-V3 用 YaRN 把上下文扩到 128K，HF 的 <code>yarn_apply_mscale</code> 还会再乘上 $m^2$；这一页的 RoPE 不用 YaRN，所以没有这个系数。
+          MLA 的 <code>self.scaling = yarn_apply_mscale(config.rope_parameters, self.qk_head_dim ** (-0.5))</code>，$d_{qk}=d_n+d_r={{ qk_nope_head_dim + qk_rope_head_dim }}$。DeepSeek-V3 用 YaRN 把上下文扩大 $\kappa$ 倍（<code>factor</code>，这一页是 {{ factor }}），<code>yarn_apply_mscale</code> 再乘上 $m^2$，$m=0.1\,m_{\mathrm{all}}\ln\kappa+1$（<code>mscale_all_dim</code> $m_{\mathrm{all}}={{ mscale_all_dim }}$）。扩大上下文后注意力分布会变平，这个系数把 softmax 的输入放大回来。这一页 $s={{ scaling }}$，是 $d_{qk}^{-1/2}={{ (qk_nope_head_dim + qk_rope_head_dim) ** -0.5 }}$ 乘上 $m^2$。
   - id: reshape
     show: o
     label: '$\viz{o}$'

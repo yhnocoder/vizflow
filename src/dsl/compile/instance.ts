@@ -136,7 +136,9 @@ export abstract class Modules extends Expressions {
     const init = this.fieldOf(def, 'init');
     for (const [key, spec] of Object.entries(init)) {
       const at = child(initWhere, init, key);
-      if (key === 'weights') {
+      if (key === 'constants') {
+        for (const [constant, text] of Object.entries(record(spec, at, 'constants'))) this.constantMember(instance, constant, text, child(at, spec as object, constant));
+      } else if (key === 'weights') {
         for (const [weight, decl] of Object.entries(record(spec, at, 'weights'))) this.tensorMember(instance, weight, decl, child(at, spec as object, weight), 'param');
       } else if (key === 'buffers') {
         for (const [buffer, decl] of Object.entries(record(spec, at, 'buffers'))) this.tensorMember(instance, buffer, decl, child(at, spec as object, buffer), 'buffer');
@@ -144,6 +146,14 @@ export abstract class Modules extends Expressions {
         this.childMember(instance, key, spec, at);
       }
     }
+  }
+
+  private constantMember(instance: Instance, name: string, text: unknown, at: Where): void {
+    if (!NAME.test(name)) fail(at, `'${name}' is not a valid name`);
+    if (instance.members.has(name) || instance.args.has(name)) fail(at, `name '${name}' is already defined in ${instance.def.name}`);
+    const value = this.computed(text, { ...this.instanceEnv(instance, at), where: at }, new ProgramBuilder(), false);
+    if (!isNum(value) && typeof value !== 'boolean' && typeof value !== 'string' && !(value instanceof Eager)) fail(at, `constant '${name}' must be a number, a bool, a str or a tensor computed at init, got ${describe(value)}`);
+    instance.args.set(name, value);
   }
 
   private define(instance: Instance, name: string, value: Member, where: Where): void {
@@ -468,7 +478,8 @@ export abstract class Modules extends Expressions {
     each(decl.args, section('args'), (arg, at) => fields(arg, at, ['default']));
     for (const key of ['inputs', 'outputs']) each(decl[key], section(key), (field, at) => fields(fieldSpec(field), at, ['shape', 'dtype']));
     each(decl.init, section('init'), (entry, at) => {
-      if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
+      if (at.key === 'constants') walk(entry, at, expression);
+      else if (at.key === 'weights' || at.key === 'buffers') each(entry, at, (tensor, w) => fields(tensor, w, ['shape', 'dtype', 'value', 'present']));
       else {
         const member = (spec: unknown, where: Where): void => {
           fields(spec, where, ['args', 'count', 'present', 'if']);
@@ -562,7 +573,11 @@ export abstract class Modules extends Expressions {
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
       call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
-      if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor or a module result, got ${describe(value)}`);
+      if (value === null && item.target === undefined && !inLoop) {
+        call.values.set(name, null);
+        continue;
+      }
+      if (!(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor, a module result or None, got ${describe(value)}`);
       const previous = call.values.get(name);
       call.values.set(name, value);
       if (!call.results.includes(name)) call.results.push(name);
