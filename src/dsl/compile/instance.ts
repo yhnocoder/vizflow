@@ -44,17 +44,57 @@ interface LoopLevel {
 
 interface GridWrite {
   accumulate: boolean;
+  values: Node[];
   tiles: Node[];
   regions: TileRegion[];
   where: Where;
+}
+
+interface CopyStore {
+  region: TileRegion;
+  value: Node;
 }
 
 interface CopyRun {
   index: number[];
   expand: string;
   writes: Map<string, GridWrite>;
-  written: Set<string>;
+  stores: Map<string, CopyStore[]>;
+  adds: Set<string>;
+  views: Map<string, Node>;
   tiles: Map<string, number>;
+}
+
+function spans(region: TileRegion, shape: readonly number[]): [number, number][] {
+  return region.map((entry, d) => (entry === null ? [0, shape[d]] : typeof entry === 'number' ? [entry, entry + 1] : entry));
+}
+
+function overlapping(a: TileRegion, b: TileRegion, shape: readonly number[]): boolean {
+  const sb = spans(b, shape);
+  return spans(a, shape).every(([start, stop], d) => Math.max(start, sb[d][0]) < Math.min(stop, sb[d][1]));
+}
+
+function sameRegion(a: TileRegion, b: TileRegion): boolean {
+  return a.every((entry, d) => JSON.stringify(entry) === JSON.stringify(b[d]));
+}
+
+function boundingRegion(regions: TileRegion[], shape: readonly number[]): TileRegion {
+  return shape.map((_, d) => {
+    const entries = regions.map((region) => region[d]);
+    if (entries.some((entry) => entry === null)) return null;
+    if (entries.every((entry) => entry === entries[0] && typeof entry === 'number')) return entries[0];
+    const all = regions.map((region) => spans(region, shape)[d]);
+    return [Math.min(...all.map(([start]) => start)), Math.max(...all.map(([, stop]) => stop))];
+  });
+}
+
+function regionWithin(region: TileRegion, outer: TileRegion): TileRegion {
+  return region.flatMap((entry, d) => {
+    const box = outer[d];
+    if (typeof box === 'number') return [];
+    if (box === null || entry === null) return [entry];
+    return [typeof entry === 'number' ? entry - box[0] : [entry[0] - box[0], entry[1] - box[0]]];
+  });
 }
 
 function flatAssignments(items: ForwardItem[]): { name: string; text: unknown; where: Where; target?: string }[] {
@@ -710,12 +750,20 @@ export abstract class Modules extends Expressions {
         for (const [name, value] of copy.locals) call.values.set(name, value);
         const before = this.g.nodes.length;
         const expand = dims.flatMap((dim, d) => (dim.arrangement === 'expand' ? [copy.index[d]] : [])).join(',');
+        const copyRun: CopyRun = { index: copy.index, expand, writes, stores: new Map(), adds: new Set(), views: new Map(), tiles: new Map() };
         this.runItems(
           call,
           items,
           dims.map((dim, d) => ({ variable: dim.name, index: copy.index[d], grid: true })),
-          { index: copy.index, expand, writes, written: new Set(), tiles: new Map() },
+          copyRun,
         );
+        for (const [name, stores] of copyRun.stores) {
+          const write = writes.get(name) as GridWrite;
+          for (const store of stores) {
+            write.tiles.push(store.value);
+            write.regions.push(store.region);
+          }
+        }
         for (const node of this.g.nodes.slice(before)) run.copyOf.set(node, copy.index);
       }
     };
@@ -749,6 +797,7 @@ export abstract class Modules extends Expressions {
       this.nodes.set(join(call.prefix, name), node);
       this.nodes.set(node.name, node);
       written.push(node);
+      run.outputs.set(node, write.values);
     }
     call.lines.push({ nodes: written, calls: [] });
   }
@@ -896,12 +945,31 @@ export abstract class Modules extends Expressions {
     }
   }
 
-  private checkReads(text: unknown, env: Env, copy: CopyRun | undefined, target?: string): void {
-    if (copy === undefined || copy.written.size === 0) return;
+  private copyReads(texts: unknown[], env: Env, copy: CopyRun, target?: string): Set<string> {
     const names = new Map<string, number>();
-    countNames(this.parse(text, env), names);
+    for (const text of texts) countNames(this.parse(text, env), names);
     if (target !== undefined) names.set(target, (names.get(target) ?? 0) - 1);
-    for (const name of copy.written) if ((names.get(name) ?? 0) > 0) fail(env.where, `'${name}' is read after this copy writes it; the copies write ${name} together after the grid finishes`);
+    const read = new Set([...names].filter(([, count]) => count > 0).map(([name]) => name));
+    for (const name of copy.adds) if (read.has(name)) fail(env.where, `'${name}' is read after this copy adds to it with +=; the copies add to ${name} at the same time, so its value is known only after the grid finishes`);
+    return read;
+  }
+
+  private checkControlReads(text: unknown, env: Env, copy: CopyRun | undefined): void {
+    if (copy === undefined) return;
+    const read = this.copyReads([text], env, copy);
+    for (const name of copy.stores.keys()) if (read.has(name)) fail(env.where, `'${name}' is read in an if test or a loop bound after this copy writes it; assign the part you need to a name first`);
+  }
+
+  private readCopy(call: Call, texts: unknown[], env: Env, copy: CopyRun, make: Make, target?: string): void {
+    const read = this.copyReads(texts, env, copy, target);
+    for (const [name, stores] of copy.stores) {
+      if (!read.has(name) || copy.views.has(name)) continue;
+      const tex = this.ownTex(call.instance, name, env);
+      const view = this.g.scatter_tiles(call.inputs.get(name) as Node, stores.map((store) => store.value), stores.map((store) => store.region), false, { name: this.anonPath(make), tex, elem: elemOf(tex) });
+      make.anon.push(view);
+      copy.views.set(name, view);
+      call.values.set(name, view);
+    }
   }
 
   private loopId(item: ForwardItem): number {
@@ -918,7 +986,7 @@ export abstract class Modules extends Expressions {
     for (const item of items) {
       const env = this.callEnv(call, item.where);
       if (item.kind === 'branch') {
-        this.checkReads(item.test, env, copy);
+        this.checkControlReads(item.test, env, copy);
         const test = this.expression(item.test, env);
         if (typeof test !== 'boolean') fail(item.where, `if must be True or False, got ${describe(test)}`);
         this.runItems(call, test ? item.then : item.other, loops, copy);
@@ -927,7 +995,7 @@ export abstract class Modules extends Expressions {
       }
       if (item.kind === 'loop') {
         if (call.instance.members.has(item.variable) || call.instance.args.has(item.variable) || call.bound.has(item.variable) || loops.some((loop) => loop.grid && loop.variable === item.variable)) fail(item.where, `name '${item.variable}' is already defined in ${def.name}`);
-        for (const bound of [item.start, item.stop, item.step]) this.checkReads(bound, env, copy);
+        for (const bound of [item.start, item.stop, item.step]) this.checkControlReads(bound, env, copy);
         const start = this.number(item.start, env);
         const stop = this.number(item.stop, env);
         const step = this.loopStep(item, env);
@@ -960,8 +1028,6 @@ export abstract class Modules extends Expressions {
       const inLoop = loops.some((loop) => !loop.grid);
       const writesInput = copy !== undefined && item.target !== undefined;
       const defined = call.values.has(name);
-      this.checkReads(item.text, env, copy);
-      if (writesInput) this.checkReads(`${name}[${item.target}]`, env, copy, name);
       if ((!inLoop && defined && !writesInput) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
       if (item.target !== undefined && !defined) fail(where, `'${name}' must be defined before '${name}[${item.target}]' writes into it`);
       if (recorded && defined && loops.some((loop) => loop.variable === name)) fail(where, `'${name}' is the loop variable`);
@@ -974,6 +1040,7 @@ export abstract class Modules extends Expressions {
       const make: Make = { name, path: tile === 1 ? `${alias.path}${suffix}` : `${alias.path}${suffix}#${tile}`, suffix, tex, anon: [] };
       const before = this.g.nodes.length;
       const calls = call.children.length;
+      if (copy !== undefined) this.readCopy(call, writesInput ? [item.text, `${name}[${item.target}]`] : [item.text], env, copy, make, writesInput ? name : undefined);
       const value = copy !== undefined && item.target !== undefined ? this.gridWrite(call, item, env, make, copy) : item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, item.accumulate, name, env, make);
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
@@ -982,6 +1049,17 @@ export abstract class Modules extends Expressions {
       if (recorded) this.slot(call, loops, copy, path, make.path, created);
       if (writesInput) {
         for (const node of created) this.nodes.set(node.name, node);
+        if (value instanceof Node) {
+          const iterations = this.iterationsOf(call, name, loops, undefined);
+          const key = loops.map((loop) => loop.index).join(',');
+          const earlier = iterations.values.get(key);
+          const anon = [...(earlier instanceof Node ? [...(this.anon.get(earlier) ?? []), earlier] : []), ...make.anon];
+          if (anon.length > 0) {
+            call.anon.set(value, [...(call.anon.get(value) ?? []), ...anon]);
+            this.anon.set(value, [...(this.anon.get(value) ?? []), ...anon]);
+          }
+          iterations.values.set(key, value);
+        }
         continue;
       }
       if (value === null && item.target === undefined && !inLoop) {
@@ -1032,13 +1110,55 @@ export abstract class Modules extends Expressions {
     const ast = this.parse(item.text, env);
     const value = ast.k === 'name' ? this.reference(item.text, env) : this.expression(item.text, env, make);
     if (!(value instanceof Node)) return fail(where, `'${name}[${target}]' writes ${describe(value)}; a grid module writes tensors`);
-    const write = copy.writes.get(name) ?? { accumulate: item.accumulate, tiles: [], regions: [], where };
+    const write = copy.writes.get(name) ?? { accumulate: item.accumulate, values: [], tiles: [], regions: [], where };
     if (write.accumulate !== item.accumulate) fail(where, `'${name}' is written with both = and +=; a grid module either writes each input or adds to it`);
-    write.tiles.push(value);
-    write.regions.push(region);
     copy.writes.set(name, write);
-    copy.written.add(name);
+    write.values.push(value);
+    if (item.accumulate) {
+      write.tiles.push(value);
+      write.regions.push(region);
+      copy.adds.add(name);
+      return value;
+    }
+    copy.stores.set(name, this.storeInCopy(copy.stores.get(name) ?? [], { region, value }, input, make, this.resultAlias(call, name, env).tex));
+    copy.views.delete(name);
+    call.values.set(name, input);
     return value;
+  }
+
+  private storeInCopy(stores: CopyStore[], latest: CopyStore, input: Node, make: Make, tex: string): CopyStore[] {
+    let region = latest.region;
+    let rest = stores;
+    const earlier: CopyStore[] = [];
+    for (;;) {
+      const hit = rest.filter((store) => overlapping(store.region, region, input.shape));
+      if (hit.length === 0) break;
+      earlier.push(...hit);
+      rest = rest.filter((store) => !hit.includes(store));
+      region = boundingRegion([region, ...hit.map((store) => store.region)], input.shape);
+    }
+    if (earlier.length === 0) return [...stores, latest];
+    if (sameRegion(region, latest.region)) return [...rest, latest];
+    const made = (node: Node) => {
+      make.anon.push(node);
+      return node;
+    };
+    const options = () => ({ name: this.anonPath(make), tex, elem: elemOf(tex) });
+    const whole = earlier.find((store) => sameRegion(store.region, region));
+    const base = whole?.value ?? made(this.g.scatter_tiles(this.regionOf(input, region, (node) => made(node(options()))), earlier.map((store) => store.value), earlier.map((store) => regionWithin(store.region, region)), false, options()));
+    const value = made(this.g.scatter_tiles(base, [latest.value], [regionWithin(latest.region, region)], false, options()));
+    return [...rest, { region, value }];
+  }
+
+  private regionOf(input: Node, region: TileRegion, make: (op: (options: { name: string; tex: string; elem: string }) => Node) => Node): Node {
+    let node = input;
+    for (let d = region.length - 1; d >= 0; d--) {
+      const entry = region[d];
+      const from = node;
+      if (typeof entry === 'number') node = make((options) => this.g.select(from, d, entry, options));
+      else if (entry !== null) node = make((options) => this.g.narrow(from, d, entry[0], entry[1] - entry[0], options));
+    }
+    return node;
   }
 
   private tileRegion(items: IndexItem[], shape: readonly number[], env: Env, text: string): TileRegion {

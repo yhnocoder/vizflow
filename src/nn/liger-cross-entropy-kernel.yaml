@@ -1,40 +1,46 @@
 module: liger_cross_entropy_kernel
 kernel: true
+grid:
+  row: N
 inputs:
   X: [N, V]
   Y: { type: tensor, shape: [N], dtype: int64 }
+  loss: { type: tensor, shape: [N], dtype: fp32 }
   n_non_ignore: { type: tensor, shape: [], dtype: int64 }
 outputs:
+  X: [N, V]
   loss: { type: tensor, shape: [N], dtype: fp32 }
-  X_grad: [N, V]
 
 forward:
-  - ori_X_y: X.gather(-1, Y.unsqueeze(-1)).squeeze(-1).float()
+  - y: Y[row]
   - BLOCK_SIZE: min(32768, triton.next_power_of_2(V))
-  - m: full([N], float('-inf'), dtype=fp32)
-  - d: zeros(N, dtype=fp32)
+  - m: full([], float('-inf'), dtype=fp32)
+  - d: zeros([], dtype=fp32)
+  - ori_X_y: X[row].gather(-1, y.unsqueeze(-1)).squeeze(-1).float()
   - for: i in range(0, V, BLOCK_SIZE)
     do:
-      - X_block: X[:, i:min(i + BLOCK_SIZE, V)].float()
+      - X_block: X[row, i:min(i + BLOCK_SIZE, V)].float()
       - block_max: X_block.max(-1)
       - m_new: maximum(m, block_max)
-      - d: d * 2 ** ((m - m_new) * math.log2(math.e)) + (2 ** ((X_block - m_new.unsqueeze(-1)) * math.log2(math.e))).sum(-1)
+      - d: d * 2 ** ((m - m_new) * math.log2(math.e)) + (2 ** ((X_block - m_new) * math.log2(math.e))).sum(-1)
       - m: m_new
   - lse: m + d.log()
   - for: j in range(0, V, BLOCK_SIZE)
     do:
-      - X_load: X[:, j:min(j + BLOCK_SIZE, V)].float()
-      - softmax_X: 2 ** ((X_load - m.unsqueeze(-1)) * math.log2(math.e)) / d.unsqueeze(-1)
+      - X_load: X[row, j:min(j + BLOCK_SIZE, V)].float()
+      - softmax_X: 2 ** ((X_load - m) * math.log2(math.e)) / d
       - X_store: softmax_X / n_non_ignore
-      - 'X[:, j:min(j + BLOCK_SIZE, V)]': X_store.to(X.dtype)
+      - 'X[row, j:min(j + BLOCK_SIZE, V)]': X_store.to(X.dtype)
   - softmax_X_y: 2 ** ((ori_X_y - m) * math.log2(math.e)) / d
   - dx_y: (softmax_X_y - 1) / n_non_ignore
-  - X_grad: X.scatter(-1, Y.unsqueeze(-1), dx_y.unsqueeze(-1).to(X.dtype))
-  - loss: (lse - ori_X_y) / n_non_ignore
+  - 'X[row]': X[row].scatter(-1, y.unsqueeze(-1), dx_y.unsqueeze(-1).to(X.dtype))
+  - 'loss[row]': (lse - ori_X_y) / n_non_ignore
 
 tex:
   X: 'X'
-  Y: 'y'
+  Y: 'Y'
+  loss: '\boldsymbol{\ell}'
+  y: 'y'
   ori_X_y: 'x_y'
   m: 'm'
   d: 'd'
@@ -47,30 +53,29 @@ tex:
   X_store: 'p/N'
   softmax_X_y: 'p_y'
   dx_y: '\frac{\partial\ell}{\partial x_y}'
-  X_grad: '\frac{\partial\ell}{\partial X}'
-  loss: '\ell_t'
 
 fold:
-  label: '$\viz{loss},\ \viz{X_grad}$'
+  label: '$\viz{loss},\ \viz{X}$'
   title: liger_cross_entropy_kernel
   text: |
-    一次 kernel 读两遍 logits：第一遍求每行的 $\log\sum_v e^{X_v}$ 得到损失，第二遍把 logits 就地改写成损失对它的梯度。
+    一次 kernel 每行一个 program，把这一行的 logits 读两遍：第一遍求 $\log\sum_v e^{X_v}$ 得到损失，第二遍把 logits 就地改写成损失对它的梯度。
     $$\viz{loss}={{ loss | matrix:3 }}$$
 
 steps:
   - id: x_y
-    show: ori_X_y
+    show: [y, ori_X_y]
     label: '$\viz{ori_X_y}$'
     title: 取出目标 logit
     text: |
-      <code>liger_cross_entropy_kernel</code> 的每个 Triton program 处理一行，也就是一个位置，所以这一块的 {{ N }} 行同时计算。先读出目标 token 那一格 $x_y$，转成 fp32。HF 的 <code>-100</code> 标签在这里直接返回、梯度置 0，这一页没有这样的位置。
+      <code>liger_cross_entropy_kernel</code> 的网格是 <code>(n_rows,)</code>：每个 Triton program 处理 logits 的一行，也就是一个位置，<code>program_id = tl.program_id(0)</code> 是行号。这一块有 {{ N }} 行，{{ N }} 个 program 同时执行、互不通信，每一步亮的是所有 program 在这一步做的事，文字以第 {{ row }} 行的 program 为例。
+      program 先读出这一行的标签 $y$。标签等于 <code>ignore_index</code>（HF 的 <code>-100</code>）时，program 把这一行的 $X$ 全部写成 0 后直接返回，这一页没有这样的位置。接着读出目标那一格 $x_y$ 并转成 fp32。第二遍会把这一格改写成梯度，所以原来的值要先存下来，算损失时使用。
       $$\viz{ori_X_y}={{ ori_X_y | matrix:3 }}$$
   - id: init
     show: [m, d]
     label: '$m,\ d$'
     title: 'online softmax 的初值'
     text: |
-      $m$ 是已经读过的 logits 的最大值，初值 $-\infty$；$d$ 是 $\sum e^{X_v-m}$，初值 0。词表很大，一行放不进一个程序的寄存器，所以按 <code>BLOCK_SIZE</code> $=\min(32768,\ 2^{\lceil\log_2 V\rceil})={{ BLOCK_SIZE }}$ 列一块读。
+      $m$ 是这一行已经读过的 logits 的最大值，初值 $-\infty$；$d$ 是 $\sum e^{X_v-m}$，初值 0。两者都是标量，放在寄存器里。词表很大，一行放不进一个 program 的寄存器，所以按 <code>BLOCK_SIZE</code> $=\min(32768,\ 2^{\lceil\log_2 V\rceil})={{ BLOCK_SIZE }}$ 列一块读，这一行共 {{ triton.cdiv(V, BLOCK_SIZE) }} 块。
   - id: online
     loop: i
     defaults:
@@ -78,7 +83,7 @@ steps:
       label: '$\viz{m_new},\ \viz{d}$'
       title: '第一遍：第 {{ i }} 列起的一块'
       text: |
-        读入第 {{ i }} 到 {{ min(i + BLOCK_SIZE, V) - 1 }} 列，转成 fp32。新的最大值 $m^{\mathrm{new}}=\max(m,\max_v X_v)$，旧的和要乘 $e^{m-m^{\mathrm{new}}}$ 换到新的最大值下，再加上这一块的指数和：
+        每个 program 读入自己那一行的第 {{ i }} 到 {{ min(i + BLOCK_SIZE, V) - 1 }} 列，转成 fp32。新的最大值 $m^{\mathrm{new}}=\max(m,\max_v X_v)$，旧的和要乘 $e^{m-m^{\mathrm{new}}}$ 换到新的最大值下，再加上这一块的指数和：
         $$d\leftarrow d\,e^{m-m^{\mathrm{new}}}+\sum_{v\in\text{块}}e^{X_v-m^{\mathrm{new}}},\qquad m\leftarrow m^{\mathrm{new}}$$
         $$\viz{d}={{ d | matrix:3 }}$$
   - id: lse
@@ -95,19 +100,21 @@ steps:
       label: '$\viz{X_store}$'
       title: '第二遍：把第 {{ j }} 列起的一块改写成梯度'
       text: |
-        前向时就已经知道损失对 logits 的梯度：对 mean 归约，$\frac{\partial\ell}{\partial X_v}=(p_v-[v=y])/N$，其中 $N$ 是不被忽略的位置数（这里是 {{ n_non_ignore }}）。第二遍再读一次这一块，算出 $p_v=e^{X_v-m}/d$，除以 $N$，转回 logits 的 dtype 写回原来的位置。logits 的缓冲区从此存的是梯度，不再需要另外分配 $N\times V$ 的空间。
+        前向时就已经知道损失对 logits 的梯度：对 mean 归约，$\frac{\partial\ell}{\partial X_v}=(p_v-[v=y])/N$，其中 $N$ 是不被忽略的位置数（这里是 {{ n_non_ignore }}）。每个 program 再读一次自己那一行的第 {{ j }} 到 {{ min(j + BLOCK_SIZE, V) - 1 }} 列，算出 $p_v=e^{X_v-m}/d$，除以 $N$，用 <code>tl.store</code> 转回 logits 的 dtype 写回原来的位置。一个 program 只写自己的那一行，写完这一块再读下一块，读到的都是还没有改写的 logits。logits 的缓冲区从此存的是梯度，不再需要另外分配 $N\times V$ 的空间。
+        Liger 在这一步还加上 z-loss 的导数 $2\,\mathrm{lse\_square\_scale}\cdot\mathrm{lse}\cdot p_v$ 和 label smoothing 的 $-\varepsilon$。<code>LigerFusedLinearCrossEntropyLoss</code> 的默认参数下 <code>lse_square_scale</code> 和 <code>label_smoothing</code> 都是 0，这两项都是 0，图里不画。
         $$\viz{X_store}={{ X_store | matrix:3 }}$$
   - id: target
-    show: [softmax_X_y, dx_y, X_grad]
-    label: '$\viz{X_grad}$'
-    title: 目标列减 $1/N$
+    show: [softmax_X_y, dx_y, X]
+    label: '$\viz{dx_y}$'
+    title: 目标那一格改写成 $(p_y-1)/N$
     text: |
-      目标那一格还要减去 one-hot 的 1：<code>X_y = (softmax_X_y - 1) / n_non_ignore</code>，单独写回 $X$ 的第 $y$ 列。
-      $$\viz{X_grad}={{ X_grad | matrix:3 }}$$
+      第二遍已经把目标那一格写成 $p_y/N$，还差 one-hot 的 $-1/N$。<code>tl.debug_barrier()</code> 保证循环里的写入先完成，program 再用存下的 fp32 $x_y$ 重新算 $p_y=e^{x_y-m}/d$，求出 $(p_y-1)/N$，用 <code>tl.store(X_ptr + y, dx_y)</code> 覆盖这一格，同一个 program 后写的值为准。在 fp32 里先减 1 再转回 logits 的 dtype，避免 $p_y$ 接近 1 时在 bf16 里相减丢掉有效位。
+      图里把这一行按 program 写过以后的值读回来，用 scatter 换掉第 $y$ 格再写回整行，只有第 $y$ 格的值改变。
+      $$\viz{dx_y}={{ dx_y | matrix:3 }}$$
   - id: loss
     show: loss
     label: '$\viz{loss}$'
     title: 每行的损失
     text: |
-      每行的损失 $(\mathrm{lse}-x_y)/N$ 写进 fp32 的 <code>loss_ptr</code>，除以 $N$ 是 mean 归约，求和在 kernel 外面做。
+      再一次 <code>tl.debug_barrier()</code> 之后，这一行的损失 $(\mathrm{lse}-x_y)/N$ 写进 fp32 的 <code>loss_ptr</code> 的第 {{ row }} 个位置。除以 $N$ 是 mean 归约，求和在 kernel 外面做。z-loss $\mathrm{lse\_square\_scale}\cdot\mathrm{lse}^2$ 在这里是 0。全部 program 执行完以后，$X$ 存的是这一块 logits 的梯度，$\viz{loss}$ 存的是每行的损失。
       $$\viz{loss}={{ loss | matrix:3 }}$$

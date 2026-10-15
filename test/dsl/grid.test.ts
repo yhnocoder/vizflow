@@ -112,8 +112,44 @@ describe('grid modules', () => {
     expect(twice.graph.nodes.map((n) => n.name).filter((name) => /#2$/.test(name))).toEqual(['y[0]#2', 'y[1]#2']);
   });
 
-  it('rejects a read of an input after the copy writes it, and outputs that are not written inputs', async () => {
-    await expect(page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0]\n- z: y[i, 1] * 2\n- 'y[i, 1]': z" })).rejects.toThrow(/'y' is read after this copy writes it; the copies write y together after the grid finishes/);
+  it('applies the writes of one copy in program order, and later writes win where they overlap', async () => {
+    const ONES = '- buf: ones(T, 2)\n- y: g(x, buf)\n- l: y.sum()';
+    const inside = await page({ grid: '{ i: 2 }', forward: "- 'y[i]': x[i]\n- 'y[i, 1]': x[i, 0] * 10" }, ONES);
+    expect(Array.from(inside.nodes.get('y')!.value.data)).toEqual([1, 10, 3, 30, 1, 1, 1, 1]);
+    const covering = await page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0] * 5\n- 'y[i]': x[i] * 2" }, ONES);
+    expect(Array.from(covering.nodes.get('y')!.value.data)).toEqual([2, 4, 6, 8, 1, 1, 1, 1]);
+    expect(covering.nodes.get('y')!.inputs.slice(1).map((n) => n.name)).toEqual(['y[0]#2', 'y[1]#2']);
+    const partial = await page({ grid: '{ i: 2 }', forward: "- 'y[2 * i:2 * i + 2, 0]': x[2 * i:2 * i + 2, 0]\n- 'y[2 * i + 1]': x[2 * i + 1] * 10" }, ONES);
+    expect(Array.from(partial.nodes.get('y')!.value.data)).toEqual([1, 1, 30, 40, 5, 1, 70, 80]);
+  });
+
+  it('reads the values the copy has written so far, and the passed-in values elsewhere', async () => {
+    const ONES = '- buf: ones(T, 2)\n- y: g(x, buf)\n- l: y.sum()';
+    const unwritten = await page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0]\n- z: y[i, 1] + 1\n- 'y[i, 1]': z", steps: '- id: z\n- id: y' }, ONES);
+    expect(Array.from(unwritten.nodes.get('y')!.value.data)).toEqual([1, 2, 3, 2, 1, 1, 1, 1]);
+    const written = await page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0] * 3\n- z: y[i, 0] + y[i, 1]\n- 'y[i, 1]': z", steps: '- id: z\n- id: y' }, ONES);
+    expect(Array.from(written.nodes.get('y')!.value.data)).toEqual([3, 4, 9, 10, 1, 1, 1, 1]);
+    const view = written.graph.node('g.z[1]/1')!;
+    expect([view.op, view.inputs.map((n) => n.name)]).toEqual(['scatter_tiles', ['buf', 'y[1]']]);
+    expect(Array.from(view.value.data)).toEqual([1, 1, 9, 1, 1, 1, 1, 1]);
+    expect(written.graph.node('g.z[1]')!.value.data[0]).toBe(10);
+  });
+
+  it('shows the writes of every copy where a step shows the written input, and the scatter_tiles output with the last of them', async () => {
+    const p = await page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0] * 3\n- z: y[i, 0] + y[i, 1]\n- 'y[i, 1]': z * 2", steps: '- id: z\n- id: w\n  show: y' }, '- buf: ones(T, 2)\n- y: g(x, buf)\n- l: y.sum()');
+    const steps = p.steps.forward.filter((s) => s.grid === 'g');
+    const names = (k: number) => (steps[k].show as { name: string }[]).map((n) => n.name);
+    expect(steps).toHaveLength(2);
+    expect(names(0)).toEqual(expect.arrayContaining(['g.z[0]/1', 'g.z[0]', 'g.z[1]/1', 'g.z[1]']));
+    expect(names(0)).not.toContain('y');
+    expect(names(1)).toEqual(expect.arrayContaining(['y[0]', 'y[0]#2', 'y[1]', 'y[1]#2', 'y']));
+    expect(Array.from(p.nodes.get('y')!.value.data)).toEqual([3, 8, 9, 20, 1, 1, 1, 1]);
+  });
+
+  it('rejects a read after +=, a read in an if test after a write, overlapping copies, and outputs that are not written inputs', async () => {
+    await expect(page({ grid: '{ i: 2 }', forward: "- 'y[i, 0] +=': x[i, 0]\n- z: y[i, 1] * 2\n- 'y[i, 1] +=': z", steps: '- id: z\n- id: y' })).rejects.toThrow(/'y' is read after this copy adds to it with \+=; the copies add to y at the same time, so its value is known only after the grid finishes/);
+    await expect(page({ grid: '{ i: 2 }', forward: "- 'y[i, 0]': x[i, 0]\n- if: y[i, 0] > 0\n  then:\n    - 'y[i, 1]': x[i, 1]" })).rejects.toThrow(/'y' is read in an if test or a loop bound after this copy writes it; assign the part you need to a name first/);
+    await expect(page({ grid: '{ i: 2 }', forward: "- 'y[i]': x[i]\n- 'y[i + 1, 0]': x[i, 0]" })).rejects.toThrow(/scatter_tiles: tiles 1 and 2 write the same element; overlapping tiles need accumulate/);
     await expect(page({ grid: '{ i: 2 }', outputs: '{ y: [T, 2], z: [T, 2] }', forward: "- 'y[i]': x[i]" })).rejects.toThrow(/output 'z' of G is not an input that the grid writes/);
     await expect(page({ grid: '{ i: 2 }', inputs: '{ x: [T, _], y: [T, 2], w: [T, 2] }', forward: "- 'y[i]': x[i]\n- 'w[i]': x[i]" }, '- buf: zeros(T, 2)\n- y: g(x, buf, buf)\n- l: y.sum()')).rejects.toThrow(/the grid writes input 'w', so 'w' must also be an output of G/);
   });

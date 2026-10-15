@@ -445,6 +445,19 @@ export class StepCompiler {
     trees.forEach(visit);
   }
 
+  showGridOutputs(lists: { show: Node | Node[] }[][]): void {
+    const nodesOf = (step: { show: Node | Node[] }) => (Array.isArray(step.show) ? step.show : [step.show]);
+    for (const call of this.c.calls) {
+      for (const [output, values] of call.grid?.outputs ?? []) {
+        for (const list of lists) {
+          if (list.some((step) => nodesOf(step).includes(output))) continue;
+          const last = [...list].reverse().find((step) => nodesOf(step).some((n) => values.includes(n)));
+          if (last !== undefined) last.show = [...nodesOf(last), output];
+        }
+      }
+    }
+  }
+
   private callOf(value: Value, env: Env, text: string): Call {
     if (value instanceof Instance) return this.c.onlyCall(value, env, 0);
     if (value instanceof Result) return value.call;

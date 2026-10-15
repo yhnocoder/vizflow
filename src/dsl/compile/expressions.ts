@@ -657,15 +657,19 @@ export abstract class Expressions extends CompilerState {
     return def.compose<Node | Eager>((op, args, last) => this.applyOp(opDef(op) as AnyOpDef, args, last ? rest : {}, mode, top && last), inputs);
   }
 
+  protected anonPath(make: Make): string {
+    const count = (this.anonCount.get(make.path) ?? 0) + 1;
+    this.anonCount.set(make.path, count);
+    return `${make.path}/${count}`;
+  }
+
   private applyOp(def: AnyOpDef, positional: unknown[], options: Record<string, unknown>, mode: Mode, top: boolean): Node | Eager {
     if (mode.k === 'eager') return this.eagerOp(def, positional, options, mode.program);
     if (mode.k !== 'graph') throw new Error(`${def.name} cannot be computed here`);
     const make = mode.make;
     const { inputs, attrs } = bindOp(def, positional, options, isNode);
     const texAttrs = Object.fromEntries(Object.entries(attrs).map(([key, value]) => [key, def.sizes?.includes(key) ? toySize(value, this.g.dims) : value]));
-    const count = top ? 0 : (this.anonCount.get(make.path) ?? 0) + 1;
-    if (!top) this.anonCount.set(make.path, count);
-    const name = top ? make.path : `${make.path}/${count}`;
+    const name = top ? make.path : this.anonPath(make);
     const tex = top ? make.tex : (explainOf(def.name)?.tex.forward({ out: '', in: inputs.map((n) => n.tex), attrs: texAttrs }) ?? `\\mathrm{${def.name}}`);
     const elem = top ? elemOf(tex) : `(${elemOf(tex)})`;
     const node = (this.g as unknown as Record<string, (...a: unknown[]) => Node>)[def.name](...positional, { ...options, name, tex, elem });

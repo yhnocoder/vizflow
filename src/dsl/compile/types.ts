@@ -104,6 +104,7 @@ export interface GridCopy {
 
 export class GridRun {
   readonly copyOf = new Map<Node, number[]>();
+  readonly outputs = new Map<Node, Node[]>();
 
   constructor(
     readonly dims: readonly GridDim[],

@@ -275,6 +275,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   for (const step of sc.allSteps) step.show = [...new Set([...drawn, ...(Array.isArray(step.show) ? step.show : [step.show])])];
   sc.markFormulas(trees);
   const functions = sc.functionBackward(forward, groups);
+  sc.showGridOutputs([forward, ...functions.map((f) => f.steps)]);
   checkShown(c, sc, forward, functions);
   checkBackwardShown(c, sc, functions);
   const visible = new Set([...forward.flatMap((s) => (Array.isArray(s.show) ? s.show : [s.show])), ...functions.flatMap((f) => f.steps.flatMap((s) => s.show))]);

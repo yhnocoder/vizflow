@@ -29,9 +29,10 @@ forward:
       - _input_chunk: _input[start_idx:end_idx]
       - logits_chunk: _input_chunk @ weight.transpose(0, 1)
       - target_chunk: target[start_idx:end_idx]
-      - ce: ce_kernel(logits_chunk, target_chunk, total_n_non_ignore)
+      - loss_1d_slice: loss_1d[start_idx:end_idx]
+      - ce: ce_kernel(logits_chunk, target_chunk, loss_1d_slice, total_n_non_ignore)
+      - grad_logits_chunk: ce.X
       - 'loss_1d[start_idx:end_idx]': ce.loss
-      - grad_logits_chunk: ce.X_grad
       - 'grad_input[start_idx:end_idx]': grad_logits_chunk @ weight
       - 'grad_weight[...]': grad_weight + grad_logits_chunk.transpose(0, 1) @ _input_chunk
   - loss: loss_1d.sum()
@@ -52,6 +53,7 @@ tex:
   _input_chunk: '\mathbf{h}^{\mathrm{chunk}}'
   logits_chunk: '\mathbf{z}^{\mathrm{chunk}}'
   target_chunk: 'y^{\mathrm{chunk}}'
+  loss_1d_slice: '\boldsymbol{\ell}^{\mathrm{chunk}}'
   grad_logits_chunk: '\frac{\partial\ell}{\partial\mathbf{z}^{\mathrm{chunk}}}'
   loss: '\ell'
   grad__input: '\frac{\partial\ell}{\partial\mathbf{h}}'
@@ -92,7 +94,7 @@ steps:
           label: '$\viz{grad_input},\ \viz{grad_weight}$'
           title: '第 {{ chunk_id }} 块：传回 $\mathbf{h}$ 和 $W$'
           text: |
-            kernel 已经把 logits 改写成 $\frac{\partial\ell}{\partial \mathbf{z}}$，在前向里直接乘回去：$\frac{\partial\ell}{\partial \mathbf{h}^{\mathrm{chunk}}}=\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}}W$ 写进 <code>grad_input</code> 的这几行，$\frac{\partial\ell}{\partial W}\mathrel{+}=(\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}})^{\top}\mathbf{h}^{\mathrm{chunk}}$ 用 <code>torch.addmm</code> 累加，图里画成乘法加加法。这一块的 logits 和它的梯度到这里就不再需要了。
+            kernel 把每行的损失写进传入的 <code>loss_1d_slice</code>，它是 <code>loss_1d</code> 这几行的切片，<code>loss_1d[start_idx:end_idx] = loss_1d_slice</code> 因此不改变数值。kernel 还把 logits 就地改写成了 $\frac{\partial\ell}{\partial \mathbf{z}}$，<code>grad_logits_chunk = logits_chunk</code> 就是这块缓冲区。在前向里直接乘回去：$\frac{\partial\ell}{\partial \mathbf{h}^{\mathrm{chunk}}}=\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}}W$ 写进 <code>grad_input</code> 的这几行，$\frac{\partial\ell}{\partial W}\mathrel{+}=(\frac{\partial\ell}{\partial \mathbf{z}^{\mathrm{chunk}}})^{\top}\mathbf{h}^{\mathrm{chunk}}$ 用 <code>torch.addmm</code> 累加，图里画成乘法加加法。这一块的 logits 和它的梯度到这里就不再需要了。
             $$\viz{grad_input}={{ grad_input | matrix:3 }}$$
   - id: loss
     show: loss
