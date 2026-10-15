@@ -2,7 +2,7 @@ import { DTYPES, type Dtype, type Graph, Node, ProgramBuilder } from '../../auto
 import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
-import { DEFAULT_SCHEME_OPTIONS, ITERATION_MODES, LEVEL_SCHEMES, type LevelScheme, type SchemeOptions } from '../../scene3d/levels';
+import { DEFAULT_LAYOUT_OPTIONS, ITERATION_MODES, LEVEL_SCHEMES, type LayoutOptions, type LevelScheme, PREPARE_MODES, SPAN_MODES } from '../../scene3d/levels';
 import { isLayoutOp } from '../../scene3d/layout';
 import type { ForwardStep, PageModule, StepsSpec } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
@@ -292,21 +292,33 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   return compiled;
 }
 
-function levelSchemeOf(c: PageCompiler): { scheme: LevelScheme; options: SchemeOptions } {
-  const options = { ...DEFAULT_SCHEME_OPTIONS };
+function levelSchemeOf(c: PageCompiler): { scheme: LevelScheme; options: LayoutOptions } {
+  const options = { ...DEFAULT_LAYOUT_OPTIONS };
   if (c.page.layout === undefined) return { scheme: 'lines', options };
   const where = child(c.pageWhere, c.page, 'layout');
   const layout = record(c.page.layout, where, 'layout');
-  checkKeys(layout, new Set(['levels', 'iterations', 'width']), where);
+  checkKeys(layout, new Set(['levels', 'iterations', 'width', 'prepare', 'gap', 'span']), where);
   const levels = layout.levels ?? 'lines';
   if (typeof levels !== 'string' || !(LEVEL_SCHEMES as readonly string[]).includes(levels)) fail(child(where, layout, 'levels'), `layout.levels is one of ${LEVEL_SCHEMES.join(', ')}`);
   if (layout.iterations !== undefined) {
     if (typeof layout.iterations !== 'string' || !(ITERATION_MODES as readonly string[]).includes(layout.iterations)) fail(child(where, layout, 'iterations'), `layout.iterations is one of ${ITERATION_MODES.join(', ')}`);
-    options.iterations = layout.iterations as SchemeOptions['iterations'];
+    options.iterations = layout.iterations as LayoutOptions['iterations'];
   }
   if (layout.width !== undefined) {
     if (layout.width !== 'none' && !(typeof layout.width === 'number' && Number.isInteger(layout.width) && layout.width > 0)) fail(child(where, layout, 'width'), 'layout.width is a positive integer or none');
     options.width = layout.width === 'none' ? Infinity : layout.width;
+  }
+  if (layout.prepare !== undefined) {
+    if (typeof layout.prepare !== 'string' || !(PREPARE_MODES as readonly string[]).includes(layout.prepare)) fail(child(where, layout, 'prepare'), `layout.prepare is one of ${PREPARE_MODES.join(', ')}`);
+    options.prepare = layout.prepare as LayoutOptions['prepare'];
+  }
+  if (layout.gap !== undefined) {
+    if (layout.gap !== 'labels' && !(typeof layout.gap === 'number' && Number.isFinite(layout.gap) && layout.gap >= 0)) fail(child(where, layout, 'gap'), 'layout.gap is a non-negative number or labels');
+    options.gap = layout.gap as LayoutOptions['gap'];
+  }
+  if (layout.span !== undefined) {
+    if (typeof layout.span !== 'string' || !(SPAN_MODES as readonly string[]).includes(layout.span)) fail(child(where, layout, 'span'), `layout.span is one of ${SPAN_MODES.join(', ')}`);
+    options.span = layout.span as LayoutOptions['span'];
   }
   return { scheme: levels as LevelScheme, options };
 }

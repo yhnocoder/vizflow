@@ -3,12 +3,12 @@ import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
 import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
-import { type BoardRef, Columns, type Entry, type Kind, LEVEL_ROW, type Level, STACK_GAP, STREAM_SPACING, position } from './columns';
+import { type BoardRef, Columns, type Entry, type Kind, LEVEL_ROW, type Level, STACK_GAP, STREAM_SPACING, TITLE, position } from './columns';
 import type { SceneModule } from './modules';
-import { type LevelScheme, type Place, type SchemeOptions, schemeLevels } from './schemes';
+import { DEFAULT_LAYOUT_OPTIONS, type LayoutOptions, type LevelScheme, type Place, schemeLevels } from './schemes';
 
-export { DEFAULT_SCHEME_OPTIONS, ITERATION_MODES, LEVEL_SCHEMES, type LevelScheme, type SchemeOptions } from './schemes';
-export { BOARD_GAP, COLUMN_BREAK, DISC_GROUP_SIDE, DISC_NEAR_SIDE, DISC_SIDE, LEVEL_ROW, PLACE_GAP, PLACE_TITLE_ROOM, SPACING_MAX, SPACING_MIN, SPACING_SPAN, STACK_GAP, STREAM_BESIDE, STREAM_PARALLEL, STREAM_SPACING, STREAM_X, TITLE_ROOM } from './columns';
+export { DEFAULT_LAYOUT_OPTIONS, ITERATION_MODES, LEVEL_SCHEMES, type LayoutOptions, type LevelScheme, PREPARE_MODES, SPAN_MODES } from './schemes';
+export { BLOCK_HALF, BOARD_GAP, CHIP_ROOM, COLUMN_BREAK, DISC_GROUP_SIDE, DISC_NEAR_SIDE, DISC_SIDE, LABEL_CHAR, LEVEL_ROW, SPACING_MAX, SPACING_MIN, SPACING_SPAN, STACK_GAP, STREAM_SPACING, STREAM_X, texWidth } from './columns';
 
 export const LEVEL_FRONT = 2.9;
 export const TILE_BACK = 1.3;
@@ -64,14 +64,6 @@ export const TOP_ROOM = 1.5;
 
 export const BRACE_PAD = { below: 0.6, belowBoard: 0.9, above: 1.0, aboveBoard: 1.4, aboveTable: 1.6 } as const;
 export const BRACE_X = { left: 1.7, right: 2.2, outer: 4.0 } as const;
-
-const TITLE = {
-  left: [-0.55, 0.3] as const,
-  board: [-0.55, -0.45] as const,
-  below: [-0.55, 0.9] as const,
-  right: [0.6, 0.35] as const,
-  vector: [0.55, 0.35] as const,
-};
 
 export interface FoldBox {
   module: StepModule;
@@ -143,7 +135,7 @@ const list = (nodes: Node | Node[]): Node[] => (Array.isArray(nodes) ? nodes : [
 
 export interface LevelSpec {
   scheme?: LevelScheme;
-  options?: SchemeOptions;
+  options?: LayoutOptions;
   lines: Node[][];
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
@@ -200,7 +192,7 @@ class Plan implements LevelPlan {
     this.cols = new Columns({
       levels: this.levels,
       entries: this.entries,
-      scheme: this.layout.scheme ?? 'lines',
+      options: this.layout.options ?? DEFAULT_LAYOUT_OPTIONS,
       sides: this.layout.sides,
       merges: this.layout.merges,
       boards: this.boards,
@@ -216,6 +208,8 @@ class Plan implements LevelPlan {
       sourceOf: this.sourceOf,
       source: (n) => this.source(n),
       consumers: (n) => this.consumers(n),
+      prepared: (n) => this.constant(n),
+      labelled: (n) => this.tables.has(n) || this.selectLabel(n) !== undefined,
     });
     this.cols.run();
     this.markQuiet();
@@ -420,7 +414,7 @@ class Plan implements LevelPlan {
     if (node.shape.length === 0) kind = 'box';
     else if (leaf && node.shape.length === 1) kind = 'vector';
     else if (this.isDisc(node)) kind = 'disc';
-    const e: Entry = { key, node, kind, level, rows, cols, lane: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined, transposed: false, zShift: 0 };
+    const e: Entry = { key, node, kind, level, rows, cols, track: undefined, host: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined, transposed: false, zShift: 0 };
     level.entries.push(e);
     this.entries.push(e);
     if (!this.entryOf.has(node) || key === `node:${node.id}`) this.entryOf.set(node, e);
@@ -490,25 +484,17 @@ class Plan implements LevelPlan {
       predsOf.set(n, [...out]);
       return predsOf.get(n)!;
     };
-    const constantOf = new Map<Node, boolean>();
-    const constant = (n: Node): boolean => {
-      const known = constantOf.get(n);
-      if (known !== undefined) return known;
-      constantOf.set(n, true);
-      const value = n.kind !== 'label' && n.kind !== 'input' && n.inputs.every(constant);
-      constantOf.set(n, value);
-      return value;
-    };
     const index = schemeLevels(scheme, {
       nodes,
       preds,
-      constant: (n) => constant(n) || (n.kind === 'op' && n.op === 'alias'),
+      constant: (n) => this.constant(n) || (n.kind === 'op' && n.op === 'alias'),
       ...this.schemeScopes(nodes),
       pack: (n) => {
         const group = (n.attrs as { group?: unknown } | undefined)?.group;
         return n.kind === 'op' && typeof group === 'string' ? `${n.op}:${group}` : undefined;
       },
       rides: (n) => this.ridesBoards(n),
+      starts: (n) => this.startsTrack(n, preds),
       late: (n) => n.kind === 'op' && n.op === 'alias',
       iteration: (n) => this.layout.iterations?.get(n),
       places: this.layout.places ?? [],
@@ -525,6 +511,24 @@ class Plan implements LevelPlan {
     const used = [...new Set(nodes.filter((n) => !moveTo.has(n)).map((n) => index.get(n)!))].sort((p, q) => p - q);
     const levelAt = new Map(used.map((l) => [l, this.newLevel()]));
     for (const n of nodes) if (!moveTo.has(n) && !this.entryOf.has(n)) this.placeNode(n, levelAt.get(index.get(n)!)!, moveTo);
+  }
+
+  private readonly constantOf = new Map<Node, boolean>();
+
+  private constant(n: Node): boolean {
+    const known = this.constantOf.get(n);
+    if (known !== undefined) return known;
+    this.constantOf.set(n, true);
+    const value = n.kind !== 'label' && n.kind !== 'input' && n.inputs.every((i) => this.constant(i));
+    this.constantOf.set(n, value);
+    return value;
+  }
+
+  private startsTrack(n: Node, preds: (n: Node) => Node[]): boolean {
+    const board = this.boards.get(n);
+    if (board !== undefined) return this.ridesBoards(board.a);
+    const main = n.inputs[0];
+    return main === undefined || !preds(n).includes(this.source(main));
   }
 
   private ridesBoards(n: Node): boolean {
@@ -698,8 +702,8 @@ class Plan implements LevelPlan {
   }
 
   dump(): string {
-    const laneOf = (e: Entry) => (e.lane === undefined ? '-1' : e.lane === this.cols.stream ? 's' : String(this.cols.lanes.indexOf(e.lane)));
-    const entry = (e: Entry) => `${e.node.name}[${e.kind}|${e.offsets.join(',')}]@${laneOf(e)}:${(e.xs ?? []).map((x) => x.toFixed(1)).join(',')}`;
+    const trackOf = (e: Entry) => (e.track === undefined ? '-1' : e.track === this.cols.stream ? 's' : String(e.track.id));
+    const entry = (e: Entry) => `${e.node.name}[${e.kind}|${e.offsets.join(',')}]@${trackOf(e)}:${(e.xs ?? []).map((x) => x.toFixed(1)).join(',')}`;
     return this.levels.map((level, i) => `${String(i).padStart(3)} ${level.entries.map(entry).join('  ')}\n`).join('');
   }
 
@@ -935,9 +939,12 @@ class Plan implements LevelPlan {
     return Math.max(1, ...this.entries.filter((e) => e.kind === 'plate').map((e) => e.rows));
   }
 
-  private headsOf(n: Node): { count: number; width: number } {
+  private chunkOf(e: Entry): (col: number) => number {
+    const n = e.node;
     const view = n.shape.length >= 3 ? n : this.drawnOn.get(n)?.find((v) => v.shape.length >= 3);
-    return view === undefined ? { count: 1, width: rowsCols(n)[1] } : plates(view);
+    if (view !== undefined && plates(view).count >= 2) return (col) => Math.floor(col / plates(view).width);
+    const runs = runsOf(e.offsets);
+    return (col) => runs[col] ?? 0;
   }
 
   private block(e: Entry, hidden: boolean, aligned: ReadonlyMap<Node, Node>): Block {
@@ -954,7 +961,7 @@ class Plan implements LevelPlan {
       const z = slab ? this.slabZ(n, index[0], row) : zs[Math.min(row, zs.length - 1)];
       elements.push({ index, row, col, x: xs[Math.min(col, xs.length - 1)], y, z });
     }
-    const spacing = e.lane?.spacing ?? STREAM_SPACING;
+    const spacing = e.track?.spacing ?? STREAM_SPACING;
     const footprint: [number, number] =
       e.kind === 'tile'
         ? [spacing >= STREAM_SPACING ? TILE_WIDTH : TILE_WIDTH_NARROW, e.rows > TILE_DENSE_ROWS ? TILE_DEPTH_DENSE : TILE_DEPTH]
@@ -964,7 +971,7 @@ class Plan implements LevelPlan {
             ? BOX_FOOTPRINT
             : this.slabbed.has(n)
               ? [STREAM_FOOTPRINT, TILE_DEPTH_DENSE]
-              : e.lane?.stream === true
+              : e.track?.stream === true
                 ? [STREAM_FOOTPRINT, STREAM_FOOTPRINT]
                 : [Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE), Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE)];
     const ex = elements.map((el) => el.x);
@@ -986,7 +993,7 @@ class Plan implements LevelPlan {
     const tokens = aligned.get(n)?.tokens;
     const named = e.kind === 'tile' ? tokens : this.selectLabel(n) !== undefined ? (this.selectLabel(n)!.tokens ?? undefined) : undefined;
     const slabs = this.slabsOf(e, elements, footprint, y);
-    const chunks = slabs === undefined && !scalar ? chunksOf(this.headsOf(n), elements, footprint, y) : undefined;
+    const chunks = slabs === undefined && !scalar ? chunksOf(this.chunkOf(e), elements, footprint, y) : undefined;
     const slabGroup = this.slabbed.get(n);
     const slabLabels = slabGroup === undefined ? undefined : slabs!.map((slab, g) => ({ text: groupText(slabGroup, g), col: g, x: x1 + ROW_NAME_SIDE, y: y + ROW_NAME_LIFT, z: slab.plate.z, anchor: 'right' as const }));
     const classLabels = (named ?? []).slice(0, e.cols).map((text, col) =>
@@ -1056,11 +1063,22 @@ function groupText(group: Node, value: number): string {
   return `${group.name.slice(group.name.lastIndexOf('.') + 1)}=${Math.round(value)}`;
 }
 
-function chunksOf(heads: { count: number; width: number }, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
-  const { count, width } = heads;
+function runsOf(offsets: number[]): number[] {
+  const sorted = offsets.map((o, col) => ({ o, col })).sort((p, q) => p.o - q.o);
+  const runs: number[] = [];
+  let run = 0;
+  sorted.forEach(({ o, col }, i) => {
+    if (i > 0 && o !== sorted[i - 1].o + 1) run++;
+    runs[col] = run;
+  });
+  return runs;
+}
+
+function chunksOf(chunk: (col: number) => number, elements: Element[], footprint: readonly [number, number], y: number): Plate[] | undefined {
+  const count = new Set(elements.map((el) => chunk(el.col))).size;
   if (count < 2) return undefined;
   return Array.from({ length: count }, (_, p) => {
-    const members = elements.filter((el) => Math.floor(el.col / width) === p);
+    const members = elements.filter((el) => chunk(el.col) === p);
     const xs = members.map((el) => el.x);
     const zs = members.map((el) => el.z);
     const [x0, x1, z0, z1] = [Math.min(...xs), Math.max(...xs), Math.min(...zs), Math.max(...zs)];

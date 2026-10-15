@@ -1,6 +1,6 @@
 import { Node } from '../../autograd';
 import type { LevelScheme, LevelSpec } from '../../scene3d/levels';
-import type { Place, SchemeOptions } from '../../scene3d/schemes';
+import type { LayoutOptions, Place } from '../../scene3d/schemes';
 
 type Spec = LevelSpec & { places: Place[] };
 import { type Where, child, fail } from '../source';
@@ -14,7 +14,7 @@ const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
 
 type Placement = (typeof PLACE_KEYS)[number];
 
-export function layoutOf(c: PageCompiler, root: Call, levels: { scheme: LevelScheme; options?: SchemeOptions } = { scheme: 'lines' }): LevelSpec {
+export function layoutOf(c: PageCompiler, root: Call, levels: { scheme: LevelScheme; options?: LayoutOptions } = { scheme: 'lines' }): LevelSpec {
   const spec: Spec = { scheme: levels.scheme, options: levels.options, lines: [], sides: [], merges: [], places: [], iterations: c.iterations };
   spec.lines = levelsOf(c, root, spec);
   return spec;

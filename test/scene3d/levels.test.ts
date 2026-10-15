@@ -53,7 +53,7 @@ function headGraph() {
     backward: 'reverse',
     modules: [module],
   };
-  return { spec, flat, x, ms, r, hat, y };
+  return { spec, flat, x, sq, ms, r, hat, y };
 }
 
 const blockOf = (blocks: Block[], node: Node) => blocks.find((b) => b.node === node && b.copyOf === undefined)!;
@@ -80,9 +80,9 @@ describe('levelPlan with rank-3 tensors', () => {
   });
 
   it('draws one disc per row and head for a (T, H, 1) reduction, beside each head', () => {
-    const { spec, flat, ms, r } = headGraph();
+    const { spec, sq, ms, r } = headGraph();
     const { blocks } = levelPlan(spec, linesOf(spec)).resolve({ folded: () => false, aligned: new Map() });
-    const xBlock = blockOf(blocks, flat);
+    const xBlock = blockOf(blocks, sq);
     for (const node of [ms, r]) {
       const block = blockOf(blocks, node);
       expect([block.shape, block.rows, block.cols]).toEqual(['disc', T, H]);

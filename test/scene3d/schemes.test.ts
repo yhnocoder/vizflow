@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Node } from '../../src/autograd';
-import { type Place, type SchemeGraph, schemeLevels } from '../../src/scene3d/schemes';
+import { DEFAULT_LAYOUT_OPTIONS, type Place, type SchemeGraph, schemeLevels } from '../../src/scene3d/schemes';
 
 interface Toy {
   name: string;
@@ -8,6 +8,7 @@ interface Toy {
   scope?: string;
   pack?: string;
   rides?: boolean;
+  starts?: boolean;
   iteration?: string;
 }
 
@@ -24,6 +25,7 @@ function toyGraph(toys: Toy[], places: { node: string; key: Place['key']; of: st
     parent: () => null,
     pack: (n) => toyOf.get(n)!.pack,
     rides: (n) => toyOf.get(n)!.rides ?? false,
+    starts: (n) => toyOf.get(n)!.starts ?? (toyOf.get(n)!.inputs ?? []).length === 0,
     late: () => false,
     iteration: (n) => toyOf.get(n)!.iteration,
     places: places.map((p) => ({ node: node(p.node), key: p.key, of: node(p.of) })),
@@ -36,11 +38,11 @@ const EXPERTS = 6;
 describe('nested levels', () => {
   it('keeps per-expert copies on one level when the width cap is exceeded', () => {
     const toys: Toy[] = [{ name: 'x' }, { name: 'd', inputs: ['x'] }, { name: 's1', inputs: ['d'] }, { name: 's2', inputs: ['s1'] }, { name: 's3', inputs: ['s2'] }, { name: 's4', inputs: ['s3'] }];
-    for (let e = 0; e < EXPERTS; e++) toys.push({ name: `xs[${e}]`, inputs: ['d'] }, { name: `h[${e}]`, inputs: [`xs[${e}]`] }, { name: `y[${e}]`, inputs: [`h[${e}]`] });
+    for (let e = 0; e < EXPERTS; e++) toys.push({ name: `xs[${e}]`, inputs: ['d'], starts: true }, { name: `h[${e}]`, inputs: [`xs[${e}]`] }, { name: `y[${e}]`, inputs: [`h[${e}]`] });
     toys.push({ name: 'out', inputs: ['s4', ...Array.from({ length: EXPERTS }, (_, e) => `y[${e}]`)] });
     const { g, node } = toyGraph(toys);
     for (const iterations of ['overlap', 'together'] as const) {
-      const level = schemeLevels('nested', g, { iterations, width: 4 });
+      const level = schemeLevels('nested', g, { ...DEFAULT_LAYOUT_OPTIONS, iterations, width: 4 });
       for (const prefix of ['xs', 'h', 'y']) expect(new Set(Array.from({ length: EXPERTS }, (_, e) => level.get(node(`${prefix}[${e}]`))))).toHaveLength(1);
     }
   });
@@ -59,7 +61,7 @@ describe('nested levels', () => {
     }
     const { g, node } = toyGraph(toys);
     for (const iterations of ['overlap', 'together'] as const) {
-      const level = schemeLevels('nested', g, { iterations, width: 4 });
+      const level = schemeLevels('nested', g, { ...DEFAULT_LAYOUT_OPTIONS, iterations, width: 4 });
       for (let h = 0; h < 3; h++) {
         expect(level.get(node(`P0[${h}]`))).toBe(level.get(node('P0[0]')));
         expect(level.get(node(`lse0[${h}]`))).toBe(level.get(node('P0[0]')));
@@ -88,7 +90,7 @@ describe('nested levels', () => {
     for (let r = 0; r < 2; r++) toys.push({ name: `K[${r}][1]`, inputs: [`recv[${r}][0]`] }, { name: `S[${r}][1]`, inputs: [`K[${r}][1]`] });
     const { g, node } = toyGraph(toys);
     for (const iterations of ['overlap', 'together'] as const) {
-      const level = schemeLevels('nested', g, { iterations, width: 8 });
+      const level = schemeLevels('nested', g, { ...DEFAULT_LAYOUT_OPTIONS, iterations, width: 8 });
       for (let r = 0; r < 2; r++) {
         expect(level.get(node(`K[${r}][0]`))).toBe(level.get(node(`k[${r}]`))! + 1);
         expect(level.get(node(`S[${r}][0]`))).toBe(level.get(node(`K[${r}][0]`))! + 1);
@@ -109,7 +111,7 @@ describe('nested levels', () => {
     for (let h = 0; h < 2; h++) toys.push({ name: `om[${h}]`, inputs: [`S0[${h}]`, `S1[${h}]`], iteration: `3.${h}` });
     const { g, node } = toyGraph(toys);
     for (const iterations of ['overlap', 'together'] as const) {
-      const level = schemeLevels('nested', g, { iterations, width: 8 });
+      const level = schemeLevels('nested', g, { ...DEFAULT_LAYOUT_OPTIONS, iterations, width: 8 });
       for (let h = 0; h < 2; h++) {
         expect(level.get(node(`K0[${h}]`))).toBe(level.get(node('k1')));
         expect(level.get(node(`S0[${h}]`))).toBeLessThan(level.get(node(`S1[${h}]`))!);
