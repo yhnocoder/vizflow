@@ -75,6 +75,7 @@ import {
   indexPutExplain,
   selectScatterExplain,
   sliceScatterExplain,
+  scatterTilesExplain,
 } from './index_ops';
 import { arangeExplain, causalMaskExplain, eyeExplain, fullExplain, gradOfExplain, onesExplain, zerosExplain, zerosLikeExplain } from './creation';
 import { nllLossExplain } from './loss';
@@ -174,6 +175,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   index_put: indexPutExplain,
   select_scatter: selectScatterExplain,
   slice_scatter: sliceScatterExplain,
+  scatter_tiles: scatterTilesExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
   repeat_kv: repeatKvExplain,
