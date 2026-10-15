@@ -93,6 +93,8 @@ describe('grid kernels in the level layout', () => {
     expect(region.shared!.x[1]).toBeCloseTo(Math.max(...shared) + BOX_MARGIN.right);
     expect(region.registers!.x[0]).toBeCloseTo(Math.min(...registers) - BOX_MARGIN.left);
     expect(region.frame.x).toEqual([region.shared!.x[0], region.registers!.x[1]]);
+    expect(region.shared!.y).toEqual(region.registers!.y);
+    expect(region.shared!.x[1]).toBeLessThan(region.registers!.x[0]);
     expect([...region.grids[0].shared, ...region.grids[0].registers].some((n) => n.name === 'x' || n.name === 'y')).toBe(false);
   });
 
@@ -126,20 +128,21 @@ describe('stacked outlines', () => {
 });
 
 describe('FlashAttention forward kernel', () => {
-  it('draws the row vectors as discs beside the tensors of the same round', async () => {
+  it('lays the row vectors of a round out in one row beside the tile they reduce', async () => {
     const url = new URL('qwen3/qwen3-dsl.yaml', examplesUrl).href;
     const spec = parseYaml(await readFileUrl(url), url) as { config: Record<string, unknown> };
     Object.assign(spec.config, { attn_implementation: 'flash_attention_2' });
     const layout = plan(await compilePage(spec as never, { base: url, read: readFileUrl }));
     const kernel = layout.blocks.filter((b) => /^model\.layers\[0\]\..*\.fwd\./.test(b.node.name));
     const named = (name: string) => kernel.find((b) => new RegExp(`\\.fwd\\.${name}(\\[\\d+\\])+$`).test(b.node.name))!;
-    for (const name of ['prev_max', 'row_max', 'scores_scale', 'row_sum_scaled', 'row_sum']) expect(named(name).shape).toBe('disc');
     const y = (name: string) => named(name).elements[0].y;
-    expect(y('prev_max')).toBeCloseTo(y('cols'));
-    expect(y('prev_max')).toBeLessThan(y('row_max'));
-    const level = (b: (typeof kernel)[number]) => b.elements[0].y.toFixed(3);
-    const discs = kernel.filter((b) => b.shape === 'disc');
-    expect(new Set(discs.map(level)).size).toBeLessThan(discs.length);
+    const x = (name: string) => named(name).elements[0].x;
+    for (const name of ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled', 'max_scaled', 'row_sum']) expect(named(name).shape).toBe('disc');
+    for (const name of ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled', 'max_scaled']) expect(y(name)).toBeCloseTo(y('acc_s_masked'));
+    expect(y('row_sum')).toBeCloseTo(y('p'));
+    const order = ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled'].map(x);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    expect(order[0]).toBeGreaterThan(Math.max(...named('acc_s_masked').elements.map((e) => e.x)));
   }, 60000);
 });
 

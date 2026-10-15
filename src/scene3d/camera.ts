@@ -4,7 +4,9 @@ import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
 import { LABEL_SAFE_MARGIN } from './labels';
-import { type Renderable, activeOf } from './renderable';
+import { type Renderable, activeOf, renderableOf } from './renderable';
+import type { Node } from '../autograd';
+import { VALUE_MIN_ZOOM } from './blockview';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
@@ -195,12 +197,49 @@ export class CameraRig {
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
     const points = allPoints(c);
     if (keys.length === 0) return this.overviewGoal(points, keys);
+    if (inRound) {
+      const withMemory = this.fitGoal(framingPoints([...keys, ...this.memoryOf(framedNodes!)]));
+      return withMemory.zoom >= VALUE_MIN_ZOOM ? withMemory : this.fitGoal(framingPoints(keys));
+    }
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
     const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
     const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap, points));
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom };
+  }
+
+  private memoryOf(nodes: ReadonlySet<Node>): Renderable[] {
+    const grids = this.c.levelLayout?.grids ?? [];
+    const onChip = (r: Renderable) => (r.block.slot ?? [r.block.node]).some((n) => grids.some((g) => g.shared.has(n) || g.registers.has(n)));
+    const out = new Set<Renderable>();
+    for (const n of nodes) {
+      for (const input of n.inputs) {
+        const r = renderableOf(this.c, input);
+        if (r !== undefined && r.block.copyOf === undefined && !onChip(r)) out.add(r);
+      }
+    }
+    return [...out];
+  }
+
+  private fitGoal(points: Vec3[]): FollowGoal {
+    const c = this.c;
+    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
+    const side = this.sideAxis();
+    const ups = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
+    const sides = points.map(([x, , z]) => x * side.x + z * side.z);
+    const [lo, hi] = [Math.min(...ups), Math.max(...ups)];
+    const [left, right] = [Math.min(...sides), Math.max(...sides)];
+    const marginTop = Math.max(chromeBottom(c, '.vf-stage-tools'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN;
+    const marginBottom = 2 * LABEL_SAFE_MARGIN;
+    const perUnit = c.height / (2 * this.halfHeight());
+    const tall = Math.max(1, c.height - marginTop - marginBottom) / Math.max(1e-6, (hi - lo) * perUnit);
+    const wide = Math.max(1, c.width - 2 * LABEL_SAFE_MARGIN) / Math.max(1e-6, (right - left + 2 * FOLLOW_SIDE_ROOM) * perUnit);
+    const zoom = Math.min(1, tall, wide);
+    const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
+    const target = this.controls.target;
+    const now = target.x * up.x + target.y * up.y + target.z * up.z;
+    return { y: target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y), side: (left + right) / 2, zoom };
   }
 
   private overviewGoal(points: Vec3[], keys: Renderable[]): FollowGoal {

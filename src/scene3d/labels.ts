@@ -286,7 +286,7 @@ export class LabelLayer {
       }
     });
     const clearing = (label: Label) => label.avoidsBlocks || label.group !== undefined;
-    const avoiding = shown.flatMap((label, i) => ((avoidAll || label.movable) && !clearing(label) ? [i] : []));
+    const avoiding = shown.flatMap((label, i) => ((avoidAll || label.movable || label.priority === PRIORITY.value) && !clearing(label) ? [i] : []));
     const adjusted = avoidOverlaps(
       avoiding.map((i) => placements[i]),
       avoidAll ? bounds : undefined,

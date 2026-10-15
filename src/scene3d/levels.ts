@@ -2,7 +2,7 @@ import type { Node, Size } from '../autograd';
 import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isIndexView, isView, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, SCALAR_ROW_GAP, isIndexView, isView, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -286,6 +286,7 @@ class Plan implements LevelPlan {
   private readonly braces: StepBrace[];
   private readonly braceNodes = new Map<StepBrace, Node[]>();
   private kernelGroups: KernelGroup[] = [];
+  private readonly chainAt = new Map<Entry, number>();
   private readonly stream: Lane;
 
   constructor(
@@ -308,7 +309,7 @@ class Plan implements LevelPlan {
     this.assignTitles();
     this.makeTitleRoom();
     this.placeApart();
-    this.packDiscs();
+    this.attachChains();
     this.kernelGroups = this.findKernels();
     this.placeChips();
     this.placeCopies();
@@ -926,49 +927,78 @@ class Plan implements LevelPlan {
     }
   }
 
-  private packDiscs(): void {
-    const indexOf = new Map<Level, number>();
-    const reindex = () => this.levels.forEach((level, k) => indexOf.set(level, k));
-    reindex();
-    const groupOf = new Map<Node, string>();
+  private attachChains(): void {
+    const stepOf = new Map<Node, number>();
+    const roundOf = new Map<Node, string>();
     const sizeOf = new Map<Node, number>();
-    for (const step of [...this.spec.forward, ...(this.spec.functions ?? []).flatMap((f) => f.steps)]) {
+    [...this.spec.forward, ...(this.spec.functions ?? []).flatMap((f) => f.steps)].forEach((step, k) => {
       const shown = list(step.show);
-      const group = (step.groups?.[step.groups.length - 1] ?? '').replace(ROUND_SUFFIX, '');
+      const group = step.groups?.[step.groups.length - 1] ?? '';
       for (const n of shown) {
         if ((sizeOf.get(n) ?? Infinity) <= shown.length) continue;
-        groupOf.set(n, group);
+        stepOf.set(n, k);
         sizeOf.set(n, shown.length);
+        if (ROUND_SUFFIX.test(group)) roundOf.set(n, group);
+        else roundOf.delete(n);
+      }
+    });
+    const together = (a: Node, b: Node) => (stepOf.has(a) && stepOf.get(a) === stepOf.get(b)) || (roundOf.has(a) && roundOf.get(a) === roundOf.get(b));
+    const chipOf = (e: Entry) => this.layout.grids.find((g) => (this.slotOf.get(e.node) ?? [e.node]).some((m) => g.shared.has(m) || g.registers.has(m)));
+    const members = (e: Entry) => this.slotOf.get(e.node) ?? [e.node];
+    const linked = (e: Entry, ends: (m: Node) => readonly Node[]) =>
+      members(e).flatMap((m) => ends(m).filter((o) => together(m, this.source(o))).flatMap((o) => this.entryOf.get(this.source(o)) ?? [])).filter((f) => f !== e);
+    const inputsOf = (e: Entry) => linked(e, (m) => m.inputs);
+    const consumersOf = (e: Entry) => linked(e, (m) => this.consumers(m));
+    const levelOf = (e: Entry) => this.levels.indexOf(e.level);
+    const tileShaped = (e: Entry) => e.kind === 'plate' && e.cols > 1;
+    const scalar = (e: Entry) => (e.kind === 'disc' || e.kind === 'box') && e.cols === 1;
+    const hosts = new Map<Entry, Entry | null>();
+    const fromInputs = (e: Entry): Entry | undefined => {
+      if (hosts.has(e)) return hosts.get(e) ?? undefined;
+      hosts.set(e, null);
+      let best: Entry | undefined;
+      for (const f of inputsOf(e)) {
+        const host = tileShaped(f) ? f : scalar(f) ? fromInputs(f) : undefined;
+        if (host !== undefined && chipOf(host) === chipOf(e) && (best === undefined || levelOf(host) > levelOf(best))) best = host;
+      }
+      hosts.set(e, best ?? null);
+      return best;
+    };
+    const reductions = this.entries.filter((e) => scalar(e) && e.xs !== undefined && this.computed.has(e.node));
+    for (const e of reductions) fromInputs(e);
+    for (let grown = true; grown; ) {
+      grown = false;
+      for (const e of reductions) {
+        if (hosts.get(e) != null) continue;
+        const host = consumersOf(e)
+          .map((u) => (scalar(u) ? (hosts.get(u) ?? undefined) : tileShaped(u) ? u : undefined))
+          .find((h) => h !== undefined && chipOf(h) === chipOf(e));
+        if (host === undefined) continue;
+        hosts.set(e, host);
+        grown = true;
       }
     }
-    const stepKey = (level: Level) => {
-      const keys = new Set(level.entries.map((e) => groupOf.get(e.node)));
-      return keys.size === 1 ? [...keys][0] : undefined;
-    };
-    for (let i = 0; i < this.levels.length; i++) {
-      const level = this.levels[i];
-      const key = stepKey(level);
-      if (key === undefined) continue;
-      let start = i;
-      while (start > 0 && stepKey(this.levels[start - 1]) === key) start--;
-      for (const e of [...level.entries]) {
-        if (e.kind !== 'disc' || e.xs === undefined) continue;
-        const inputs = (this.slotOf.get(e.node) ?? [e.node]).flatMap((m) => m.inputs);
-        const below = inputs.map((n) => indexOf.get(this.entryOf.get(this.source(n))?.level as Level) ?? -1).filter((k) => k < i);
-        const floor = Math.max(start, ...below.map((k) => k + 1));
-        for (let t = floor; t <= i; t++) {
-          const target = this.levels[t];
-          if (this.overlapping(e, target.entries.filter((o) => o !== e)).length > 0) continue;
-          if (t < i) {
-            level.entries.splice(level.entries.indexOf(e), 1);
-            target.entries.push(e);
-            e.level = target;
-          }
-          break;
-        }
-        const own = e.level.entries.filter((o) => o !== e);
-        while (this.overlapping(e, own).length > 0) e.xs = e.xs!.map((x) => x + DISC_SIDE);
+    const chains = new Map<Entry, Entry[]>();
+    for (const e of reductions) {
+      const host = hosts.get(e);
+      if (host != null) chains.set(host, [...(chains.get(host) ?? []), e]);
+    }
+    for (const [host, chain] of chains) {
+      chain.sort((p, q) => levelOf(p) - levelOf(q) || this.entries.indexOf(p) - this.entries.indexOf(q));
+      const target = host.level;
+      const placed = chain.filter((e) => inputsOf(e).every((f) => chain.includes(f) || levelOf(f) <= levelOf(host)));
+      let x = Math.max(...host.xs!) + DISC_SIDE - SCALAR_ROW_GAP;
+      for (const e of placed) {
+        e.level.entries.splice(e.level.entries.indexOf(e), 1);
+        target.entries.push(e);
+        e.level = target;
+        x += SCALAR_ROW_GAP;
+        e.xs = e.xs!.map(() => x);
+        this.chainAt.set(e, placed.indexOf(e));
       }
+      const right = target.entries.filter((o) => o !== host && !placed.includes(o) && o.xs !== undefined && Math.min(...o.xs) > Math.max(...host.xs!));
+      const need = x + SCALAR_ROW_GAP - Math.min(...right.flatMap((o) => o.xs!));
+      if (right.length > 0 && need > 0) for (const o of right) o.xs = o.xs!.map((v) => v + need);
     }
     this.levels.splice(0, this.levels.length, ...this.levels.filter((level) => level.entries.length > 0));
   }
@@ -1137,7 +1167,7 @@ class Plan implements LevelPlan {
     for (const level of this.levels) {
       for (const e of level.entries) {
         if (e.kind === 'disc' || e.kind === 'box') {
-          e.title = 'left';
+          e.title = (this.chainAt.get(e) ?? 0) % 2 === 1 ? 'below' : 'left';
           continue;
         }
         if (e.kind === 'vector') continue;
@@ -1358,6 +1388,11 @@ class Plan implements LevelPlan {
       };
       const shared = chip(group.shared);
       const registers = chip(group.registers);
+      if (shared !== undefined && registers !== undefined) {
+        const y: [number, number] = [Math.min(shared.y[0], registers.y[0]), Math.max(shared.y[1], registers.y[1])];
+        shared.y = y;
+        registers.y = [...y];
+      }
       const parts = [shared, registers, chip(group.fixed)].filter((b): b is ChipBox => b !== undefined);
       if (parts.length === 0) continue;
       const span = (axis: 'x' | 'y' | 'z'): [number, number] => [Math.min(...parts.map((b) => b[axis][0])), Math.max(...parts.map((b) => b[axis][1]))];

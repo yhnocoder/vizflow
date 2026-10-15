@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { OrthographicCamera } from 'three';
 import { describe, expect, it } from 'vitest';
 import { AVOID_STEP } from '../../src/scene3d/avoid';
 import { CLEAR_MAX_STEPS, LabelLayer, clearShift } from '../../src/scene3d/labels';
@@ -46,5 +47,32 @@ describe('LabelLayer', () => {
     shown.measure();
     expect([...layer.root.children]).toEqual([shown.el]);
     expect(never.el.parentElement).toBeNull();
+  });
+});
+
+describe('LabelLayer.project while the camera follows the steps', () => {
+  function layered(kind: 'val' | 'tick') {
+    const parent = document.createElement('div');
+    const layer = new LabelLayer(parent, () => {});
+    const camera = new OrthographicCamera(-10, 10, 10, -10, 0.1, 100);
+    camera.position.set(0, 0, 50);
+    camera.lookAt(0, 0, 0);
+    camera.updateMatrixWorld();
+    const labels = [0, 0.1].map((x) => {
+      const label = layer.add(kind);
+      label.pos = [x, 0, 0];
+      label.size = [40, 14];
+      return label;
+    });
+    layer.project(camera, 400, 400, false);
+    return labels.map((label) => label.el.classList.contains('vf-off'));
+  }
+
+  it('hides a value label that overlaps another value label', () => {
+    expect(layered('val')).toEqual([false, true]);
+  });
+
+  it('leaves other low-priority labels to overlap', () => {
+    expect(layered('tick')).toEqual([false, false]);
   });
 });

@@ -14,7 +14,7 @@ import { type Renderable, activeOf, elementValue, revealedOf, targetOf, valuesOf
 import { barHeight } from './scales';
 
 export const FAR_LEVELS = 2;
-export const VALUE_MIN_ZOOM = 0.55;
+export const VALUE_MIN_ZOOM = 0.3;
 export const VALUE_ALL_ROWS_ZOOM = 1.45;
 export const SEE_THROUGH_MIN_OVERLAP = 6;
 export const SEE_THROUGH_DEPTH_GAP = 0.3;
@@ -195,8 +195,9 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     const mesh = renderable.nodes;
     const first = block.elements[0];
     const middle = first.y + mesh.height / 2;
-    title.pos = [first.x + NODE_TITLE_OFFSET[0], middle + NODE_TITLE_OFFSET[1], first.z + NODE_TITLE_OFFSET[2]];
-    title.anchor = 'above-right';
+    const below = block.title.anchor === 'below';
+    title.pos = [first.x + NODE_TITLE_OFFSET[0], below ? first.y - NODE_TITLE_OFFSET[1] : middle + NODE_TITLE_OFFSET[1], (below ? Math.max(...block.elements.map((e) => e.z)) : first.z) + NODE_TITLE_OFFSET[2]];
+    title.anchor = below ? 'below-right' : 'above-right';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
       const value = elementValue(values, renderable, i);
