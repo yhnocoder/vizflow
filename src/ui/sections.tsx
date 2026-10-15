@@ -57,9 +57,14 @@ const columnTrack = (width: number | string) => `minmax(0, ${typeof width === 'n
 function Markdown(props: { g: Graph; version: () => number; text: string; class: string }) {
   const evaluate = compileTemplate(props.g, props.text);
   let target!: HTMLDivElement;
+  let shown: string | undefined;
   createEffect(() => {
     props.version();
-    renderMarkdown(evaluate(0), target);
+    const text = evaluate(0);
+    if (text !== shown) {
+      shown = text;
+      renderMarkdown(text, target);
+    }
     renderFigures(target, props.g);
   });
   return <div class={props.class} ref={(el) => (target = el)} />;

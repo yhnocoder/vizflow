@@ -2,17 +2,18 @@ import katex from 'katex';
 import type { FormulaAdapter } from './adapter';
 import './katex-style';
 
-const renderedHtml = new Map<string, string>();
+const rendered = new Map<string, HTMLTemplateElement>();
 const ARRAY_STRETCH = '1.1';
 
 export const katexAdapter: FormulaAdapter = {
   render(tex, display, target) {
     const key = `${display ? 'display' : 'inline'}:${tex}`;
-    let html = renderedHtml.get(key);
-    if (html === undefined) {
-      html = katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: { '\\arraystretch': ARRAY_STRETCH }, trust: (context) => context.command === '\\htmlData', strict: (code: string) => (code === 'htmlExtension' ? 'ignore' : 'warn') });
-      renderedHtml.set(key, html);
+    let template = rendered.get(key);
+    if (template === undefined) {
+      template = document.createElement('template');
+      template.innerHTML = katex.renderToString(tex, { displayMode: display, throwOnError: true, macros: { '\\arraystretch': ARRAY_STRETCH }, trust: (context) => context.command === '\\htmlData', strict: (code: string) => (code === 'htmlExtension' ? 'ignore' : 'warn') });
+      rendered.set(key, template);
     }
-    target.innerHTML = html;
+    target.replaceChildren(template.content.cloneNode(true));
   },
 };

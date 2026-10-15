@@ -17,6 +17,7 @@ export type AnchorName = keyof typeof ANCHORS;
 export const LABEL_SAFE_MARGIN = 12;
 export const LABEL_CLIP = 1.2;
 export const LANE_GAP = 4;
+export const LABEL_CONTENT_CACHE = 4;
 
 export function anchorOffset(anchor: AnchorName): [number, number] {
   return ANCHORS[anchor];
@@ -53,6 +54,7 @@ export class Label {
   base: [number, number] = [0, 0];
   placed: [number, number] = [0, 0];
   private content = '';
+  private readonly built = new Map<string, ChildNode[]>();
   private off = false;
   private transform = '';
   private readonly data: Partial<Record<'node' | 'index', string>> = {};
@@ -79,7 +81,13 @@ export class Label {
   setContent(key: string, build: () => Node): void {
     if (this.content === key) return;
     this.content = key;
-    this.el.replaceChildren(build());
+    const known = this.built.get(key);
+    if (known !== undefined) this.el.replaceChildren(...known);
+    else {
+      this.el.replaceChildren(build());
+      this.built.set(key, [...this.el.childNodes]);
+      if (this.built.size > LABEL_CONTENT_CACHE) this.built.delete(this.built.keys().next().value!);
+    }
     this.size = undefined;
   }
 

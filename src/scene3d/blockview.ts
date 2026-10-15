@@ -149,7 +149,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const values = valuesOf(c, node);
   const integer = !backward && isIntegerDtype(node.dtype);
   const scale = renderable.scale[dir];
-  for (const group of [renderable.bars?.group, renderable.nodes?.group, renderable.plate?.group]) if (group !== undefined) group.visible = !hidden;
+  for (const group of [renderable.bars?.group, renderable.nodes?.group]) if (group !== undefined) group.visible = !hidden;
   const heights = new Float64Array(block.elements.length);
   for (let i = 0; i < heights.length; i++) {
     const { height, clipped } = barHeight(values[i], scale, revealed, renderable.cap);

@@ -16,10 +16,12 @@ export interface Explainer {
   nodeCard(node: Node, dir: 'forward' | 'backward', drawnFrom?: Node): NodeCard;
   edgeCard(e: FlowEdge): EdgeCard;
   elemTex(ref: ElemRef | CellRef): string;
+  edgesVersion(): number;
 }
 
 interface Snapshot {
   version: number;
+  edgesVersion: number;
   size: number;
   loss: Node | undefined;
   zero: Map<FlowEdge, boolean>;
@@ -98,22 +100,39 @@ class ExplainerImpl implements Explainer {
     return false;
   }
 
+  edgesVersion(): number {
+    return this.current().edgesVersion;
+  }
+
   private current(): Snapshot {
     const loss = this.g.findLoss();
     const known = this.snapshot;
     if (known !== undefined && known.version === this.g.version && known.size === this.g.nodes.length && known.loss === loss) return known;
-    this.snapshot = this.build(loss);
+    this.snapshot = this.build(loss, known);
     return this.snapshot;
   }
 
-  private build(loss: Node | undefined): Snapshot {
-    const edges: FlowEdge[] = [];
+  private build(loss: Node | undefined, previous: Snapshot | undefined): Snapshot {
+    const reusable = previous !== undefined && previous.size === this.g.nodes.length;
+    let changed = !reusable || previous.loss !== loss;
     const byOp = new Map<number, FlowEdge[]>();
-    const outgoing = new Map<string, FlowEdge[]>();
     for (const node of this.g.nodes) {
       if (node.kind !== 'op') continue;
-      const own = edgesOf(node, explainDefOf(node));
+      const def = explainDefOf(node);
+      const before = reusable ? previous.byOp.get(node.id) : undefined;
+      let own: FlowEdge[];
+      if (before !== undefined && def.selected === undefined) own = before;
+      else {
+        const fresh = edgesOf(node, def);
+        own = before !== undefined && sameEdges(before, fresh) ? before : fresh;
+        if (own !== before) changed = true;
+      }
       byOp.set(node.id, own);
+    }
+    if (!changed) return { ...previous!, version: this.g.version };
+    const edges: FlowEdge[] = [];
+    const outgoing = new Map<string, FlowEdge[]>();
+    for (const own of byOp.values()) {
       for (const e of own) {
         edges.push(e);
         const key = refKey(e.from);
@@ -122,7 +141,8 @@ class ExplainerImpl implements Explainer {
         else list.push(e);
       }
     }
-    return { version: this.g.version, size: this.g.nodes.length, loss, zero: new Map(), edges, byOp, outgoing, reachable: this.reach(byOp, loss) };
+    const edgesVersion = (previous?.edgesVersion ?? 0) + 1;
+    return { version: this.g.version, edgesVersion, size: this.g.nodes.length, loss, zero: new Map(), edges, byOp, outgoing, reachable: this.reach(byOp, loss) };
   }
 
   private reach(byOp: Map<number, FlowEdge[]>, loss: Node | undefined): Set<string> {
@@ -145,4 +165,8 @@ class ExplainerImpl implements Explainer {
 
 export function explain(g: Graph): Explainer {
   return new ExplainerImpl(g);
+}
+
+function sameEdges(a: readonly FlowEdge[], b: readonly FlowEdge[]): boolean {
+  return a.length === b.length && a.every((e, i) => e.id === b[i].id && e.arg === b[i].arg && refKey(e.from) === refKey(b[i].from) && refKey(e.to) === refKey(b[i].to) && e.constant === b[i].constant);
 }
