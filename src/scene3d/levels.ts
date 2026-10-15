@@ -1,4 +1,4 @@
-import type { Node } from '../autograd';
+import type { Node, Size } from '../autograd';
 import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
@@ -203,6 +203,19 @@ export interface LevelSpec {
   lines: Node[][];
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
+  slots: Node[][];
+  grids: LevelGrid[];
+}
+
+export interface LevelGrid {
+  module: string;
+  names: string[];
+  counts: number[];
+  real: Size[];
+  arrangement: ('expand' | 'stack')[];
+  copyOf: ReadonlyMap<Node, number[]>;
+  shared: ReadonlySet<Node>;
+  registers: ReadonlySet<Node>;
 }
 
 export const PLACE_GAP = 1.6;

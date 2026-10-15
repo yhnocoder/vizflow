@@ -1,17 +1,18 @@
-import { DTYPES, Node, type NodeCopies, ProgramBuilder, type RealSize, type Size, isIntegerDtype } from '../../autograd';
+import { DTYPES, Node, type NodeCopies, ProgramBuilder, type RealSize, type Size, type TileRegion, isIntegerDtype } from '../../autograd';
 import { type Nested, Tensor } from '../../tensor';
 import type { Ast, IndexItem } from '../expr';
 import type { ModuleDef } from '../load';
 import { type Where, child, fail } from '../source';
 import { addMark, defaultTex, elemOf } from '../tex';
 import { Expressions, describe, isDtype, isModuleRef } from './expressions';
-import { type Alias, Call, type DtypeValue, Eager, type Env, Instance, InstanceList, type Iterations, ListCall, type Make, type Member, type Mode, type Num, Result, type Value } from './types';
+import { type Alias, type Arrangement, Call, type DtypeValue, Eager, type Env, type GridDim, GridRun, Instance, InstanceList, type Iterations, ListCall, type Make, type Member, type Mode, type Num, Result, type Value } from './types';
 import { templateExpressions, vizReferences } from './template';
 import { checkKeys, combine, fieldSpec, isNum, isRecord, join, num, rangeCount, rangeValues, realOf, record } from './util';
 
 const ARG_TYPES: ReadonlySet<string> = new Set(['dim', 'int', 'float', 'bool', 'str', 'list', 'dtype', 'module']);
 const INITS: ReadonlySet<string> = new Set(['ones', 'zeros', 'normal', 'uniform']);
-const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown', 'kernel', 'save', 'backward', 'backward_steps']);
+const MODULE_KEYS: ReadonlySet<string> = new Set(['module', 'import', 'args', 'inputs', 'outputs', 'init', 'forward', 'tex', 'formula', 'fold', 'layout', 'steps', 'unshown', 'kernel', 'grid', 'shared', 'save', 'backward', 'backward_steps']);
+const ARRANGEMENTS: ReadonlySet<string> = new Set(['expand', 'stack']);
 const BRANCH_ITEM_KEYS: ReadonlySet<string> = new Set(['if', 'then', 'else']);
 const LOOP_KEY = '\u0000loop:';
 const CHILD_KEYS: ReadonlySet<string> = new Set(['use', 'args', 'count', 'index', 'present']);
@@ -20,11 +21,11 @@ const TENSOR_KEYS: ReadonlySet<string> = new Set(['shape', 'dtype', 'init', 'val
 const FIELD_KEYS: ReadonlySet<string> = new Set(['type', 'shape', 'dtype', 'optional']);
 const LIST_USE = /^list\[(.+)\]$/;
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const WRITE = /^([A-Za-z_][A-Za-z0-9_]*)\[(.+)\]$/;
+const WRITE = /^([A-Za-z_][A-Za-z0-9_]*)\[(.+)\](\s*\+=)?$/;
 const LOOP_HEAD = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\((.+)\)\s*$/;
 
 type ForwardItem =
-  | { kind: 'assign'; name: string; target: string | undefined; text: unknown; where: Where }
+  | { kind: 'assign'; name: string; target: string | undefined; accumulate: boolean; text: unknown; where: Where }
   | { kind: 'loop'; variable: string; start: string; stop: string; step: string; body: ForwardItem[]; where: Where }
   | { kind: 'branch'; test: unknown; then: ForwardItem[]; other: ForwardItem[]; where: Where };
 
@@ -32,6 +33,28 @@ interface Nest {
   base: NodeCopies;
   drawn: number;
   real: Size;
+}
+
+interface LoopLevel {
+  variable: string;
+  index: number;
+  grid?: boolean;
+  item?: ForwardItem;
+}
+
+interface GridWrite {
+  accumulate: boolean;
+  tiles: Node[];
+  regions: TileRegion[];
+  where: Where;
+}
+
+interface CopyRun {
+  index: number[];
+  expand: string;
+  writes: Map<string, GridWrite>;
+  written: Set<string>;
+  tiles: Map<string, number>;
 }
 
 function flatAssignments(items: ForwardItem[]): { name: string; text: unknown; where: Where; target?: string }[] {
@@ -119,6 +142,7 @@ export abstract class Modules extends Expressions {
   readonly instances: Instance[] = [];
   private readonly structuralNames = new Map<ModuleDef, Map<string, number>>();
   private readonly nests = new Map<ForwardItem, Nest>();
+  private readonly loopIds = new Map<ForwardItem, number>();
   readonly backwardCalls = new Map<Call, Call>();
 
   inBackward(call: Call): boolean {
@@ -619,16 +643,169 @@ export abstract class Modules extends Expressions {
     const def = call.instance.def;
     const forwardWhere = child(def.where, def.decl, 'forward');
     const items = this.forwardItems(def.decl.forward ?? [], forwardWhere);
+    const dims = this.gridDims(call);
     const seen = new Set<string>();
     for (const item of items) {
       if (item.kind !== 'assign') continue;
-      if (item.target !== undefined) fail(item.where, `'${item.name}[...]' writes into a tensor, which forward does only inside a loop; outside a loop, give the result a new name`);
+      if (item.target !== undefined && dims === undefined) fail(item.where, `'${item.name}[...]' writes into a tensor, which forward does only inside a loop; outside a loop, give the result a new name`);
+      if (item.target !== undefined) continue;
       if (seen.has(item.name)) fail(item.where, `name '${item.name}' is already defined in ${def.name}`);
       seen.add(item.name);
     }
     this.scanAliases(call, flatAssignments(items));
-    this.runItems(call, items, []);
+    if (dims === undefined) this.runItems(call, items, []);
+    else this.runGrid(call, items, dims);
     call.finished = true;
+    this.markShared(call);
+  }
+
+  private gridDims(call: Call): GridDim[] | undefined {
+    const def = call.instance.def;
+    const layoutWhere = child(def.where, def.decl, 'layout');
+    const layout = record(def.decl.layout, layoutWhere, 'layout');
+    const arrangementWhere = child(layoutWhere, layout, 'grid');
+    const arrangements = record(layout.grid, arrangementWhere, 'layout.grid');
+    if (def.decl.grid === undefined) {
+      if (layout.grid !== undefined) fail(arrangementWhere, `layout.grid arranges the copies of a grid module; ${def.name} has no grid`);
+      return undefined;
+    }
+    const where = child(def.where, def.decl, 'grid');
+    const grid = record(def.decl.grid, where, 'grid');
+    const names = Object.keys(grid);
+    if (names.length === 0) fail(where, 'grid needs at least one dimension, such as grid: { m: triton.cdiv(T, block_m) }');
+    for (const [name, value] of Object.entries(arrangements)) {
+      const at = child(arrangementWhere, arrangements, name);
+      if (!names.includes(name)) fail(at, `layout.grid names '${name}', which is not a dimension of the grid of ${def.name}; its dimensions are ${names.join(', ')}`);
+      if (typeof value !== 'string' || !ARRANGEMENTS.has(value)) fail(at, `layout.grid '${name}' must be expand or stack`);
+    }
+    return names.map((name) => {
+      const at = child(where, grid, name);
+      if (!NAME.test(name)) fail(at, `'${name}' is not a valid name`);
+      if (call.instance.args.has(name) || call.instance.members.has(name) || call.bound.has(name) || call.values.has(name)) fail(at, `name '${name}' is already defined in ${def.name}`);
+      const count = this.number(grid[name], this.callEnv(call, at));
+      if (!Number.isInteger(count.toy) || count.toy < 1) fail(at, `grid '${name}' must be a positive integer, got ${count.toy}`);
+      return { name, count, arrangement: (arrangements[name] ?? 'stack') as Arrangement };
+    });
+  }
+
+  private runGrid(call: Call, items: ForwardItem[], dims: GridDim[]): void {
+    const def = call.instance.def;
+    const indices = dims.reduce<number[][]>((acc, dim) => acc.flatMap((prefix) => Array.from({ length: dim.count.toy }, (_, i) => [...prefix, i])), [[]]);
+    const run = new GridRun(
+      dims,
+      indices.map((index) => ({ index, locals: new Map<string, Value>(dims.map((dim, d) => [dim.name, { toy: index[d], real: 0 }])) })),
+    );
+    call.grid = run;
+    const base = this.g.copiesNow();
+    for (const inner of innerLoops(items)) this.gridNest(call, dims, indices, inner, base);
+    const snapshot = new Map(call.values);
+    const writes = new Map<string, GridWrite>();
+    const reset = () => {
+      call.values.clear();
+      for (const [name, value] of snapshot) call.values.set(name, value);
+    };
+    const runCopies = () => {
+      for (const copy of run.copies) {
+        reset();
+        for (const [name, value] of copy.locals) call.values.set(name, value);
+        const before = this.g.nodes.length;
+        const expand = dims.flatMap((dim, d) => (dim.arrangement === 'expand' ? [copy.index[d]] : [])).join(',');
+        this.runItems(
+          call,
+          items,
+          dims.map((dim, d) => ({ variable: dim.name, index: copy.index[d], grid: true })),
+          { index: copy.index, expand, writes, written: new Set(), tiles: new Map() },
+        );
+        for (const node of this.g.nodes.slice(before)) run.copyOf.set(node, copy.index);
+      }
+    };
+    const total = combine(
+      dims.map((dim) => dim.count),
+      (...counts) => counts.reduce((a, b) => a * b, 1),
+    );
+    const real = this.dimSpec(total);
+    if (real === total.toy) runCopies();
+    else this.g.realCopies(total.toy, real, runCopies);
+    reset();
+    const outputsWhere = child(def.where, def.decl, 'outputs');
+    const declared = this.fieldOf(def, 'outputs');
+    for (const name of Object.keys(declared)) {
+      if (!writes.has(name)) fail(child(outputsWhere, declared, name), `output '${name}' of ${def.name} is not an input that the grid writes; a grid module returns only the inputs it writes`);
+    }
+    const written: Node[] = [];
+    for (const [name, write] of writes) {
+      if (!(name in declared)) fail(write.where, `the grid writes input '${name}', so '${name}' must also be an output of ${def.name}, with the same shape`);
+      const env = this.callEnv(call, write.where);
+      const alias = this.resultAlias(call, name, env);
+      let node: Node;
+      try {
+        node = this.g.scatter_tiles(call.inputs.get(name) as Node, write.tiles, write.regions, write.accumulate, { name: alias.path, tex: alias.tex, elem: elemOf(alias.tex) });
+      } catch (error) {
+        return fail(write.where, (error as Error).message);
+      }
+      call.values.set(name, node);
+      if (!call.results.includes(name)) call.results.push(name);
+      call.resultValues.push({ name, value: node, where: write.where });
+      this.nodes.set(join(call.prefix, name), node);
+      this.nodes.set(node.name, node);
+      written.push(node);
+    }
+    call.lines.push({ nodes: written, calls: [] });
+  }
+
+  private gridNest(call: Call, dims: GridDim[], indices: number[][], inner: Extract<ForwardItem, { kind: 'loop' }>, base: NodeCopies): void {
+    const env = this.callEnv(call, inner.where);
+    const names = new Map<string, number>();
+    for (const bound of [inner.start, inner.stop]) countNames(this.parse(bound, env), names);
+    const mentioned = dims.flatMap((dim, d) => (names.has(dim.name) ? [d] : []));
+    if (mentioned.length === 0) return;
+    const step = this.loopStep(inner, env);
+    const spanAt = (values: Num[]): Num => {
+      dims.forEach((dim, d) => call.values.set(dim.name, values[d]));
+      const from = this.number(inner.start, env);
+      const to = this.number(inner.stop, env);
+      dims.forEach((dim) => call.values.delete(dim.name));
+      return combine([from, to, step], rangeCount);
+    };
+    let drawn = 0;
+    for (const index of indices) drawn += spanAt(index.map((i) => ({ toy: i, real: 0 }))).toy;
+    if (drawn === 0) return;
+    const key = (d: number) => `${LOOP_KEY}${dims[d].name}`;
+    const span = realOf(spanAt(dims.map((_, d): Num => (mentioned.includes(d) ? { toy: 0, real: 0, derive: (sizes) => sizes[key(d)] } : { toy: 0, real: 0 }))));
+    const counts = dims.map((dim) => realOf(dim.count));
+    const derive: RealSize = (sizes, shapes) => {
+      let total = 0;
+      const visit = (k: number, at: Record<string, number>): void => {
+        if (k === mentioned.length) {
+          total += span(at, shapes);
+          return;
+        }
+        const d = mentioned[k];
+        const count = counts[d](sizes, shapes);
+        for (let i = 0; i < count; i++) visit(k + 1, { ...at, [key(d)]: i });
+      };
+      visit(0, { ...sizes });
+      return dims.reduce((acc, _, d) => (mentioned.includes(d) ? acc : acc * counts[d](sizes, shapes)), total);
+    };
+    const real: Size = this.g.real === undefined ? drawn : { toy: drawn, real: derive(this.g.realSizes(), this.g.realShapes()), derive };
+    this.nests.set(inner, { base, drawn, real });
+  }
+
+  private markShared(call: Call): void {
+    const def = call.instance.def;
+    if (def.decl.shared === undefined) return;
+    const where = child(def.where, def.decl, 'shared');
+    const shared = def.decl.shared;
+    if (def.decl.kernel !== true) fail(where, `shared lists the tensors a kernel keeps in shared memory, so it needs kernel: true; ${def.name} is not a kernel`);
+    if (!Array.isArray(shared) || !shared.every((name) => typeof name === 'string')) fail(where, 'shared must be a list of forward names');
+    const outputs = this.fieldOf(def, 'outputs');
+    (shared as string[]).forEach((name, i) => {
+      const at = child(where, shared, i);
+      if (name in outputs) fail(at, `'${name}' is an output of ${def.name}; outputs stay in device memory, so they cannot be shared`);
+      const values = call.resultValues.filter((entry) => entry.name === name && entry.value instanceof Node);
+      if (values.length === 0) fail(at, `'${name}' is not a tensor computed in the forward of ${def.name}`);
+      for (const { value } of values) for (const node of [...(call.anon.get(value as Node) ?? []), value as Node]) call.shared.add(node);
+    });
   }
 
   private loopStep(item: Extract<ForwardItem, { kind: 'loop' }>, env: Env): Num {
@@ -691,7 +868,7 @@ export abstract class Modules extends Expressions {
       const key = Object.keys(item)[0];
       const written = WRITE.exec(key);
       if (!NAME.test(key) && written === null) fail(at, `'${key}' is not a valid name`);
-      return { kind: 'assign', name: written === null ? key : written[1], target: written === null ? undefined : written[2], text: item[key], where: child(at, item, key) };
+      return { kind: 'assign', name: written === null ? key : written[1], target: written === null ? undefined : written[2], accumulate: written?.[3] !== undefined, text: item[key], where: child(at, item, key) };
     });
   }
 
@@ -702,7 +879,7 @@ export abstract class Modules extends Expressions {
     return iterations;
   }
 
-  private skipBranch(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
+  private skipBranch(call: Call, items: ForwardItem[], loops: LoopLevel[]): void {
     for (const item of items) {
       if (item.kind === 'loop' || (item.kind === 'assign' && item.target !== undefined)) continue;
       if (item.kind === 'branch') {
@@ -719,31 +896,54 @@ export abstract class Modules extends Expressions {
     }
   }
 
-  private runItems(call: Call, items: ForwardItem[], loops: { variable: string; index: number }[]): void {
+  private checkReads(text: unknown, env: Env, copy: CopyRun | undefined, target?: string): void {
+    if (copy === undefined || copy.written.size === 0) return;
+    const names = new Map<string, number>();
+    countNames(this.parse(text, env), names);
+    if (target !== undefined) names.set(target, (names.get(target) ?? 0) - 1);
+    for (const name of copy.written) if ((names.get(name) ?? 0) > 0) fail(env.where, `'${name}' is read after this copy writes it; the copies write ${name} together after the grid finishes`);
+  }
+
+  private loopId(item: ForwardItem): number {
+    let id = this.loopIds.get(item);
+    if (id === undefined) {
+      id = this.loopIds.size;
+      this.loopIds.set(item, id);
+    }
+    return id;
+  }
+
+  private runItems(call: Call, items: ForwardItem[], loops: LoopLevel[], copy?: CopyRun): void {
     const def = call.instance.def;
     for (const item of items) {
       const env = this.callEnv(call, item.where);
       if (item.kind === 'branch') {
+        this.checkReads(item.test, env, copy);
         const test = this.expression(item.test, env);
         if (typeof test !== 'boolean') fail(item.where, `if must be True or False, got ${describe(test)}`);
-        this.runItems(call, test ? item.then : item.other, loops);
+        this.runItems(call, test ? item.then : item.other, loops, copy);
         this.skipBranch(call, test ? item.other : item.then, loops);
         continue;
       }
       if (item.kind === 'loop') {
-        if (call.instance.members.has(item.variable) || call.instance.args.has(item.variable) || call.bound.has(item.variable)) fail(item.where, `name '${item.variable}' is already defined in ${def.name}`);
+        if (call.instance.members.has(item.variable) || call.instance.args.has(item.variable) || call.bound.has(item.variable) || loops.some((loop) => loop.grid && loop.variable === item.variable)) fail(item.where, `name '${item.variable}' is already defined in ${def.name}`);
+        for (const bound of [item.start, item.stop, item.step]) this.checkReads(bound, env, copy);
         const start = this.number(item.start, env);
         const stop = this.number(item.stop, env);
         const step = this.loopStep(item, env);
         if (!Number.isInteger(start.toy) || !Number.isInteger(stop.toy)) fail(item.where, `range(${item.start}, ${item.stop}) needs integers, got ${start.toy} and ${stop.toy}`);
         const span = combine([start, stop, step], rangeCount);
         const count = span.toy;
+        const rounds = call.rounds.get(item.variable) ?? { outer: loops.map((loop) => loop.variable), values: new Map<string, number[]>(), loops: new Set<object>() };
+        rounds.loops.add(item);
+        rounds.values.set(loops.map((loop) => loop.index).join(','), rangeValues(start.toy, stop.toy, step.toy));
+        call.rounds.set(item.variable, rounds);
         if (count === 0) continue;
         const first: Num = start.derive === undefined ? { toy: start.toy, real: start.real } : { toy: start.toy, real: start.real, derive: start.derive };
         const run = () => {
           for (const k of rangeValues(start.toy, stop.toy, step.toy)) {
             call.values.set(item.variable, { ...first, toy: k });
-            this.runItems(call, item.body, [...loops, { variable: item.variable, index: k }]);
+            this.runItems(call, item.body, [...loops, { variable: item.variable, index: k, item }], copy);
           }
         };
         const base = this.g.copiesNow();
@@ -756,23 +956,37 @@ export abstract class Modules extends Expressions {
         continue;
       }
       const { name, where } = item;
-      const inLoop = loops.length > 0;
+      const recorded = loops.length > 0;
+      const inLoop = loops.some((loop) => !loop.grid);
+      const writesInput = copy !== undefined && item.target !== undefined;
       const defined = call.values.has(name);
-      if ((!inLoop && defined) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
+      this.checkReads(item.text, env, copy);
+      if (writesInput) this.checkReads(`${name}[${item.target}]`, env, copy, name);
+      if ((!inLoop && defined && !writesInput) || call.bound.has(name) || call.instance.members.has(name) || call.instance.args.has(name)) fail(where, `name '${name}' is already defined in ${def.name}`);
       if (item.target !== undefined && !defined) fail(where, `'${name}' must be defined before '${name}[${item.target}]' writes into it`);
-      if (inLoop && defined && loops.some((loop) => loop.variable === name)) fail(where, `'${name}' is the loop variable`);
+      if (recorded && defined && loops.some((loop) => loop.variable === name)) fail(where, `'${name}' is the loop variable`);
       const suffix = loops.map((loop) => `[${loop.index}]`).join('');
       const alias = this.resultAlias(call, name, env);
-      const tex = loops.reduce((acc, loop) => addMark(acc, `_{${loop.index}}`), alias.tex);
-      const make: Make = { name, path: `${alias.path}${suffix}`, suffix, tex, anon: [] };
+      const tex = loops.filter((loop) => !loop.grid).reduce((acc, loop) => addMark(acc, `_{${loop.index}}`), alias.tex);
+      const tile = writesInput ? (copy.tiles.get(`${alias.path}${suffix}`) ?? 0) + 1 : 1;
+      if (writesInput) copy.tiles.set(`${alias.path}${suffix}`, tile);
+      const path = tile === 1 ? alias.path : `${alias.path}#${tile}`;
+      const make: Make = { name, path: tile === 1 ? `${alias.path}${suffix}` : `${alias.path}${suffix}#${tile}`, suffix, tex, anon: [] };
       const before = this.g.nodes.length;
       const calls = call.children.length;
-      const value = item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, name, env, make);
+      const value = copy !== undefined && item.target !== undefined ? this.gridWrite(call, item, env, make, copy) : item.target === undefined ? this.expression(item.text, env, make) : this.write(item.target, item.text, item.accumulate, name, env, make);
       const inner = call.children.slice(calls);
       const nested = new Set(inner.flatMap((c) => c.created));
-      call.lines.push({ nodes: this.g.nodes.slice(before).filter((n) => !nested.has(n)), calls: inner });
+      const created = this.g.nodes.slice(before).filter((n) => !nested.has(n));
+      call.lines.push(copy === undefined ? { nodes: created, calls: inner } : { nodes: created, calls: inner, copy: copy.index });
+      if (recorded) this.slot(call, loops, copy, path, make.path, created);
+      if (writesInput) {
+        for (const node of created) this.nodes.set(node.name, node);
+        continue;
+      }
       if (value === null && item.target === undefined && !inLoop) {
         call.values.set(name, null);
+        if (recorded) this.iterationsOf(call, name, loops, undefined).values.set(loops.map((loop) => loop.index).join(','), null);
         continue;
       }
       const numeric = (isNum(value) || typeof value === 'boolean') && item.target === undefined;
@@ -780,7 +994,7 @@ export abstract class Modules extends Expressions {
       if (!numeric && !(value instanceof Node) && !(value instanceof Result)) fail(where, `'${name}' must be a tensor, a number, a bool, a module result or None, got ${describe(value)}`);
       const previous = call.values.get(name);
       call.values.set(name, value);
-      if (inLoop) {
+      if (recorded) {
         this.iterationsOf(call, name, loops, previous).values.set(loops.map((loop) => loop.index).join(','), value);
       }
       if (numeric) continue;
@@ -798,7 +1012,63 @@ export abstract class Modules extends Expressions {
     }
   }
 
-  private write(target: string, text: unknown, name: string, env: Env, make: Make): Value {
+  private slot(call: Call, loops: LoopLevel[], copy: CopyRun | undefined, path: string, made: string, created: Node[]): void {
+    const body = loops.flatMap((loop) => (loop.item === undefined ? [] : [this.loopId(loop.item)])).join('/');
+    for (const node of created) {
+      const key = `${body}|${copy?.expand ?? ''}|${node.name.startsWith(made) ? `${path}${node.name.slice(made.length)}` : node.name}`;
+      const members = call.slots.get(key);
+      if (members === undefined) call.slots.set(key, [node]);
+      else members.push(node);
+    }
+  }
+
+  private gridWrite(call: Call, item: Extract<ForwardItem, { kind: 'assign' }>, env: Env, make: Make, copy: CopyRun): Value {
+    const { name, target, where } = item;
+    const input = call.inputs.get(name);
+    if (input === undefined) return fail(where, `'${name}[${target}]' writes into '${name}', but a grid module only writes its inputs`);
+    const index = this.parse(`${name}[${target}]`, env);
+    if (index.k !== 'index') return this.fail(env, `'${name}[${target}]' is not an index`);
+    const region = this.tileRegion(index.items, input.shape, env, `${name}[${target}]`);
+    const ast = this.parse(item.text, env);
+    const value = ast.k === 'name' ? this.reference(item.text, env) : this.expression(item.text, env, make);
+    if (!(value instanceof Node)) return fail(where, `'${name}[${target}]' writes ${describe(value)}; a grid module writes tensors`);
+    const write = copy.writes.get(name) ?? { accumulate: item.accumulate, tiles: [], regions: [], where };
+    if (write.accumulate !== item.accumulate) fail(where, `'${name}' is written with both = and +=; a grid module either writes each input or adds to it`);
+    write.tiles.push(value);
+    write.regions.push(region);
+    copy.writes.set(name, write);
+    copy.written.add(name);
+    return value;
+  }
+
+  private tileRegion(items: IndexItem[], shape: readonly number[], env: Env, text: string): TileRegion {
+    const ellipsis = items.findIndex((item) => item.k === 'ellipsis');
+    if (items.filter((item) => item.k === 'ellipsis').length > 1) this.fail(env, `'${text}' has more than one '...'`);
+    const given = items.filter((item) => item.k !== 'ellipsis');
+    if (given.length > shape.length) this.fail(env, `'${text}' has ${given.length} indices for a tensor with shape (${shape.join(', ')})`);
+    const fill = Array.from({ length: shape.length - given.length }, (): IndexItem | undefined => undefined);
+    const expanded = ellipsis < 0 ? [...given, ...fill] : [...items.slice(0, ellipsis), ...fill, ...items.slice(ellipsis + 1)];
+    return expanded.map((item, d) => {
+      const size = shape[d];
+      if (item === undefined || item.k === 'ellipsis' || (item.k === 'slice' && item.start === undefined && item.stop === undefined && item.step === undefined)) return null;
+      if (item.k === 'at') {
+        if (item.value.k === 'none') return this.fail(env, `'${text}' cannot write through None`);
+        const i = this.int(item.value, env, 0);
+        if (i < -size || i >= size) this.fail(env, `index ${i} is out of range for dimension ${d} of size ${size} in '${text}'`);
+        return i < 0 ? size + i : i;
+      }
+      if (item.step !== undefined && this.int(item.step, env, 0) !== 1) this.fail(env, `'${text}' writes a slice with a step; a grid module writes slices with step 1`);
+      const bound = (ast: Ast | undefined, fallback: number) => {
+        if (ast === undefined) return fallback;
+        const v = this.int(ast, env, 0);
+        return Math.min(size, Math.max(0, v < 0 ? size + v : v));
+      };
+      const start = bound(item.start, 0);
+      return [start, Math.max(start, bound(item.stop, size))];
+    });
+  }
+
+  private write(target: string, text: unknown, accumulate: boolean, name: string, env: Env, make: Make): Value {
     const index = this.parse(`${name}[${target}]`, env);
     if (index.k !== 'index') return this.fail(env, `'${name}[${target}]' is not an index`);
     const pos = index.pos;
@@ -809,10 +1079,13 @@ export abstract class Modules extends Expressions {
       .map((item, d) => ({ item, dim: ellipsis >= 0 && d > ellipsis ? d - index.items.length : d }))
       .filter(({ item }) => item.k !== 'ellipsis' && !full(item));
     const mode: Mode = { k: 'graph', make };
+    const given = this.parse(text, env);
+    const whole: Ast = { k: 'name', name, pos };
+    const value = (): Value => this.evaluate(accumulate ? { k: 'bin', op: '+', a: picks.length === 0 ? whole : index, b: given, pos } : given, env, mode, false);
     if (picks.length === 0) {
       if (index.items.length !== 1 || ellipsis !== 0) this.fail(env, `'${name}[${target}]' writes the whole tensor; write '${name}[...]' to update it in place, or give the result a new name`);
-      const whole = this.evaluate({ k: 'name', name, pos }, env, mode, false);
-      return this.apply('slice_scatter', [whole, this.evaluate(this.parse(text, env), env, mode, false), num(0), null, null], new Map(), env, mode, true, pos);
+      const current = this.evaluate(whole, env, mode, false);
+      return this.apply('slice_scatter', [current, value(), num(0), null, null], new Map(), env, mode, true, pos);
     }
     const scalar = (ast: Ast | undefined): Value => (ast === undefined ? null : this.evaluate(ast, env, mode, false));
     const part = (base: Value, item: IndexItem, dim: number): Value => {
@@ -821,20 +1094,20 @@ export abstract class Modules extends Expressions {
       return this.evaluate({ k: 'index', obj: { k: 'name', name: ' base', pos }, items, pos }, local, mode, false);
     };
     const into = (base: () => Value, rest: { item: IndexItem; dim: number }[], top: boolean): Value => {
-      if (rest.length === 0) return this.evaluate(this.parse(text, env), env, mode, false);
+      if (rest.length === 0) return value();
       const [{ item, dim }, ...others] = rest;
-      const whole = base();
+      const current = base();
       if (item.k === 'at') {
         if (item.value.k === 'name' && item.value.name === 'None') this.fail(env, `'${name}[${target}]' cannot write through None`);
         const shifted = others.map((o) => ({ ...o, dim: dim >= 0 && o.dim > dim ? o.dim - 1 : o.dim }));
-        const src = into(() => part(whole, item, dim), shifted, false);
-        return this.apply('select_scatter', [whole, src, num(dim), scalar(item.value)], new Map(), env, mode, top, pos);
+        const src = into(() => part(current, item, dim), shifted, false);
+        return this.apply('select_scatter', [current, src, num(dim), scalar(item.value)], new Map(), env, mode, top, pos);
       }
       if (item.k !== 'slice') return this.fail(env, `'${name}[${target}]' has an entry that cannot be written`);
-      const src = into(() => part(whole, item, dim), others, false);
-      return this.apply('slice_scatter', [whole, src, num(dim), scalar(item.start), scalar(item.stop)], new Map(), env, mode, top, pos);
+      const src = into(() => part(current, item, dim), others, false);
+      return this.apply('slice_scatter', [current, src, num(dim), scalar(item.start), scalar(item.stop)], new Map(), env, mode, top, pos);
     };
-    return into(() => this.evaluate({ k: 'name', name, pos }, env, mode, false), picks, true);
+    return into(() => this.evaluate(whole, env, mode, false), picks, true);
   }
 
   private scanAliases(call: Call, items: { name: string; text: unknown; where: Where; target?: string }[]): void {

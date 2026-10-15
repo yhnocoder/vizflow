@@ -72,7 +72,7 @@ steps:
 
       $\frac{\partial\ell}{\partial \mathbf{h}}$、$\frac{\partial\ell}{\partial W}$ 和每行的损失先分配好。$N$ 是标签不等于 <code>ignore_index</code> 的位置数，作为 mean 的分母。
   - id: chunk
-    loop: chunk_id in range(num_chunks)
+    loop: chunk_id
     defaults:
       title: '第 {{ chunk_id }} 块'
       subtitle: '第 {{ start_idx }} 到 {{ end_idx - 1 }} 个位置'

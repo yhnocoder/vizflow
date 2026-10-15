@@ -6,19 +6,36 @@ import type { PageCompiler } from './page';
 import { type Call, Instance } from './types';
 import { checkKeys, record } from './util';
 
-const LAYOUT_KEYS: ReadonlySet<string> = new Set(['place', 'merge']);
+const LAYOUT_KEYS: ReadonlySet<string> = new Set(['place', 'merge', 'grid']);
 const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
 
 type Placement = (typeof PLACE_KEYS)[number];
 
 export function layoutOf(c: PageCompiler, root: Call): LevelSpec {
-  const spec: LevelSpec = { lines: [], sides: [], merges: [] };
+  const spec: LevelSpec = { lines: [], sides: [], merges: [], slots: [], grids: [] };
   spec.lines = levelsOf(c, root, spec);
   return spec;
 }
 
 function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
-  if (c.inBackward(call)) return call.lines.flatMap((line) => [...line.calls.flatMap((inner) => levelsOf(c, inner, spec)), ...(line.nodes.length > 0 ? [[...line.nodes]] : [])]);
+  const groups = [...call.slots.values()].filter((members) => members.length > 1);
+  spec.slots.push(...groups);
+  const firstOf = new Map(groups.flatMap((members) => members.map((node): [Node, Node] => [node, members[0]])));
+  const hidden = new Set(groups.flatMap((members) => members.slice(1)));
+  const grid = call.grid;
+  if (grid !== undefined || call.instance.def.decl.kernel === true) {
+    spec.grids.push({
+      module: call.prefix,
+      names: grid?.dims.map((dim) => dim.name) ?? [],
+      counts: grid?.dims.map((dim) => dim.count.toy) ?? [],
+      real: grid?.dims.map((dim) => c.dimSpec(dim.count)) ?? [],
+      arrangement: grid?.dims.map((dim) => dim.arrangement) ?? [],
+      copyOf: grid?.copyOf ?? new Map(),
+      shared: call.shared,
+      registers: new Set(call.created.filter((node) => node.kind === 'op' && c.g.onChip(node) && !call.shared.has(node))),
+    });
+  }
+  if (c.inBackward(call)) return arranged(call, hidden, (inner) => levelsOf(c, inner, spec));
   const def = call.instance.def;
   const where = child(def.where, def.decl, 'layout');
   const layout = record(def.decl.layout, where, 'layout');
@@ -41,33 +58,28 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
     deferred.add(a);
     later.set(b, pair);
   }
-  const levels: Node[][] = [];
-  for (const line of call.lines) {
-    for (const inner of line.calls) {
-      if (deferred.has(inner)) continue;
-      const pair = later.get(inner);
-      if (pair === undefined) {
-        levels.push(...levelsOf(c, inner, spec));
-        continue;
-      }
-      const left = levelsOf(c, pair[0], spec);
-      const right = levelsOf(c, pair[1], spec);
-      spec.merges.push({ left: left.flat(), right: right.flat() });
-      for (let i = 0; i < Math.max(left.length, right.length); i++) levels.push([...(left[i] ?? []), ...(right[i] ?? [])]);
-    }
-    if (line.nodes.length > 0) levels.push([...line.nodes]);
-  }
+  const levels = arranged(call, hidden, (inner) => {
+    if (deferred.has(inner)) return [];
+    const pair = later.get(inner);
+    if (pair === undefined) return levelsOf(c, inner, spec);
+    const left = levelsOf(c, pair[0], spec);
+    const right = levelsOf(c, pair[1], spec);
+    spec.merges.push({ left: left.flat(), right: right.flat() });
+    return sideBySide([left, right]);
+  });
   const placeWhere = child(where, layout, 'place');
   const place = record(layout.place, placeWhere, 'place');
   for (const [name, value] of Object.entries(place)) {
     const at = child(placeWhere, place, name);
-    const node = nodeIn(c, call, name, at);
+    const named = nodeIn(c, call, name, at);
+    const node = firstOf.get(named) ?? named;
     const placement = record(value, at, `place '${name}'`);
     checkKeys(placement, new Set(PLACE_KEYS), at);
     const keys = Object.keys(placement) as Placement[];
     if (keys.length !== 1) fail(at, `place '${name}' takes one of ${PLACE_KEYS.join(', ')}`);
     const key = keys[0];
-    const target = nodeIn(c, call, placement[key], child(at, placement, key));
+    const placed = nodeIn(c, call, placement[key], child(at, placement, key));
+    const target = firstOf.get(placed) ?? placed;
     const from = levels.findIndex((level) => level.includes(node));
     if (levels.findIndex((level) => level.includes(target)) < 0) fail(child(at, placement, key), `'${String(placement[key])}' is not computed in the forward of ${def.name}`);
     if (node === target) fail(at, `'${name}' cannot be placed relative to itself`);
@@ -87,6 +99,32 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec): Node[][] {
     }
   }
   return levels.filter((level) => level.length > 0);
+}
+
+function arranged(call: Call, hidden: ReadonlySet<Node>, inner: (call: Call) => Node[][]): Node[][] {
+  const levels: Node[][] = [];
+  const copies = new Map<string, Node[][]>();
+  const flush = () => {
+    levels.push(...sideBySide([...copies.values()]));
+    copies.clear();
+  };
+  for (const line of call.lines) {
+    const dims = call.grid?.dims ?? [];
+    const copy = line.copy;
+    const key = copy === undefined ? undefined : dims.flatMap((dim, d) => (dim.arrangement === 'expand' ? [copy[d]] : [])).join(',');
+    if (key === undefined) flush();
+    const out = key === undefined ? levels : (copies.get(key) ?? copies.set(key, []).get(key)!);
+    for (const called of line.calls) out.push(...inner(called));
+    const nodes = line.nodes.filter((node) => !hidden.has(node));
+    if (nodes.length > 0) out.push(nodes);
+  }
+  flush();
+  return levels;
+}
+
+function sideBySide(parts: Node[][][]): Node[][] {
+  const length = Math.max(0, ...parts.map((part) => part.length));
+  return Array.from({ length }, (_, i) => parts.flatMap((part) => part[i] ?? []));
 }
 
 function callIn(c: PageCompiler, call: Call, ref: unknown, where: Where): Call {

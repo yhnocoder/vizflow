@@ -133,7 +133,12 @@ export abstract class Expressions extends CompilerState {
       const depth = indices.findIndex((n) => !isNum(n));
       const at = (depth < 0 ? indices : indices.slice(0, depth)) as Num[];
       if (iterations !== undefined && at.length > 0) {
-        for (let d = at.length; d > 0; d--) {
+        const key = at.map((n) => n.toy).join(',');
+        const exact = iterations.values.get(key);
+        if (exact !== undefined) return exact;
+        const inner = [...iterations.values].filter(([k]) => k.startsWith(`${key},`));
+        if (inner.length > 0) return inner[inner.length - 1][1];
+        for (let d = at.length - 1; d > 0; d--) {
           const value = iterations.values.get(at.slice(0, d).map((n) => n.toy).join(','));
           if (value !== undefined) return value;
         }

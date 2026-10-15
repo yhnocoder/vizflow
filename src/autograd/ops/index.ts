@@ -90,7 +90,7 @@ import { arangeOp, causalMaskOp, eyeOp, fullOp, onesOp, zerosLikeOp, zerosOp } f
 import { type Dim, cumsumOp, logsumexpOp, maxOp, meanOp, sumOp, rrmsOp } from './reduce';
 import { logSoftmaxOp, softmaxOp } from './softmax';
 
-export type { Dim, Reduction };
+export type { Dim, Reduction, TileRegion };
 
 export interface ReduceOptions extends OpOptions {
   keepdim?: boolean;

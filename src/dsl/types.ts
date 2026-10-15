@@ -11,6 +11,8 @@ export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'str' | 'dtype' | 'modu
 export type ArgDeclaration = ArgType | ArgField;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
+export type LoopVariable = string;
+export type GridArrangement = 'expand' | 'stack';
 export type ArgValue = Expression | number | boolean;
 export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>)[];
 export type Declaration = Dimension[] | TensorField | ListField;
@@ -88,6 +90,8 @@ export interface Module {
   steps?: Step[];
   unshown?: Reference[];
   kernel?: boolean;
+  grid?: Record<string, Dimension>;
+  shared?: Reference[];
   save?: Reference[];
   backward?: Assignment[];
   backward_steps?: Step[];
@@ -130,6 +134,7 @@ export interface Assignment {
 export interface Layout {
   place?: Record<Reference, Placement>;
   merge?: Reference[][];
+  grid?: Record<string, GridArrangement>;
 }
 
 export interface Placement {
@@ -176,7 +181,7 @@ export interface NamedStep extends StepOptions {
 
 export interface LoopStep {
   id: string;
-  loop: LoopBinding;
+  loop: LoopBinding | LoopVariable;
   defaults: StepOptions;
   rules?: LoopRule[];
 }

@@ -72,7 +72,7 @@ steps:
     text: |
       $m$ 是已经读过的 logits 的最大值，初值 $-\infty$；$d$ 是 $\sum e^{X_v-m}$，初值 0。词表很大，一行放不进一个程序的寄存器，所以按 <code>BLOCK_SIZE</code> $=\min(32768,\ 2^{\lceil\log_2 V\rceil})={{ BLOCK_SIZE }}$ 列一块读。
   - id: online
-    loop: i in range(0, V, BLOCK_SIZE)
+    loop: i
     defaults:
       show: [X_block, block_max, m_new, d, m]
       label: '$\viz{m_new},\ \viz{d}$'
@@ -89,7 +89,7 @@ steps:
       读完整行以后 $\mathrm{lse}=m+\log d=\log\sum_v e^{X_v}$，这一行的损失是 $\mathrm{lse}-x_y=-\log p_y$。
       $$\viz{lse}={{ lse | matrix:3 }}$$
   - id: grad
-    loop: j in range(0, V, BLOCK_SIZE)
+    loop: j
     defaults:
       show: [X_load, softmax_X, X_store, X]
       label: '$\viz{X_store}$'

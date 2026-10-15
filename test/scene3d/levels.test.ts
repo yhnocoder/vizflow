@@ -7,7 +7,7 @@ import { type LevelSpec, levelPlan } from '../../src/scene3d/levels';
 import { type StepModule, type StepsSpec, createSteps } from '../../src/steps';
 
 function linesOf(spec: StepsSpec): LevelSpec {
-  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [] };
+  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [], slots: [], grids: [] };
 }
 
 const T = 2;

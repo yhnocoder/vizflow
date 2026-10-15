@@ -46,6 +46,8 @@ export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'str' | 'dtype' | 'modu
 export type ArgDeclaration = ArgType | ArgField;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
+export type LoopVariable = string;
+export type GridArrangement = 'expand' | 'stack';
 export type ArgValue = Expression | number | boolean;
 export type Args = Record&lt;string, ArgValue&gt; | (string | Record&lt;string, ArgValue&gt;)[];
 export type Declaration = Dimension[] | TensorField | ListField;
@@ -124,6 +126,8 @@ export interface Module {
   steps?: Step[];
   unshown?: Reference[];
   kernel?: boolean;
+  grid?: Record&lt;string, Dimension&gt;;
+  shared?: Reference[];
   save?: Reference[];
   backward?: Assignment[];
   backward_steps?: Step[];
@@ -175,6 +179,7 @@ export interface Assignment {
 export interface Layout {
   place?: Record&lt;Reference, Placement&gt;;
   merge?: Reference[][];
+  grid?: Record&lt;string, GridArrangement&gt;;
 }
 
 export interface Placement {
@@ -221,7 +226,7 @@ export interface NamedStep extends StepOptions {
 
 export interface LoopStep {
   id: string;
-  loop: LoopBinding;
+  loop: LoopBinding | LoopVariable;
   defaults: StepOptions;
   rules?: LoopRule[];
 }
@@ -472,19 +477,25 @@ panels:
 <h3>save、backward 与 kernel</h3>
 <pre><code class="language-yaml">module: flash_attn_func
 forward:
-  - fwd_result: fwd(q, k, v)
+  - out_buffer: zeros_like(q)
+  - lse_buffer: zeros(num_heads, T, dtype=fp32)
+  - fwd_result: fwd(q, k, v, out_buffer, lse_buffer)
   - out: fwd_result.out
   - softmax_lse: fwd_result.softmax_lse
 save: [q, k, v, out, softmax_lse]
 backward:
   - dq: zeros_like(q)
-  - dot: dot_do_o(grad_out, out)
-  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum)
-  - grad_q: convert_dq(main.dq_accum_out, dq)
+  - softmax_d: zeros(num_heads, T, dtype=fp32)
+  - dq_accum: zeros(T, num_heads, d_head, dtype=fp32)
+  - dk_expanded: zeros(T, num_heads, d_head, dtype=k.dtype)
+  - dv_expanded: zeros(T, num_heads, d_head, dtype=v.dtype)
+  - dot: dot_do_o(grad_out, out, softmax_d, dq_accum)
+  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum, dk_expanded, dv_expanded)
+  - grad_q: convert_dq(main.dq_accum, dq)
   - grad_k: main.dk_expanded
   - grad_v: main.dv_expanded
 backward_steps:
-  - { id: dq, show: dq }
+  - { id: dq, show: [dq, softmax_d, dq_accum, dk_expanded, dv_expanded] }
   - { id: dot, show: dot }
   - { id: main, show: main }
   - { id: convert, show: convert_dq }
@@ -520,7 +531,7 @@ forward:
   - 'out[m * block_m:min((m + 1) * block_m, T), h]': o_tile</code></pre>
 <ul>
   <li><code>grid</code> 对应 CUDA 的 <code>dim3 grid</code> 和 Triton 的 <code>grid</code>：每个名字是一维的编号，值是这一维的个数，调用时按参数和维度求值，必须是正整数。<code>forward</code> 写一个 thread block（Triton 里一个 program）的代码，网格里每个编号组合执行一次，这些名字在 <code>forward</code> 里是整数，对应 <code>blockIdx</code> 和 <code>tl.program_id</code>。每个组合是一个副本，副本之间互相独立：每个副本有自己的一份 <code>forward</code> 名字，读不到其他副本算出的值。</li>
-  <li>副本的节点路径在名字后面按 <code>grid</code> 的顺序带每一维的编号，例如 <code>q_tile[3][0]</code> 是 $m=3$、$h=0$ 的副本，副本里的循环再接着带轮次。tex 不加副本的编号，图上同一个位置画的是任意一个副本。真实规模下副本数按真实尺寸的 <code>grid</code> 计算，显存与计算量按真实副本数统计。</li>
+  <li>副本的节点路径在名字后面按 <code>grid</code> 的顺序带每一维的编号，例如 <code>q_tile[3][0]</code> 是 $m=3$、$h=0$ 的副本，副本里的循环再接着带轮次。tex 不加副本的编号，图上同一个位置画的是任意一个副本。一个副本在同一轮里对同一个输入写第二次、第三次时，写入的块的路径再接 <code>#2</code>、<code>#3</code>，与同一个子模块的第二次调用的写法相同。真实规模下副本数按真实尺寸的 <code>grid</code> 计算，显存与计算量按真实副本数统计。</li>
   <li><code>grid</code> 模块只能写自己的输入，对应 kernel 写调用方传进来的缓冲区。写入用 <code>'x[下标]': 新值</code>，<code>x</code> 必须是输入；所有副本对同一个输入的写入在全部副本执行完以后合成一次 <code>scatter_tiles</code>，结果就是同名的输出。被写的输入必须列在 <code>outputs</code> 里，名字和形状与输入相同；<code>grid</code> 模块的输出只能是被写的输入。两个副本写到同一个元素时编译报错 <code>scatter_tiles: tiles a and b write the same element; overlapping tiles need accumulate</code>。</li>
   <li><code>'x[下标] +=': 新值</code> 表示累加：各副本的块加到 <code>x</code> 上，重叠的部分相加，对应 kernel 用 atomicAdd 累加到同一块显存，例如 FlashAttention 反向的 <code>dq_accum</code>。同一个输入不能既用 <code>=</code> 写又用 <code>+=</code> 写。写入以后再读这个输入报错 <code>'x' is read after this copy writes it; the copies write x together after the grid finishes</code>，写入之前读到的是传进来的值。</li>
   <li><code>shared</code> 列出 kernel 放在 shared memory 里的张量，只能写在 <code>kernel: true</code> 的模块里，名字必须是 <code>forward</code> 定义的、不是输出的张量。kernel 里其余不是输出的张量都在寄存器里。图上片上存储分成 shared memory 和寄存器两块，见 <a href="vizflow.html">vizflow 设计</a>的「并行副本、循环与片上存储」。</li>
@@ -662,12 +673,24 @@ interface LevelSpec {
   lines: Node[][];
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
+  slots: Node[][];
+  grids: LevelGrid[];
+}
+interface LevelGrid {
+  module: string;
+  names: string[];
+  counts: number[];
+  real: Size[];
+  arrangement: ('expand' | 'stack')[];
+  copyOf: ReadonlyMap&lt;Node, number[]&gt;;
+  shared: ReadonlySet&lt;Node&gt;;
+  registers: ReadonlySet&lt;Node&gt;;
 }
 function compilePage(spec: Page, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
 function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;</code></pre>
 <ul>
   <li><code>config</code> 覆盖页面 <code>config</code> 里的同名值，再按同名传给根模块的 <code>args</code>。名字不在页面的 <code>config</code> 里时报错 <code>config has no 'x' to override</code>。<code>&lt;vizflow-page&gt;</code> 切换实现时用它重新编译。</li>
-  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。<code>steps.functions</code> 是 <code>backward_steps</code> 编译出的反向步骤，见 <a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。</li>
+  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>slots</code> 是共用一个位置的节点组，每组至少两个节点：同一个调用的同一个循环体里同名的各轮节点，以及 <code>stack</code> 维度上 <code>expand</code> 编号相同的各副本里的同名节点，组内先按副本编号、再按轮次排列；<code>lines</code> 只放每组的第一个节点。<code>expand</code> 维度上编号不同的副本在 <code>lines</code> 里逐层并排，第 $k$ 层是各副本第 $k$ 层的节点按编号顺序拼接，场景用 <code>copyOf</code> 区分它们。<code>grids</code> 对每个 <code>grid</code> 调用和每个 <code>kernel: true</code> 的调用各有一项：<code>module</code> 是调用路径，<code>names</code>、<code>counts</code>、<code>real</code>、<code>arrangement</code> 是各维的名字、示例个数、真实尺寸下的个数和排法（没有 <code>grid</code> 的 kernel 这几项是空列表），<code>copyOf</code> 把副本里创建的节点映射到副本编号（每维一个整数），<code>shared</code> 是 <code>shared</code> 列出的张量，<code>registers</code> 是 kernel 里其余不是输出的张量。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。<code>steps.functions</code> 是 <code>backward_steps</code> 编译出的反向步骤，见 <a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。</li>
   <li><code>nodes</code> 按路径查节点：根模块的名字没有前缀，子模块里是 <code>实例路径.名字</code>，参数是 <code>state_dict</code> 的键。</li>
   <li>错误信息的格式是 <code>文件:行:列 路径: 说明</code>。</li>
 </ul>

@@ -281,6 +281,8 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   const modules = sc.modules(visible);
   const steps: StepsSpec = { forward, groups, braces, backward: 'reverse', modules };
   if (functions.length > 0) steps.functions = functions;
+  const grids = c.calls.flatMap((inner) => (inner.grid === undefined ? [] : [{ module: inner.prefix, names: inner.grid.dims.map((dim) => dim.name), counts: inner.grid.dims.map((dim) => dim.count.toy) }]));
+  if (grids.length > 0) steps.grids = grids;
   const env = c.rootEnv();
   const compiled: CompiledPage = {
     graph: c.g,

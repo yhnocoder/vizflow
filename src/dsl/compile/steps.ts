@@ -1,14 +1,14 @@
 import { Node } from '../../autograd';
 import { isLayoutOp } from '../../scene3d/layout';
-import { type BackwardOverride, type ForwardStep, type FunctionBackward, type StepBrace, type StepGroup, type StepModule, isLeafLike } from '../../steps';
+import { type BackwardOverride, type CopyText, type ForwardStep, type FunctionBackward, type StepBrace, type StepGroup, type StepModule, isLeafLike } from '../../steps';
 import type { Ast } from '../expr';
 import { type Where, child, fail, merged } from '../source';
 import { markSteps } from '../tex';
 import { describe } from './expressions';
 import { notesOf } from './notes';
 import type { PageCompiler } from './page';
-import { type Call, type Env, Instance, InstanceList, Result, type Value } from './types';
-import { checkKeys, isNum, num, rangeValues, record } from './util';
+import { type Call, type Env, type GridCopy, Instance, InstanceList, Result, type Value } from './types';
+import { checkKeys, isNum, num, record } from './util';
 
 const EXPLANATION_KEYS = ['label', 'title', 'text', 'append'];
 const OPTION_KEYS: ReadonlySet<string> = new Set([...EXPLANATION_KEYS, 'show', 'subtitle', 'expand', 'flat', 'brace', 'formula', 'notes', 'fold', 'backward', 'edit']);
@@ -21,6 +21,7 @@ const FOLD_KEYS: ReadonlySet<string> = new Set(['label', 'title', 'text', 'appen
 const INTRO_KEYS = ['label', 'notes', 'backward'];
 const LOOP = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)\[\s*([A-Za-z_][A-Za-z0-9_]*)\s*\]\s*$/;
 const RANGE_LOOP = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+range\((.+)\)\s*$/;
+const NAME = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/;
 
 type Options = Record<string, unknown>;
 
@@ -38,6 +39,12 @@ interface Formula {
   env: Env;
 }
 
+interface CopyLabel {
+  index: number[];
+  title?: string;
+  subtitle?: string;
+}
+
 interface Leaf {
   kind: 'leaf';
   id: string;
@@ -46,6 +53,7 @@ interface Leaf {
   call?: Call;
   subtitle?: string;
   braceTitle?: string;
+  copies?: CopyLabel[];
 }
 
 interface Group {
@@ -60,9 +68,34 @@ interface Group {
   formula?: Formula;
   fold: Fold;
   expand?: boolean;
+  grid?: string;
+  copies?: CopyLabel[];
 }
 
 export type Tree = Leaf | Group;
+
+interface CopyEnv {
+  index?: number[];
+  env: Env;
+}
+
+interface Texts {
+  title?: string;
+  label?: string;
+  text?: string;
+  append?: string;
+}
+
+function applyTexts(target: { title: string; label?: string; text?: string }, texts: Texts): void {
+  if (texts.title !== undefined) target.title = texts.title;
+  if (texts.label !== undefined) target.label = texts.label;
+  if (texts.text !== undefined) target.text = texts.text;
+  if (texts.append !== undefined) target.text = target.text ? `${target.text}\n${texts.append}` : texts.append;
+}
+
+function sameIndex(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((v, d) => v === b[d]);
+}
 
 type Shown = { kind: 'nodes'; nodes: Node[]; all: boolean } | { kind: 'call'; call: Call } | { kind: 'zip'; calls: [Call, Call]; where: Where };
 
@@ -88,6 +121,12 @@ function combineLabels(a: string | undefined, b: string | undefined): string | u
 
 function leaves(trees: Tree[]): Rec[] {
   return trees.flatMap((tree) => (tree.kind === 'leaf' ? [tree.rec] : [...(tree.intro === undefined ? [] : [tree.intro]), ...leaves(tree.children)]));
+}
+
+type BraceCopy = NonNullable<StepBrace['copies']>[number];
+
+function braceCopy(index: number[], title: string, subtitle: string | undefined): BraceCopy {
+  return subtitle === undefined ? { index, title } : { index, title, subtitle };
 }
 
 function terms(ast: Ast): Ast[] {
@@ -118,7 +157,28 @@ export class StepCompiler {
     const where = child(def.where, def.decl, 'steps');
     const steps = def.decl.steps;
     if (steps === undefined) return [];
-    return this.list(steps, this.c.callEnv(call, where));
+    const env = this.c.callEnv(call, where);
+    return this.list(steps, call.grid === undefined ? env : { ...env, copies: call.grid.copies });
+  }
+
+  private copyEnvs(env: Env): CopyEnv[] {
+    const { copies, ...plain } = env;
+    if (copies === undefined) return [{ env }];
+    return copies.map((copy) => ({ index: copy.index, env: { ...plain, locals: new Map([...env.locals, ...copy.locals]) } }));
+  }
+
+  private frontIndex(env: Env): number[] | undefined {
+    const copies = env.copies;
+    const all = env.call?.grid?.copies;
+    if (copies === undefined || copies.length === 0 || all === undefined) return undefined;
+    const last = all[all.length - 1].index;
+    return (copies.find((copy) => sameIndex(copy.index, last)) ?? copies[0]).index;
+  }
+
+  private frontEnv(env: Env): Env {
+    const envs = this.copyEnvs(env);
+    const front = this.frontIndex(env);
+    return (front === undefined ? envs[0] : (envs.find((e) => e.index !== undefined && sameIndex(e.index, front)) ?? envs[0])).env;
   }
 
   private list(steps: unknown, env: Env): Tree[] {
@@ -135,7 +195,7 @@ export class StepCompiler {
       if (seen.has(step.id)) fail(child(at, step, 'id'), `step id '${step.id}' is used twice`);
       seen.add(step.id);
       const stepEnv = { ...env, where: at };
-      if (step.loop === undefined && step.steps === undefined && this.isNone(step.show ?? step.id, this.field(stepEnv, step, step.show === undefined ? 'id' : 'show'))) {
+      if (step.loop === undefined && step.steps === undefined && this.copyEnvs(stepEnv).every(({ env: e }) => this.isNone(step.show ?? step.id, this.field(e, step, step.show === undefined ? 'id' : 'show')))) {
         absent.add(step.id);
         return;
       }
@@ -152,42 +212,72 @@ export class StepCompiler {
     const at = env.where;
     checkKeys(step, LOOP_KEYS, at);
     const loopWhere = child(at, step, 'loop');
-    const { variable, index, items } = this.loopItems(step.loop, { ...env, where: loopWhere });
-    const defaults = record(step.defaults, child(at, step, 'defaults'), 'defaults');
-    checkKeys(defaults, LOOP_DEFAULT_KEYS, child(at, step, 'defaults'));
+    const text = typeof step.loop === 'string' ? step.loop : '';
+    const range = RANGE_LOOP.exec(text);
+    if (range !== null) fail(loopWhere, `loop: '${text}' is no longer written with range; write loop: ${range[1]}, the variable of a for loop in the forward`);
+    const defaultsWhere = child(at, step, 'defaults');
+    const defaults = record(step.defaults, defaultsWhere, 'defaults');
+    checkKeys(defaults, LOOP_DEFAULT_KEYS, defaultsWhere);
     const rulesWhere = child(at, step, 'rules');
     const rules = step.rules ?? [];
     if (!Array.isArray(rules)) fail(rulesWhere, 'rules must be a list');
-    return items.map((item, i) => {
-      const locals = new Map<string, Value>([...env.locals, ...(index === undefined ? [] : [[index, num(i)] as [string, Value]]), [variable, item]]);
+    const optionsAt = (i: number, count: number): Options => {
       const matching = rules.filter((rule, k) => {
         const ruleWhere = child(rulesWhere, rules, k);
         const spec = record(rule, ruleWhere, 'a rule');
         checkKeys(spec, RULE_KEYS, ruleWhere);
         if (typeof spec.at !== 'number' || !Number.isInteger(spec.at)) fail(child(ruleWhere, spec, 'at'), 'at must be an integer index');
-        const target = spec.at < 0 ? items.length + spec.at : spec.at;
-        if (target < 0 || target >= items.length) fail(child(ruleWhere, spec, 'at'), `at ${spec.at} is out of range for ${items.length} items`);
+        const target = spec.at < 0 ? count + spec.at : spec.at;
+        if (target < 0 || target >= count) fail(child(ruleWhere, spec, 'at'), `at ${spec.at} is out of range for ${count} items`);
         return target === i;
       });
       const options = merged([defaults, ...matching]);
       delete options.at;
-      if (options.show === undefined && index !== undefined) options.show = variable;
-      return this.step(`${String(step.id)}[${index === undefined ? (item as { toy: number }).toy : i}]`, options, { ...env, locals, where: child(at, step, 'defaults') });
+      return options;
+    };
+    const named = NAME.exec(text);
+    if (named !== null) return this.rounds(String(step.id), named[1], optionsAt, { ...env, where: loopWhere }, defaultsWhere);
+    const { variable, index, items } = this.listItems(text, { ...env, where: loopWhere });
+    return items.map((item, i) => {
+      const locals = new Map<string, Value>([...env.locals, [index, num(i)], [variable, item]]);
+      const options = optionsAt(i, items.length);
+      if (options.show === undefined) options.show = variable;
+      return this.step(`${String(step.id)}[${i}]`, options, { ...env, locals, where: defaultsWhere });
     });
   }
 
-  private loopItems(loop: unknown, env: Env): { variable: string; index: string | undefined; items: Value[] } {
-    const text = typeof loop === 'string' ? loop : '';
-    const range = RANGE_LOOP.exec(text);
-    if (range !== null) {
-      const bounds = this.c.reference(`[${range[2]}]`, env);
-      const ints = Array.isArray(bounds) ? bounds.map((b) => (isNum(b) && Number.isInteger(b.toy) ? b.toy : undefined)) : [];
-      if (ints.length < 1 || ints.length > 3 || ints.some((b) => b === undefined) || ints[2] === 0) this.c.fail(env, `range(${range[2]}) needs one to three integers and a nonzero step`);
-      const [start, stop, step] = ints.length === 1 ? [0, ints[0] as number, 1] : [ints[0] as number, ints[1] as number, ints[2] ?? 1];
-      return { variable: range[1], index: undefined, items: rangeValues(start, stop, step).map(num) };
-    }
+  private rounds(id: string, variable: string, optionsAt: (k: number, count: number) => Options, env: Env, defaultsWhere: Where): Tree[] {
+    const call = env.call;
+    const def = env.instance.def;
+    const rounds = call?.rounds.get(variable);
+    if (rounds === undefined) return fail(env.where, `loop '${variable}' is not a loop of the forward of ${def.name}`);
+    if (rounds.loops.size > 1) fail(env.where, `loop '${variable}' names ${rounds.loops.size} loops of the forward of ${def.name}; give each loop its own variable`);
+    const envs = this.copyEnvs(env);
+    const values = envs.map(({ env: e }) => {
+      const key = rounds.outer.map((outer) => {
+        const value = e.locals.get(outer);
+        if (!isNum(value)) return fail(env.where, `loop '${variable}' runs inside the loop over '${outer}' in the forward of ${def.name}; put this step inside a loop step over '${outer}'`);
+        return value.toy;
+      });
+      return rounds.values.get(key.join(',')) ?? [];
+    });
+    const count = Math.max(0, ...values.map((list) => list.length));
+    return Array.from({ length: count }, (_, k) => {
+      const options = optionsAt(k, count);
+      if (options.show === undefined && options.steps === undefined) fail(defaultsWhere, `the loop step '${id}' needs show, or steps`);
+      const round = (c: number) => new Map<string, Value>([[variable, num(values[c][k])], ['round', num(k)]]);
+      const copies = env.copies;
+      const stepEnv: Env =
+        copies === undefined
+          ? { ...env, locals: new Map([...env.locals, ...round(0)]), where: defaultsWhere }
+          : { ...env, copies: copies.flatMap((copy, c): GridCopy[] => (values[c].length > k ? [{ index: copy.index, locals: new Map([...copy.locals, ...round(c)]) }] : [])), where: defaultsWhere };
+      return this.step(`${id}[${k}]`, options, stepEnv);
+    });
+  }
+
+  private listItems(text: string, env: Env): { variable: string; index: string; items: Value[] } {
     const match = LOOP.exec(text);
-    if (match === null) fail(env.where, "loop must look like 'layer = layers[i]' or 'i in range(n)'");
+    if (match === null) fail(env.where, "loop must look like 'layer = layers[i]', or name the variable of a for loop in the forward, such as loop: i");
     const [, variable, listText, index] = match;
     const listValue = this.c.reference(listText, env);
     const items: Value[] = listValue instanceof InstanceList ? listValue.items : Array.isArray(listValue) ? listValue : this.c.fail(env, `'${listText}' is ${describe(listValue)}, not a list`);
@@ -214,11 +304,11 @@ export class StepCompiler {
   private step(id: string, options: Options, env: Env): Tree {
     if (options.steps !== undefined) {
       if (options.show !== undefined) fail(child(env.where, options, 'show'), 'a step with steps shows what its steps show; remove show');
-      const group = this.group(id, this.list(options.steps, this.field(env, options, 'steps')));
+      const group = this.group(id, this.list(options.steps, this.field(env, options, 'steps')), env);
       this.groupOptions(group, options, env);
       return group;
     }
-    const shown = this.shown(options.show ?? id, this.field(env, options, 'show'));
+    const shown = this.shownInCopies(options.show ?? id, env, options);
     if (shown.kind === 'nodes') {
       const leaf = this.leaf(id, shown.nodes, env);
       if (shown.all) this.allSteps.add(leaf.rec.step);
@@ -246,6 +336,7 @@ export class StepCompiler {
     const group = this.group(id, this.compileCall(call));
     group.call = call;
     group.title = call.instance.name;
+    if (group.copies !== undefined) for (const copy of group.copies) copy.title = call.instance.name;
     const def = call.instance.def;
     const childEnv = this.c.callEnv(call);
     if (def.decl.fold !== undefined) group.fold = this.fold(def.decl.fold, { ...childEnv, where: child(def.where, def.decl, 'fold') }, group.fold);
@@ -255,15 +346,40 @@ export class StepCompiler {
     return group;
   }
 
-  private group(id: string, children: Tree[]): Group {
-    return { kind: 'group', id, flat: false, children, fold: { forward: {}, backward: {} } };
+  private group(id: string, children: Tree[], env?: Env): Group {
+    const group: Group = { kind: 'group', id, flat: false, children, fold: { forward: {}, backward: {} } };
+    if (env?.copies !== undefined && env.call !== undefined) {
+      group.grid = env.call.prefix;
+      group.copies = env.copies.map((copy) => ({ index: copy.index }));
+    }
+    return group;
   }
 
   private leaf(id: string, nodes: Node[], env: Env): Leaf {
     const step: Rec['step'] = { show: this.withAnon(nodes), title: id };
     const call = env.call;
     if (call !== undefined && call.parent !== undefined) step.module = call.prefix;
-    return { kind: 'leaf', id, rec: { step }, brace: false };
+    const leaf: Leaf = { kind: 'leaf', id, rec: { step }, brace: false };
+    if (env.copies !== undefined && call !== undefined) {
+      step.grid = call.prefix;
+      step.copies = env.copies.map((copy) => ({ index: copy.index, title: id }));
+      leaf.copies = env.copies.map((copy) => ({ index: copy.index }));
+    }
+    return leaf;
+  }
+
+  private shownInCopies(show: unknown, env: Env, options: Options): Shown {
+    const envs = this.copyEnvs(env);
+    const results = envs.map(({ env: e }) => this.shown(show, this.field(e, options, 'show')));
+    if (results.length === 1) return results[0];
+    const nodes: Node[] = [];
+    let all = false;
+    for (const result of results) {
+      if (result.kind !== 'nodes') fail(child(env.where, options, 'show'), `show '${String(show)}' is a module call inside a grid module; a step of a grid module shows tensors`);
+      nodes.push(...result.nodes);
+      all = all || result.all;
+    }
+    return { kind: 'nodes', nodes: unique(nodes), all };
   }
 
   private shown(show: unknown, env: Env): Shown {
@@ -369,68 +485,138 @@ export class StepCompiler {
     });
   }
 
+  private texts(options: Options, env: Env, keys: readonly string[]): Texts & { subtitle?: string } {
+    const out: Record<string, string> = {};
+    for (const key of keys) if (options[key] !== undefined) out[key] = this.text(options, key, env);
+    return out;
+  }
+
+  private frontOf(indices: number[][], env: Env): number {
+    const all = env.call?.grid?.copies;
+    const last = all === undefined ? undefined : all[all.length - 1].index;
+    const at = last === undefined ? -1 : indices.findIndex((index) => sameIndex(index, last));
+    return at < 0 ? 0 : at;
+  }
+
+  private perCopy(copies: { index: number[] }[], env: Env, visit: (k: number, env: Env) => void): void {
+    for (const { index, env: e } of this.copyEnvs(env)) {
+      const k = index === undefined ? -1 : copies.findIndex((copy) => sameIndex(copy.index, index));
+      if (k >= 0) visit(k, e);
+    }
+  }
+
+  private copyNotes(options: Options, env: Env): ForwardStep['notes'] {
+    return this.copyEnvs(env).flatMap(({ env: e }) => notesOf(this.c, options.notes, this.field(e, options, 'notes')));
+  }
+
   private leafOptions(leaf: Leaf, options: Options, env: Env): void {
     for (const key of ['flat', 'expand', 'fold', 'formula', 'edit']) {
       if (options[key] !== undefined) fail(child(env.where, options, key), `'${key}' applies to a step with steps`);
     }
     const step = leaf.rec.step;
-    if (options.title !== undefined) {
-      step.title = this.text(options, 'title', env);
-      leaf.braceTitle = step.title;
+    const keys = ['title', 'label', 'text', 'append', 'subtitle'];
+    const copies = step.copies;
+    const labels = leaf.copies;
+    if (copies === undefined || labels === undefined) {
+      const texts = this.texts(options, env, keys);
+      applyTexts(step, texts);
+      if (texts.title !== undefined) leaf.braceTitle = step.title;
+      if (texts.subtitle !== undefined) leaf.subtitle = texts.subtitle;
+    } else {
+      this.perCopy(copies, env, (k, e) => {
+        const texts = this.texts(options, e, keys);
+        applyTexts(copies[k], texts);
+        if (texts.title !== undefined) labels[k].title = texts.title;
+        if (texts.subtitle !== undefined) labels[k].subtitle = texts.subtitle;
+      });
+      const front = this.frontOf(
+        copies.map((copy) => copy.index),
+        env,
+      );
+      const chosen: CopyText = copies[front];
+      step.title = chosen.title;
+      if (chosen.label !== undefined) step.label = chosen.label;
+      if (chosen.text !== undefined) step.text = chosen.text;
+      if (options.title !== undefined) leaf.braceTitle = step.title;
+      if (options.subtitle !== undefined) leaf.subtitle = labels[front].subtitle;
     }
-    if (options.label !== undefined) step.label = this.text(options, 'label', env);
-    if (options.text !== undefined) step.text = this.text(options, 'text', env);
-    if (options.append !== undefined) step.text = step.text ? `${step.text}\n${this.text(options, 'append', env)}` : this.text(options, 'append', env);
-    if (options.subtitle !== undefined) leaf.subtitle = this.text(options, 'subtitle', env);
     if (options.brace !== undefined) {
       if (typeof options.brace !== 'boolean') fail(child(env.where, options, 'brace'), 'brace must be true or false');
       leaf.brace = options.brace;
     }
-    if (options.notes !== undefined) step.notes = [...(step.notes ?? []), ...notesOf(this.c, options.notes, this.field(env, options, 'notes'))];
-    if (options.backward !== undefined) step.backward = this.backward(options.backward, this.field(env, options, 'backward'), step.backward ?? {});
+    if (options.notes !== undefined) step.notes = [...(step.notes ?? []), ...(this.copyNotes(options, env) ?? [])];
+    if (options.backward !== undefined) step.backward = this.backward(options.backward, this.field(this.frontEnv(env), options, 'backward'), step.backward ?? {});
   }
 
   private groupOptions(group: Group, options: Options, env: Env): void {
     if (options.brace !== undefined) fail(child(env.where, options, 'brace'), 'a step with steps always has a brace; brace applies to a step that shows tensors');
-    if (options.title !== undefined) group.title = this.text(options, 'title', env);
-    if (options.subtitle !== undefined) group.subtitle = this.text(options, 'subtitle', env);
+    const front = this.frontEnv(env);
+    const labels = group.copies;
+    const frontLabel = labels === undefined ? 0 : this.frontOf(
+      labels.map((copy) => copy.index),
+      env,
+    );
+    if (labels === undefined) {
+      if (options.title !== undefined) group.title = this.text(options, 'title', env);
+      if (options.subtitle !== undefined) group.subtitle = this.text(options, 'subtitle', env);
+    } else {
+      this.perCopy(labels, env, (k, e) => {
+        if (options.title !== undefined) labels[k].title = this.text(options, 'title', e);
+        if (options.subtitle !== undefined) labels[k].subtitle = this.text(options, 'subtitle', e);
+      });
+      if (options.title !== undefined) group.title = labels[frontLabel].title;
+      if (options.subtitle !== undefined) group.subtitle = labels[frontLabel].subtitle;
+    }
     if (options.flat !== undefined) {
       if (typeof options.flat !== 'boolean') fail(child(env.where, options, 'flat'), 'flat must be true or false');
       group.flat = options.flat;
     }
     if (options.expand !== undefined) {
-      const value = typeof options.expand === 'boolean' ? options.expand : this.c.expression(options.expand, this.field(env, options, 'expand'));
+      const value = typeof options.expand === 'boolean' ? options.expand : this.c.expression(options.expand, this.field(front, options, 'expand'));
       if (typeof value !== 'boolean') fail(child(env.where, options, 'expand'), 'expand must be true or false');
       group.expand = value;
     }
-    if (options.fold !== undefined) group.fold = this.fold(options.fold, this.field(env, options, 'fold'), group.fold);
+    if (options.fold !== undefined) group.fold = this.fold(options.fold, this.field(front, options, 'fold'), group.fold);
     if (options.formula !== undefined) {
       if (typeof options.formula !== 'string') fail(child(env.where, options, 'formula'), 'formula must be LaTeX text');
-      group.formula = { tex: options.formula, env: this.field(env, options, 'formula') };
+      group.formula = { tex: options.formula, env: this.field(front, options, 'formula') };
     }
     if (options.edit !== undefined) {
       const where = child(env.where, options, 'edit');
       const patches = record(options.edit, where, 'edit');
       for (const [path, patch] of Object.entries(patches)) this.patch(group.children, path, patch, { ...env, where: child(where, patches, path) });
     }
-    if (options.text !== undefined) {
-      const intro: Rec = group.intro ?? { step: { show: [], title: group.title ?? group.id } };
+    const introKeys = ['text', 'append', 'label'];
+    if (options.text !== undefined && group.intro === undefined) {
+      const intro: Rec = { step: { show: [], title: group.title ?? group.id } };
       const owner = group.call ?? (env.call?.parent === undefined ? undefined : env.call);
       if (owner !== undefined) intro.step.module = owner.prefix;
-      intro.step.text = this.text(options, 'text', env);
+      if (group.grid !== undefined && labels !== undefined) {
+        intro.step.grid = group.grid;
+        intro.step.copies = labels.map((copy) => ({ index: copy.index, title: copy.title ?? group.title ?? group.id }));
+      }
       group.intro = intro;
     }
-    if (options.append !== undefined) {
-      if (group.intro === undefined) fail(child(env.where, options, 'append'), 'append adds to the text of a step; this step with steps has no text');
-      group.intro.step.text = `${group.intro.step.text ?? ''}\n${this.text(options, 'append', env)}`;
-    }
+    if (options.append !== undefined && group.intro === undefined) fail(child(env.where, options, 'append'), 'append adds to the text of a step; this step with steps has no text');
     for (const key of INTRO_KEYS) {
-      if (options[key] === undefined) continue;
-      if (group.intro === undefined) fail(child(env.where, options, key), `'${key}' applies to a step of its own; give this step text, or set ${key} on one of its steps`);
-      const step = group.intro.step;
-      if (key === 'label') step.label = this.text(options, 'label', env);
-      if (key === 'notes') step.notes = [...(step.notes ?? []), ...notesOf(this.c, options.notes, this.field(env, options, 'notes'))];
-      if (key === 'backward') step.backward = this.backward(options.backward, this.field(env, options, 'backward'), step.backward ?? {});
+      if (options[key] !== undefined && group.intro === undefined) fail(child(env.where, options, key), `'${key}' applies to a step of its own; give this step text, or set ${key} on one of its steps`);
+    }
+    const intro = group.intro;
+    if (intro !== undefined) {
+      const step = intro.step;
+      const copies = step.copies;
+      if (copies === undefined) applyTexts(step, this.texts(options, env, introKeys));
+      else {
+        this.perCopy(copies, env, (k, e) => applyTexts(copies[k], this.texts(options, e, introKeys)));
+        const chosen = copies[this.frontOf(
+          copies.map((copy) => copy.index),
+          env,
+        )];
+        if (chosen.label !== undefined) step.label = chosen.label;
+        if (chosen.text !== undefined) step.text = chosen.text;
+      }
+      if (options.notes !== undefined) step.notes = [...(step.notes ?? []), ...(this.copyNotes(options, env) ?? [])];
+      if (options.backward !== undefined) step.backward = this.backward(options.backward, this.field(front, options, 'backward'), step.backward ?? {});
     }
     if (group.call !== undefined) this.callSteps.set(group.call, { title: group.title ?? group.id, subtitle: group.subtitle ?? '', fold: group.fold, expand: group.expand ?? true, flat: group.flat });
   }
@@ -507,6 +693,11 @@ export class StepCompiler {
           if (tree.brace || tree.call !== undefined) {
             const brace: StepBrace = { id, title: tree.braceTitle ?? tree.rec.step.title, nodes: framed(tree.rec.step.show, tree.call), depth };
             if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
+            const step = tree.rec.step;
+            if (step.grid !== undefined && tree.copies !== undefined) {
+              brace.grid = step.grid;
+              brace.copies = tree.copies.map((copy, k) => braceCopy(copy.index, copy.title ?? step.copies?.[k]?.title ?? brace.title, copy.subtitle));
+            }
             braces.push(brace);
           }
           continue;
@@ -521,10 +712,17 @@ export class StepCompiler {
           continue;
         }
         const title = tree.title ?? tree.id;
-        groups.push({ id, title });
+        const group: StepGroup = { id, title };
         if (tree.call !== undefined) this.callGroups.set(tree.call, [...path, id]);
         const brace: StepBrace = { id, title, nodes: framed(shows([tree]), tree.call), depth };
         if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
+        if (tree.grid !== undefined && tree.copies !== undefined) {
+          group.grid = tree.grid;
+          group.copies = tree.copies.map((copy) => ({ index: copy.index, title: copy.title ?? title }));
+          brace.grid = tree.grid;
+          brace.copies = tree.copies.map((copy) => braceCopy(copy.index, copy.title ?? title, copy.subtitle ?? tree.subtitle));
+        }
+        groups.push(group);
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;
         braces.push(brace);
         if (tree.intro !== undefined) {
@@ -591,7 +789,14 @@ export class StepCompiler {
             continue;
           }
           const inner = tree.flat ? path : [...path, id];
-          if (!tree.flat) groups.push({ id, title: tree.title ?? tree.id });
+          if (!tree.flat) {
+            const group: StepGroup = { id, title: tree.title ?? tree.id };
+            if (tree.grid !== undefined && tree.copies !== undefined) {
+              group.grid = tree.grid;
+              group.copies = tree.copies.map((copy) => ({ index: copy.index, title: copy.title ?? group.title }));
+            }
+            groups.push(group);
+          }
           if (tree.intro !== undefined) placed.push({ rec: tree.intro, path: inner });
           walk(tree.children, inner, id);
         }
@@ -609,6 +814,10 @@ export class StepCompiler {
         if (step.label !== undefined) out.label = step.label;
         if (step.text !== undefined) out.text = step.text;
         if (step.notes !== undefined) out.notes = step.notes;
+        if (step.grid !== undefined && step.copies !== undefined) {
+          out.grid = step.grid;
+          out.copies = step.copies;
+        }
         return out;
       });
       return { module: call.prefix, after, steps };

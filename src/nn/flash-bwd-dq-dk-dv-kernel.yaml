@@ -4,6 +4,10 @@ args:
   softmax_scale: float
   block_m: dim
   block_n: dim
+grid:
+  n: triton.cdiv(T, block_n)
+  h: num_heads
+shared: [k_tile, v_tile, q_tile, do_tile, rp, rds]
 inputs:
   dout: [T, num_heads, d_head]
   q: [T, num_heads, d_head]
@@ -12,50 +16,45 @@ inputs:
   softmax_lse: { type: tensor, shape: [num_heads, T], dtype: fp32 }
   dsoftmax_sum: { type: tensor, shape: [num_heads, T], dtype: fp32 }
   dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+  dk_expanded: [T, num_heads, d_head]
+  dv_expanded: [T, num_heads, d_head]
 outputs:
-  dq_accum_out: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+  dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
   dk_expanded: [T, num_heads, d_head]
   dv_expanded: [T, num_heads, d_head]
 
 forward:
   - scale_softmax_log2: softmax_scale * math.log2(math.e)
-  - dk_expanded: zeros(T, num_heads, d_head, dtype=k.dtype)
-  - dv_expanded: zeros(T, num_heads, d_head, dtype=v.dtype)
-  - for: h in range(num_heads)
+  - k_tile: k[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
+  - v_tile: v[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
+  - cols: arange(n * block_n, min((n + 1) * block_n, T))
+  - acc_dk: zeros(min((n + 1) * block_n, T) - n * block_n, d_head, dtype=fp32)
+  - acc_dv: zeros(min((n + 1) * block_n, T) - n * block_n, d_head, dtype=fp32)
+  - for: m in range(triton.cdiv(T, block_m) - 1, (n * block_n) // block_m - 1, -1)
     do:
-      - for: n in range((T + block_n - 1) // block_n)
-        do:
-          - k_tile: k[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
-          - v_tile: v[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
-          - cols: arange(n * block_n, min((n + 1) * block_n, T))
-          - acc_dk: zeros(min((n + 1) * block_n, T) - n * block_n, d_head, dtype=fp32)
-          - acc_dv: zeros(min((n + 1) * block_n, T) - n * block_n, d_head, dtype=fp32)
-          - for: m in range((T + block_m - 1) // block_m - 1, (n * block_n) // block_m - 1, -1)
-            do:
-              - q_tile: q[m * block_m:min((m + 1) * block_m, T), h]
-              - do_tile: dout[m * block_m:min((m + 1) * block_m, T), h]
-              - lse_tile: softmax_lse[h, m * block_m:min((m + 1) * block_m, T)]
-              - dpsum_tile: dsoftmax_sum[h, m * block_m:min((m + 1) * block_m, T)]
-              - acc_s: matmul(q_tile, k_tile.transpose(0, 1), dtype=fp32)
-              - masking: m * block_m < (n + 1) * block_n or (not (T % block_m == 0 and T % block_n == 0) and (n + 1) * block_n >= T)
-              - if: masking
-                then:
-                  - rows: arange(m * block_m, min((m + 1) * block_m, T))
-                  - future: cols.unsqueeze(0) > rows.unsqueeze(1)
-                  - acc_s_masked: acc_s.masked_fill(future, float('-inf'))
-              - p: 2 ** ((acc_s_masked if masking else acc_s) * scale_softmax_log2 - lse_tile.unsqueeze(-1) * math.log2(math.e))
-              - rp: p.to(q.dtype)
-              - acc_dp: matmul(do_tile, v_tile.transpose(0, 1), dtype=fp32)
-              - ds: p * (acc_dp - dpsum_tile.unsqueeze(-1))
-              - rds: ds.to(q.dtype)
-              - acc_dv: acc_dv + matmul(rp.transpose(0, 1), do_tile, dtype=fp32)
-              - acc_dq: matmul(rds, k_tile, dtype=fp32)
-              - 'dq_accum[m * block_m:min((m + 1) * block_m, T), h]': dq_accum[m * block_m:min((m + 1) * block_m, T), h] + acc_dq
-              - acc_dk: acc_dk + matmul(rds.transpose(0, 1), q_tile, dtype=fp32)
-          - acc_dk_scaled: acc_dk * softmax_scale
-          - 'dk_expanded[n * block_n:min((n + 1) * block_n, T), h]': acc_dk_scaled.to(k.dtype)
-          - 'dv_expanded[n * block_n:min((n + 1) * block_n, T), h]': acc_dv.to(v.dtype)
-  - dq_accum_out: dq_accum
+      - q_tile: q[m * block_m:min((m + 1) * block_m, T), h]
+      - do_tile: dout[m * block_m:min((m + 1) * block_m, T), h]
+      - lse_tile: softmax_lse[h, m * block_m:min((m + 1) * block_m, T)]
+      - dpsum_tile: dsoftmax_sum[h, m * block_m:min((m + 1) * block_m, T)]
+      - acc_s: matmul(q_tile, k_tile.transpose(0, 1), dtype=fp32)
+      - masking: m * block_m < (n + 1) * block_n or (not (T % block_m == 0 and T % block_n == 0) and (n + 1) * block_n >= T)
+      - if: masking
+        then:
+          - rows: arange(m * block_m, min((m + 1) * block_m, T))
+          - future: cols.unsqueeze(0) > rows.unsqueeze(1)
+          - acc_s_masked: acc_s.masked_fill(future, float('-inf'))
+      - p: 2 ** ((acc_s_masked if masking else acc_s) * scale_softmax_log2 - lse_tile.unsqueeze(-1) * math.log2(math.e))
+      - rp: p.to(q.dtype)
+      - acc_dp: matmul(do_tile, v_tile.transpose(0, 1), dtype=fp32)
+      - ds: p * (acc_dp - dpsum_tile.unsqueeze(-1))
+      - rds: ds.to(q.dtype)
+      - acc_dv: acc_dv + matmul(rp.transpose(0, 1), do_tile, dtype=fp32)
+      - acc_dq: matmul(rds, k_tile, dtype=fp32)
+      - 'dq_accum[m * block_m:min((m + 1) * block_m, T), h] +=': acc_dq
+      - acc_dk: acc_dk + matmul(rds.transpose(0, 1), q_tile, dtype=fp32)
+  - acc_dk_scaled: acc_dk * softmax_scale
+  - 'dk_expanded[n * block_n:min((n + 1) * block_n, T), h]': acc_dk_scaled.to(k.dtype)
+  - 'dv_expanded[n * block_n:min((n + 1) * block_n, T), h]': acc_dv.to(v.dtype)
 
 tex:
   dout: '\mathrm{d}O'
@@ -84,61 +83,47 @@ tex:
   acc_dk_scaled: '\mathrm{d}K'
 
 steps:
-  - id: alloc
-    show: [dk_expanded, dv_expanded]
-    label: '$\viz{dk_expanded},\ \viz{dv_expanded}$'
-    title: 分配 dk_expanded、dv_expanded
+  - id: load
+    show: [k_tile, v_tile, cols, acc_dk, acc_dv]
+    label: '$\viz{k_tile},\ \viz{v_tile}$'
+    title: 读入 kv 块
     text: |
-      反向的主 kernel 是 <code>flash_bwd_dq_dk_dv_loop_seqk_parallel_kernel</code>，入口 <code>compute_dq_dk_dv_1colblock</code>。它和前向反过来：每个 thread block 负责一个 head 的一个 kv 块，网格是 (kv 块数, batch, head 数)，在 kv 块内部沿 query 块循环。$\mathrm{d}K$、$\mathrm{d}V$ 只由自己的 thread block 写，留在寄存器里累加到最后；$\mathrm{d}Q$ 的每一行要收集所有 kv 块的贡献，用 atomicAdd 加进 fp32 的 <code>dq_accum</code>。
-      GQA 时 $\mathrm{d}K$、$\mathrm{d}V$ 先按 query head 写进 $T\times H\times d_h$ 的 <code>dk_expanded</code>、<code>dv_expanded</code>。A100 上 $d_h=128$ 时块大小是 $B_m=64$、$B_n=128$，这一页取 $B_m={{ block_m }}$、$B_n={{ block_n }}$。
-  - id: head
-    loop: h in range(num_heads)
+      反向的主 kernel 是 <code>flash_bwd_dq_dk_dv_loop_seqk_parallel_kernel</code>，入口 <code>compute_dq_dk_dv_1colblock</code>。它和前向反过来：<code>run_mha_bwd</code> 的网格是 <code>dim3 grid_n(num_n_block, b, h)</code>，每个 thread block 负责一个 head 的一个 kv 块，这一页有 {{ triton.cdiv(T, block_n) }} 个 kv 块、{{ num_heads }} 个 head，共 {{ triton.cdiv(T, block_n) * num_heads }} 个 thread block 同时执行，在 kv 块内部沿 query 块循环。$\mathrm{d}K$、$\mathrm{d}V$ 只由自己的 thread block 写，留在寄存器里累加到最后；$\mathrm{d}Q$ 的每一行要收集所有 kv 块的贡献，用 atomicAdd 加进 fp32 的 <code>dq_accum</code>。A100 上 $d_h=128$ 时块大小是 $B_m=64$、$B_n=128$，这一页取 $B_m={{ block_m }}$、$B_n={{ block_n }}$。
+
+      以 head {{ h }}、kv 块 {{ n }} 的 thread block 为例：它读入 kv head {{ h // (num_heads // num_kv_heads) }} 的第 {{ n * block_n }} 到 {{ min((n + 1) * block_n, T) - 1 }} 行 key、value，放在 shared memory 里。$\viz{acc_dk}$、$\viz{acc_dv}$ 是 fp32 累加器，初值为 0。causal 下第 {{ n }} 块只被第 {{ n * block_n }} 行及以后的 query 看到，所以 query 块从最后一块倒序循环到第 {{ (n * block_n) // block_m }} 块（<code>m_block_min</code>），共 {{ triton.cdiv(T, block_m) - (n * block_n) // block_m }} 轮；kv 块越靠前轮数越多。
+  - id: row_block
+    loop: m
     defaults:
-      title: 'head {{ h }}'
+      title: '第 {{ round + 1 }} 轮：query 块 {{ m }}'
+      subtitle: '第 {{ m * block_m }} 到 {{ min((m + 1) * block_m, T) - 1 }} 行'
       steps:
-        - id: col_block
-          loop: n in range(triton.cdiv(T, block_n))
-          defaults:
-            title: 'kv 块 {{ n }}'
-            steps:
-              - id: load
-                show: [k_tile, v_tile, cols, acc_dk, acc_dv]
-                label: '$\viz{k_tile},\ \viz{v_tile}$'
-                title: 'head {{ h }}：读入 kv 块 {{ n }}'
-                text: |
-                  读入 kv head {{ h // (num_heads // num_kv_heads) }} 的第 {{ n * block_n }} 到 {{ min((n + 1) * block_n, T) - 1 }} 行 key、value，留在片上。$\viz{acc_dk}$、$\viz{acc_dv}$ 是 fp32 累加器，初值为 0。causal 下第 {{ n }} 块只被第 {{ n * block_n }} 行及以后的 query 看到，所以 query 块从最后一块倒序循环到第 {{ (n * block_n) // block_m }} 块（<code>m_block_min</code>）。
-              - id: row_block
-                loop: m in range(triton.cdiv(T, block_m) - 1, (n * block_n) // block_m - 1, -1)
-                defaults:
-                  title: 'query 块 {{ m }}'
-                  steps:
-                    - id: p
-                      show: [q_tile, do_tile, lse_tile, dpsum_tile, acc_s, rows, future, acc_s_masked, p, rp]
-                      label: '$\viz{p}$'
-                      title: 'head {{ h }}，kv 块 {{ n }}，query 块 {{ m }}：重算 $P$'
-                      text: |
-                        读入 query 块 {{ m }} 的 $Q$、$\mathrm{d}O$，以及前向存下的 $L$ 和上一个 kernel 算出的 $D$。$S=QK^{\top}$ 与前向相同，{{ '这一块与对角线相交，先按行号、列号把 $s>t$ 的格子置为 $-\infty$，' if masking else '这一块在对角线左下方，不需要 mask，' }}再由 $L$ 直接得到归一化的概率：
-                        $$P_{t,s}=2^{S_{t,s}\log_2 e/\sqrt{d_h}-L_t\log_2 e}=\exp\big(S_{t,s}/\sqrt{d_h}-L_t\big)$$
-                        前向时还不知道整行的最大值和指数和，要做 online softmax；反向时 $L$ 已知，一次 exp 就得到最终的 $P$。
-                        $$\viz{p}={{ p | matrix:3 }}$$
-                    - id: dp
-                      show: [acc_dp, ds, rds, acc_dv]
-                      label: '$\viz{ds},\ \viz{acc_dv}$'
-                      title: 'head {{ h }}，kv 块 {{ n }}，query 块 {{ m }}：$\mathrm{d}P$、$\mathrm{d}S$、$\mathrm{d}V$'
-                      text: |
-                        $\mathrm{d}P=\mathrm{d}O\,V^{\top}$，再由 softmax 的反向 $\mathrm{d}S=P\odot(\mathrm{d}P-D)$，其中 $D_t=\sum_sP_{t,s}\mathrm{d}P_{t,s}$ 是上一个 kernel 算好的整行之和，所以按块计算也是精确的。$\mathrm{d}V$ 累加 $P^{\top}\mathrm{d}O$，$P$ 用 bf16。
-                        $$\viz{ds}={{ ds | matrix:3 }}$$
-                    - id: dq_dk
-                      show: [acc_dq, dq_accum, acc_dk]
-                      label: '$\viz{acc_dq},\ \viz{acc_dk}$'
-                      title: 'head {{ h }}，kv 块 {{ n }}，query 块 {{ m }}：$\mathrm{d}Q$、$\mathrm{d}K$'
-                      text: |
-                        $\mathrm{d}S$ 转成 bf16。$\mathrm{d}Q$ 这一块的贡献 $\mathrm{d}S\,K$ 用 atomicAdd 加进 <code>dq_accum</code> 的第 {{ m * block_m }} 到 {{ min((m + 1) * block_m, T) - 1 }} 行，别的 kv 块的 thread block 同时也在往这里加。$\mathrm{d}K$ 累加 $\mathrm{d}S^{\top}Q$。这里都还没有乘 $1/\sqrt{d_h}$。
-                        $$\viz{acc_dq}={{ acc_dq | matrix:3 }}$$
-              - id: write
-                show: [acc_dk_scaled, dk_expanded, dv_expanded]
-                label: '$\viz{dk_expanded},\ \viz{dv_expanded}$'
-                title: 'head {{ h }}：写回 kv 块 {{ n }} 的 $\mathrm{d}K$、$\mathrm{d}V$'
-                text: |
-                  全部 query 块处理完，$\mathrm{d}K$ 乘上 $1/\sqrt{d_h}$（$S$ 对 $K$ 的导数里带这个系数），和 $\mathrm{d}V$ 一起转成 bf16 写回。
-                  $$\viz{acc_dk_scaled}={{ acc_dk_scaled | matrix:3 }}$$
+        - id: p
+          show: [q_tile, do_tile, lse_tile, dpsum_tile, acc_s, rows, future, acc_s_masked, p, rp]
+          label: '$\viz{p}$'
+          title: '重算 $P$'
+          text: |
+            读入 query 块 {{ m }} 的 $Q$、$\mathrm{d}O$ 到 shared memory，以及前向存下的 $L$ 和上一个 kernel 算出的 $D$，这两个每行一个数，读进寄存器。$S=QK^{\top}$ 与前向相同，{{ '这一块与对角线相交，先按行号、列号把 $s>t$ 的格子置为 $-\infty$，' if masking else '这一块在对角线左下方，不需要 mask，' }}再由 $L$ 直接得到归一化的概率：
+            $$P_{t,s}=2^{S_{t,s}\log_2 e/\sqrt{d_h}-L_t\log_2 e}=\exp\big(S_{t,s}/\sqrt{d_h}-L_t\big)$$
+            前向时还不知道整行的最大值和指数和，要做 online softmax；反向时 $L$ 已知，一次 exp 就得到最终的 $P$。$P$ 转成 bf16 存进 shared memory，下一步与 $\mathrm{d}O$ 相乘时要按转置读它。
+            $$\viz{p}={{ p | matrix:3 }}$$
+        - id: dp
+          show: [acc_dp, ds, rds, acc_dv]
+          label: '$\viz{ds},\ \viz{acc_dv}$'
+          title: '$\mathrm{d}P$、$\mathrm{d}S$、$\mathrm{d}V$'
+          text: |
+            $\mathrm{d}P=\mathrm{d}O\,V^{\top}$，再由 softmax 的反向 $\mathrm{d}S=P\odot(\mathrm{d}P-D)$，其中 $D_t=\sum_sP_{t,s}\mathrm{d}P_{t,s}$ 是上一个 kernel 算好的整行之和，所以按块计算也是精确的。$\mathrm{d}V$ 累加 $P^{\top}\mathrm{d}O$，$P$ 用 bf16。$\mathrm{d}S$ 转成 bf16 存进 shared memory。
+            $$\viz{ds}={{ ds | matrix:3 }}$$
+        - id: dq_dk
+          show: [acc_dq, acc_dk]
+          label: '$\viz{acc_dq},\ \viz{acc_dk}$'
+          title: '$\mathrm{d}Q$、$\mathrm{d}K$'
+          text: |
+            $\mathrm{d}Q$ 这一块的贡献 $\mathrm{d}S\,K$ 用 atomicAdd 加进 <code>dq_accum</code> 的第 {{ m * block_m }} 到 {{ min((m + 1) * block_m, T) - 1 }} 行，其他 kv 块的 thread block 也在往这些行加。图上各个 thread block 的贡献在 kernel 结束后一起加进 <code>dq_accum</code>。$\mathrm{d}K$ 累加 $\mathrm{d}S^{\top}Q$。这里都还没有乘 $1/\sqrt{d_h}$。
+            $$\viz{acc_dq}={{ acc_dq | matrix:3 }}$$
+  - id: write
+    show: [acc_dk_scaled, dk_expanded, dv_expanded, dq_accum]
+    label: '$\viz{dk_expanded},\ \viz{dv_expanded}$'
+    title: '写回 $\mathrm{d}K$、$\mathrm{d}V$'
+    text: |
+      一个 thread block 处理完自己的全部 query 块以后，$\mathrm{d}K$ 乘上 $1/\sqrt{d_h}$（$S$ 对 $K$ 的导数里带这个系数），和 $\mathrm{d}V$ 一起转成 bf16，写回 kv 块 {{ n }}、head {{ h }} 的那一段。各个 thread block 写的 $\mathrm{d}K$、$\mathrm{d}V$ 区域互不重叠；<code>dq_accum</code> 收到了所有 thread block 的累加。
+      $$\viz{acc_dk_scaled}={{ acc_dk_scaled | matrix:3 }}$$

@@ -50,7 +50,7 @@ function chunked() {
 
 function resolve(spec: StepsSpec): LevelLayout {
   const lines = spec.forward.map((step) => (Array.isArray(step.show) ? step.show : [step.show]));
-  return levelPlan(spec, { lines, sides: [], merges: [] }).resolve({ folded: () => false, aligned: new Map() });
+  return levelPlan(spec, { lines, sides: [], merges: [], slots: [], grids: [] }).resolve({ folded: () => false, aligned: new Map() });
 }
 
 const blockOf = (layout: LevelLayout, node: Node) => layout.blocks.find((b) => b.node === node && b.copyOf === undefined)!;

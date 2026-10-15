@@ -11,7 +11,7 @@ import type { StepsSpec } from '../../src/steps';
 import { forEachIndex } from '../../src/tensor';
 
 function linesOf(spec: StepsSpec): LevelSpec {
-  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [] };
+  return { lines: spec.forward.map((s) => (Array.isArray(s.show) ? s.show : [s.show])), sides: [], merges: [], slots: [], grids: [] };
 }
 
 const T = 3;

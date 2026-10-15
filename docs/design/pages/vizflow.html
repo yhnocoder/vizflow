@@ -566,13 +566,19 @@ defineComposite(def: CompositeDef): void</code></pre>
 <p>步骤状态由 <code>steps</code> 模块的 <code>createSteps</code> 生成，界面上的步骤条由 <code>ui</code> 的 <code>mountSteps</code> 画出。两者分开，只挂 3D 场景的页面不需要引入 <code>ui</code>。</p>
 <pre><code class="language-ts">type StepKind = 'overview' | 'inputs' | 'op' | 'module';
 interface BackwardOverride { title?: string; text?: string; label?: string }
+interface CopyText { index: number[]; title: string; label?: string; text?: string }
+interface StepGrid { module: string; names: string[]; counts: number[] }
 interface ForwardStep {
   show: Node | Node[]; active?: Node | Node[]; title: string; text?: string; label?: string;
   groups?: string[]; module?: string; formula?: { title: string; tex: string }; backward?: BackwardOverride; marks?: string[];
+  grid?: string; copies?: CopyText[];
 }
 type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record&lt;number, BackwardOverride&gt; };
-interface StepGroup { id: string; title: string }
-interface StepBrace { id: string; title: string; subtitle?: string; nodes: Node[]; depth: number; module?: string }
+interface StepGroup { id: string; title: string; grid?: string; copies?: { index: number[]; title: string }[] }
+interface StepBrace {
+  id: string; title: string; subtitle?: string; nodes: Node[]; depth: number; module?: string;
+  grid?: string; copies?: { index: number[]; title: string; subtitle?: string }[];
+}
 
 interface PageModule {
   id: string; parent: string | null; title: string; subtitle: string;
@@ -585,6 +591,7 @@ interface FunctionStep {
   id: string; title: string; label?: string; text?: string;
   show: Node[]; receive: Node[]; groups?: string[];
   formula?: { title: string; tex: string }; marks?: string[];
+  grid?: string; copies?: CopyText[];
 }
 interface FunctionBackward { module: string; after: ForwardStep; steps: FunctionStep[] }
 
@@ -596,6 +603,7 @@ interface StepsSpec {
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride };
   backward?: BackwardSpec;
   modules?: StepModule[];
+  grids?: StepGrid[];
 }
 createSteps(g: Graph, spec: StepsSpec): Steps
 
@@ -614,12 +622,15 @@ interface Steps {
   folded(id: string): boolean;
   setFolded(id: string, folded: boolean): void;
   setAllFolded(folded: boolean): void;
+  front(grid: string): readonly number[];
+  setFront(grid: string, index: readonly number[]): void;
   dispose(): void;
 }
 interface StepInfo {
   dir: 'forward' | 'backward'; index: number; id: string; kind: StepKind;
   label: string; title: string; text: string; nodes: Node[];
   groups: string[]; module?: string; forwardId?: string; computes?: Node[];
+  copy?: { grid: string; index: number[]; front: boolean };
 }
 interface StepState {
   dir: 'forward' | 'backward';
@@ -650,6 +661,7 @@ isLeafLike(node: Node): boolean</code></pre>
 <p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
 <p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：自动加的总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），反向步骤是 <code>b:k</code>，第 $k$ 个步骤声明是总览时它的反向总览是 <code>b:k</code> 并带 <code>forwardId</code> <code>f:k</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>，自定义反向函数的第 $k$ 个反向步骤是 <code>x:模块 id:k</code>。<code>groups</code> 是这一步从外到内所在的分组 id，标题在 <code>StepsSpec.groups</code> 里，步骤条按它分段；<code>module</code> 是这一步所属的最内层模块。<code>braces</code> 是场景里的括号，<code>depth</code> 是嵌套深度，最外层是 0。</p>
+<p><b>grid 调用的步骤文字。</b><code>grid</code> 模块的一步亮所有副本的张量，文字按「最前面的副本」求值（DSL 的规则 15）。编译器对 grid 调用里的每一步按每个示例副本各求值一次文字，放进 <code>copies</code>，<code>index</code> 是副本编号（每维一个整数），<code>grid</code> 是这次调用的路径；这一步里空闲的副本不在 <code>copies</code> 里。<code>StepsSpec.grids</code> 列出每个 grid 调用的路径、各维名字和示例个数。<code>front(grid)</code> 读取一个调用的最前面的副本，初值是各维编号都取最大值；<code>setFront(grid, index)</code> 设置它，然后按新的副本重建步骤列表并通知订阅者，调用路径不存在时抛错 <code>setFront: 'g' is not a grid module call; the grid calls are ...</code>，编号越界时抛错 <code>setFront: [2] is not a copy of 'g', whose grid is i &lt; 2</code>。<code>StepInfo</code> 的标题、按钮文字和正文取 <code>copies</code> 里编号等于最前面的副本的一项；最前面的副本这一步空闲时取 <code>copies</code> 的第一项，也就是编号最小的有工作的副本。<code>copy</code> 写出取的是哪个副本，<code>front</code> 为假表示最前面的副本这一步空闲。<code>groups</code> 的标题同样按最前面的副本选取；括号的 <code>copies</code> 留给场景按最前面的副本选择标题。场景判断「这一步亮的节点」和「到这一步为止出现过的节点」用 <code>state()</code> 的 <code>active</code> 与 <code>revealed</code>。</p>
 
 <h3>折叠与反向步骤</h3>
 <p>一整层 Transformer 有上百个节点，逐个运算讲解时读者看不到结构。页面描述文件编译出的步骤用 <code>backward: 'reverse'</code> 和 <code>modules</code>：每个模块可以折叠成一步，折叠后它的内部节点从图上隐去，只留输入、输出和参数，读者先看整体，再展开感兴趣的模块。JavaScript 页面也可以直接这样写。</p>

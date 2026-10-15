@@ -89,6 +89,40 @@ export interface Alias {
   tex: string;
 }
 
+export type Arrangement = 'expand' | 'stack';
+
+export interface GridDim {
+  name: string;
+  count: Num;
+  arrangement: Arrangement;
+}
+
+export interface GridCopy {
+  index: number[];
+  locals: ReadonlyMap<string, Value>;
+}
+
+export class GridRun {
+  readonly copyOf = new Map<Node, number[]>();
+
+  constructor(
+    readonly dims: readonly GridDim[],
+    readonly copies: readonly GridCopy[],
+  ) {}
+}
+
+export interface Rounds {
+  outer: string[];
+  values: Map<string, number[]>;
+  loops: Set<object>;
+}
+
+export interface Line {
+  nodes: Node[];
+  calls: Call[];
+  copy?: number[];
+}
+
 export interface Iterations {
   variables: string[];
   values: Map<string, Value>;
@@ -107,8 +141,12 @@ export class Call {
   readonly resultValues: { name: string; value: Value; where: Where }[] = [];
   finished = false;
   readonly iterations = new Map<string, Iterations>();
-  readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
+  readonly rounds = new Map<string, Rounds>();
+  readonly slots = new Map<string, Node[]>();
+  readonly lines: Line[] = [];
   created: Node[] = [];
+  grid: GridRun | undefined;
+  readonly shared = new Set<Node>();
 
   constructor(
     readonly instance: Instance,
@@ -137,6 +175,7 @@ export interface Env {
   call: Call | undefined;
   locals: ReadonlyMap<string, Value>;
   where: Where;
+  copies?: readonly GridCopy[];
 }
 
 export interface Make {

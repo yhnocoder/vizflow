@@ -21,25 +21,33 @@ init:
   fwd:
     use: flash_fwd_kernel
     args: { softmax_scale: softmax_scale, block_m: block_m, block_n: block_n }
-  dot_do_o: flash_bwd_dot_do_o_kernel
+  dot_do_o:
+    use: flash_bwd_dot_do_o_kernel
+    args: { block_m: bwd_block_m }
   dq_dk_dv:
     use: flash_bwd_dq_dk_dv_kernel
     args: { softmax_scale: softmax_scale, block_m: bwd_block_m, block_n: bwd_block_n }
   convert_dq:
     use: flash_bwd_convert_dq_kernel
-    args: { softmax_scale: softmax_scale }
+    args: { softmax_scale: softmax_scale, block_m: bwd_block_m }
 
 forward:
-  - fwd_result: fwd(q, k, v)
+  - out_buffer: zeros_like(q)
+  - lse_buffer: zeros(num_heads, T, dtype=fp32)
+  - fwd_result: fwd(q, k, v, out_buffer, lse_buffer)
   - out: fwd_result.out
   - softmax_lse: fwd_result.softmax_lse
 
 save: [q, k, v, out, softmax_lse]
 backward:
   - dq: zeros_like(q)
-  - dot: dot_do_o(grad_out, out)
-  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum)
-  - grad_q: convert_dq(main.dq_accum_out, dq)
+  - softmax_d: zeros(num_heads, T, dtype=fp32)
+  - dq_accum: zeros(T, num_heads, d_head, dtype=fp32)
+  - dk_expanded: zeros(T, num_heads, d_head, dtype=k.dtype)
+  - dv_expanded: zeros(T, num_heads, d_head, dtype=v.dtype)
+  - dot: dot_do_o(grad_out, out, softmax_d, dq_accum)
+  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum, dk_expanded, dv_expanded)
+  - grad_q: convert_dq(main.dq_accum, dq)
   - grad_k: main.dk_expanded.reshape(T, num_kv_heads, num_heads // num_kv_heads, d_head).sum(2) if num_kv_heads != num_heads else main.dk_expanded
   - grad_v: main.dv_expanded.reshape(T, num_kv_heads, num_heads // num_kv_heads, d_head).sum(2) if num_kv_heads != num_heads else main.dv_expanded
 
@@ -49,6 +57,12 @@ tex:
   v: '\mathbf{v}'
   out: '\mathbf{o}'
   softmax_lse: 'L'
+  out_buffer: '\mathbf{o}^{\mathrm{buf}}'
+  lse_buffer: 'L^{\mathrm{buf}}'
+  softmax_d: 'D^{\mathrm{buf}}'
+  dq_accum: '\mathrm{d}\mathbf{q}^{\mathrm{acc}}'
+  dk_expanded: '\mathrm{d}\mathbf{k}^{\mathrm{exp}}'
+  dv_expanded: '\mathrm{d}\mathbf{v}^{\mathrm{exp}}'
   grad_out: '\frac{\partial\ell}{\partial\mathbf{o}}'
   dq: '\mathrm{d}\mathbf{q}'
   grad_q: '\frac{\partial\ell}{\partial \mathbf{q}}'
@@ -67,22 +81,30 @@ fold:
       $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
 
 steps:
+  - id: alloc
+    show: [out_buffer, lse_buffer]
+    label: '$\viz{out_buffer},\ \viz{lse_buffer}$'
+    title: 分配输出
+    text: |
+      <code>_flash_attn_forward</code> 调用 C++ 的 <code>mha_fwd</code>，它先用 <code>torch::empty_like(q)</code> 分配输出，再分配 fp32 的 <code>softmax_lse</code>，形状 $H\times T$，每个 head 的每一行存一个 $\log\sum_s e^{S_{t,s}/\sqrt{d_h}}$，反向要用它重新算出概率。<code>empty</code> 不初始化内容，这里画成 0。kernel 的每个 thread block 把算完的那一块写进这两个缓冲区。
   - id: fwd
     subtitle: '<code>_flash_attn_forward</code>'
 
 backward_steps:
   - id: dq
-    show: dq
-    label: '$\viz{dq}$'
+    show: [dq, softmax_d, dq_accum, dk_expanded, dv_expanded]
+    label: '$\viz{dq},\ \viz{dq_accum}$'
     title: 分配梯度
     text: |
-      <code>FlashAttnFunc.backward</code> 收到 $\viz{grad_out}$，先用 <code>torch.empty_like</code> 分配 $\frac{\partial\ell}{\partial \mathbf{q}}$、$\frac{\partial\ell}{\partial \mathbf{k}}$、$\frac{\partial\ell}{\partial \mathbf{v}}$ 的输出缓冲区，再调用 <code>_flash_attn_backward</code>。前向保存的只有 $\mathbf{q}$、$\mathbf{k}$、$\mathbf{v}$、$\viz{out}$ 和 $\viz{softmax_lse}$，没有 $T\times T$ 的概率矩阵，反向按块重新算出它。C++ 的 <code>mha_bwd</code> 依次启动三个 kernel。
+      <code>FlashAttnFunc.backward</code> 收到 $\viz{grad_out}$，先用 <code>torch.empty_like</code> 分配 $\frac{\partial\ell}{\partial \mathbf{q}}$、$\frac{\partial\ell}{\partial \mathbf{k}}$、$\frac{\partial\ell}{\partial \mathbf{v}}$ 的输出缓冲区，再调用 <code>_flash_attn_backward</code>。前向保存的只有 $\mathbf{q}$、$\mathbf{k}$、$\mathbf{v}$、$\viz{out}$ 和 $\viz{softmax_lse}$，没有 $T\times T$ 的概率矩阵，反向按块重新算出它。
+
+      C++ 的 <code>mha_bwd</code> 再分配三个 kernel 共用的缓冲区：fp32 的 <code>softmax_d</code>（$H\times T$，存每行的 $D$）、fp32 的 <code>dq_accum</code>（$T\times H\times d_h$，累加 $\mathrm{d}\mathbf{q}$），GQA 时还有按 query head 存放的 <code>dk_expanded</code>、<code>dv_expanded</code>（$T\times H\times d_h$；$H=H_{kv}$ 时它们就是 $\mathrm{d}\mathbf{k}$、$\mathrm{d}\mathbf{v}$ 本身）。它们都用 <code>torch::empty</code> 分配，这里画成 0。之后依次启动三个 kernel。
   - id: dot
     show: dot
     label: '$D$'
     title: flash_bwd_dot_do_o_kernel
     text: |
-      softmax 的反向要用到每行的 $D_t=\sum_s P_{t,s}\,\frac{\partial\ell}{\partial P_{t,s}}$。因为 $\frac{\partial\ell}{\partial P_{t,s}}=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{v}_s$，有 $D_t=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\sum_sP_{t,s}\mathbf{v}_s=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{o}_t$，只要 $\frac{\partial\ell}{\partial \mathbf{o}}$ 和 $\mathbf{o}$ 逐行点积，不需要 $P$。<code>flash_bwd_dot_do_o_kernel</code> 算出它存为 fp32 的 <code>dsoftmax_sum</code>，同时把 <code>dq_accum</code> 清零。
+      softmax 的反向要用到每行的 $D_t=\sum_s P_{t,s}\,\frac{\partial\ell}{\partial P_{t,s}}$。因为 $\frac{\partial\ell}{\partial P_{t,s}}=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{v}_s$，有 $D_t=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\sum_sP_{t,s}\mathbf{v}_s=\frac{\partial\ell}{\partial \mathbf{o}_t}\cdot\mathbf{o}_t$，只要 $\frac{\partial\ell}{\partial \mathbf{o}}$ 和 $\mathbf{o}$ 逐行点积，不需要 $P$。<code>flash_bwd_dot_do_o_kernel</code> 的网格与前向相同，是 (query 块数, batch, head 数)，块大小用反向的 $B_m$；每个 thread block 算出自己那一块的 $D$ 写进 <code>softmax_d</code>，同时把 <code>dq_accum</code> 的对应一块清零。
       $$D={{ dot.dsoftmax_sum | matrix:3 }}$$
   - id: main
     show: main

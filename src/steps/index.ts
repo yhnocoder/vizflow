@@ -14,6 +14,8 @@ export {
   type PageModule,
   type StepModule,
   type StepGroup,
+  type StepGrid,
+  type CopyText,
   type StepBrace,
   type StepKind,
   type StepNote,

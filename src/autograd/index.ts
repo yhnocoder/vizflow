@@ -17,4 +17,5 @@ export {
   type SumOptions,
   type NllLossOptions,
   type CatOptions,
+  type TileRegion,
 } from './ops';

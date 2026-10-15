@@ -44,7 +44,11 @@ it('renders every step text, label and node TeX of the FlashAttention-2 and Lige
     const { title, body } = steps.text(i);
     for (const tex of [...math(title), ...math(body), ...math(info.label)]) renders(tex, `step ${i} ${title}`);
   });
-  expect(steps.list.some((s) => s.dir === 'backward' && s.title.startsWith('head 0，kv 块 0，query 块 1'))).toBe(true);
+  const recompute = steps.list.filter((s) => s.dir === 'backward' && s.title === '重算 $P$' && s.copy?.grid === 'model.layers[0].self_attn.flash_attention_forward.flash_attn_func.dq_dk_dv');
+  expect(recompute.map((s) => [s.copy?.index, s.copy?.front])).toEqual([
+    [[1, 1], true],
+    [[0, 0], false],
+  ]);
   expect(steps.list.some((s) => s.title === '交出前向算好的梯度')).toBe(true);
   steps.dispose();
   for (const n of page.graph.nodes) {
