@@ -370,6 +370,11 @@
   overflow-x: auto;
 }
 
+.vf-caption p.vf-copy-note {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .vf-stepper .katex-display,
 .vf-panels .katex-display,
 .vf-sections .katex-display {

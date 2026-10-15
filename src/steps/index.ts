@@ -21,6 +21,8 @@ export {
   type StepNote,
   type NoteSide,
   isLeafLike,
+  copyName,
+  copyNote,
 } from './steps';
 export { compileTemplate } from './template';
 export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type Scale, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';

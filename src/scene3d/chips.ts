@@ -5,7 +5,7 @@ import type { SceneController } from './controller';
 import type { Label } from './labels';
 import { tokenText } from './layout';
 import { CHIP_LIFT } from './levels';
-import { renderableFor } from './renderable';
+import { renderableFor, revealedOf } from './renderable';
 
 export const ARROW_TEXT = '位置顺序';
 
@@ -52,7 +52,7 @@ export class TokenChips {
       }
       const y = block.elements[0].y;
       const zs = Array.from({ length: rows }, (_, r) => block.elements.find((e) => e.row === r)!.z);
-      const shown = !c.lod && !renderable.far && block.hidden !== true && (chip.arrow || c.state.revealed(block.node));
+      const shown = !c.lod && !renderable.far && block.hidden !== true && (chip.arrow || revealedOf(c, renderable));
       labels.forEach((label, t) => {
         const id = Math.round(chip.label.value.data[Math.min(t, chip.label.value.size - 1)]);
         const token = chip.label.tokens?.[id] ?? String(id);

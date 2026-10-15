@@ -445,6 +445,10 @@ export class StepCompiler {
     trees.forEach(visit);
   }
 
+  treeSteps(trees: Tree[]): ForwardStep[] {
+    return leaves(trees).map((rec) => rec.step);
+  }
+
   showGridOutputs(lists: { show: Node | Node[] }[][]): void {
     const nodesOf = (step: { show: Node | Node[] }) => (Array.isArray(step.show) ? step.show : [step.show]);
     for (const call of this.c.calls) {

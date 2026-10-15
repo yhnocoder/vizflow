@@ -32,6 +32,14 @@ export interface StepGrid {
   counts: number[];
 }
 
+export function copyName(grid: { names: readonly string[] }, index: readonly number[]): string {
+  return grid.names.map((name, d) => `${name}=${index[d]}`).join(' · ');
+}
+
+export function copyNote(grid: { names: readonly string[] }, copy: { index: readonly number[]; front: boolean }): string | undefined {
+  return copy.front ? undefined : `这一步按 ${copyName(grid, copy.index)} 说明，最前面的副本这一步空闲`;
+}
+
 export interface ForwardStep {
   show: Node | Node[];
   notes?: StepNote[];
@@ -153,6 +161,7 @@ export interface Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
   readonly groups: readonly StepGroup[];
+  readonly grids: readonly StepGrid[];
   readonly current: number;
   readonly focus: number;
   go(i: number): void;
@@ -304,7 +313,8 @@ class StepsImpl implements Steps {
   private readonly units: Unit[] = [];
   private readonly reverse: boolean;
   private readonly forwardVisible: ReadonlySet<Node>;
-  private readonly grids = new Map<string, StepGrid>();
+  private readonly gridOf = new Map<string, StepGrid>();
+  readonly grids: readonly StepGrid[];
   private readonly fronts = new Map<string, number[]>();
 
   constructor(
@@ -313,8 +323,9 @@ class StepsImpl implements Steps {
   ) {
     this.reverse = spec.backward === 'reverse';
     this.modules = Object.freeze([...(spec.modules ?? [])]);
-    for (const grid of spec.grids ?? []) {
-      this.grids.set(grid.module, grid);
+    this.grids = Object.freeze([...(spec.grids ?? [])]);
+    for (const grid of this.grids) {
+      this.gridOf.set(grid.module, grid);
       this.fronts.set(grid.module, grid.counts.map((count) => count - 1));
     }
     this.groups = this.frontGroups();
@@ -352,13 +363,13 @@ class StepsImpl implements Steps {
 
   front(grid: string): readonly number[] {
     const index = this.fronts.get(grid);
-    if (index === undefined) throw new Error(`front: '${grid}' is not a grid module call; the grid calls are ${[...this.grids.keys()].join(', ') || '(none)'}`);
+    if (index === undefined) throw new Error(`front: '${grid}' is not a grid module call; the grid calls are ${[...this.gridOf.keys()].join(', ') || '(none)'}`);
     return index;
   }
 
   setFront(grid: string, index: readonly number[]): void {
-    const spec = this.grids.get(grid);
-    if (spec === undefined) throw new Error(`setFront: '${grid}' is not a grid module call; the grid calls are ${[...this.grids.keys()].join(', ') || '(none)'}`);
+    const spec = this.gridOf.get(grid);
+    if (spec === undefined) throw new Error(`setFront: '${grid}' is not a grid module call; the grid calls are ${[...this.gridOf.keys()].join(', ') || '(none)'}`);
     if (index.length !== spec.counts.length || index.some((v, d) => !Number.isInteger(v) || v < 0 || v >= spec.counts[d])) {
       throw new Error(`setFront: [${index.join(', ')}] is not a copy of '${grid}', whose grid is ${spec.names.map((name, d) => `${name} < ${spec.counts[d]}`).join(', ')}`);
     }

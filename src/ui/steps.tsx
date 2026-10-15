@@ -2,7 +2,7 @@ import { For, Index, Show, createEffect, createMemo, createSignal, on, onCleanup
 import { render } from 'solid-js/web';
 import { renderText } from '../formula';
 import { Rich, plain } from './rich';
-import type { StepInfo, Steps } from '../steps';
+import { type StepInfo, type Steps, copyNote } from '../steps';
 import { renderFigures } from './figures';
 import { resolveElement, trackSteps } from './mount';
 import { counterpart } from './counterpart';
@@ -21,6 +21,11 @@ function StepsView(props: { steps: Steps }) {
 
   let title!: HTMLHeadingElement;
   let body!: HTMLDivElement;
+  const note = createMemo(() => {
+    const copy = steps.list[current()]?.copy;
+    const grid = copy === undefined ? undefined : steps.grids.find((g) => g.module === copy.grid);
+    return copy === undefined || grid === undefined ? undefined : copyNote(grid, copy);
+  });
   let frame: number | undefined;
   let shown: { title: string; body: string } | undefined;
   const draw = () => {
@@ -122,6 +127,7 @@ function StepsView(props: { steps: Steps }) {
       </div>
       <div class="vf-caption">
         <h3 ref={(el) => (title = el)} />
+        <Show when={note()}>{(text) => <p class="vf-copy-note">{text()}</p>}</Show>
         <div class="vf-caption-body" ref={(el) => (body = el)} />
       </div>
     </div>

@@ -707,3 +707,35 @@
     bottom: 12px;
   }
 }
+
+.vf-lb.vf-tag {
+  font-family: var(--sans);
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+
+.vf-lb.vf-tag.vf-on {
+  color: var(--pos);
+}
+
+.vf-lb.vf-copy {
+  pointer-events: auto;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  padding: 0 2px;
+}
+
+.vf-lb.vf-copy.vf-on {
+  color: var(--pos);
+}
+
+.vf-lb.vf-copy:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}

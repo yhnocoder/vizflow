@@ -11,20 +11,23 @@ import { FOLLOW_RATE, CameraRig } from './camera';
 import { buildChrome, buildTools } from './chrome';
 import { TokenChips } from './chips';
 import { FoldBoxes } from './boxes';
+import { KernelRegions } from './kernels';
+import { RegionFrames } from './regions';
 import { type EditHost, mountEditor } from './edit';
 import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
 import type { Box } from './avoid';
 import { LabelLayer } from './labels';
 import { type BoardGeometry, type ResolvedLayout, type Vec3, classAlignment, resolveLayout, sameData, targetColumn } from './layout';
-import type { LevelLayout } from './levels';
+import type { LevelGrid, LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
-import { type Renderable, createRenderable, renderableFor } from './renderable';
+import { type Renderable, createRenderable, renderableFor, showMember } from './renderable';
+import { type CopyRef, copiesOf, sameStack, shownMember } from './slots';
 import type { SceneOptions } from './scene';
 
 export type PageStepInfo = StepInfo & { kind?: string; sub?: string };
@@ -51,6 +54,8 @@ export class SceneController implements EditHost {
   readonly edgeLines: EdgeLines;
   readonly moduleBraces: ModuleBraces;
   readonly boxes: FoldBoxes;
+  readonly kernels: KernelRegions;
+  readonly regions: RegionFrames;
   readonly chips: TokenChips;
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
@@ -63,6 +68,8 @@ export class SceneController implements EditHost {
   private overlayBoxes: Box[] | undefined;
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
+  private views: { levels: LevelLayout; bySource: Map<Node, Node[]> } | undefined;
+  private copies: { levels: LevelLayout; of: Map<Node, CopyRef> } | undefined;
   private resolvedKey: string | undefined;
   private resolved: ResolvedLayout | undefined;
   private lastFrame: number | undefined;
@@ -118,6 +125,8 @@ export class SceneController implements EditHost {
     this.edgeLines = new EdgeLines(this);
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
+    this.kernels = new KernelRegions(this);
+    this.regions = new RegionFrames(this);
     this.chips = new TokenChips(this);
 
     this.buildBlocks();
@@ -184,18 +193,57 @@ export class SceneController implements EditHost {
     return blockAt(this, clientX, clientY);
   }
 
+  private viewsOf(): ReadonlyMap<Node, readonly Node[]> {
+    const levels = this.levelLayout;
+    if (levels === undefined) return new Map();
+    if (this.views?.levels === levels) return this.views.bySource;
+    const bySource = new Map<Node, Node[]>();
+    for (const [view, source] of levels.sourceOf) bySource.set(source, [...(bySource.get(source) ?? []), view]);
+    this.views = { levels, bySource };
+    return bySource;
+  }
+
   private currentState(): StepState {
     const state = this.options.steps?.state() ?? allVisible(this.g);
-    const views = [...(this.levelLayout?.sourceOf ?? [])];
-    if (views.length === 0) return state;
+    const views = this.viewsOf();
+    if (views.size === 0) return state;
     return {
       dir: state.dir,
       index: state.index,
       kind: state.kind,
       focus: state.focus,
-      revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
-      active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
+      revealed: (node) => state.revealed(node) || (views.get(node)?.some((view) => state.revealed(view)) ?? false),
+      active: (node) => state.active(node) || (views.get(node)?.some((view) => state.active(view)) ?? false),
     };
+  }
+
+  frontOf(grid: LevelGrid): readonly number[] {
+    const steps = this.steps;
+    if (steps !== undefined && steps.grids.some((g) => g.module === grid.module)) return steps.front(grid.module);
+    return grid.counts.map((count) => count - 1);
+  }
+
+  private showMembers(): void {
+    const levels = this.levelLayout;
+    if (levels === undefined) return;
+    if (this.copies?.levels !== levels) this.copies = { levels, of: copiesOf(levels.grids) };
+    const copies = this.copies.of;
+    const fronts = new Map(levels.grids.map((grid) => [grid, this.frontOf(grid)]));
+    const inFront = (node: Node) => {
+      const copy = copies.get(node);
+      return copy === undefined || sameStack(copy.grid, copy.index, fronts.get(copy.grid)!);
+    };
+    for (const renderable of this.renderables) {
+      const slot = renderable.block.slot;
+      if (slot !== undefined) showMember(renderable, shownMember(slot, inFront, this.state));
+    }
+  }
+
+  copyOf(node: Node): CopyRef | undefined {
+    const levels = this.levelLayout;
+    if (levels === undefined) return undefined;
+    if (this.copies?.levels !== levels) this.copies = { levels, of: copiesOf(levels.grids) };
+    return this.copies.of.get(node);
   }
 
   currentInfo(): PageStepInfo | undefined {
@@ -251,7 +299,10 @@ export class SceneController implements EditHost {
   refresh(): void {
     if (this.disposed) return;
     this.state = this.currentState();
+    const before = this.levelLayout;
     this.resolve();
+    if (this.levelLayout !== before) this.state = this.currentState();
+    this.showMembers();
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
@@ -267,6 +318,8 @@ export class SceneController implements EditHost {
     for (const renderable of this.renderables) refreshBlock(this, renderable, now, zoom);
     this.moduleBraces.update();
     this.boxes.update();
+    this.kernels.update();
+    this.regions.update();
     this.chips.update();
     this.edgeLines.edges = buildEdges(this);
     this.formula?.update();
@@ -331,7 +384,10 @@ export class SceneController implements EditHost {
       rebuilt = true;
     }
     if (rebuilt) this.batches.update(this.renderables);
-    if (this.labelsDirty || moved || following) this.moduleBraces.place();
+    if (this.labelsDirty || moved || following) {
+      this.moduleBraces.place();
+      this.kernels.place();
+    }
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
       this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
@@ -402,6 +458,8 @@ export class SceneController implements EditHost {
     this.batches.setTheme(this.theme);
     this.edgeLines.setTheme(this.theme);
     this.moduleBraces.setTheme(this.theme);
+    this.kernels.setTheme(this.theme);
+    this.regions.setTheme(this.theme);
     this.refresh();
     this.renderNow();
   }
@@ -428,6 +486,8 @@ export class SceneController implements EditHost {
     this.batches.dispose();
     this.edgeLines.dispose();
     this.moduleBraces.dispose();
+    this.kernels.dispose();
+    this.regions.dispose();
     this.labels.dispose();
     this.notes.dispose();
     this.renderer.dispose();

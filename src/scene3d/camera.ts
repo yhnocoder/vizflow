@@ -4,7 +4,7 @@ import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
 import { LABEL_SAFE_MARGIN } from './labels';
-import type { Renderable } from './renderable';
+import { type Renderable, activeOf } from './renderable';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
@@ -182,7 +182,7 @@ export class CameraRig {
   private followGoal(): FollowGoal {
     const c = this.c;
     const hh = this.halfHeight();
-    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
+    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && activeOf(c, r));
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;

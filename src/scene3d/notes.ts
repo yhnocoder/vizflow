@@ -4,7 +4,7 @@ import { renderText } from '../formula';
 import type { NoteSide, StepNote } from '../steps';
 import { type Box, intersects } from './avoid';
 import type { SceneController } from './controller';
-import { shown } from './renderable';
+import { renderableOf, revealedOf, shown } from './renderable';
 
 export const NOTE_GAP = 46;
 export const NOTE_MARGIN = 10;
@@ -260,9 +260,8 @@ export class SceneNotes {
     let point: Point | undefined;
     for (const node of target.nodes) {
       if (!c.state.revealed(node)) continue;
-      const found = c.renderables.filter((r) => r.block.node === node && shown(r.block));
-      const renderable = found.find((r) => r.block.copyOf === undefined) ?? found[0];
-      if (renderable === undefined) continue;
+      const renderable = renderableOf(c, node);
+      if (renderable === undefined || !shown(renderable.block) || renderable.node !== node) continue;
       renderable.block.elements.forEach((element, i) => {
         if (target.index !== undefined && element.index.some((k, axis) => k !== target.index![axis])) return;
         const h = renderable.bars === undefined ? 0 : renderable.transition.current[i];
@@ -295,7 +294,7 @@ export class SceneNotes {
         const [w, h] = label.measure();
         return { x: label.placed[0], y: label.placed[1], w, h };
       });
-    const revealed = c.renderables.filter((r) => c.state.revealed(r.block.node) && shown(r.block)).map((r) => r.block.node);
+    const revealed = c.renderables.filter((r) => revealedOf(c, r) && shown(r.block)).map((r) => r.node);
     const blocks = [...new Set([...c.stepNodes, ...revealed])].flatMap((node) => {
       const g = this.geometry({ nodes: [node] });
       return g === undefined ? [] : [{ x: g.rect.x - 4, y: g.rect.y - 4, w: g.rect.w + 8, h: g.rect.h + 8 }];

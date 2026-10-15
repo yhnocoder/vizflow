@@ -10,6 +10,15 @@ export interface SceneModule {
   side?: 'left' | 'right' | 'outer';
   depth?: number;
   column?: number;
+  rounds?: SceneRound[];
+}
+
+export interface SceneRound {
+  title: string;
+  subtitle?: string;
+  nodes: readonly Node[];
+  grid?: string;
+  copies?: { index: number[]; title: string; subtitle?: string }[];
 }
 
 export const MODULE_GAP = 1.6;
