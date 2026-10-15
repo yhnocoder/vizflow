@@ -2,6 +2,7 @@ import { type Graph, type Node, saturated } from '../autograd';
 import { type Positions, explain } from '../explain';
 import { type Nested, offsetOf } from '../tensor';
 import { type CacheDecl, type CacheKind, analyzeCache } from './cache';
+import { type CompactStep, type ModuleTile, moduleTiles } from './compact';
 import type { SampleDraw, SamplerSpec } from './sampling';
 import { compileTemplate } from './template';
 
@@ -39,6 +40,7 @@ export interface ForwardStep {
 export interface StepGroup {
   id: string;
   title: string;
+  loop?: boolean;
 }
 
 export interface StepBrace {
@@ -140,7 +142,8 @@ export interface StepState {
 export interface GenerationState {
   position: number;
   known: number;
-  caches: { decl: CacheDecl; kind: CacheKind; nodes: Node[]; values: number; perToken: number }[];
+  caches: { decl: CacheDecl; kind: CacheKind; nodes: Node[]; previous: Node[]; read: number[]; values: number; perToken: number }[];
+  compact?: CompactStep;
 }
 
 export interface Steps {
@@ -149,6 +152,7 @@ export interface Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
   readonly groups: readonly StepGroup[];
+  readonly tiles: readonly ModuleTile[];
   readonly current: number;
   readonly focus: number;
   go(i: number): void;
@@ -282,6 +286,7 @@ class StepsImpl implements Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
   readonly groups: readonly StepGroup[];
+  tiles: readonly ModuleTile[] = [];
   current = 0;
   focus = 0;
   private entries: Entry[] = [];
@@ -529,6 +534,8 @@ class StepsImpl implements Steps {
     const prodOf = (group: Group) => group.module?.outputs ?? group.unit?.prod ?? [];
     const nodesOf = (group: Group) => group.module?.nodes ?? group.unit?.prod ?? [];
     const kept = groups.filter((group) => !prodOf(group).some((n) => scored.has(n)));
+    const stepsOf = (group: Group) => (group.unit !== undefined ? [group.unit.step] : this.units.filter((u) => this.outerFolded(u.step.module) === group.module).map((u) => u.step));
+    if (this.tiles.length === 0) this.tiles = moduleTiles(kept.flatMap(stepsOf), this.groups, infer.caches);
     const scope = new Set(kept.flatMap(nodesOf));
     const cache = analyzeCache(g, T, infer.caches, scope, [infer.logits]);
     this.skipped = (node, offset, h) => h >= P && h < T && cache.reads(h).needed.get(node)?.has(offset) !== true && node.kind === 'op';
@@ -644,12 +651,13 @@ class StepsImpl implements Steps {
     };
     const within = (phase: string, parts: { info: StepInfo }[]) => [phase, ...commonPrefix(parts.map((part) => part.info.groups))];
     const shownBy = (shown: number) => new Set([...revealed].filter((n) => (cache.first(n) ?? 0) < shown));
-    const push = (info: Omit<StepInfo, 'index' | 'dir' | 'kind'>, active: Iterable<Node>, rows: RowSpec, notes?: StepNote[]) => {
+    const push = (info: Omit<StepInfo, 'index' | 'dir' | 'kind'>, active: Iterable<Node>, rows: RowSpec, notes?: StepNote[], compact?: CompactStep) => {
       const full: StepInfo = { ...info, dir: 'forward', kind: 'op', index: entries.length };
       withNotes(full, notes);
       const entry = this.entry(full, shownBy(rows.shown), new Set(active));
       entry.rows = rows;
       entry.generation = generationAt(current, Math.max(current + 1, rows.labels + 1));
+      if (compact !== undefined) entry.generation.compact = compact;
       entries.push(entry);
     };
     let current = P - 1;
@@ -659,8 +667,8 @@ class StepsImpl implements Steps {
       caches: infer.caches.map((decl) => {
         const kind = cache.kind(decl);
         const values = cache.stored(decl, position + 1);
-        const nodes = kind === 'state' ? decl.nodes.filter((n) => cache.horizons(n)[0] === position) : decl.nodes;
-        return { decl, kind, nodes, values, perToken: kind === 'rows' ? values - cache.stored(decl, position) : 0 };
+        const at = (t: number) => (kind === 'state' ? decl.nodes.filter((n) => cache.horizons(n)[0] === t) : decl.nodes);
+        return { decl, kind, nodes: at(position), previous: at(position - 1), read: cache.window(decl, position), values, perToken: kind === 'rows' ? values - cache.stored(decl, position) : 0 };
       }),
     });
     const decodeRows = (t: number, extra: Partial<RowSpec> = {}): RowSpec => ({ shown: t + 1, lit: [t, t + 1], labels: t, ...extra });
@@ -793,7 +801,7 @@ class StepsImpl implements Steps {
       else runs.push({ cache: isCache, groups: [group] });
     }
 
-    const sample = (row: number, phaseId: string) => {
+    const sample = (row: number, phaseId: string, compact?: CompactStep) => {
       const V = infer.logits.shape[1];
       const tokens = infer.label.tokens ?? infer.input.tokens;
       const next = row + 1 < T ? `它被写进输入的第 ${row + 2} 个位置，成为下一个 decode 步唯一的新输入。` : `页面只画 ${T} 个位置，生成到这里停止。`;
@@ -820,6 +828,8 @@ class StepsImpl implements Steps {
         },
         [infer.logits, infer.label],
         { shown: row + 1, lit: [row, row + 1], labels: row + 1 },
+        undefined,
+        compact,
       );
     };
     sample(P - 1, prefill);
@@ -834,6 +844,14 @@ class StepsImpl implements Steps {
       const writes = writesAt(row, false);
       const groupIndex = new Map(kept.map((group, k) => [group, k]));
       const growing = infer.caches.filter((c) => kinds.get(c) === 'rows');
+      const done = new Set<ForwardStep>();
+      const covering = (covered: Group[]): CompactStep | undefined => {
+        if (detailed) return undefined;
+        const steps = new Set(covered.flatMap(stepsOf));
+        const compact = { steps, done: new Set(done), sample: false };
+        steps.forEach((step) => done.add(step));
+        return compact;
+      };
       const recompute: Node[] = [];
       let seenCacheRun = false;
       let contrasted = false;
@@ -910,6 +928,7 @@ class StepsImpl implements Steps {
             active,
             decodeRows(row),
             notes,
+            covering(live),
           );
           afterWrite(...live);
           return;
@@ -929,6 +948,8 @@ class StepsImpl implements Steps {
             { id: `d:${row}:${k}`, title: runGrowing ? `${phase}：读取 ${pos} 行缓存` : `${phase}：读取并更新缓存`, label: '读缓存', text, nodes: prod, groups: within(phaseId, parts) },
             unique([...active, ...readNodes.filter((n) => members.has(n) || cacheSet.has(n))]),
             decodeRows(row, show),
+            undefined,
+            covering(live),
           );
           afterWrite(...live);
           return;
@@ -1016,7 +1037,7 @@ class StepsImpl implements Steps {
         });
         flush();
       });
-      sample(row, phaseId);
+      sample(row, phaseId, detailed ? undefined : { steps: new Set(), done: new Set(done), sample: true });
     }
   }
 

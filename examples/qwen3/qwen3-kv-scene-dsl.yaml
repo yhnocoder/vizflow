@@ -5,7 +5,7 @@ import:
 
 model: Qwen3ForCausalLM
 
-generate: { steps: 3, temperature: 0.6, top_k: 20, top_p: 0.95, seed: 4, note: "τ、k、p 取 Qwen3-8B 的 generation_config.json 里的默认值。" }
+generate: { steps: 3, temperature: 0.6, top_k: 20, top_p: 0.95, seed: 4, compact_view: modules, note: "τ、k、p 取 Qwen3-8B 的 generation_config.json 里的默认值。" }
 optimizer: { type: adamw, lr: 0.02 }
 
 config:

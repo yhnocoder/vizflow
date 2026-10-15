@@ -118,3 +118,11 @@ export class LineBatch {
     this.material.dispose();
   }
 }
+
+export function rectPoints(x: number, y: number, z: number, w: number, d: number): number[] {
+  const x0 = x - w / 2;
+  const x1 = x + w / 2;
+  const z0 = z - d / 2;
+  const z1 = z + d / 2;
+  return [x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1, x0, y, z0];
+}

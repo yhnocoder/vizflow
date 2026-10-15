@@ -180,6 +180,7 @@ export class CameraRig {
 
   private followGoal(): FollowGoal {
     const c = this.c;
+    if (c.compactView?.active === true) return this.overviewGoal(allPoints(c), true);
     const hh = this.halfHeight();
     const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
     const slabbed = active.some((r) => r.block.slabs !== undefined);
@@ -197,18 +198,20 @@ export class CameraRig {
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, stepPoints, points), zoom };
   }
 
-  private overviewGoal(points: Vec3[]): FollowGoal {
+  private overviewGoal(points: Vec3[], fitWidth = false): FollowGoal {
     const c = this.c;
     const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
     const ys = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
     const lo = Math.min(...ys);
     const hi = Math.max(...ys);
-    const labelPad = Math.max(0, ...c.labels.labels.filter((l) => l.kind === 'mod' && l.visible && l.pos !== undefined).map((l) => l.frameSize()[1] / 2));
+    const labelPad = Math.max(0, ...c.labels.labels.filter((l) => l.kind === 'mod' && l.visible && l.pos !== undefined && c.labels.allows(l)).map((l) => l.frameSize()[1] / 2));
     const marginTop = Math.max(chromeBottom(c, '.vf-stage-tools'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
     const marginBottom = 2 * LABEL_SAFE_MARGIN + labelPad;
     const perUnit = c.height / (2 * this.halfHeight());
     const room = Math.max(1, c.height - marginTop - marginBottom);
-    const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit));
+    const side = this.sideRange(points);
+    const across = fitWidth ? (2 * (this.halfWidth() - FOLLOW_SIDE_ROOM)) / Math.max(1e-6, side.hi - side.lo) : Infinity;
+    const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit), across);
     const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
     const target = this.controls.target;
     const now = target.x * up.x + target.y * up.y + target.z * up.z;

@@ -1,6 +1,6 @@
 import { WebGLRenderer } from 'three';
 import type { Graph } from '../autograd';
-import type { KvBlocksSpec, Steps } from '../steps';
+import type { CompactViewSpec, KvBlocksSpec, Steps } from '../steps';
 import { SceneController } from './controller';
 import { editableLayout } from './editconfig';
 import type { LayoutItem, Vec3 } from './layout';
@@ -26,6 +26,7 @@ export interface SceneOptions {
   levels?: LevelPlan;
   sequence?: { get(): number[]; set(ids: number[]): void };
   kvPool?: KvBlocksSpec;
+  compactView?: CompactViewSpec;
 }
 
 export interface SceneHandle {

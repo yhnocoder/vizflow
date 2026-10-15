@@ -60,6 +60,7 @@ interface Group {
   formula?: Formula;
   fold: Fold;
   expand?: boolean;
+  loop?: boolean;
 }
 
 export type Tree = Leaf | Group;
@@ -164,7 +165,9 @@ export class StepCompiler {
       const options = merged([defaults, ...matching]);
       delete options.at;
       if (options.show === undefined && index !== undefined) options.show = variable;
-      return this.step(`${String(step.id)}[${index === undefined ? (item as { toy: number }).toy : i}]`, options, { ...env, locals, where: child(at, step, 'defaults') });
+      const tree = this.step(`${String(step.id)}[${index === undefined ? (item as { toy: number }).toy : i}]`, options, { ...env, locals, where: child(at, step, 'defaults') });
+      if (tree.kind === 'group') tree.loop = true;
+      return tree;
     });
   }
 
@@ -511,7 +514,7 @@ export class StepCompiler {
           continue;
         }
         const title = tree.title ?? tree.id;
-        groups.push({ id, title });
+        groups.push(tree.loop === true ? { id, title, loop: true } : { id, title });
         const brace: StepBrace = { id, title, nodes: framed(shows([tree]), tree.call), depth };
         if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;

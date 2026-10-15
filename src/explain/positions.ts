@@ -117,3 +117,12 @@ export function positionsOf(g: Graph, length: number): Positions {
     deps: (node, offset) => (deps.get(node)?.[offset] ?? []).filter(([input, at]) => !isKilled(input, at)),
   };
 }
+
+export function offsetsByPosition(positions: Positions, node: Node): number[][] {
+  const rows: number[][] = [];
+  for (let offset = 0; offset < node.value.size; offset++) {
+    const h = positions.horizon(node, offset);
+    if (h !== undefined) (rows[h] ??= []).push(offset);
+  }
+  return rows;
+}

@@ -65,6 +65,11 @@ export function bindPointer(c: SceneController): () => void {
   const { popups, edgeLines } = c;
   let downAt: [number, number] | undefined;
   const onMove = (ev: PointerEvent) => {
+    if (c.compactView?.active === true) {
+      onLeave();
+      canvas.classList.remove('vf-cursor-help', 'vf-cursor-pointer');
+      return;
+    }
     const found = hit(c, ev);
     const rect = c.root.getBoundingClientRect();
     edgeLines.setBar(found);
@@ -107,7 +112,7 @@ export function bindPointer(c: SceneController): () => void {
     const moved = Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]);
     downAt = undefined;
     if (moved > CLICK_SLOP) return;
-    const found = hit(c, ev);
+    const found = c.compactView?.active === true ? undefined : hit(c, ev);
     if (found === undefined || !c.aligned.has(found.renderable.block.node) || c.state.dir !== 'forward') return;
     setTarget(c, found.renderable, found.index);
     popups.showTip(found.renderable, found.index, ev);

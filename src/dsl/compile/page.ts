@@ -3,7 +3,7 @@ import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
 import { isLayoutOp } from '../../scene3d/layout';
-import { type ForwardStep, type InferSpec, type KvBlocksSpec, type PageModule, type SampleDraw, type SamplerSpec, type StepsSpec, type UpdateSpec, checkCache, drawToken, uniforms } from '../../steps';
+import { type CompactViewSpec, type ForwardStep, type InferSpec, type KvBlocksSpec, type PageModule, type SampleDraw, type SamplerSpec, type StepsSpec, type UpdateSpec, checkCache, drawToken, uniforms } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import type { ModuleDef } from '../load';
@@ -30,6 +30,7 @@ export interface CompiledPage {
   modes?: { train: StepsSpec; infer: StepsSpec };
   modePanels?: { train: PanelItem[]; infer: PanelItem[] };
   kvPool?: KvBlocksSpec;
+  compactView?: CompactViewSpec;
   train?: CompiledPage;
   page: { title: string; camera?: CameraOptions };
 }
@@ -43,7 +44,8 @@ export interface PageSequence {
 }
 
 export const PAGE_KEYS: ReadonlySet<string> = new Set(['title', 'camera', 'import', 'preamble', 'model', 'config', 'data', 'modules', 'panels', 'sections', 'generate', 'optimizer']);
-const GENERATE_KEYS: ReadonlySet<string> = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note', 'config']);
+const GENERATE_KEYS: ReadonlySet<string> = new Set(['steps', 'temperature', 'top_k', 'top_p', 'seed', 'note', 'config', 'compact_view']);
+const COMPACT_VIEWS: ReadonlySet<unknown> = new Set(['graph', 'modules']);
 const OPTIMIZER_KEYS: ReadonlySet<string> = new Set(['type', 'lr', 'weight_decay']);
 const DEFAULT_ADAMW_LR = 0.1;
 const SAMPLER_ONLY = ['top_k', 'top_p', 'seed', 'note'];
@@ -333,6 +335,7 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
     const pools = panels.flatMap((item, i) => (inScene[i] && typeof item === 'object' && 'kvBlocks' in item ? [item.kvBlocks] : []));
     if (pools.length > 1) fail(child(where, page, 'panels'), 'only one kv_blocks panel can set scene: true');
     if (pools.length === 1) compiled.kvPool = pools[0];
+    if (isRecord(page.generate) && page.generate.compact_view === 'modules') compiled.compactView = { infer };
     const inMode = (mode: 'train' | 'infer') => panels.filter((_, i) => !inScene[i] && (modes[i] === undefined || modes[i] === mode));
     compiled.modePanels = { train: inMode('train'), infer: inMode('infer') };
     compiled.panels = compiled.modePanels.infer;
@@ -349,6 +352,7 @@ function generateSteps(c: PageCompiler): number | undefined {
   const spec = record(page.generate, where, 'generate');
   checkKeys(spec, GENERATE_KEYS, where);
   if (typeof spec.steps !== 'number' || !Number.isInteger(spec.steps) || spec.steps < 2) fail(child(where, spec, 'steps'), 'generate.steps must be an integer of at least 2');
+  if (spec.compact_view !== undefined && !COMPACT_VIEWS.has(spec.compact_view)) fail(child(where, spec, 'compact_view'), "generate.compact_view must be 'graph' or 'modules'");
   return spec.steps;
 }
 

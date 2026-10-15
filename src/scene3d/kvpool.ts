@@ -1,6 +1,6 @@
 import { BoxGeometry, Group, Mesh, MeshLambertMaterial, type Raycaster } from 'three';
 import type { Node } from '../autograd';
-import { positionsOf } from '../explain';
+import { offsetsByPosition, positionsOf } from '../explain';
 import { renderText } from '../formula';
 import { type PagedRequestState, type PagedStep, simulateVllmPages } from '../sim';
 import { type CacheDecl, type KvBlocksSpec, type KvSlotSource, PAGE_REQUEST, engineStepAt, kvScenario, kvTokenText, pageTokens, slotOf, slotSources, touchedPositions, writtenPositions } from '../steps';
@@ -13,7 +13,7 @@ import type { SceneController } from './controller';
 import { graphPoints } from './framing';
 import type { Label } from './labels';
 import { PLATE_THICKNESS, type Vec3 } from './layout';
-import { LineBatch, type Polyline } from './lines';
+import { LineBatch, type Polyline, rectPoints } from './lines';
 import { anchorOut, elementOf, renderableOf } from './renderable';
 import { barHeight } from './scales';
 
@@ -90,14 +90,7 @@ export class KvPoolView {
     private readonly spec: KvBlocksSpec,
   ) {
     const positions = positionsOf(c.g, spec.infer.input.shape[0]);
-    const rowsOf = (node: Node) => {
-      const rows: number[][] = [];
-      for (let offset = 0; offset < node.value.size; offset++) {
-        const h = positions.horizon(node, offset);
-        if (h !== undefined) (rows[h] ??= []).push(offset);
-      }
-      return rows;
-    };
+    const rowsOf = (node: Node) => offsetsByPosition(positions, node);
     this.paged = spec.infer.caches.filter((decl) => rowsOf(decl.nodes[0]).length > 1);
     const decl = this.paged[0];
     if (decl === undefined) throw new Error('kv_blocks scene: no cache: declaration holds one row per position');
@@ -133,7 +126,7 @@ export class KvPoolView {
     return mesh;
   }
 
-  private steps(): PagedStep[] {
+  steps(): PagedStep[] {
     const key = pageTokens(this.spec.infer).join('\u0000');
     if (this.simulated?.key !== key) this.simulated = { key, steps: simulateVllmPages(kvScenario(this.spec)) };
     return this.simulated.steps;
@@ -451,12 +444,7 @@ export class KvPoolView {
 }
 
 function rect(x: number, y: number, z: number, w: number, d: number): number[] {
-  const x0 = x - w / 2;
-  const x1 = x + w / 2;
-  const z0 = z - d / 2;
-  const z1 = z + d / 2;
-  const yy = y + OUTLINE_LIFT;
-  return [x0, yy, z0, x1, yy, z0, x1, yy, z1, x0, yy, z1, x0, yy, z0];
+  return rectPoints(x, y + OUTLINE_LIFT, z, w, d);
 }
 
 function arc(from: Vec3, to: Vec3): number[] {

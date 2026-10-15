@@ -719,3 +719,59 @@
 .vf-lb.vf-pool-tok {
   color: var(--fg);
 }
+
+.vf-lb.vf-tile-title {
+  font-family: var(--serif);
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.vf-lb.vf-tile-title.vf-tile-idle {
+  color: var(--muted);
+}
+
+.vf-lb.vf-tile-title.vf-tile-lit {
+  font-weight: 600;
+}
+
+.vf-lb.vf-tile-group {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: var(--serif);
+  font-size: 14px;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+.vf-lb.vf-tile-token {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+.vf-lb.vf-cache-caption {
+  font-family: var(--serif);
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.vf-lb.vf-cache-note,
+.vf-lb.vf-cache-block {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.vf-lb.vf-cache-token {
+  font-size: 10.5px;
+}
+
+.vf-lb.vf-cache-token.vf-cache-new {
+  color: var(--fg);
+  font-weight: 600;
+}

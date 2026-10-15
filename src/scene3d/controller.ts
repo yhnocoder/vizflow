@@ -19,6 +19,7 @@ import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetCol
 import type { LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
+import { CompactView } from './compactview';
 import { KvPoolView } from './kvpool';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
@@ -40,6 +41,7 @@ const LIGHT_POSITION: Vec3 = [-4, 12, 8];
 export class SceneController implements EditHost {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
+  readonly compactScene = new Scene();
   readonly explainer: Explainer;
   readonly aligned: Map<Node, Node>;
   readonly labels: LabelLayer;
@@ -52,6 +54,7 @@ export class SceneController implements EditHost {
   readonly boxes: FoldBoxes;
   readonly chips: TokenChips;
   readonly kvPool: KvPoolView | undefined;
+  readonly compactView: CompactView | undefined;
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
@@ -59,6 +62,7 @@ export class SceneController implements EditHost {
   private stepKey: string | undefined;
   private lastFrame: number | undefined;
   private far = true;
+  private compactShown = false;
   private seeThrough = true;
   private frontRow = true;
   lod = false;
@@ -101,11 +105,13 @@ export class SceneController implements EditHost {
     this.popups = new ScenePopups(this);
     this.rig = new CameraRig(this);
 
-    this.scene.add(new AmbientLight(0xffffff, AMBIENT_INTENSITY * LEGACY_LIGHT_FACTOR));
-    const sun = new DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY * LEGACY_LIGHT_FACTOR);
-    sun.position.set(...LIGHT_POSITION);
-    this.scene.add(sun);
-    this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    for (const scene of [this.scene, this.compactScene]) {
+      scene.add(new AmbientLight(0xffffff, AMBIENT_INTENSITY * LEGACY_LIGHT_FACTOR));
+      const sun = new DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY * LEGACY_LIGHT_FACTOR);
+      sun.position.set(...LIGHT_POSITION);
+      scene.add(sun);
+      scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    }
     this.edgeLines = new EdgeLines(this);
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
@@ -113,6 +119,7 @@ export class SceneController implements EditHost {
 
     this.buildBlocks();
     this.kvPool = options.kvPool === undefined ? undefined : new KvPoolView(this, options.kvPool);
+    this.compactView = options.compactView === undefined ? undefined : new CompactView(this, options.compactView);
     const modules = options.modules ?? [];
     checkModules(modules, this.renderables.map((r) => r.block.node));
     this.moduleBraces.mountLabels(modules);
@@ -245,6 +252,10 @@ export class SceneController implements EditHost {
     if (this.disposed) return;
     this.state = this.currentState();
     this.resolve();
+    const compact = this.compactView?.active === true;
+    this.labels.only = compact ? this.compactView!.labelSet : undefined;
+    if (compact !== this.compactShown && !this.follow) this.rig.reset();
+    this.compactShown = compact;
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
@@ -262,6 +273,7 @@ export class SceneController implements EditHost {
     this.boxes.update();
     this.chips.update();
     this.kvPool?.update();
+    this.compactView?.update();
     this.edgeLines.edges = buildEdges(this);
     this.formula?.update();
     this.notes.update(info?.notes ?? [], info?.id ?? 'all');
@@ -318,7 +330,7 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
     }
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.render(this.compactShown ? this.compactScene : this.scene, this.camera);
     if (this.labelsDirty || moved) {
       this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
       this.notes.place();
@@ -380,7 +392,7 @@ export class SceneController implements EditHost {
 
   private applyTheme(): void {
     this.theme = readTheme();
-    this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    for (const scene of [this.scene, this.compactScene]) scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
     for (const renderable of this.renderables) {
       renderable.bars?.setTheme(this.theme);
       renderable.nodes?.setTheme(this.theme);
@@ -413,6 +425,7 @@ export class SceneController implements EditHost {
     }
     this.edgeLines.dispose();
     this.kvPool?.dispose();
+    this.compactView?.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();
     this.notes.dispose();

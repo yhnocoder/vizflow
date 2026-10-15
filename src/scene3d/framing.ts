@@ -88,6 +88,7 @@ export function graphPoints(c: SceneController): Vec3[] {
 }
 
 export function allPoints(c: SceneController): Vec3[] {
+  if (c.compactView?.active === true) return c.compactView.points();
   return [...graphPoints(c), ...(c.kvPool?.points() ?? [])];
 }
 
@@ -164,7 +165,7 @@ function computeFrame(c: SceneController, points: Vec3[], labels: readonly Label
 
 export function frameAll(c: SceneController): void {
   const points = allPoints(c);
-  const frame = computeFrame(c, points, c.labels.labels, center(points), c.rig.direction);
+  const frame = computeFrame(c, points, c.labels.labels.filter((label) => c.labels.allows(label)), center(points), c.rig.direction);
   const camera = c.camera;
   camera.left = frame.left;
   camera.right = frame.right;
