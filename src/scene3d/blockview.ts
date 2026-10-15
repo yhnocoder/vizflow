@@ -4,16 +4,17 @@ import { render } from '../formula';
 import { isLeafLike } from '../steps';
 import { formatNumber } from '../tensor';
 import type { LinearRgb } from '../theme';
+import type { Box } from './avoid';
 import type { BarMesh } from './blocks';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import type { SceneController } from './controller';
 import { IDLE_FLAG, type Label } from './labels';
 import type { Vec3 } from './layout';
-import { type Renderable, targetOf, valuesOf } from './renderable';
+import { type Renderable, activeOf, elementValue, revealedOf, targetOf, valuesOf } from './renderable';
 import { barHeight } from './scales';
 
 export const FAR_LEVELS = 2;
-export const VALUE_MIN_ZOOM = 0.55;
+export const VALUE_MIN_ZOOM = 0.3;
 export const VALUE_ALL_ROWS_ZOOM = 1.45;
 export const SEE_THROUGH_MIN_OVERLAP = 6;
 export const SEE_THROUGH_DEPTH_GAP = 0.3;
@@ -39,11 +40,13 @@ function levelKey(y: number): number {
 export function markFar(c: SceneController): void {
   const levels = [...new Set(c.renderables.map((r) => levelKey(r.block.elements[0].y)))].sort((a, b) => a - b);
   const levelOf = (r: Renderable) => levels.indexOf(levelKey(r.block.elements[0].y));
-  const stepLevels = c.renderables.filter((r) => r.block.copyOf === undefined && !isLeafLike(r.block.node) && c.state.active(r.block.node)).map(levelOf);
+  const stepLevels = c.renderables.filter((r) => r.block.copyOf === undefined && !isLeafLike(r.node) && activeOf(c, r)).map(levelOf);
   const enabled = c.follow && c.farOn && !c.lod && stepLevels.length > 0;
+  const ground = c.follow ? c.focusGround : undefined;
   for (const r of c.renderables) {
     const level = levelOf(r);
-    r.far = enabled && !c.state.active(r.block.node) && Math.min(...stepLevels.map((s) => Math.abs(s - level))) > FAR_LEVELS;
+    r.away = ground !== undefined && !ground.blocks.includes(r.block);
+    r.far = r.away || (enabled && !activeOf(c, r) && Math.min(...stepLevels.map((s) => Math.abs(s - level))) > FAR_LEVELS);
   }
 }
 
@@ -97,6 +100,15 @@ function screenBox(c: SceneController, renderable: Renderable, direction: Vector
   return box;
 }
 
+export function blockBoxes(c: SceneController): Box[] {
+  const direction = c.camera.getWorldDirection(new Vector3());
+  return c.renderables.flatMap((r) => {
+    const box = screenBox(c, r, direction);
+    if (box === undefined || box.x1 < 0 || box.y1 < 0 || box.x0 > c.width || box.y0 > c.height) return [];
+    return [{ x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 }];
+  });
+}
+
 function stepInvolved(c: SceneController): Set<Node> {
   const involved = new Set(c.stepNodes);
   if (c.state.dir === 'forward') for (const node of c.stepNodes) for (const input of node.inputs) involved.add(input);
@@ -123,13 +135,13 @@ export function markSeeThrough(c: SceneController): boolean {
     }
   }
   const involved = enabled ? stepInvolved(c) : new Set<Node>();
-  const inStep = (node: Node) => c.state.active(node) || involved.has(node);
-  const targets = [...boxes].filter(([r]) => inStep(r.block.node) && c.state.revealed(r.block.node)).map(([, box]) => box);
+  const inStep = (r: Renderable) => activeOf(c, r) || involved.has(r.node);
+  const targets = [...boxes].filter(([r]) => inStep(r) && revealedOf(c, r)).map(([, box]) => box);
   let changed = false;
   for (const r of c.renderables) {
     const box = boxes.get(r);
-    const node = r.block.node;
-    const next = (c.state.dir === 'backward' && node.op === 'alias' && !c.state.active(node)) || (box !== undefined && !inStep(node) && targets.some((t) => covers(box, t)));
+    const node = r.node;
+    const next = (c.state.dir === 'backward' && node.op === 'alias' && !activeOf(c, r)) || (box !== undefined && !inStep(r) && targets.some((t) => covers(box, t)));
     if (next !== r.seeThrough) changed = true;
     r.seeThrough = next;
   }
@@ -139,63 +151,66 @@ export function markSeeThrough(c: SceneController): boolean {
 export function refreshBlock(c: SceneController, renderable: Renderable, now: number, zoom: number): void {
   const dir = c.state.dir;
   const backward = dir === 'backward';
-  const { block } = renderable;
-  const node = block.node;
+  const { block, node } = renderable;
   const hidden = block.hidden === true;
-  const revealed = c.state.revealed(node) && !hidden;
-  const active = c.state.active(node);
+  const revealed = revealedOf(c, renderable) && !hidden;
+  const active = activeOf(c, renderable);
   const far = renderable.far;
   const clear = !renderable.seeThrough;
   const values = valuesOf(c, node);
   const integer = !backward && isIntegerDtype(node.dtype);
   const scale = renderable.scale[dir];
-  for (const group of [renderable.bars?.group, renderable.nodes?.group]) if (group !== undefined) group.visible = !hidden;
+  for (const group of [renderable.bars?.group, renderable.nodes?.group]) if (group !== undefined) group.visible = !hidden && !renderable.away;
   const heights = new Float64Array(block.elements.length);
   for (let i = 0; i < heights.length; i++) {
-    const { height, clipped } = barHeight(values[i], scale, revealed, renderable.cap);
+    const value = elementValue(values, renderable, i);
+    const { height, clipped } = barHeight(value ?? 0, scale, revealed && value !== undefined, renderable.cap);
     heights[i] = height;
-    renderable.clipped[i] = revealed && clipped;
+    renderable.clipped[i] = revealed && value !== undefined && clipped;
   }
   renderable.transition.retarget(heights, now);
   const focusedRow = (row: number) => !block.batched || row === c.state.focus;
   const front = Math.max(...block.elements.map((e) => e.z));
   const stepped = block.copyOf === undefined || backward ? c.stepNodes.has(node) : active && !c.stepNodes.has(node);
-  const showValues = revealed && clear && stepped && block.quiet !== true && !c.lod && (!c.follow || zoom >= VALUE_MIN_ZOOM);
+  const showValues = revealed && clear && stepped && !renderable.away && block.quiet !== true && !c.lod && (!c.follow || zoom >= VALUE_MIN_ZOOM);
   const named = revealed && clear && !c.lod && !far;
   const title = renderable.title!;
   title.setData('node', node.name);
   title.offset = c.options.labels?.[node.name];
   title.visible = named && block.untitled !== true;
   title.setFlag(IDLE_FLAG, c.options.steps !== undefined && !active);
-  texOf(title, backward ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
+  texOf(title, backward && node.phase === 'forward' ? `\\partial\\ell/\\partial ${node.tex}` : node.tex);
   if (renderable.bars !== undefined) {
     title.pos = [block.title.x, block.title.y, block.title.z];
     title.anchor = block.title.anchor === 'left' ? 'right-middle' : block.title.anchor === 'right' ? 'left-middle' : block.title.anchor === 'below' ? 'bottom-center' : 'top-center';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
-      valueOf(label, values[i], integer);
+      const value = elementValue(values, renderable, i);
+      if (value !== undefined) valueOf(label, value, integer);
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       const rowShown = !c.follow || element.z === front || zoom >= VALUE_ALL_ROWS_ZOOM;
-      label.visible = showValues && focusedRow(element.row) && rowShown;
+      label.visible = showValues && value !== undefined && focusedRow(element.row) && rowShown;
     });
   }
   if (renderable.nodes !== undefined) {
     const mesh = renderable.nodes;
     const first = block.elements[0];
     const middle = first.y + mesh.height / 2;
-    title.pos = [first.x + NODE_TITLE_OFFSET[0], middle + NODE_TITLE_OFFSET[1], first.z + NODE_TITLE_OFFSET[2]];
-    title.anchor = 'above-right';
+    const below = block.title.anchor === 'below';
+    title.pos = [first.x + NODE_TITLE_OFFSET[0], below ? first.y - NODE_TITLE_OFFSET[1] : middle + NODE_TITLE_OFFSET[1], (below ? Math.max(...block.elements.map((e) => e.z)) : first.z) + NODE_TITLE_OFFSET[2]];
+    title.anchor = below ? 'below-right' : 'above-right';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];
-      valueOf(label, values[i], integer);
+      const value = elementValue(values, renderable, i);
+      if (value !== undefined) valueOf(label, value, integer);
       label.setData('node', node.name);
       label.setData('index', element.index.join(','));
       label.pos = [element.x + NODE_VALUE_OFFSET, element.y + mesh.height / 2, element.z];
-      label.visible = showValues && focusedRow(element.row);
+      label.visible = showValues && value !== undefined && focusedRow(element.row);
     });
-    const colors = block.elements.map((element, i) => nodeColor(values[i], c.theme, { dir, revealed, active, far, focused: focusedRow(element.row) }));
-    mesh.update(block.elements, colors, block.elements.map(() => revealed), renderable.seeThrough);
+    const colors = block.elements.map((element, i) => nodeColor(elementValue(values, renderable, i) ?? 0, c.theme, { dir, revealed, active, far, focused: focusedRow(element.row) }));
+    mesh.update(block.elements, colors, block.elements.map((_, i) => revealed && elementValue(values, renderable, i) !== undefined), renderable.seeThrough);
   }
   renderable.classes.forEach((label, i) => {
     const text = block.classLabels[i];
@@ -237,10 +252,9 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
 }
 
 export function updateBars(c: SceneController, renderable: Renderable, bars: BarMesh): void {
-  const { block } = renderable;
-  const node = block.node;
-  const revealed = c.state.revealed(node);
-  const active = c.state.active(node);
+  const { block, node } = renderable;
+  const revealed = revealedOf(c, renderable);
+  const active = activeOf(c, renderable);
   const values = valuesOf(c, node);
   const heights = renderable.transition.current;
   const colors: LinearRgb[] = [];
@@ -249,7 +263,7 @@ export function updateBars(c: SceneController, renderable: Renderable, bars: Bar
   block.elements.forEach((element, i) => {
     const focused = !block.batched || element.row === c.state.focus;
     const faded = far || block.slabs?.[element.index[0]]?.used === false;
-    colors.push(barColor(values[i], c.theme, { active: revealed && active, far: faded, focused }));
+    colors.push(barColor(elementValue(values, renderable, i) ?? 0, c.theme, { active: revealed && active, far: faded, focused }));
     outline.push(outlineOpacity({ active: active && revealed, far: faded, tile: block.shape === 'tile' }));
     const label = renderable.values[i];
     if (label !== undefined) {

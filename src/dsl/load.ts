@@ -16,6 +16,7 @@ export interface ModuleDef {
 export interface LoadOptions {
   base?: string;
   read?: (url: string) => Promise<string>;
+  config?: Readonly<Record<string, string | number | boolean>>;
 }
 
 function bundledSource(name: string): string | undefined {

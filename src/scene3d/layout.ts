@@ -140,6 +140,7 @@ export interface Block {
   extent: Vec3[];
   key?: string;
   copyOf?: Node;
+  slot?: readonly Node[];
   hidden?: boolean;
   quiet?: boolean;
   untitled?: boolean;
@@ -171,10 +172,27 @@ export interface LayoutContext {
   plan?: LevelPlan;
 }
 
-const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'squeeze', 'contiguous', 'identity']);
+const LAYOUT_OPS: ReadonlySet<string> = new Set(['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'squeeze', 'contiguous', 'identity', 'grad_of']);
 
 export function isLayoutOp(n: Node): boolean {
   return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);
+}
+
+const INDEX_OPS: ReadonlySet<string> = new Set(['narrow', 'select']);
+const ANONYMOUS = /\/\d+$/;
+
+export function isIndexView(n: Node): boolean {
+  return n.kind === 'op' && INDEX_OPS.has(n.op as string) && ANONYMOUS.test(n.name);
+}
+
+export function isView(n: Node): boolean {
+  return isLayoutOp(n) || isIndexView(n);
+}
+
+export function viewSourceIndex(n: Node, index: readonly number[]): number[] {
+  if (!isIndexView(n)) return layoutSourceIndex(n, index);
+  const ctx = { node: n, inputs: n.inputs.map((i) => i.value), out: n.value, attrs: n.attrs };
+  return [...explainOf(n.op as string)!.selected!(ctx, [...index])[0].index];
 }
 
 export function layoutSourceIndex(n: Node, index: readonly number[]): number[] {
@@ -203,8 +221,8 @@ export function sourceIndex(n: Node, source: Node, index: readonly number[]): nu
   let node = n;
   let at = [...index];
   while (node !== source) {
-    if (!isLayoutOp(node)) return undefined;
-    at = layoutSourceIndex(node, at);
+    if (!isView(node)) return undefined;
+    at = viewSourceIndex(node, at);
     node = node.inputs[0];
   }
   return at;
@@ -258,8 +276,7 @@ export function plateAxes(n: Node): { chunk: number; row: number; col: number } 
   return { chunk, row, col };
 }
 
-export function rowsCols(n: Node): [number, number] {
-  const { shape } = n;
+export function rowsCols(n: Node, shape: readonly number[] = n.shape): [number, number] {
   if (shape.length === 0) return [1, 1];
   if (shape.length === 1) return [1, shape[0]];
   if (shape.length === 3) {
@@ -270,8 +287,7 @@ export function rowsCols(n: Node): [number, number] {
   return [shape[0], shape[1]];
 }
 
-export function rowCol(n: Node, index: readonly number[]): [number, number] {
-  const { shape } = n;
+export function rowCol(n: Node, index: readonly number[], shape: readonly number[] = n.shape): [number, number] {
   if (shape.length === 0) return [0, 0];
   if (shape.length === 1) return [0, index[0]];
   if (shape.length === 3) {
@@ -282,11 +298,11 @@ export function rowCol(n: Node, index: readonly number[]): [number, number] {
   return [index[0], index[1]];
 }
 
-export function plates(n: Node): { count: number; width: number } {
-  if (n.shape.length === 4) return { count: n.shape[0] * n.shape[1], width: n.shape[3] };
-  if (n.shape.length !== 3) return { count: 1, width: rowsCols(n)[1] };
+export function plates(n: Node, shape: readonly number[] = n.shape): { count: number; width: number } {
+  if (shape.length === 4) return { count: shape[0] * shape[1], width: shape[3] };
+  if (shape.length !== 3) return { count: 1, width: rowsCols(n, shape)[1] };
   const { chunk, col } = plateAxes(n);
-  return { count: n.shape[chunk], width: n.shape[col] };
+  return { count: shape[chunk], width: shape[col] };
 }
 
 function checkDims(n: Node): void {
@@ -691,6 +707,7 @@ export function sameData(a: unknown, b: unknown): boolean {
 interface ElementIndex {
   byIndex: Map<string, Element>;
   byCell: Map<string, Element>;
+  position: Map<Element, number>;
 }
 
 const elementIndexes = new WeakMap<readonly Element[], ElementIndex>();
@@ -698,7 +715,8 @@ const elementIndexes = new WeakMap<readonly Element[], ElementIndex>();
 function elementIndex(elements: readonly Element[]): ElementIndex {
   const known = elementIndexes.get(elements);
   if (known !== undefined) return known;
-  const index: ElementIndex = { byIndex: new Map(), byCell: new Map() };
+  const index: ElementIndex = { byIndex: new Map(), byCell: new Map(), position: new Map() };
+  elements.forEach((e, i) => index.position.set(e, i));
   for (const e of elements) {
     const key = e.index.join(',');
     if (!index.byIndex.has(key)) index.byIndex.set(key, e);
@@ -715,4 +733,8 @@ export function elementAt(block: Block, index: readonly number[]): Element {
 
 export function elementInCell(block: Block, row: number, col: number): Element | undefined {
   return elementIndex(block.elements).byCell.get(`${row},${col}`);
+}
+
+export function elementPosition(block: Block, element: Element): number {
+  return elementIndex(block.elements).position.get(element)!;
 }

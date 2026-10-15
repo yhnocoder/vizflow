@@ -587,6 +587,42 @@ const cases: Case[] = [
   },
   { op: 'copysign', build: (g, r) => binary(g, r, 'copysign', [2, 3], [3]) },
   { op: 'copysign', build: (g, r) => scalar(g, r, 'copysign', -1) },
+  { op: 'maximum', build: (g, r) => binary(g, r, 'maximum', [2, 3], [3]) },
+  {
+    op: 'maximum',
+    build: (g) => {
+      const x = g.input('x', [2, 3], [[1, 2, -3], [0.5, 0.5, 4]]);
+      const y = g.input('y', [2, 3], [[1, 0, -3], [0.5, 2, -4]]);
+      return { out: g.maximum(x, y), inputs: [x, y] };
+    },
+  },
+  { op: 'saved', build: (g, r) => unary(g, r, 'saved', [2, 3]) },
+  {
+    op: 'scatter_tiles',
+    build: (g, r) => {
+      const x = g.input('x', [4, 3], randomValues(r, [4, 3]));
+      const a = g.input('a', [2, 3], randomValues(r, [2, 3]));
+      const b = g.input('b', [2], randomValues(r, [2]));
+      return { out: g.scatter_tiles(x, [a, b], [[[0, 2], null], [3, [0, 2]]]), inputs: [x, a, b] };
+    },
+  },
+  {
+    op: 'scatter_tiles',
+    build: (g, r) => {
+      const x = g.input('x', [3, 2], randomValues(r, [3, 2]));
+      const a = g.input('a', [2, 2], randomValues(r, [2, 2]));
+      const b = g.input('b', [2, 2], randomValues(r, [2, 2]));
+      return { out: g.scatter_tiles(x, [a, b], [[[0, 2], null], [[1, 3], null]], true), inputs: [x, a, b] };
+    },
+  },
+  { op: 'full', build: (g) => ({ out: g.full([2, 3], -0.5), inputs: [] }) },
+  {
+    op: 'grad_of',
+    build: (g, r) => {
+      const x = g.input('x', [2, 3], randomValues(r, [2, 3]));
+      return { out: g.add(g.grad_of(x), x), inputs: [x] };
+    },
+  },
   {
     op: 'where',
     build: (g, r) => {

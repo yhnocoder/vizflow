@@ -504,7 +504,7 @@ steps:
     const p = await page(
       root({
         forward: '- acc: zeros_like(x)\n- s: x[0] * 0\n- for: i in range(T)\n  do:\n    - s: s + x[i]\n    - acc[i, :]: s\n- l: acc.mean()',
-        steps: '- id: init\n  show: [acc, s]\n- id: scan\n  loop: i in range(T)\n  defaults: { show: [s, acc], title: "row {{ i }}" }\n- id: l',
+        steps: '- id: init\n  show: [acc, s]\n- id: scan\n  loop: i\n  defaults: { show: [s, acc], title: "row {{ i }}" }\n- id: l',
       }),
     );
     expect(Array.from(p.nodes.get('acc[2]')!.value.data)).toEqual([1, 2, 4, 6, 9, 12]);
@@ -514,7 +514,7 @@ steps:
   });
 
   it('writes into a slice with select_scatter and slice_scatter and rejects a write outside a loop', async () => {
-    const yaml = (forward: string) => page(root({ forward, steps: '- id: y\n- id: w\n  loop: i in range(1, 2)\n  defaults: { show: y }\n- id: l' }));
+    const yaml = (forward: string) => page(root({ forward, steps: '- id: y\n- id: w\n  loop: i\n  defaults: { show: y }\n- id: l' }));
     const p = await yaml('- y: x * 1\n- for: i in range(1, 2)\n  do:\n    - y[i, :i]: x[i, :i] * 10\n- l: y.mean()');
     expect(Array.from(p.nodes.get('y[1]')!.value.data)).toEqual([1, 2, 30, 4, 5, 6]);
     await expect(yaml('- y: x * 1\n- y[0]: x[0]\n- l: y.mean()')).rejects.toThrow(/writes into a tensor, which forward does only inside a loop/);

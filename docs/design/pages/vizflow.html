@@ -255,6 +255,7 @@ interface Graph {
   readonly dtype: Dtype;
   readonly nodes: readonly Node[];
   readonly version: number;
+  readonly functions: readonly FunctionSpec[];
   input(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   param(name: string, shape: (number | string)[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: NodeOptions &amp; { tokens?: string[]; classes?: number; shape?: (number | string)[] }): Node;
@@ -262,11 +263,29 @@ interface Graph {
   split(tensor: Node, split_size: number | string, dim?: number, options?: SplitOptions): Node[];
   loss(node?: Node): Node;
   findLoss(): Node | undefined;
+  realCopies&lt;T&gt;(drawn: number, real: Size, fn: () =&gt; T, base?: NodeCopies): T;
+  copiesNow(): NodeCopies;
+  backwardPhase&lt;T&gt;(fn: () =&gt; T): T;
+  defineFunction(spec: FunctionSpec): void;
+  functionOf(node: Node): FunctionSpec | undefined;
+  markOnChip(nodes: readonly Node[]): void;
+  onChip(node: Node): boolean;
   node(name: string): Node | undefined;
   subscribe(fn: () =&gt; void): () =&gt; void;
   batch(fn: () =&gt; void): void;
   reset(): void;
   jacobian(out: Node, input: Node, options?: { row?: number }): Tensor;
+}
+type Size = number | string | DerivedSize;
+interface DerivedSize { toy: number; real: number; derive(sizes: Readonly&lt;Record&lt;string, number&gt;&gt;, shapes: readonly (readonly number[])[]): number }
+interface NodeCopies { drawn: number; real: readonly Size[] }
+interface FunctionSpec {
+  inputs: readonly Node[];
+  outputs: readonly Node[];
+  inside: readonly Node[];
+  gradOutputs: readonly { leaf: Node; output: Node }[];
+  gradInputs: readonly { input: Node; grad: Node }[];
+  backward: readonly Node[];
 }</code></pre>
 <table>
   <thead>
@@ -282,6 +301,10 @@ interface Graph {
     <tr><td><code>buffer</code></td><td>常量叶子，对应 torch 的 <code>register_buffer</code>，例如 RoPE 的 cos、sin 表和 causal mask。值可以含 <code>-Infinity</code>。它没有梯度：<code>grad</code> 为 <code>null</code>，不进入自动生成的反向步骤，不能放进损失面板的 <code>sgd.params</code> 与 <code>random.nodes</code>，模板里对它取 <code>.grad</code> 在编译时报错。它可以 <code>set</code>，<code>reset</code> 时恢复创建时的值。3D 场景照常画出它；它连到运算的边在前向画出，反向不画，因为反向连线表示梯度经过的路径，而 buffer 没有梯度。用 input 表示这类张量时，读者会在反向步骤和梯度下降里看到一个本不该训练的量，所以单独设一种叶子。</td></tr>
     <tr><td><code>split</code></td><td>对应 <code>torch.split(tensor, split_size, dim)</code>，返回若干个 <code>narrow</code> 节点组成的数组，本身不是运算节点。<code>split_size</code> 不整除时最后一块较小。<code>split_size</code> 可以是 <code>dims</code> 里的维度名，规则见「尺寸参数可以写维度名」。<code>options</code> 的 <code>names</code>、<code>tex</code>、<code>elem</code> 按块逐个给出，个数必须等于块数；没给 <code>names</code> 时第 $i$ 块（从 1 开始）命名为 <code>名字_i</code>，例如 <code>q_1</code>。任何一块的名字已经存在时抛错，这时一个节点也不创建。<code>dim</code> 默认 0，第三个参数是对象时视为 <code>options</code>。</td></tr>
     <tr><td><code>loss</code>、<code>findLoss</code></td><td><code>loss(node)</code> 指定损失节点。<code>findLoss()</code> 返回当前损失节点：指定过时返回指定的节点，否则取最后创建的、元素个数为 1 的运算节点，都没有时返回 <code>undefined</code>。不传参数的 <code>loss()</code> 与 <code>findLoss()</code> 相同，但没有损失节点时抛错；steps、explain 与 scene3d 用 <code>findLoss()</code> 判断一个节点是否是损失。</td></tr>
+    <tr><td><code>functions</code>、<code>defineFunction</code>、<code>functionOf</code></td><td>自定义反向的函数，对应 <code>torch.autograd.Function</code>。<code>inputs</code> 是函数的输入，<code>inside</code> 是前向里创建的全部节点，<code>outputs</code> 是其中的输出，<code>backward</code> 是在 <code>backwardPhase</code> 里创建的反向节点；<code>gradOutputs</code> 把每个输出对应到一个 <code>grad_of</code> 节点，反向时这个节点的值是输出收到的梯度；<code>gradInputs</code> 给出每个输入的梯度是哪个反向节点。反向传播走到 <code>inside</code> 里编号最大的节点时，如果有输出收到了梯度，就按创建顺序执行 <code>backward</code> 里的运算，把 <code>gradInputs</code> 的值加到对应输入的梯度上，不对 <code>inside</code> 里的运算逐个求导。<code>inside</code> 里除输出以外的节点和全部反向节点的 <code>grad</code> 为 <code>null</code>，<code>findLoss</code> 不考虑它们。<code>defineFunction</code> 检查：节点属于这张图且不属于别的函数，输出在 <code>inside</code> 里，反向节点的 <code>phase</code> 是 <code>'backward'</code>，<code>gradInputs</code> 的输入是函数的输入、梯度形状与输入相同，<code>gradOutputs</code> 的输出是函数的输出、梯度节点是反向节点；不满足时抛错，例如 <code>defineFunction: output 'o' is not computed inside the function</code>。<code>functions</code> 按定义顺序列出全部函数，<code>functionOf(node)</code> 返回 <code>inside</code> 或 <code>backward</code> 包含这个节点的函数。页面描述文件里写了 <code>backward</code> 的模块编译成它，见 <a href="dsl.html">vizflow 页面描述文件</a>的「save、backward 与 kernel」。</td></tr>
+    <tr><td><code>backwardPhase</code></td><td><code>fn</code> 里创建的节点的 <code>phase</code> 是 <code>'backward'</code>。这些节点不在前向里计算，它们的值在反向传播执行所属函数的反向时算出，读取 <code>value</code> 时先完成反向；有限差分检查跳过它们。</td></tr>
+    <tr><td><code>markOnChip</code>、<code>onChip</code></td><td>把运算节点标为片上的张量，显存统计不计它们，FLOP 照常计，见「显存与计算量」。传入叶子节点时抛错 <code>markOnChip: 'x' is a param, which lives in device memory</code>。页面描述文件里 <code>kernel: true</code> 的模块编译成它。</td></tr>
+    <tr><td><code>realCopies</code>、<code>copiesNow</code></td><td>见下文「循环画出的份数」。</td></tr>
     <tr><td><code>node</code></td><td>按名字查找节点，比较时忽略空白，<code>'log p'</code> 与 <code>'logp'</code> 相同。</td></tr>
     <tr><td><code>batch</code></td><td><code>fn</code> 内的多次 <code>set</code> 合并成一次重算和一次通知。</td></tr>
     <tr><td><code>reset</code></td><td>所有叶子节点恢复创建时的值。</td></tr>
@@ -314,7 +337,8 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
   readonly elem: string;
   readonly tokens: readonly string[] | undefined;
   readonly card: NodeOptions['card'];
-  readonly copies: { drawn: number; real: readonly (number | string)[] };
+  readonly copies: NodeCopies;
+  readonly phase: 'forward' | 'backward';
   get value(): Tensor;
   get grad(): Tensor | null;
   get T(): Node;
@@ -326,6 +350,7 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
   <li><code>dtype</code> 是这个张量在真实模型里的 dtype，悬停提示、层名卡片和连线卡片都显示它。选项里给了 <code>dtype</code> 时用给出的值，否则：label 是 <code>int64</code>；input、param、buffer 取 <code>graph({ dtype })</code>；运算节点按输入推导，整数和 bool 输入不参与，浮点输入取位数最大的那个，位数相同但类型不同（<code>bf16</code> 与 <code>fp16</code>）时取高一级的 <code>fp32</code>，没有浮点输入时按位数取最宽的整数类型（<code>bool</code> 最窄，<code>uint8</code> 与 <code>int8</code> 混用得到 <code>int16</code>），只对浮点有定义的运算（<code>exp</code>、<code>log</code>、<code>sin</code>、<code>cos</code>、<code>sqrt</code>、<code>rsqrt</code>、<code>reciprocal</code>、<code>sigmoid</code>、<code>erf</code>、<code>logsumexp</code> 和真除法 <code>div</code>）此时得到 <code>graph({ dtype })</code>，与 torch 把整数输入提升为默认浮点类型相同，例如 <code>exp(arange(4))</code> 是 <code>fp32</code>；<code>fp8_e4m3</code> 与 <code>fp8_e5m2</code> 混用时抛错 <code>add 'x': cannot promote fp8_e4m3 with fp8_e5m2, give the dtype explicitly</code>，torch 对这种组合也报错。这条规则与 torch 的类型提升一致，所以只有模型显式转换类型的地方需要写 <code>dtype</code>，例如 RMSNorm 先转成 float32 计算、最后转回输入的 dtype。</li>
   <li><code>grad</code> 对 label 和 buffer 为 <code>null</code>。运算节点在两种情况下 <code>grad</code> 也为 <code>null</code>，与 torch 里不求梯度或梯度为 <code>None</code> 的张量对应：它的每个可求导参数都不依赖 param 或 input（例如 <code>topk_mask</code> 的输出），或者从它到损失没有一条只经过可求导参数的路径（例如只用来挑选专家的分数，以及损失之后创建的节点）。这样的节点不进入自动生成的反向步骤，3D 场景里也不画它的反向连线。param 和 input 总有梯度，不在损失上游时为全零。</li>
   <li><code>W.T</code> 是二维节点的转置。第一次访问时创建 transpose 节点并缓存，之后返回同一个节点。<code>g.matmul(h, W.T)</code> 和 <code>board(h, W.T, z)</code> 各取一次 <code>W.T</code>，布局必须找到计算图里的同一个节点，所以缓存不能去掉。转置节点名为 <code>W.T</code>，<code>tex</code> 与 <code>elem</code> 默认在原节点的写法后加 <code>^{\top}</code>；原写法含 <code>^</code>、<code>'</code> 或 <code>_</code> 时先整体加花括号，例如 <code>{W_{q}}^{\top}</code>，否则追加元素下标时会出现双下标。</li>
+  <li><code>phase</code> 是 <code>'backward'</code> 时，节点是在 <code>backwardPhase</code> 里创建的自定义反向节点，其余节点是 <code>'forward'</code>。</li>
   <li><code>set</code> 只允许 input、param、label、buffer 调用。<code>index</code> 返回 label 的整数值，等于 <code>Math.round(value.get(idx))</code>。</li>
 </ul>
 
@@ -339,7 +364,7 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
 <ul>
   <li>建图时每创建一个节点，立即算出它的前向值。</li>
   <li><code>set</code> 之后同步执行：全部前向、全部反向、<code>version</code> 加一，然后按订阅顺序调用每个订阅者一次。<code>batch</code> 内的 <code>set</code> 只在 <code>batch</code> 结束时执行一次。</li>
-  <li>反向时所有梯度清零，损失节点的梯度为 1，按创建顺序倒序调用每个运算的 <code>backward</code>，把结果累加到输入节点的梯度上。同一节点被多处使用时梯度相加；不可微的参数跳过。</li>
+  <li>反向时所有梯度清零，损失节点的梯度为 1，按创建顺序倒序调用每个运算的 <code>backward</code>，把结果累加到输入节点的梯度上。同一节点被多处使用时梯度相加；不可微的参数跳过。属于自定义反向函数的节点不调用各自的 <code>backward</code>，走到函数时执行它的反向节点，见上表的 <code>defineFunction</code>。</li>
 </ul>
 <p>对外的通知只有 <code>version</code> 和 <code>subscribe</code>，与界面框架无关。Solid 只在 <code>ui</code> 内部把通知转成 signal。</p>
 
@@ -377,8 +402,10 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
     <tr><td><code>arange</code></td><td><code>g.arange('T')</code>、<code>g.arange(0, 'd', 2, { dtype: 'fp32' })</code></td><td>与 <code>torch.arange</code> 相同：只给一个数时是 $0,\dots,\mathit{end}-1$，给出 <code>start, end, step</code> 时按步长取，<code>step</code> 为 0 时报错 <code>arange: step must be nonzero</code>。<code>start</code> 与 <code>end</code> 可以是维度名，真实规模和 $T$ 滑块改变时长度随之重新计算。dtype 默认 int64，给出 <code>dtype</code> 时用它。没有输入，没有梯度。</td></tr>
     <tr><td><code>causal_mask</code></td><td><code>g.causal_mask('T', 'bf16')</code></td><td>HF <code>create_causal_mask</code> 在没有 padding 时的结果：$(T, T)$，$s\le t$ 的格子是 0，$s&gt;t$ 的格子是 <code>torch.finfo(dtype).min</code>（bf16 为 $-3.39\times10^{38}$），dtype 必须是浮点类型。HF 不用 $-\infty$，因为与 padding mask 合并后整行都被遮住时，softmax 会出现 $-\infty-(-\infty)$。滑动窗口和分块注意力的 mask 也按这种方式加成注册运算，参数写窗口大小或块长。没有输入，没有梯度。</td></tr>
     <tr><td><code>zeros</code>、<code>ones</code></td><td><code>g.zeros('H', 'dk', 'dv')</code>、<code>g.ones(3, 3, { dtype: 'bool' })</code></td><td>与 <code>torch.zeros</code>、<code>torch.ones</code> 相同，尺寸可以是维度名。dtype 默认 fp32，与 torch 的默认浮点类型相同。没有输入，没有梯度。</td></tr>
+    <tr><td><code>full</code></td><td><code>g.full(['T', 'd'], 0.5)</code>、<code>g.full([2], 1, { dtype: 'int64' })</code></td><td>与 <code>torch.full(size, fill_value)</code> 相同，每个元素都是 <code>fill_value</code>，尺寸可以是维度名。dtype 默认 fp32，与 <code>zeros</code> 相同；torch 按 <code>fill_value</code> 推断 dtype，整数的 <code>fill_value</code> 在这里要写出 <code>dtype</code>。没有输入，没有梯度。</td></tr>
     <tr><td><code>eye</code></td><td><code>g.eye('C')</code></td><td>与 <code>torch.eye(n)</code> 相同，$(n, n)$ 单位矩阵，dtype 默认 fp32。没有输入，没有梯度。</td></tr>
     <tr><td><code>zeros_like</code></td><td><code>g.zeros_like(a)</code></td><td>与 <code>torch.zeros_like</code> 相同，形状和 dtype 取 <code>a</code>。<code>a</code> 不求梯度，图上不画边。</td></tr>
+    <tr><td><code>grad_of</code>、<code>saved</code></td><td><code>g.grad_of(o)</code>、<code>g.saved(q)</code></td><td>自定义反向函数的反向节点，由页面描述文件的编译器在 <code>backwardPhase</code> 里创建，见「建图」的 <code>defineFunction</code>。<code>grad_of(o)</code> 是输出 <code>o</code> 收到的梯度，对应 <code>Function.backward</code> 的参数 <code>grad_output</code>：形状和 dtype 与 <code>o</code> 相同，反向执行函数时取 <code>o</code> 的梯度，<code>o</code> 不求梯度，图上没有边，卡片写作 $\partial\ell/\partial o$。<code>saved(q)</code> 是 <code>ctx.saved_tensors</code> 里的 <code>q</code>，数值与 <code>q</code> 相同，图上的边与 <code>identity</code> 相同；显存统计让 <code>q</code> 从函数的输出算出起一直保留，直到读它的反向步骤执行。两者都不是 torch 的运算，显存统计按 view 处理，FLOP 为 0。</td></tr>
     <tr><td><code>abs</code>、<code>sign</code></td><td><code>g.abs(a)</code></td><td>逐元素。<code>abs</code> 的导数是 $\operatorname{sign}(x)$，在 0 处是 0；<code>sign</code> 的导数处处是 0。与 torch 相同。</td></tr>
     <tr><td><code>clamp_min</code></td><td><code>g.clamp_min(a, min)</code></td><td>逐元素 $\max(x, \mathit{min})$，<code>min</code> 是数。导数在 $x&gt;\mathit{min}$ 处是 1，其余（包括 $x=\mathit{min}$）是 0，与 torch 相同。</td></tr>
     <tr><td><code>remainder</code></td><td><code>g.remainder(a, b)</code>、<code>g.remainder(a, 7)</code></td><td>向下取整的余数 $a-\lfloor a/b\rfloor\,b$，结果的符号与 $b$ 相同，与 <code>torch.remainder</code> 相同；按 torch 规则广播，第二个参数可以是数。两个运算数都是整数、其中一个带 int64 存储时按 bigint 精确计算。对 $a$ 的导数是 1，对 $b$ 的导数是 $-\lfloor a/b\rfloor$。</td></tr>
@@ -386,16 +413,17 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
     <tr><td><code>bitwise_xor</code>、<code>bitwise_and</code>、<code>bitwise_or</code></td><td><code>g.bitwise_xor(a, b)</code></td><td>按位异或、按位与，按 torch 规则广播，第二个参数可以是整数。输入必须是整数或 bool，否则报错 <code>bitwise_xor: inputs must be integers or bools</code>。按 bigint 计算，结果按 int64 解释；输入带 int64 存储时结果也带。不求梯度。</td></tr>
     <tr><td><code>eq</code>、<code>ge</code>、<code>lt</code></td><td><code>g.eq(a, 5)</code>、<code>g.ge(a, b)</code></td><td>逐元素比较 $a=\mathit{other}$、$a\ge\mathit{other}$、$a&lt;\mathit{other}$，与 <code>torch.eq</code>、<code>torch.ge</code>、<code>torch.lt</code> 相同，<code>other</code> 是节点或数，按 torch 规则广播。输出 <code>bool</code>，不求梯度。</td></tr>
     <tr><td><code>copysign</code></td><td><code>g.copysign(a, b)</code>、<code>g.copysign(a, 1)</code></td><td>与 <code>torch.copysign</code> 相同：取 $|a|$，符号取 $b$ 的符号位，$b=-0$ 时为负；按 torch 规则广播，第二个参数可以是数。只有 <code>a</code> 求梯度，局部导数是 $\operatorname{sign}(a)$ 乘 $b$ 的符号，在 $a=0$ 处是 0。</td></tr>
+    <tr><td><code>maximum</code></td><td><code>g.maximum(a, b)</code>、<code>g.maximum(a, 0)</code></td><td>与 <code>torch.maximum</code> 相同：逐元素取 $\max(a, b)$，按 torch 规则广播，第二个参数可以是数。局部导数在 $a&gt;b$ 处对 $a$ 是 1、对 $b$ 是 0，反过来时相反；$a=b$ 时两边各是 0.5，与 torch 把梯度平分相同。FlashAttention 的 online softmax 用它更新每行的最大值。</td></tr>
     <tr><td><code>matmul</code></td><td><code>g.matmul(a, b)</code></td><td>2 维乘 2 维，以及 1 维与 2 维的组合，按 torch 规则。任一边超过 2 维时是批量矩阵乘：两边都至少 2 维，最后两维相乘，前面的 batch 维按广播规则对齐，与 <code>torch.matmul</code> 相同，例如分块注意力里 $(N, C, d)$ 乘 $(N, d, C)$</td></tr>
     <tr><td><code>transpose</code></td><td><code>g.transpose(a, dim0, dim1)</code></td><td></td></tr>
     <tr><td><code>rrms</code></td><td><code>g.rrms(a, eps)</code></td><td>沿最后一维计算 $r=(\operatorname{mean}(a^2)+\epsilon)^{-1/2}$，保留最后一维，输入 $(\ldots,d)$ 输出 $(\ldots,1)$。<code>eps</code> 显式传入，必须是有限的非负数；输入至少一维，最后一维不能为空。浮点输入保留 dtype，整数输入提升到计算图的默认浮点 dtype。平方、均值、加常数和倒数平方根组成一个运算节点；反向局部导数是 $\partial r/\partial a_i=-a_i r^3/d$。RMSNorm 用它把逐行统计作为一步展示，每行输出一个圆盘，不创建中间节点，也不涉及折叠。反向保存输入和输出；按复用每行反向系数计数，前向 FLOP 为 $2|a|+3|r|$，反向为 $|a|+4|r|$，竖线表示元素数量。</td></tr>
-    <tr><td><code>sum</code>、<code>mean</code></td><td><code>g.sum(a, dim?, { keepdim })</code></td><td><code>dim</code> 省略时对全部元素归约，可以是数或数组</td></tr>
+    <tr><td><code>sum</code>、<code>mean</code></td><td><code>g.sum(a, dim?, { keepdim })</code></td><td><code>dim</code> 省略时对全部元素归约，可以是数或数组。<code>sum</code> 的输入是整数或 bool 时输出 <code>int64</code>，与 torch 相同，例如 Liger 用 <code>target_mask.sum()</code> 数出不被忽略的位置数</td></tr>
     <tr><td><code>max</code></td><td><code>g.max(a, dim, { keepdim })</code></td><td>只返回 values；梯度给第一个取到最大值的元素</td></tr>
     <tr><td><code>logsumexp</code></td><td><code>g.logsumexp(a, dim, { keepdim })</code></td><td>先减最大值</td></tr>
     <tr><td><code>softmax</code>、<code>log_softmax</code></td><td><code>g.softmax(a, dim)</code></td><td><code>log_softmax</code> 先减最大值</td></tr>
     <tr><td><code>gather</code></td><td><code>g.gather(a, dim, index)</code></td><td><code>index</code> 是 label 节点，维数与 <code>a</code> 相同</td></tr>
     <tr><td><code>embedding</code></td><td><code>g.embedding(input, weight)</code></td><td><code>input</code> 是 label 节点（token id，shape 任意），<code>weight</code> 是 $(\text{num}, \text{dim})$，输出 shape 为 <code>[...input.shape, dim]</code>。<code>input</code> 不求梯度，id 超出 <code>weight</code> 的行数时抛错。</td></tr>
-    <tr><td><code>narrow</code></td><td><code>g.narrow(a, dim, start, length, step?)</code></td><td><code>start</code> 可以为负数，按 torch 规则加上该维长度；<code>length</code> 可以是维度名；<code>step</code> 默认 1，第 $i$ 个元素取 <code>start + i*step</code>，对应切片 <code>x[..., 0::2]</code></td></tr>
+    <tr><td><code>narrow</code></td><td><code>g.narrow(a, dim, start, length, step?)</code></td><td><code>start</code> 可以为负数，按 torch 规则加上该维长度；<code>start</code> 和 <code>length</code> 可以是维度名；<code>step</code> 默认 1，第 $i$ 个元素取 <code>start + i*step</code>，对应切片 <code>x[..., 0::2]</code></td></tr>
     <tr><td><code>zeros_like</code></td><td><code>g.zeros_like(a)</code></td><td>与 <code>torch.zeros_like</code> 相同：形状和 dtype 与 <code>a</code> 相同的全 0 张量，不读 <code>a</code> 的数值，没有梯度</td></tr>
     <tr><td><code>cat</code></td><td><code>g.cat([a, b, ...], dim?, { pieces })</code></td><td>节点数组，至少一个；<code>dim</code> 默认 0，也可以写在选项对象里。除 <code>dim</code> 外各维必须相同。<code>pieces</code>（默认 <code>null</code>）是数或维度名，表示真实模型里拼接的块数：给出时各块沿 <code>dim</code> 的长度必须相同，示例值必须等于数组长度，realShape 沿 <code>dim</code> 取「一块的真实长度 × pieces 的真实值」。示例只画 2 个 head、真实模型有 32 个时，拼接结果因此显示真实的宽度。报错 <code>cat: pieces X needs a positive integer and tensors of the same size along dim d</code>、<code>cat: pieces is X, but N tensors are given</code>。</td></tr>
     <tr><td><code>view</code></td><td><code>g.view(a, shape)</code>、<code>g.view(a, T, H, dh)</code></td><td>改变形状，元素按行主序不动。形状可以写成数组，也可以逐个写在后面；元素可以是维度名，可以有一个 <code>-1</code> 由元素个数推出。形状不合法或元素个数不符时报错 <code>view: shape (..) is invalid for input (..) of size N</code>。</td></tr>
@@ -416,6 +444,7 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
     <tr><td><code>index_put</code></td><td><code>g.index_put(a, mask, values)</code></td><td>torch 的布尔下标赋值 <code>a[mask] = values</code>，不改写 <code>a</code>：<code>mask</code> 的形状等于 <code>a</code> 的前几维，选出的位置按行优先顺序依次换成 <code>values</code> 的第 $k$ 行；<code>values</code> 可以只有余下的维（广播到每个选中的位置，对应 <code>span[types == START] = self.image_start</code>），也可以是 $(n, \ldots)$，$n$ 等于选中的个数或 1。<code>mask</code> 不求梯度；<code>a</code> 在被换掉的位置梯度是 0，<code>values</code> 的梯度是这些位置的梯度，广播时求和。<code>mask</code> 形状不对时报错 <code>index_put: mask (..) must match the leading dimensions of input (..)</code>，行数不符时报错 <code>index_put: values (..) has n rows, but the mask selects m</code>。</td></tr>
     <tr><td><code>select_scatter</code></td><td><code>g.select_scatter(a, src, dim, index)</code></td><td>与 <code>torch.select_scatter</code> 相同：返回 <code>a</code> 的副本，<code>dim</code> 维第 <code>index</code> 个位置换成 <code>src</code>，<code>src</code> 的形状是 <code>a</code> 去掉 <code>dim</code> 维。YAML 的 <code>x[:, i]: 表达式</code> 编译成它。<code>a</code> 在被换掉的位置梯度是 0，<code>src</code> 的梯度是这些位置的梯度。形状不对时报错 <code>select_scatter: src (..) must have the shape (..) of input (..) without dim d</code>。</td></tr>
     <tr><td><code>slice_scatter</code></td><td><code>g.slice_scatter(a, src, dim?, start?, end?, step?)</code></td><td>与 <code>torch.slice_scatter</code> 相同：返回 <code>a</code> 的副本，<code>dim</code> 维 <code>start:end:step</code> 这一段换成 <code>src</code>，越界的端点按 Python 切片截断。YAML 的 <code>x[..., :i]: 表达式</code> 编译成它。梯度与 <code>select_scatter</code> 相同。</td></tr>
+    <tr><td><code>scatter_tiles</code></td><td><code>g.scatter_tiles(a, tiles, regions, accumulate?)</code></td><td>返回 <code>a</code> 的副本，第 <code>k</code> 个块写进第 <code>k</code> 个区域。区域对 <code>a</code> 的每一维写一项：整数取这一维的一个位置（这一维从块的形状里去掉），<code>[start, stop]</code> 取一段，<code>null</code> 取整维；块的形状必须等于区域的形状。<code>accumulate</code> 为 false（默认）时块之间不能重叠，否则报错 <code>scatter_tiles: tiles a and b write the same element; overlapping tiles need accumulate</code>；为 true 时块加到 <code>a</code> 上，重叠的块相加，对应 kernel 用 atomicAdd 累加到同一块显存。<code>a</code> 的梯度在被覆盖的位置是 0（accumulate 时原样传回），每个块的梯度是它的区域上的梯度。</td></tr>
     <tr><td><code>sort</code></td><td><code>g.sort(a, dim?)</code></td><td><code>torch.sort(a, dim).values</code>：沿 <code>dim</code>（默认 $-1$）从小到大排序，值相同时保持原来的顺序（<code>stable=True</code>）。反向把梯度送回每个值原来的位置。整数输入的排序结果和 torch 相同，常用来把 top-k 的下标按位置排好。</td></tr>
     <tr><td><code>index_add</code></td><td><code>g.index_add(a, dim, index, source)</code></td><td>与 <code>torch.index_add</code> 相同，不改写 <code>a</code>：输出是 <code>a</code> 加上把 <code>source</code> 沿 <code>dim</code> 的第 $r$ 个切片加到第 <code>index[r]</code> 个切片上的结果。<code>index</code> 是一维整数节点，不求梯度；<code>a</code> 的梯度是输出梯度，<code>source</code> 第 $r$ 个切片的梯度是输出梯度的第 <code>index[r]</code> 个切片。</td></tr>
     <tr><td><code>grouped_linear</code></td><td><code>g.grouped_linear(x, W, group)</code></td><td><code>x</code> 是 $(N, \mathit{in})$，<code>W</code> 是 $(G, \mathit{out}, \mathit{in})$，<code>group</code> 是 $(N,)$ 的整数节点；第 $r$ 行是 <code>F.linear(x[r], W[group[r]])</code>，输出 $(N, \mathit{out})$。<code>group</code> 不求梯度，越界时报错。MoE 的专家用它把各专家的行一次算完，见 dsl 文档的 <code>experts</code> 模块。torch 里对应的是 <code>torch._grouped_mm</code>，这里用 HF 的说法 linear 命名。</td></tr>
@@ -437,9 +466,9 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
   </tbody>
 </table>
 <p>logsumexp、softmax 这类运算在 vizflow 里是原子运算，不拆成基础运算组合，因为读者要在图上看到 LSE 是一个节点。</p>
-<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?, derive?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
+<p><b>尺寸参数可以写维度名。</b><code>narrow</code> 的 <code>start</code> 与 <code>length</code>、<code>split</code> 的 <code>split_size</code>、<code>view</code> 的形状的每个元素与 <code>cat</code> 的 <code>pieces</code> 可以写 <code>graph({ dims })</code> 里的名字，例如 <code>g.split(q, 'dh', 1)</code>。计算 shape 时按 <code>dims</code> 取值；计算 <code>realShape</code> 时按 <code>real</code> 里的同名值取值，<code>real</code> 里没有这个名字时用 <code>dims</code> 的值。这样在 <code>real: { dh: 128 }</code> 下，切出的每个头在卡片上显示真实尺寸 128；写成数字时 realShape 只能是这个数字。节点的 <code>attrs</code> 里存按 <code>dims</code> 取到的数。建图以后可以用 <code>g.addDim(name, value, real?, derive?)</code> 再加一个维度，<code>real</code> 默认等于 <code>value</code>；名字已经存在时，值相同不做任何事，值不同抛错 <code>addDim: dimension 'x' is already defined</code>。DSL 编译器用它登记表达式算出的尺寸，见 DSL 设计的「真实尺寸」，这样编译只需要一遍。名字不在 <code>dims</code> 里时抛错 <code>narrow: dimension 'x' is not defined</code>。</p>
 <p><b>按其他真实尺寸重算。</b><code>g.realSizes(dims?)</code> 返回真实尺寸表，<code>dims</code> 覆盖其中的同名值；<code>g.realShapes(dims?)</code> 按这张表重新推导每个节点的真实 shape，结果按节点编号排列，不改变节点本身的 <code>realShape</code>。显存面板的 $T$ 滑块用它们。<code>g.addDim(name, value, real?, derive?)</code> 的 <code>derive(sizes, shapes)</code> 给出这个维度怎样由其他维度和已经推导出的 shape 算出，重算时按它求值；没有 <code>derive</code> 的维度保持登记时的真实值。DSL 编译器登记的维度都带 <code>derive</code>，所以 $T \times H$ 这样由表达式算出的尺寸也跟着 $T$ 变。<code>dims</code> 里的名字不在真实尺寸表里时抛错 <code>realSizes: dimension 'x' is not defined</code>，值不是正整数时抛错 <code>realSizes: dimension 'x' needs a positive integer, got v</code>；图没有 <code>real</code> 时抛错 <code>realSizes: the graph has no real dimensions</code>。</p>
-<p><b>循环画出的份数。</b>图里只画出循环的几份、真实模型有更多份时（例如画 2 个 head，真实有 32 个），<code>g.realCopies(drawn, real, fn)</code> 在 <code>fn</code> 里建的每个节点的 <code>copies</code> 记下「画出 drawn 份，真实有 real 份」，<code>real</code> 是数或维度名，嵌套时 <code>drawn</code> 相乘、<code>real</code> 依次记下。不在 <code>realCopies</code> 里建的节点是 <code>{ drawn: 1, real: [] }</code>。显存面板在真实尺寸下把每个这样的节点按 real/drawn 倍统计。</p>
+<p><b>循环画出的份数。</b>图里只画出循环的几份、真实模型有更多份时（例如画 2 个 head，真实有 32 个），<code>g.realCopies(drawn, real, fn)</code> 在 <code>fn</code> 里建的每个节点的 <code>copies</code> 记下「画出 drawn 份，真实有 real 份」，<code>real</code> 是数、维度名或带 <code>derive</code> 的尺寸，嵌套时 <code>drawn</code> 相乘、<code>real</code> 依次记下。不在 <code>realCopies</code> 里建的节点是 <code>{ drawn: 1, real: [] }</code>。<code>copiesNow()</code> 返回当前的份数；给了 <code>base</code> 时从 <code>base</code> 开始相乘和记下，不从当前的份数开始。页面描述文件的内层循环轮数随外层循环变量变化时，编译器在外层循环开始前记下 <code>copiesNow()</code>，内层循环用它作 <code>base</code>，<code>drawn</code> 与 <code>real</code> 是外层各轮的内层轮数之和，这样内层节点的份数不再乘外层的轮数。显存面板在真实尺寸下把每个这样的节点按 real/drawn 倍统计。</p>
 
 <h3>定义新运算</h3>
 <p>每个运算定义四件事，反向传播和全部讲解内容都由它们推导。数值部分是前向怎么算、反向怎么算（给定输出梯度，求每个输入的梯度）；讲解部分是元素级的连线模式，以及每条边的局部导数（一个数值函数加一段公式模板）。讲解部分放在 <code>explain</code> 模块，只需要数值的场合不会加载。</p>
@@ -457,12 +486,15 @@ class ProgramBuilder { read(name: string, grad: boolean): number; op(op: string,
   backward(gradOut: Tensor, inputs: Tensor[], out: Tensor, attrs: A): (Tensor | null)[];
   differentiable?: boolean[];
   dtype?: Dtype;
+  floating?: boolean;
+  integral?: Dtype;
   int64?: boolean;
   explain?: OpExplain;
   cost?: OpCost;
 }
 interface OpCost {
   view?: boolean;
+  writes?: boolean;
   saves: (number | 'out')[][];
   flops(inputs: number[][], out: number[]): { forward: number[]; backward: number[][] };
 }
@@ -473,13 +505,14 @@ defineOp(def: OpDef): void</code></pre>
   <li><code>list</code> 是一个张量参数的名字，这个参数接受节点数组，例如 <code>cat</code> 的 <code>tensors</code>。数组里的节点按顺序展开成运算的输入，<code>forward</code>、<code>backward</code>、<code>shape</code> 收到的输入个数等于数组长度，讲解里的 <code>arg</code> 是节点在数组里的位置。<code>list</code> 必须是 <code>tensors</code> 的最后一个，例如 <code>index</code> 写 <code>tensors: ['input', 'indices']</code>、<code>list: 'indices'</code>，前面的张量参数占前几个输入，数组里的节点接在后面；违反时 <code>defineOp</code> 抛错 <code>list 'x' must be the last tensor argument</code>。<code>differentiable</code> 里 <code>list</code> 那一项对数组里的每个节点都适用。有限差分报错时这类输入写作 <code>indices[0]</code>。</li>
   <li><code>dtype</code> 是输出固定的 dtype，例如 <code>one_hot</code> 的 <code>int64</code>、比较运算 <code>greater</code>、<code>eq</code>、<code>ge</code> 的 <code>bool</code>；不写时按输入的类型提升推导，节点的 <code>dtype</code> 选项优先。</li>
   <li><code>floating</code> 为 <code>true</code> 时，按输入推导出的 dtype 是整数或 <code>bool</code> 时改为 <code>graph({ dtype })</code>，用于 torch 中只对浮点有定义、整数输入会被提升为默认浮点类型的运算，例如 <code>exp</code> 和 <code>div</code>。不写时为 <code>false</code>。</li>
+  <li><code>integral</code> 是按输入推导出的 dtype 是整数或 <code>bool</code> 时改用的 dtype，例如 <code>sum</code> 的 <code>int64</code>，与 torch 对整数和 bool 求和得到 int64 相同。</li>
   <li><code>int64</code> 为 <code>true</code> 表示运算能保持 int64 存储的精确值（见「张量」）。没有写的运算收到超过 $2^{53}$ 的输入时报错。</li>
   <li><code>scalars</code> 列出可以传数的张量参数，例如 <code>add</code> 的 <code>other</code>。传了数时它不成为输入，存进 <code>attrs</code> 的同名字段，<code>forward</code> 收到的输入少一个，运算自己按 <code>attrs</code> 计算。</li>
   <li><code>sizes</code> 列出可以写维度名的非张量参数，例如 <code>narrow</code> 的 <code>length</code>。计算 shape 前按 <code>dims</code> 换成数，计算 realShape 前按 <code>real</code> 换成数，规则见上文「尺寸参数可以写维度名」。值是数组时逐个元素换算（<code>view</code> 的 <code>shape</code>）。<code>sizes</code> 也可以列出只在 <code>defaults</code> 里出现的关键字参数（<code>cat</code> 的 <code>pieces</code>）。</li>
   <li><code>rest</code> 是最后一个位置参数的名字，调用时多出来的位置参数收成一个数组交给它，所以 <code>g.view(a, T, H, dh)</code> 与 <code>g.view(a, [T, H, dh])</code> 相同，与 torch 的 <code>x.view(T, H, dh)</code> 写法一致。</li>
   <li>不是张量、也不是 <code>rest</code> 的位置参数可以放进选项对象按关键字传，例如 <code>g.nonzero_static(m, { size: 6 })</code>，与 torch 的 <code>torch.nonzero_static(m, size=6)</code> 一致；同一个参数既按位置又按关键字给出时抛错 <code>&lt;运算名&gt;: argument 'x' is given both by position and by keyword</code>。</li>
   <li>重复注册同名运算抛错。注册后的运算在运行时出现在 <code>g</code> 上，可以写成 <code>g.&lt;name&gt;(...)</code>；TypeScript 通过对 <code>interface Graph</code> 的声明合并补充类型。</li>
-  <li><code>cost</code> 给显存与计算量面板用，见「面板」里的「显存与计算量」。<code>view</code> 为 <code>true</code> 的运算与第一个输入共用存储。<code>saves[k]</code> 列出第 <code>k</code> 个输入的梯度需要保存哪些张量，数字是输入的下标，<code>'out'</code> 是输出。<code>flops</code> 收到输入和输出的 shape，返回前向和每个输入的反向 FLOP，每一项写成因子列表（例如矩阵乘写成 <code>[2, m, k, n]</code>），面板把因子连乘写成公式。内置运算都有 <code>cost</code>；自定义运算不写时，按它的反向保存全部输入、FLOP 为 0 统计，面板的总数不含它。</li>
+  <li><code>cost</code> 给显存与计算量面板用，见「面板」里的「显存与计算量」。<code>view</code> 为 <code>true</code> 的运算与第一个输入共用存储。<code>writes</code> 为 <code>true</code> 的运算（<code>select_scatter</code>、<code>slice_scatter</code>、<code>scatter_tiles</code>）表示写进第一个输入，结果与它共用存储。<code>saves[k]</code> 列出第 <code>k</code> 个输入的梯度需要保存哪些张量，数字是输入的下标，<code>'out'</code> 是输出。<code>flops</code> 收到输入和输出的 shape，返回前向和每个输入的反向 FLOP，每一项写成因子列表（例如矩阵乘写成 <code>[2, m, k, n]</code>），面板把因子连乘写成公式。内置运算都有 <code>cost</code>；自定义运算不写时，按它的反向保存全部输入、FLOP 为 0 统计，面板的总数不含它。</li>
   <li><code>defineOp</code> 可以写在页面里临时使用，也可以放进单独的文件供多个页面共用。加一个运算不需要修改核心库。</li>
   <li>运算名不能与 Graph 已有的成员同名（例如 <code>input</code>、<code>loss</code>、<code>node</code>），<code>defineOp</code> 遇到这样的名字抛错，因为 <code>g.&lt;运算名&gt;</code> 会遮蔽这些方法。</li>
 </ul>
@@ -533,13 +566,19 @@ defineComposite(def: CompositeDef): void</code></pre>
 <p>步骤状态由 <code>steps</code> 模块的 <code>createSteps</code> 生成，界面上的步骤条由 <code>ui</code> 的 <code>mountSteps</code> 画出。两者分开，只挂 3D 场景的页面不需要引入 <code>ui</code>。</p>
 <pre><code class="language-ts">type StepKind = 'overview' | 'inputs' | 'op' | 'module';
 interface BackwardOverride { title?: string; text?: string; label?: string }
+interface CopyText { index: number[]; title: string; label?: string; text?: string }
+interface StepGrid { module: string; names: string[]; counts: number[] }
 interface ForwardStep {
   show: Node | Node[]; active?: Node | Node[]; title: string; text?: string; label?: string;
   groups?: string[]; module?: string; formula?: { title: string; tex: string }; backward?: BackwardOverride; marks?: string[];
+  grid?: string; copies?: CopyText[];
 }
 type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record&lt;number, BackwardOverride&gt; };
-interface StepGroup { id: string; title: string }
-interface StepBrace { id: string; title: string; subtitle?: string; nodes: Node[]; depth: number; module?: string }
+interface StepGroup { id: string; title: string; grid?: string; copies?: { index: number[]; title: string }[] }
+interface StepBrace {
+  id: string; title: string; subtitle?: string; nodes: Node[]; depth: number; module?: string;
+  grid?: string; copies?: { index: number[]; title: string; subtitle?: string }[];
+}
 
 interface PageModule {
   id: string; parent: string | null; title: string; subtitle: string;
@@ -548,13 +587,23 @@ interface PageModule {
 }
 interface StepModule extends PageModule { foldable: boolean; forward: BackwardOverride; backward: BackwardOverride }
 
+interface FunctionStep {
+  id: string; title: string; label?: string; text?: string;
+  show: Node[]; receive: Node[]; groups?: string[];
+  formula?: { title: string; tex: string }; marks?: string[];
+  grid?: string; copies?: CopyText[];
+}
+interface FunctionBackward { module: string; after: ForwardStep; steps: FunctionStep[] }
+
 interface StepsSpec {
   forward: ForwardStep[];
+  functions?: FunctionBackward[];
   groups?: StepGroup[];
   braces?: StepBrace[];
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride };
   backward?: BackwardSpec;
   modules?: StepModule[];
+  grids?: StepGrid[];
 }
 createSteps(g: Graph, spec: StepsSpec): Steps
 
@@ -573,12 +622,16 @@ interface Steps {
   folded(id: string): boolean;
   setFolded(id: string, folded: boolean): void;
   setAllFolded(folded: boolean): void;
+  readonly grids: readonly StepGrid[];
+  front(grid: string): readonly number[];
+  setFront(grid: string, index: readonly number[]): void;
   dispose(): void;
 }
 interface StepInfo {
   dir: 'forward' | 'backward'; index: number; id: string; kind: StepKind;
   label: string; title: string; text: string; nodes: Node[];
-  groups: string[]; module?: string; forwardId?: string;
+  groups: string[]; module?: string; forwardId?: string; computes?: Node[];
+  copy?: { grid: string; index: number[]; front: boolean };
 }
 interface StepState {
   dir: 'forward' | 'backward';
@@ -608,7 +661,8 @@ isLeafLike(node: Node): boolean</code></pre>
 <p>反向时，如果某条边的上游梯度在结构上恒为零（例如 nll_loss 只取目标类，其余类别的边），这条边的不透明度降低（当前步骤 0.35，总览 0.12），读者可以直接看出哪些路径上没有梯度。所有连线都画成实线：虚线在边很多的场景里会形成大片断续的纹理，干扰阅读，所以只用不透明度区分状态。是否恒为零由 <code>explain</code> 的 <code>zeroGrad(e)</code> 给出，它只依赖图结构和 label 的当前值。</p>
 <p>批量模式下 <code>focus</code> 是选中的样本下标，默认 0。<code>setFocus</code> 改变它，下标超出 <code>visible</code> 中节点的行数时抛错；scene3d 据此高亮这一行，正文模板用它代入这一行的数值。切换样本只改变高亮和正文，不改变计算图的数值。</p>
 <p>页面没有创建 steps 时，<code>allVisible(g)</code> 给出默认状态：方向为前向，全部显示、全部高亮。</p>
-<p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：自动加的总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），反向步骤是 <code>b:k</code>，第 $k$ 个步骤声明是总览时它的反向总览是 <code>b:k</code> 并带 <code>forwardId</code> <code>f:k</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>。<code>groups</code> 是这一步从外到内所在的分组 id，标题在 <code>StepsSpec.groups</code> 里，步骤条按它分段；<code>module</code> 是这一步所属的最内层模块。<code>braces</code> 是场景里的括号，<code>depth</code> 是嵌套深度，最外层是 0。</p>
+<p>每一步的 <code>id</code> 在折叠状态变化前后保持不变，界面和场景用它判断「是不是同一步」：自动加的总览是 <code>f:overview</code>，前向第 $k$ 个步骤声明是 <code>f:k</code>（从 0 起），反向步骤是 <code>b:k</code>，第 $k$ 个步骤声明是总览时它的反向总览是 <code>b:k</code> 并带 <code>forwardId</code> <code>f:k</code>，折叠的模块是 <code>F:模块 id</code> 与 <code>B:模块 id</code>，自定义反向函数的第 $k$ 个反向步骤是 <code>x:模块 id:k</code>。<code>groups</code> 是这一步从外到内所在的分组 id，标题在 <code>StepsSpec.groups</code> 里，步骤条按它分段；<code>module</code> 是这一步所属的最内层模块。<code>braces</code> 是场景里的括号，<code>depth</code> 是嵌套深度，最外层是 0。</p>
+<p><b>grid 调用的步骤文字。</b><code>grid</code> 模块的一步亮所有副本的张量，文字按「最前面的副本」求值（DSL 的规则 15）。编译器对 grid 调用里的每一步按每个示例副本各求值一次文字，放进 <code>copies</code>，<code>index</code> 是副本编号（每维一个整数），<code>grid</code> 是这次调用的路径；这一步里空闲的副本不在 <code>copies</code> 里。<code>StepsSpec.grids</code> 列出每个 grid 调用的路径、各维名字和示例个数，<code>Steps.grids</code> 是同一份列表。<code>front(grid)</code> 读取一个调用的最前面的副本，初值是各维编号都取最大值；<code>setFront(grid, index)</code> 设置它，然后按新的副本重建步骤列表并通知订阅者，调用路径不存在时抛错 <code>setFront: 'g' is not a grid module call; the grid calls are ...</code>，编号越界时抛错 <code>setFront: [2] is not a copy of 'g', whose grid is i &lt; 2</code>。<code>StepInfo</code> 的标题、按钮文字和正文取 <code>copies</code> 里编号等于最前面的副本的一项；最前面的副本这一步空闲时取 <code>copies</code> 的第一项，也就是编号最小的有工作的副本。<code>copy</code> 写出取的是哪个副本，<code>front</code> 为假表示最前面的副本这一步空闲，这时步骤条在标题下方用 <code>--muted</code> 色的小字写「这一步按 h=0 · m=0 说明，最前面的副本这一步空闲」，副本编号按 <code>names</code> 的顺序写出。<code>groups</code> 的标题同样按最前面的副本选取；括号的 <code>copies</code> 留给场景按最前面的副本选择标题。场景判断「这一步亮的节点」和「到这一步为止出现过的节点」用 <code>state()</code> 的 <code>active</code> 与 <code>revealed</code>。</p>
 
 <h3>折叠与反向步骤</h3>
 <p>一整层 Transformer 有上百个节点，逐个运算讲解时读者看不到结构。页面描述文件编译出的步骤用 <code>backward: 'reverse'</code> 和 <code>modules</code>：每个模块可以折叠成一步，折叠后它的内部节点从图上隐去，只留输入、输出和参数，读者先看整体，再展开感兴趣的模块。JavaScript 页面也可以直接这样写。</p>
@@ -618,6 +672,7 @@ isLeafLike(node: Node): boolean</code></pre>
   <li>前向：每个步骤声明是一个单元。<code>show</code> 包含全部 <code>visible</code> 的单元是总览（<code>kind: 'overview'</code>），全部显示、全部高亮，不计入之后的 revealed；<code>show</code> 全是叶子的单元是输入步骤（<code>kind: 'inputs'</code>）。其余单元：<code>show</code> 里不是叶子的节点是它算出的节点，没有时取全部 <code>show</code>；它用到的节点是这些节点的输入（权重的转置同时带上权重）；<code>active</code> 默认是两者的并集。叶子指 input、param、label、buffer 和权重的转置（<code>isLeafLike</code>）。前向第 $k$ 步的 revealed 是输入步骤的 <code>show</code>，加上到这一步为止各单元算出的节点和高亮的叶子；输入步骤只列参数，buffer 在第一个使用它的步骤里出现。</li>
   <li>单元所属的模块链上有折叠的模块时，从最外层的折叠模块开始，连续属于它的单元合成一个 <code>kind: 'module'</code> 步骤：显示模块的输出，高亮输出、输入和参数，标题默认「标题（已折叠）」，按钮文字默认是模块标题。</li>
   <li>反向：前向的单元和折叠模块倒过来，每个一步。一个单元的反向步骤高亮它用到的节点里有梯度的那些；没有这样的节点，或者单元显示的节点都没有梯度时跳过，只有第一步例外。后一条让 <code>topk_mask</code> 这类不可导的选择不出现在反向里，即使它的输入从别的路径收到了梯度。第一步同时包含损失节点。折叠模块的反向步骤高亮它的输入和参数，输出都没有梯度时同样跳过；标题默认「穿过 标题（已折叠）」，按钮文字默认 <code>$\partial$ 标题</code>。单元的默认标题、按钮文字和正文与 <code>'auto'</code> 相同，以第一个收到梯度的节点为主语；只给了标题时正文为空。总览单元写了 <code>backward</code> 时，反向最后再加一个总览步骤，全部显示、全部高亮。</li>
+  <li>自定义反向函数（见「建图」的 <code>defineFunction</code>）的反向步骤由 <code>functions</code> 给出，每项对应一次函数调用：<code>module</code> 是调用的模块 id，<code>after</code> 是它所在的前向步骤，<code>steps</code> 是页面描述文件的 <code>backward_steps</code> 编译出的步骤。反向走到 <code>after</code> 这个单元时，先按顺序加入这些步骤，再加入这个单元自己的反向步骤；<code>after</code> 所在的模块折叠时，只有折叠模块的一步，不加入它们。每一步显示 <code>show</code> 与 <code>receive</code>，高亮 <code>show</code>、<code>show</code> 的输入和 <code>receive</code>；<code>receive</code> 是这一步算出梯度的函数输入，读者在这一步看到梯度交回到哪个张量。高亮的节点里的反向节点从这一步起留在图上。<code>StepInfo.computes</code> 是这一步执行的反向节点，等于 <code>show</code>，显存与计算量面板按它统计。<code>groups</code> 是步骤条的分组路径，没有时取 <code>after</code> 的分组。<code>visible</code> 包含这些步骤的 <code>show</code>；前向总览只显示前向步骤的节点。</li>
   <li>折叠或展开以后，当前位置尽量保持：依次找 id 相同的步骤、同一方向里节点有重叠的步骤、包含原来那一步的折叠模块步骤，都没有时回到同一方向的第一步。</li>
 </ul>
 <p>反向按单元倒序，而不是按节点倒序，是因为读者在前向里按单元建立的分组（例如 RMSNorm 的四步）在反向里应当一一对应；折叠后一个模块只占一步，前向与反向的步数随之一起变化。</p>
@@ -693,11 +748,11 @@ interface EdgeCard {
     <tr><th>模式</th><th>运算</th><th>边</th></tr>
   </thead>
   <tbody>
-    <tr><td><code>elementwise</code></td><td>add、sub、rsub、mul、div、neg、exp、log、pow、rsqrt、sqrt、reciprocal、erf、sigmoid、silu、softplus、relu、gelu、identity、abs、sign、clamp_min、remainder、floor_divide、bitwise_xor、bitwise_and、bitwise_or、copysign、eq、ge、lt、rotate_half、clamp、transpose、permute、embedding、narrow、cat、view、select、repeat_interleave、repeat_kv、repeat、contiguous、sort、cummax、causal_conv1d、where、greater、logical_not、masked_fill、scatter、expand、reshape、triu、tril、cumsum、unsqueeze、squeeze、pad、solve_triangular</td><td>每个输出元素连到每个张量参数的对应元素；广播的输入一对多，例如 LSE 连到每个 $\log p_i$。给了 <code>selected</code> 的运算按它给出的元素连线：transpose 和 permute 按重排后的下标对应，embedding 的输出元素只连到 weight 被取到的那一行的同一列（场景里 embedding 表与输出在同一层，这些连线画成向上拱起 0.9 的弧线，暂定），narrow 连到平移 <code>start</code> 后的元素，cat 连到它来自的那个输入元素，view 连到行主序位置相同的元素，select 连到被取出的切片里的对应元素，repeat_interleave、repeat_kv、repeat 和 expand 连到复制来源的元素，reshape 与 view 相同，contiguous 连到下标相同的元素，cummax 连到前缀里取到最大值的那个元素，sort 连到排序前的那个元素，局部导数都是 1；floor_divide、bitwise_xor、bitwise_and、bitwise_or、eq、ge、lt、greater、logical_not 不求梯度，没有边；copysign 只有 <code>a</code> 连到输出；causal_conv1d 的输出元素连到同一列里它用到的 $K$ 个输入元素（相隔 dilation 个位置）和这一列的 $K$ 个权重，局部导数分别是对应的权重和输入。where 只有 <code>a</code> 连到输出，局部导数在 condition 非 0 处是 1、其余是 0；masked_fill 相同，局部导数在 mask 非 0 处是 0、其余是 1；scatter 没被写的位置连到 <code>a</code> 的同一元素，被写的位置在 <code>src</code> 是节点时连到写来的那个 <code>src</code> 元素，是数时没有边，局部导数都是 1；triu 的局部导数在保留的位置是 1、其余是 0。cumsum 的输出元素连到这一维上它之前（含自己）的每个输入元素，unsqueeze 和 squeeze 与 view 相同，pad 连到平移后的输入元素、补出来的位置没有边，局部导数都是 1。solve_triangular 的 $X_{t,c}$ 连到 $B$ 里同一列、行 $p$ 在 $t$ 这一侧（下三角时 $p\le t$）的元素，局部导数 $[L^{-1}]_{t,p}$，以及 $A$ 里这些行用到的三角元素 $A_{p,q}$，局部导数 $-[L^{-1}]_{t,p}X_{q,c}$，$L$ 是实际参与求解的三角矩阵（unitriangular 时对角线换成 1）。标量运算数不是节点，没有边。</td></tr>
+    <tr><td><code>elementwise</code></td><td>add、sub、rsub、mul、div、neg、exp、log、pow、rsqrt、sqrt、reciprocal、erf、sigmoid、silu、softplus、relu、gelu、identity、saved、abs、sign、clamp_min、remainder、floor_divide、bitwise_xor、bitwise_and、bitwise_or、copysign、maximum、eq、ge、lt、rotate_half、clamp、transpose、permute、embedding、narrow、cat、view、select、repeat_interleave、repeat_kv、repeat、contiguous、sort、cummax、causal_conv1d、where、greater、logical_not、masked_fill、scatter、expand、reshape、triu、tril、cumsum、unsqueeze、squeeze、pad、solve_triangular</td><td>每个输出元素连到每个张量参数的对应元素；广播的输入一对多，例如 LSE 连到每个 $\log p_i$。给了 <code>selected</code> 的运算按它给出的元素连线：transpose 和 permute 按重排后的下标对应，embedding 的输出元素只连到 weight 被取到的那一行的同一列（场景里 embedding 表与输出在同一层，这些连线画成向上拱起 0.9 的弧线，暂定），narrow 连到平移 <code>start</code> 后的元素，cat 连到它来自的那个输入元素，view 连到行主序位置相同的元素，select 连到被取出的切片里的对应元素，repeat_interleave、repeat_kv、repeat 和 expand 连到复制来源的元素，reshape 与 view 相同，contiguous 连到下标相同的元素，cummax 连到前缀里取到最大值的那个元素，sort 连到排序前的那个元素，局部导数都是 1；floor_divide、bitwise_xor、bitwise_and、bitwise_or、eq、ge、lt、greater、logical_not 不求梯度，没有边；copysign 只有 <code>a</code> 连到输出；maximum 的两个输入都连到输出，局部导数是 $\mathbf{1}[a&gt;b]$ 和 $\mathbf{1}[b&gt;a]$，相等时各是 0.5；saved 与 identity 相同；causal_conv1d 的输出元素连到同一列里它用到的 $K$ 个输入元素（相隔 dilation 个位置）和这一列的 $K$ 个权重，局部导数分别是对应的权重和输入。where 只有 <code>a</code> 连到输出，局部导数在 condition 非 0 处是 1、其余是 0；masked_fill 相同，局部导数在 mask 非 0 处是 0、其余是 1；scatter 没被写的位置连到 <code>a</code> 的同一元素，被写的位置在 <code>src</code> 是节点时连到写来的那个 <code>src</code> 元素，是数时没有边，局部导数都是 1；triu 的局部导数在保留的位置是 1、其余是 0。cumsum 的输出元素连到这一维上它之前（含自己）的每个输入元素，unsqueeze 和 squeeze 与 view 相同，pad 连到平移后的输入元素、补出来的位置没有边，局部导数都是 1。solve_triangular 的 $X_{t,c}$ 连到 $B$ 里同一列、行 $p$ 在 $t$ 这一侧（下三角时 $p\le t$）的元素，局部导数 $[L^{-1}]_{t,p}$，以及 $A$ 里这些行用到的三角元素 $A_{p,q}$，局部导数 $-[L^{-1}]_{t,p}X_{q,c}$，$L$ 是实际参与求解的三角矩阵（unitriangular 时对角线换成 1）。标量运算数不是节点，没有边。</td></tr>
     <tr><td><code>reduce</code></td><td>sum、mean、max、logsumexp</td><td>被归约的一组元素各连到一个输出元素</td></tr>
     <tr><td><code>dense</code></td><td>softmax、log_softmax、topk_mask、topk_indices</td><td>输出元素连到同一切片（<code>dim</code> 方向）里的全部输入元素。topk_mask 和 topk_indices 的输入不求梯度，所以没有边</td></tr>
     <tr><td><code>contract</code></td><td>matmul、select_matmul</td><td>经过乘积格子：$A_{r,k}$ 连到格子 $(r,k,i)$，局部导数 $B_{k,i}$；$B_{k,i}$ 连到同一格子，局部导数 $A_{r,k}$；格子连到输出 $C_{r,i}$，局部导数 1。select_matmul 的 $A_{r,k}$ 是输入的 $(r, \mathit{index}, k)$ 元素，其余相同。两边都是三维的批量 matmul（注意力里 $(H, T, d_h)$ 乘 $(H, d_h, T)$）同样经过格子，格子带 batch 下标 $(b, r, k, i)$：$A_{b,r,k}$ 与 $B_{b,k,i}$ 连到格子 $(b,r,k,i)$，格子连到 $C_{b,r,i}$，batch 维为 1 的一边按广播下标对应。两边都是四维的批量 matmul 同样经过格子，格子带两个 batch 下标 $(a, b, r, k, i)$。其余批量的 matmul 不经过格子：$A_{b,r,k}$ 直接连到输出 $C_{b,r,i}$，局部导数 $B_{b,k,i}$，$B_{b,k,i}$ 连到 $C_{b,r,i}$，局部导数 $A_{b,r,k}$。scene3d 给二维的 matmul 和两边都是三维或都是四维的批量 matmul 画乘积板。</td></tr>
-    <tr><td><code>select</code></td><td>gather、nll_loss、one_hot、nonzero_static、index、index_add、index_put、select_scatter、slice_scatter、grouped_linear、arange、causal_mask、zeros、ones、eye、zeros_like</td><td>arange、causal_mask、zeros、ones、eye 没有输入，zeros_like 的输入不求梯度，都没有边。select_scatter 与 slice_scatter 的输出元素连到写入的 <code>src</code> 元素或没被改写的 <code>a</code> 元素，局部导数是 1。只连被选中的元素；被 <code>ignore_index</code> 忽略的行没有边。index 的输出元素连到取出的那个输入元素；index_add 的输出元素连到 <code>a</code> 的同一元素和 <code>source</code> 里加到这里的各个元素，局部导数都是 1；grouped_linear 的输出元素 $(r, i)$ 连到 <code>x</code> 第 $r$ 行的每个元素和 $W[\mathit{group}_r]$ 第 $i$ 行的每个元素，局部导数分别是 $W[\mathit{group}_r]_{i,k}$ 和 $x_{r,k}$。one_hot、nonzero_static 的输入不求梯度，没有边</td></tr>
+    <tr><td><code>select</code></td><td>gather、nll_loss、one_hot、nonzero_static、index、index_add、index_put、select_scatter、slice_scatter、scatter_tiles、grouped_linear、arange、causal_mask、zeros、ones、full、eye、zeros_like、grad_of</td><td>arange、causal_mask、zeros、ones、full、eye 没有输入，zeros_like 与 grad_of 的输入不求梯度，都没有边。select_scatter 与 slice_scatter 的输出元素连到写入的 <code>src</code> 元素或没被改写的 <code>a</code> 元素，局部导数是 1；scatter_tiles 的输出元素连到覆盖它的各个块的对应元素，没有块覆盖或 accumulate 时还连到 <code>a</code> 的同一元素，局部导数都是 1。只连被选中的元素；被 <code>ignore_index</code> 忽略的行没有边。index 的输出元素连到取出的那个输入元素；index_add 的输出元素连到 <code>a</code> 的同一元素和 <code>source</code> 里加到这里的各个元素，局部导数都是 1；grouped_linear 的输出元素 $(r, i)$ 连到 <code>x</code> 第 $r$ 行的每个元素和 $W[\mathit{group}_r]$ 第 $i$ 行的每个元素，局部导数分别是 $W[\mathit{group}_r]_{i,k}$ 和 $x_{r,k}$。one_hot、nonzero_static 的输入不求梯度，没有边</td></tr>
   </tbody>
 </table>
 <p>乘积格子只存在于 <code>explain</code>，不是计算图的节点，数值为 $A_{r,k}B_{k,i}$。这样计算图与 torch 保持一致，讲解仍然可以画出「一行乘一列再累加」的过程。每条边有稳定的 <code>id</code>：同一个运算、同一位置的边在 label 变化前后 id 相同，select 模式的 id 用输出下标。</p>
@@ -860,17 +915,23 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: L
 <p>对照页 <code>examples/auto-layout-qwen3.html</code> 的建图代码与 <code>examples/qwen3-structure.html</code> 相同，布局和大括号由 <code>autoLayout</code> 生成。两页的差别：自动布局按顺序排主列，k 的 k_norm 和 RoPE 排在两个 head 的竖道下面，手写布局把它们放在 head 的旁边、与 q 同高，所以自动布局的场景更高；$\boldsymbol{\gamma}$ 与使用它的节点同高，手写布局放得更低。YAML 写的 <code>examples/qwen3/qwen3-dsl.yaml</code> 用的是分层布局。</p>
 
 <h3>分层布局</h3>
-<p>分层布局把场景排成一列自下而上的「层」，每一层是一个 $y$ 高度，层里的块沿 $x$ 方向排开。层由 <code>forward</code> 和 <code>layout</code> 决定，步骤只决定哪一步亮哪些块，不改变块的位置；每个张量只有一个位置。模块折叠时它的层收进一个盒子。<code>levelPlan(steps, levels)</code> 在挂载前算出层和列，<code>levels</code> 是编译结果里的 <code>LevelSpec</code>，<code>resolve({ folded, aligned })</code> 在每次折叠状态变化时按当前的折叠状态算出各层的高度、盒子和大括号的范围，场景据此重建。</p>
+<p>分层布局把场景排成一列自下而上的「层」，每一层是一个 $y$ 高度，层里的块沿 $x$ 方向排开。层由 <code>forward</code> 和 <code>layout</code> 决定，步骤只决定哪一步亮哪些块，不改变块的位置；每个张量只有一个位置，循环各轮和叠放的副本里的同名张量共用一个位置，见「并行副本、循环与片上存储」。模块折叠时它的层收进一个盒子。<code>levelPlan(steps, levels)</code> 在挂载前算出层和列，<code>levels</code> 是编译结果里的 <code>LevelSpec</code>，<code>resolve({ folded, aligned })</code> 在每次折叠状态变化时按当前的折叠状态算出各层的高度、盒子和大括号的范围，场景据此重建。</p>
 <p><b>层怎么分。</b></p>
 <ul>
   <li><code>LevelSpec.lines</code> 是按 <code>forward</code> 一行一层排出的层：调用子模块的一行展开成子模块的各层，<code>layout.place</code> 的 <code>before</code>、<code>after</code> 移动层，<code>merge</code> 的两个调用逐层合并。一行里的节点按依赖深度再分层：不依赖这一行其他节点的在第一层，依赖它们的往上一层。</li>
   <li><code>sides</code> 记录 <code>place</code> 的 <code>with</code>、<code>left</code>、<code>right</code>：节点放进目标所在的层，横向范围与同层的块重叠时向外挪开，与目标之间留 <code>PLACE_GAP</code>（1.6，暂定），重叠按 <code>COLUMN_BREAK</code> 判断。两个块之间朝向对方的一侧有标题时（左边的块标题在右侧，或右边的块标题在左侧），每个这样的标题再加 <code>PLACE_TITLE_ROOM</code>（1.2，暂定），标题不会被旁边的块盖住。标题的位置在挪开前先按当前列算一次，挪开后再重算。<code>merges</code> 记录合并的两边，右边的块整体右移，间距按同样的规则计算。</li>
   <li><code>matmul</code> 与 <code>select_matmul</code> 画成板：$B$ 画成权重板放在输出所在的层，输出的每一列对着 $B$ 的一列。两边都是三维或都是四维的批量 matmul 画成按 batch 并排的几块板（四维时按「四维张量」的顺序排 $A B$ 块）：$A$、$B$ 和输出的分块轴都是 batch 维，输出与 $B$ 的第 $b$ 块对着 $A$ 的第 $b$ 块，$A$ 的每一行沿着这一块往上连到格子；板的列从 $A$ 最左的一列开始，列距与 $A$ 相同，$A$ 在同一层时放在 $A$ 右侧 <code>BOARD_GAP</code>（1.45）处。$A$ 是二维、$B$ 是三维或反过来的批量 matmul 不画板，直接连线。$B$ 是权重（或权重的转置）的线性层，如果输入 $A$ 只被下一个单元的板使用、并且这些板的 $A$ 都是它，$A$ 移到板的那一层，与板并排（例如 q、k、v 投影共用一个输入）。$B$ 是激活（注意力里的 $\mathbf{k}^{\top}$、$\mathbf{v}$）并且这个矩阵乘是它唯一的使用者时，$B$ 移到板的那一层。每个矩阵乘都画自己的板和自己的 $B$ 权重板，读者在每块板上都能看到一行乘一列：同一个 $B$ 是几个矩阵乘的右操作数时（gated delta rule 里的 $\hat{\mathbf{k}}^{\top}$ 同时用于 $\mathbf{k}_{\beta}\hat{\mathbf{k}}^{\top}$ 与 $\tilde{\mathbf{q}}\hat{\mathbf{k}}^{\top}$，每一块的状态 $S$ 同时用于两个矩阵乘），每块板各画一份 $B$ 的权重板，$B$ 本身留在自己的层；只有一个矩阵乘使用它、它又没有在步骤里单独显示时，这份权重板就是 $B$ 唯一的画法。其他运算连到 $B$ 的边连到 $B$ 本身（没有单独的层时连到第一块板的权重板），乘积格子的边连到所在板的那份权重板；悬停任一份权重板的柱子，提示和卡片显示的都是 $B$ 的值或梯度。</li>
   <li><code>embedding</code> 的输出与 embedding 表画在同一层，表画成权重板。</li>
+  <li>一列的归约向量跟着它的宿主：一个画成圆柱或方块的一列节点（每行一个元素的行向量，或 0 维标量，例如 Liger 交叉熵 kernel 里每个 program 一行的 $m$、$d$）由一个多列的平面张量在同一步或同一个循环轮次里推出时，这个平面张量是它的宿主。推出可以经过几个这样的一列节点，例如 FlashAttention 一轮里 $\max(\tilde{S})$、$m$、$m^{*}$、$\alpha$、$\alpha\ell$ 都由分数块 $\tilde{S}$ 推出，$\sum P$ 和 $\ell$ 由 $P$ 推出；有几个候选时取所在层最高的那个，因为宿主要在它的全部输入之上。只按同一步或同一轮的输入找，跨轮的输入（上一轮的 $m$、$\ell$）不算。从输入找不到宿主时，用同一步或同一轮里使用它的节点找：使用它的一列节点有宿主时用那个宿主，使用它的是多列平面张量时，这个张量就是宿主（例如 $1/\ell$ 的宿主是乘上它的 $O^{\mathrm{acc}}/\ell$）。片上区域里的节点只取片上区域里的宿主，显存里的张量不当宿主。两种方式都找不到宿主的一列节点（例如 FlashAttention 结束时写回显存的 $L$）留在自己的层。只有一列的节点才这样放，按 head 分组、每组一个圆柱的张量仍在自己的层。
+    <ul>
+      <li>层（<code>lines</code> 布局）：同一个宿主的这串节点都放进宿主所在的层，层只留给平面张量。移空的层删除。kernel 调用里这串节点随宿主排进地面上宿主所在的行，见「并行副本、循环与片上存储」。</li>
+      <li>横向：这串节点是宿主的附属物，不单独占一列，沿依赖顺序（所在原始层从低到高）在宿主右侧排成一行：第一个离宿主最右一列 <code>DISC_SIDE</code>（1.6），之后每个往右 <code>SCALAR_ROW_GAP</code>（3.0，与 <code>stack</code> 模板的 <code>'row'</code> 相同，能放下圆柱和它的标签）。这一行的宽度算进宿主的侧边：同一层在宿主右侧的其他块整体右移，与这一行最后一个节点之间留 <code>SCALAR_ROW_GAP</code>。行里的标题上下交替：第 1、3、5 个写在圆柱右上方，第 2、4、6 个写在圆柱右下方，相邻两个标题错开一行，隔一个的标题之间有两个间距的宽度。</li>
+    </ul>
+  </li>
   <li>布局运算（view、reshape、transpose、permute、unsqueeze、squeeze、contiguous）和类型转换（<code>identity</code> 带 dtype，即 <code>.float()</code>、<code>.to(dtype)</code>）只改变形状、下标的排法或存储精度，默认不单独画：它们不出现在任何步骤的 <code>show</code> 里时，图上用最初的源节点代表它们，不占新的层，也没有自己的连线；使用它们的运算直接连到源节点上对应的元素（按下标换算，transpose 交换下标，其余按行主序位置）。作为矩阵乘右操作数的布局节点（$W^{\top}$、$\mathbf{k}^{\top}$）画成权重板，所以总要显示。不单独画的三维布局节点把二维的源节点按 head 切开时（例如 <code>q_proj</code> 的输出 view 成 $T\times H\times d_h$），源节点按这个布局节点的分块画成每个 head 一块，与后面按 head 画的张量对得上；点击它的标题时，卡片显示这个布局节点：形状是三维的形状，公式把源节点的公式代进布局运算，例如 $\mathbf{q}=\operatorname{view}(\mathbf{h}W_q^{\top})$，当前值按 head 分组。步骤在 <code>show</code> 里列出一个布局节点时，它独占一层，按自己的分块轴画，与源节点之间画逐元素一一对应的连线（局部导数 1），读者能看到形状怎么变。</li>
   <li>一维权重（RMSNorm 的 $\boldsymbol{\gamma}$）和 buffer 放在使用它的运算的主输入所在的层，列对着运算输出的列；主输入不在紧挨着的下一层时（例如 RoPE 的 $t\,\boldsymbol{\omega}$，位置编号和它之间隔着 causal mask），放在运算输出所在的层。没有输入的运算（<code>arange</code>、<code>causal_mask</code>）占自己的层，画成柱子板；只在一列里使用、随后被 <code>unsqueeze</code> 成 $(N, 1)$ 的一维张量画成一列。</li>
 </ul>
-<p><b>块的种类。</b>平面张量画成柱子板（plate）；矩阵乘的 $B$ 和 embedding 表画成权重板（tile），放在板层的后方；一维权重画成一排柱子（vector），放在这一层后方；最后一维是 1、并且被逐元素运算沿这一维广播到更宽的张量（RMSNorm 的 $\mathrm{ms}$、$r$，softmax 的 $Z$）画成圆柱（disc），只是沿其他维广播的张量（例如 RoPE 的 $\cos$、$\sin$ 跨 head 广播）仍画成板；作为矩阵乘的右操作数或作为下标使用的张量不算，即使运算输出的形状恰好与另一个输入相同，放在源张量右侧；0 维的损失画成方块（box）。三维张量按分块轴画（见「三维张量」），块与块之间多留一道缝；代表三维布局节点的二维源节点（例如被 view 成 $(T, H, d_h)$ 的 $(T, H d_h)$）也按块宽分组；一个节点被 <code>narrow</code> 按固定宽度切开使用时也按这个宽度分组。</p>
+<p><b>块的种类。</b>平面张量画成柱子板（plate）；矩阵乘的 $B$ 和 embedding 表画成权重板（tile），放在板层的后方；一维权重画成一排柱子（vector），放在这一层后方；最后一维是 1、并且被逐元素运算沿这一维广播到更宽的张量（RMSNorm 的 $\mathrm{ms}$、$r$，softmax 的 $Z$）画成圆柱（disc），画成一列的一维张量同样适用；与圆柱画法形状相同的逐元素运算链也画成圆柱：被一个形状相同的圆柱使用的运算，以及非 0 维输入都是形状相同的圆柱的逐元素运算，例如 FlashAttention 一轮里的 $m$、$m^{*}$、$\alpha$、$\ell$；几轮或几个副本共用一个位置时，组里每个节点都是一列的形状才画成圆柱；只是沿其他维广播的张量（例如 RoPE 的 $\cos$、$\sin$ 跨 head 广播）仍画成板；作为矩阵乘的右操作数或作为下标使用的张量不算，即使运算输出的形状恰好与另一个输入相同，放在源张量右侧；0 维的损失画成方块（box）。三维张量按分块轴画（见「三维张量」），块与块之间多留一道缝；代表三维布局节点的二维源节点（例如被 view 成 $(T, H, d_h)$ 的 $(T, H d_h)$）也按块宽分组；一个节点被 <code>narrow</code> 按固定宽度切开使用时也按这个宽度分组。</p>
 <p><b>列怎么排。</b>主列（残差流）从 $x = -7.2$ 开始，列距 0.95。板放在 $A$ 的右侧，留 1.45；板的列距是 $11.4 / \text{列数}$，限制在 0.74 到 1.45 之间，几块共用 $A$ 的板接着排开，板与板之间留一道缝。逐元素运算的输出与第一个输入的列对齐；能按运算定义的 <code>selected</code> 追到唯一来源的运算（narrow、cat、neg 等），每一列对齐到它的来源元素所在的列，例如三维 RoPE 里 <code>cat([-x2, x1])</code> 的每个 head 仍落在这个 head 的列上；<code>narrow</code> 与按 head 取出的 <code>select</code> 对齐到被取出的那几列；从二维张量沿最后一维取出一列的 <code>select</code>（MoE 里 $N$ 的三列 <code>expert_idx</code>、<code>top_k_pos</code>、<code>token_idx</code>）画成一列，对齐到被取出的那一列；<code>cat</code> 把各输入的列接起来。一维节点在两种情况下画成一列（每行一个元素）：主输入是第一维相同的二维张量，或者有一个输入是同样长度的一列；其余一维节点画成一行。不同列组的板（例如一个板的列从 $A$ 的列开始，另一个板在主列上）落在同一层、并且有两列的 $x$ 相差不到 <code>COLUMN_BREAK</code>（0.6）时，后放入这一层的板整体右移，左端放在前一个板最右一列右侧 <code>PLACE_GAP</code>（1.6）处，前一个板标题在右侧或后一个板标题在左侧时再各加 <code>PLACE_TITLE_ROOM</code>（1.2），避免两个板的柱子重叠。参数或 buffer 放在主列上、和使用它的运算的另一个输入在同一层占了相同的列时（MoE 的 $W_{gu}$ 与 <code>current_state</code>、$W_d$ 与 <code>hidden</code>），挪到这一层主列已占的最后一列之后再空两列，与这一层的板隔开。</p>
 <p><b>按专家分组的行。</b><code>grouped_linear</code> 的输入和输出按 <code>group</code> 分组；分组沿第一维相同的逐元素运算向上下游传播，<code>group</code> 本身和取出它的二维张量也按组排。每个组号在深度方向占一段：段按组号从小到大往前排，组 $g$ 的行在段内居中、行距 1.0，相邻两段之间留 1.0 加 <code>ROW_GROUP_GAP</code>（0.45）。权重 $W$ 是 $(G, \mathit{out}, \mathit{in})$ 的参数时，$W$ 画成 $G$ 块分开的板（<code>Block.slabs</code>）：第 $g$ 块是 $W[g]$ 的 $\mathit{out}$ 行、$\mathit{in}$ 列，行距 0.55，柱子深 0.34，放在组 $g$ 那一段的中间。每一块权重因此和用它的那几行在同一个深度，连线从这一块横着连到这几行，对应 HF 的 <code>F.linear(current_state, gate_up_proj[expert_idx])</code>。每一段的长度取这组的行与最高的一块权重中较长的一个；没有行的组也留出一段放它的权重，这块权重和它的底板按远处淡出的样式画出，读者能看出这个专家这一次没有拿到 token。每块权重右侧 <code>ROW_NAME_SIDE</code>（0.45）处写 <code>组节点名=组号</code>，组号和 PyTorch 一样从 0 开始，例如 <code>expert_idx=0</code>。<code>grouped_linear</code> 的输入在每组第一行的左侧 0.45 处写同样的文字，它的标题改放在板的前方（与 below 的位置相同），不与这些文字一起挤在左侧；连线从右侧的权重进来，左侧的文字不被连线穿过。按组排的块带 <code>Block.rowGroups</code>（每一行的组号），「只画最前一行」对这些块画每组最后一行的边，每个专家都有一行连线。行数随路由变化，所以段的位置在每次 <code>resolve</code> 时按当前数值重算。</p>
 <table>
@@ -930,6 +991,33 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: L
 <p>括号放在最前一行前方 0.6 的深度。页面描述文件编译出的模块目前都不能折叠（<code>foldable</code> 为假，<code>folded</code> 为假），DSL 里的 <code>expand</code> 和 <code>fold</code> 仍然可以写，但不起作用，等折叠重做时再接上；用 JavaScript 写的可折叠模块，大括号的标签上有「▸ 展开」或「▾ 折叠」，点击切换这个模块的折叠状态。</p>
 <p>分层布局的这些值在 <code>scene3d/levels.ts</code> 里以 <code>GAP</code>、<code>FOLD</code>、<code>BOX_MARGIN</code>、<code>BRACE_PAD</code>、<code>BRACE_X</code> 等常量给出，改动时对照 Qwen3 页的截图检查各层的标签是否互相遮挡。</p>
 
+<h3>并行副本、循环与片上存储</h3>
+<p>kernel 的结构是：网格里的各个 thread block 同时执行，每个 thread block 里有顺序执行的循环，数据从显存读进 shared memory 和寄存器，算完写回显存。图上用下面几种画法表示它们，规则都写在 DSL 里，与具体模型无关。</p>
+<p><b>一个位置画多个张量。</b><code>LevelSpec.slots</code> 把共用一个位置的节点分成组：同一个循环体里同名的各轮张量是一组，叠放的各副本里同名的张量也在这一组里。布局只给每组的第一个节点分配位置，组里其他节点用同一个块。每次切换步骤时，块显示组里的一个节点：最前面的副本在当前步骤亮的那一轮；这一轮没亮时，显示最前面的副本已经出现过的最后一轮。柱子高度、悬停卡片、节点卡片和连线卡片都读显示的节点。连线只画显示的节点之间的边；同一组的两个节点之间的边（跨轮状态）画成从块的右侧出发、绕回块本身的自连线，标「上一轮」：起点和终点在块右侧外 0.08、块前后中点两侧各 0.32 处，两个控制点从端点往右 1.1、往上 0.9（<code>LOOP_REACH</code>、<code>LOOP_RISE</code>，暂定），同一对节点之间的元素级边合成一条。终点是显示的节点、起点是同一组里更早一轮的节点时，这条边也画出（从这个组的块出发），在起点一侧标「上一轮」；起点是更晚一轮的节点时不画。</p>
+<p><b>kernel 画成地面。</b>每个 <code>kernel: true</code> 模块的一次调用（有没有 <code>grid</code> 都一样，例如 SiLU、Liger 的交叉熵 kernel）在主图里占一层的位置，这一层画成平铺的地面：这次调用的块都放在这一层的高度上，柱子向上。地面左边是「显存 HBM」卡片，右边是片上卡片，两张卡片之间留 <code>CARD_GAP</code>。地面的左边缘与主列最左的块对齐，前沿与主列最前的块对齐。主图上下的层照旧接在地面的上下，kernel 所在模块的大括号框住整块地面。几次调用同一个 kernel 共用一组块时（例如 Liger 每个 chunk 一次）只画一块地面，卡片和轮廓按当前步骤亮的那次调用画。反向的 kernel（自定义反向函数里的 grid 调用）同样画成地面，排在前向之后。卡片是贴在地面下方 0.1 处的薄板，HBM 卡片用 <code>--neg</code> 色、不透明度 0.12，片上卡片用 <code>--pos</code> 色、不透明度 0.1，片上的两块底板 0.08。</p>
+<p><b>HBM 卡片。</b>卡片上放这次调用读的张量输入和写回的张量（kernel 的输出，即 <code>scatter_tiles</code> 的结果，与被写的输入同名）。读的张量排在后面几行，写的张量排在前面几行；每一行从左往右排，宽度不超过第一张片上卡片的宽度，放不下时换到下一行，读和写不在同一行。片上卡片比读写的行更深时，写的行推到卡片最前面。张量的列间距在卡片上压到 <code>STREAM_SPACING</code>（0.95）。一个输入只被 kernel 整块覆盖写时（用到它的地方都是不累加的 <code>scatter_tiles</code> 的被写张量，例如 FlashAttention 前向的输出缓冲区）不算读，卡片上只画写回的结果。输入是叶子张量、原本放在 kernel 所在的层时，块直接移到卡片上；输入在主图别处画过时，卡片上按「别名张量画成单独一份」的规则再画一份（<code>Block.copyOf</code> 指向原张量），从原张量的块到这一份画一条 <code>--ink</code> 色的虚线，不透明度 <code>LINK_OPACITY</code>。经过 <code>saved</code> 的输入（反向 kernel 读的前向张量）按它保存的张量找原块。kernel 里的运算连到这些输入的边从卡片上的这一份出发，区域框也画在这一份上，读者能看出每个 thread block 从显存的哪一块读、写回哪一块。</p>
+<p><b>片上卡片。</b>这次调用里不是输入、输出的节点（<code>LevelGrid</code> 的 <code>shared</code> 与 <code>registers</code>）画在片上卡片上。卡片里分两块同宽的底板：后面是 shared memory（<code>shared</code> 列出的张量），前面是寄存器，两块底板之间留 <code>CARD_ROW_GAP</code>，底板在块的外沿外留 <code>CARD_MARGIN</code>，卡片在底板外再留 <code>CARD_MARGIN</code>。HBM 卡片与片上卡片前后对齐，深度取两者中较大的。卡片左下角写「片上：m=1 · h=1」这样的最前面副本的编号，当前步骤这个副本有工作时用强调色；底板左上角写「shared memory」「寄存器」，HBM 卡片左下角写「显存 HBM」。这些标签只在当前步骤有工作的地面上显示。矩阵乘法板的 $B$ 块跟着板子画在寄存器底板里；$A$ 在另一行时板子照常画，连线从 $A$ 所在的行过来。</p>
+<p><b>片上的行。</b>底板里的块排成行，行之间留 <code>CARD_ROW_GAP</code>，行内的块之间留 <code>CARD_COL_GAP</code>，行内第 2、4、6 个块往前错开 <code>CARD_STAGGER</code>，相邻两个块的标题不在同一条线上。块的标题写在块的前方。寄存器底板的行号按数据依赖深度自动算出：只读 shared memory 或显存的块在第 0 行，用到寄存器里第 $r$ 行的块至少在第 $r+1$ 行。依赖只在同一轮里找，跨轮的输入（上一轮的 $m$、$\ell$）不算，所以一轮循环体从第 0 行开始往前排；循环之前和之后的节点按同样的规则接在前后。依赖经过不画成块的节点（下标取出的匿名节点、view）和 $B$ 块时继续往前找。一列的归约向量链按「一列的归约向量跟着它的宿主」排在宿主右侧，不另占行；宿主在 shared memory 时按自己的行号排。行内从左往右按节点建立的顺序排，也就是依赖顺序。shared memory 底板里的块默认排成一行。</p>
+<p><b>指定行。</b>kernel 模块的 <code>layout.rows</code>（见 DSL 页的 Layout）列出几行张量名，列出的名字放在对应的行，按列出的顺序从左往右；一个名字包括它的全部赋值和表达式里的匿名中间节点。一行里 shared memory 的张量放在 shared memory 底板的一行，寄存器的张量放在寄存器底板的一行，所以同一个名字在不同配置下（例如 FlashAttention 反向的 <code>rp: p.to(q.dtype)</code>，fp32 时就是 $P$ 本身，bf16 时是一次转换）落在哪块底板都能放下。有 <code>rows</code> 时，没有列出的寄存器节点放在它依赖的已放节点中最深的那一行（不再加一），没有列出的 shared memory 张量放在 shared memory 的第一行。FlashAttention 的前向和反向 dq_dk_dv kernel、Liger 的交叉熵 kernel 写了 <code>rows</code>：自动规则给每个中间节点一行，表达式里的匿名中间节点也算，前向一轮有十行左右，地面比画面高很多，读者看不出读入的块、分数与概率、行统计量与累加器、写回前的块这几段；反向 dq_dk_dv kernel 的 $P$、$\mathrm{d}S$ 存在 shared memory 里，自动规则把读它们的矩阵乘都算成第 0 行，十几个块挤在一行。</p>
+<p><b>叠放与展开的副本。</b><code>grid</code> 模块的一次调用里，<code>layout.grid</code> 为 <code>expand</code> 的维度按编号把各副本的片上卡片从左往右并排，卡片之间留 <code>COPY_GAP</code>，与 <code>merge</code> 的并排方式相同，各副本共用一张 HBM 卡片。<code>stack</code> 的维度只画最前面的副本，其余副本画成片上卡片下方、向右后方错开的一摞卡片轮廓：第 $j$ 个轮廓是片上卡片的外框平移 $j$ 个 <code>OUTLINE_STEP</code>（向右 0.9、向下 0.25、向后 1.3），最多画 <code>OUTLINE_MAX</code> 个，更多时最后一个轮廓旁写「还有 $N$ 个」。轮廓在地面下方，不会和片上的块混在一起。每个轮廓的右后角旁写副本的编号，按 <code>grid</code> 各维的顺序写，例如 <code>m=2 · h=1</code>；当前步骤里有工作的副本的外框和轮廓用强调色，空闲的用灰色。最后一个轮廓后方写「共 8 个副本同时执行（真实尺寸 2048 个）」，真实个数按真实尺寸的 <code>grid</code> 算出，页面没有真实尺寸时不写括号。点一个轮廓或它的编号，这个副本换到最前面，图上的数值和步骤文字跟着换，相机不动。初始的最前面的副本是各维编号都取最大值的那个，例如 causal FlashAttention 里最后一个 query 块，它的轮数最多。</p>
+<p><b>区域。</b>一个张量由另一个张量的下标取出时（整数下标或切片，可以有几层，例如 <code>q[a:b, h]</code>），在这一步亮它的时候，源张量上被取出的元素外画一个框，所有亮着的副本各画一个，最前面的副本的框用实线，其余用虚线；连线从框里的元素出发。<code>scatter_tiles</code> 的输出同样在每个块写入的区域画框，连线从块连进框里。被取的元素在板上正好是一个矩形时画一个框，否则每个元素一个框。框边离最外侧柱子中心 0.42，与 label 取用行的框相同，用 <code>--pos</code> 色。源张量是沿下标运算（<code>narrow</code>、<code>select</code>、<code>index</code> 与 view 一类）往回找到的第一个自己画成块的张量；中间的张量也画成块时，框画在它上面。表达式里只做整数或切片下标（<code>narrow</code>、<code>select</code>）的匿名中间节点（名字是结果名加 <code>/序号</code>，例如 <code>q[a:b, h]</code> 里先取的 <code>narrow</code>）不画成块，步骤的 <code>show</code> 列出它时也不画：源张量上的框代表它，用到它的运算的连线从框里被取出的元素出发，取一块不会在图上多出一个与源张量内容相同的块。<code>forward</code> 里有自己名字的下标结果照常画成块。</p>
+<table>
+  <thead>
+    <tr><th>常量</th><th>值</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>并排副本的片上卡片之间 <code>COPY_GAP</code></td><td>3.0（暂定）</td></tr>
+    <tr><td>HBM 卡片与片上卡片之间 <code>CARD_GAP</code></td><td>5.0（暂定）</td></tr>
+    <tr><td>卡片与底板的外边距 <code>CARD_MARGIN</code></td><td>0.8（暂定）</td></tr>
+    <tr><td>行距 <code>CARD_ROW_GAP</code></td><td>6.0（暂定）</td></tr>
+    <tr><td>行内块之间 <code>CARD_COL_GAP</code></td><td>2.4（暂定）</td></tr>
+    <tr><td>行内隔一个块往前错开 <code>CARD_STAGGER</code></td><td>1.8（暂定）</td></tr>
+    <tr><td>副本轮廓的错开量 <code>OUTLINE_STEP</code></td><td>$(0.9,\ -0.25,\ -1.3)$（暂定）</td></tr>
+    <tr><td>最多画出的轮廓 <code>OUTLINE_MAX</code></td><td>15（暂定）</td></tr>
+    <tr><td>原张量到 HBM 卡片上一份的虚线 <code>LINK_OPACITY</code></td><td>0.35（暂定）</td></tr>
+  </tbody>
+</table>
+
 <h3>相机</h3>
 <p>相机采用正交投影，避免透视变形影响对高度的判断。相机有两种模式：默认的全图取景，以及 <code>camera.follow: true</code> 的相机跟随。两种模式下读者都可以在小范围内旋转，鼠标右键拖动（触屏双指）在屏幕平面内平移；按住 Ctrl 或 Meta 再滚动滚轮才缩放，缩放以画面中心为准，缩放倍数乘 $e^{-0.0025\,\Delta y}$（$\Delta y$ 是滚动量），停止滚动 120 毫秒后刷新标签。不按修饰键的滚轮交给页面滚动，读者滚动长页面经过画布时页面不会停住。场景右上角的「复位视角」回到默认方向和当前的取景。下表是默认值；<code>mountScene</code> 的 <code>camera</code> 选项可以覆盖斜视方向（<code>direction</code>）、相对初始方位角的水平旋转范围（<code>azimuth</code>）、极角范围（<code>polar</code>）和缩放范围（<code>zoom</code>）。softmax 页用它给出自己的数值：方向 $(0.62,\ 0.5,\ 1)$，水平 $-0.75$ 到 $+0.6$ 弧度，极角 $0.55$ 到 $1.5$ 弧度。</p>
 <table>
@@ -954,10 +1042,12 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: L
   <li>每次步骤变化后，目标高度是当前步骤高亮块所在层的 $y$ 范围中点再往上 0.9，缩放是 $\min(1,\ 2h/(\Delta y + 10))$，$h$ 是视锥的半高、$\Delta y$ 是这个范围的高度，所以跨几层的步骤会缩小一些，单层的步骤保持原尺寸。目标高度限制在 $[\,y_{\min} + 0.82\,h' - 2,\ y_{\max} - 0.82\,h' + 1\,]$，$y_{\min}$、$y_{\max}$ 是最低层和场景顶部，$h'$ 是按目标缩放算出的半高，画面不会移到场景以外。</li>
   <li>总览步骤、输入步骤和没有高亮块的步骤看全图：把全部块、括号和括号标签的锚点投影到屏幕的竖直方向，上方留出工具栏的高度，下方留出步骤导航的高度，两边再各加 12px 和括号标签高度的一半；缩放取能放下这段范围的最大值，不超过 1，内容居中放在留出边距后的区域里。</li>
   <li>相机每帧向目标靠近剩余距离的 $1 - e^{-9\,\Delta t}$，高度差小于 0.01 并且缩放差小于 0.002 时停止；<code>prefers-reduced-motion</code> 时直接跳到目标。读者用滚轮缩放时取消这次过渡。</li>
+  <li>自定义反向函数里的步骤，高亮块的范围只计这一步算出和收到梯度的块，只作为输入亮起的块（例如前向保存的 $Q$、$K$）不计入，取景对准这一步算出的张量。</li>
+  <li>步骤亮着 kernel 地面上的块时（只计这一步算出的块，HBM 卡片上的复制块不计），相机取景整块地面：两张卡片、卡片上的块和最后一个副本轮廓。视线方向换成 <code>GROUND_DIRECTION</code>（$(0,\ 2,\ 1)$ 归一化，暂定），从斜上方看地面，行与行在屏幕上上下分开；离开地面的步骤换回斜视方向，方向和高度一起按下面的速度过渡，夹角小于 0.001 弧度时停止。把这些点投影到屏幕的竖直和水平方向，上方留出工具栏的高度和 12px、下方留 24px，水平方向两边各留 12px 再加 <code>FOLLOW_SIDE_ROOM</code>（4 个单位）；缩放取两个方向都放得下的最大值，不超过 1，内容居中。这时地面以外的块、两端不都在地面上的连线、其他地面的卡片和不跨过这块地面的大括号都不画，地面不会和主图里上下的层叠在一起。一次调用里的各步取景相同，读者翻页时相机不动，当前步骤由高亮区分。</li>
   <li>总览步骤（前向开头和反向结尾的都算）和输入步骤只画块和外层的大括号：不显示块的标题、数值、连线和深度大于 0 的大括号，只画最外层的括号，最外层括号都画在 <code>right</code> 的位置，排成一列，大括号标签不显示副标题和折叠按钮，读者先看整体结构。</li>
   <li>远处淡出（默认打开，右上角「远处淡出」切换）：与当前步骤高亮的运算块相距超过 2 层、并且不在当前步骤的块向底色混合 88%（标量节点 85%），轮廓线降到 0.08，底板降到 0.1，不显示标题，两端都在远处的连线不画。</li>
-  <li>数值标签在缩放不小于 0.55 时才显示；板上最前一行以外的行在缩放不小于 1.45 时才显示。</li>
-  <li>重叠检测只在块标题、节点标签和模块标签之间做，规则与「标签与交互」相同，但不检查离画布边缘的距离；数值、类别、行号与刻度不参与，也不会因为重叠而隐藏。跟随取景常常把相邻模块的标签和块标题投影到同一处，例如 o_proj 的模块标签和 repeat_kv 的块标题；数值在缩放足够大时才显示，取景已经为它们留出位置。锚点投影超出画布 1.2 倍范围（标准化设备坐标的绝对值大于 1.2）的标签不显示。</li>
+  <li>数值标签在缩放不小于 <code>VALUE_MIN_ZOOM</code>（0.3，暂定）时才显示；板上最前一行以外的行在缩放不小于 1.45 时才显示。缩放小于 0.3 时一块板上相邻柱子的间距比数值标签窄；数值参加下一条的重叠检测，密的板上只显示放得下的那些。</li>
+  <li>重叠检测只在块标题、节点标签、模块标签和数值之间做，规则与「标签与交互」相同，但不检查离画布边缘的距离：块标题、节点标签和模块标签按优先级挪开，数值与已放置的标签相交时隐藏，密的板上（例如 kernel 写回显存的输出板）不会出现两个数值叠在一起；类别、行号与刻度不参与，也不会因为重叠而隐藏。跟随取景常常把相邻模块的标签和块标题投影到同一处，例如 o_proj 的模块标签和 repeat_kv 的块标题。锚点投影超出画布 1.2 倍范围（标准化设备坐标的绝对值大于 1.2）的标签不显示。</li>
   <li>右上角的工具按钮依次是「跳到模块…」（列出全部大括号，点击后相机移到那个模块的中部，缩放为 1）、「视图」菜单和「复位视角」。「视图」菜单里是「远处淡出」、「遮挡半透明」（有步骤时）和「只画最前一行」三个开关，打勾表示打开，含义见「视觉原则」与上面的远处淡出。画布里没有翻页按钮，翻页用画布下方的步骤条。公式卡片在画布右上角、工具按钮下方，右侧与工具按钮对齐。卡片始终显示完整的公式：还没讲到的部分用浅灰，已讲过的部分用正文色，当前步骤的部分用 <code>--pos</code>，反向时这一步对应的部分用 <code>--neg</code>；状态变化时只过渡颜色，不裁切公式。</li>
 </ul>
 
@@ -975,7 +1065,7 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: L
 </ul>
 
 <h3>标签与交互</h3>
-<p>层名、数值、刻度、token 等标签用 HTML 覆盖在画布上，整个 3D 场景（标签、公式卡片、工具按钮）不能被选中，拖动视角时不会选中一片文字；场景里的输入框仍然可以选中文字。按投影位置放置，公式由 KaTeX 渲染。标签投影到屏幕后先处理越界：放在节点上方的节点标签右端超出画布（离右边缘不足 12px）时翻到节点左侧，右端对齐节点中心；左端越界时翻到右侧。放在节点侧面的标签不翻转，取景已为它们留出位置。锚点投影到画布以外的标签不显示，读者平移、缩放或跟随取景以后，画面外的块不会把标签挤到画布边缘。然后做一次重叠检测：按优先级（块标题与模块标签 5、节点标签 4、数值 3、类别 2、行号与刻度 1）依次放置；块标题、模块标签和节点标签可以移动，与已放置的标签相交时按上、下、左、右的顺序以 4px 为步长尝试平移，最多 12 步，取第一个不相交、并且离画布边缘至少 12px 的位置，找不到时留在原位，允许与其他标签重叠，不隐藏；读者用 <code>labels</code> 指定了偏移的标签不移动也不隐藏，按指定位置显示；其余标签不移动，与已放置的标签相交或越出安全区时隐藏。优先级高的标签先放置，所以被隐藏的数值、类别、行号与刻度是优先级低的那些。隐藏只影响显示，自动取景仍按全部标签的原位计算，切换步骤或转动视角后有了空位的标签重新显示。标签的像素尺寸在文字或样式变化时测量一次并缓存，字体加载完成后重新测量；标签的 DOM 元素在第一次测量时才加入页面，从未显示、也没有参与取景的标签不在 DOM 里。DeepSeek V4.1 的页面有约十万个元素，每个元素一个数值标签，全部放进 DOM 时每次样式计算和布局都要几秒；每帧只做投影和重叠检测。位置只在相机、布局或数值变化时重新计算。相机跟随时只在块标题、节点标签和模块标签之间做重叠检测，见「相机」。块的标题写节点的 tex；有步骤的页面里，不在当前步骤高亮中的块，标题用浅色文字，高亮块的标题保持深色，读者能分清这一步用到的是哪一个。反向时写 $\partial\ell/\partial$ 加节点的 tex。分层布局里同一层并排的几个张量各有自己的标题，都写在各自板的左侧，位置一致，读者不会把一个张量的标题看成下一层张量的标题；同一个张量分成几块（例如按 head）时只写一个标题。排列各列以后，同一层相邻两个带左侧标题的张量之间的距离（前一个的最右列到后一个的最左列）小于 <code>TITLE_ROOM</code>（3.5）时，最左列在后一个张量最左列或更右的所有块整体右移补足这个距离；各层一起移动，上下层对齐的列仍然对齐。</p>
+<p>层名、数值、刻度、token 等标签用 HTML 覆盖在画布上，整个 3D 场景（标签、公式卡片、工具按钮）不能被选中，拖动视角时不会选中一片文字；场景里的输入框仍然可以选中文字。按投影位置放置，公式由 KaTeX 渲染。标签投影到屏幕后先处理越界：放在节点上方的节点标签右端超出画布（离右边缘不足 12px）时翻到节点左侧，右端对齐节点中心；左端越界时翻到右侧。放在节点侧面的标签不翻转，取景已为它们留出位置。锚点投影到画布以外的标签不显示，读者平移、缩放或跟随取景以后，画面外的块不会把标签挤到画布边缘。然后做一次重叠检测：按优先级（块标题与模块标签 5、节点标签 4、数值 3、类别 2、行号与刻度 1）依次放置；块标题、模块标签和节点标签可以移动，与已放置的标签相交时按上、下、左、右的顺序以 4px 为步长尝试平移，最多 12 步，取第一个不相交、并且离画布边缘至少 12px 的位置，找不到时留在原位，允许与其他标签重叠，不隐藏；读者用 <code>labels</code> 指定了偏移的标签不移动也不隐藏，按指定位置显示；其余标签不移动，与已放置的标签相交或越出安全区时隐藏。优先级高的标签先放置，所以被隐藏的数值、类别、行号与刻度是优先级低的那些。隐藏只影响显示，自动取景仍按全部标签的原位计算，切换步骤或转动视角后有了空位的标签重新显示。标签的像素尺寸在文字或样式变化时测量一次并缓存，字体加载完成后重新测量；标签的 DOM 元素在第一次测量时才加入页面，从未显示、也没有参与取景的标签不在 DOM 里。DeepSeek V4.1 的页面有约十万个元素，每个元素一个数值标签，全部放进 DOM 时每次样式计算和布局都要几秒；每帧只做投影和重叠检测。位置只在相机、布局或数值变化时重新计算。相机跟随时只在块标题、节点标签、模块标签和数值之间做重叠检测，见「相机」。「上一轮」、「shared memory」、「寄存器」、「共 N 个副本」和副本编号这几类标签不参与上面的重叠检测，在其他标签放好之后再放：它们避开块在屏幕上的外框、已放置的标签和工具栏、公式卡片等控件，副本编号和「还有 $N$ 个」作为一组一起移动；按上、下、左、右以 4px 为步长尝试平移，最多 <code>CLEAR_MAX_STEPS</code>（24，暂定）步，取第一个不相交的位置，找不到时取相交面积最小的位置，越出画布的面积也计入。块的标题写节点的 tex；有步骤的页面里，不在当前步骤高亮中的块，标题用浅色文字，高亮块的标题保持深色，读者能分清这一步用到的是哪一个。反向时写 $\partial\ell/\partial$ 加节点的 tex。分层布局里同一层并排的几个张量各有自己的标题，都写在各自板的左侧，位置一致，读者不会把一个张量的标题看成下一层张量的标题；同一个张量分成几块（例如按 head）时只写一个标题。排列各列以后，同一层相邻两个带左侧标题的张量之间的距离（前一个的最右列到后一个的最左列）小于 <code>TITLE_ROOM</code>（3.5）时，最左列在后一个张量最左列或更右的所有块整体右移补足这个距离；各层一起移动，上下层对齐的列仍然对齐。</p>
 <p>元素之间的连线是竖直切线的三次贝塞尔曲线，两个控制点沿竖直方向离端点两端高度差的 0.45 倍，起点向上、终点向下，不会在端点处回钩。高度差超过 4.2 的长连线在深度方向弯出去，控制点改为高度差的 0.3 倍：默认向前弯 0.9；连到权重板（板的 $B$）的向后弯 2.6；连到残差相加（<code>add</code>）的向前弯 1.8。长连线因此不穿过中间各层的块。</p>
 <p>悬停柱子的提示依次显示元素名（反向时是 $\partial\ell/\partial$ 元素名）、类别对齐的列的 token 名、当前值（保留 3 位小数，前向时整数和 bool 节点显示整数，$-\infty$ 写成 $-\infty$）、节点名和 dtype（写作 <code>节点名 · bf16</code>），可以点击设为目标的柱子最后写「点击设为目标 token」（label 只给了 <code>classes</code> 时为「点击设为目标类」）。连线卡片只在反向时出现，取屏幕空间距离 6px 以内最近的一条已出现的边。卡片优先放在指针右下 18px，越界时翻到另一侧。</p>
 <ul>
@@ -1032,9 +1122,12 @@ autoLayout(tree: LayoutTree, steps?: StepsSpec, levels?: LevelSpec): { layout: L
 <h3>挂载</h3>
 <p>每个带界面的模块只提供 <code>mount(容器, ...)</code> 形式的入口，只在页面给出的容器里渲染，铺满容器，并在容器尺寸变化时重排。模块不决定页面布局，页面可以把它们放在任何位置。只有 <code>element</code> 入口按固定的布局组合这几个 mount，见「页面元素」。每个 mount 返回带 <code>dispose()</code> 的句柄，用于释放监听和 WebGL 资源。scene3d 的 <code>dispose()</code> 还会主动释放 WebGL 上下文，页面反复挂载和释放场景时不会耗尽浏览器允许的上下文数量。</p>
 <pre><code class="language-ts">mountSteps(el: string | HTMLElement, steps: Steps): Mounted
-mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: { steps?: Steps; sequence?: PageSequence }): Mounted
+mountPanels(el: string | HTMLElement, g: Graph, items: PanelItem[], options?: PanelsOptions): Mounted
 mountSections(el: string | HTMLElement, g: Graph, items: SectionItem[], options?: { steps?: Steps; onJump?: () =&gt; void }): Mounted
-interface Mounted { dispose(): void }</code></pre>
+interface Mounted { dispose(): void }
+interface PanelsOptions { steps?: Steps; sequence?: PageSequence; configure?: (change: Record&lt;string, string | boolean&gt;) =&gt; void; settings?: PanelSettings }
+interface PanelSettings { cost?: CostSettings }
+interface CostSettings { real: boolean; batch: number; sequence: number | undefined }</code></pre>
 <p><code>mountSteps</code> 画出步骤条、左右按钮和讲解正文，正文里的 <code>&lt;vf-figure&gt;</code> 换成内置小图。<code>steps.modules</code> 为空时显示前向、反向两组按钮。有模块时，第一行显示「前向」「反向」两个标签页、分段进度条和「当前位置/总步数」。进度条按当前方向步骤的第一级分组（<code>groups[0]</code>）把相邻步骤分成一段，没有分组的步骤各自一段。段宽与步数成正比，当前段按进度填充。换步时填充长度和颜色用 280ms 过渡：同一段内填充伸缩，换段时旧段补满并变灰，新段从左端开始填充；系统设置了减少动态效果时不过渡。一段按步数等分，指针在段上的位置对应段内的一步，点击跳到这一步；用键盘聚焦一段再按 Enter 时跳到它的第一步。点击另一方向的标签页时跳到与当前步对应的那一步：从前向切到反向，落在当前前向步的反向步；这一步没有自己的反向步时（例如它的输出没有梯度，或它的梯度在后面一步的反向里一起算出），落在它之后最近一个有反向步的前向步的反向步，也就是反向刚走到这一处的那一步；之后都没有时，取它之前最近的一个；都没有时落在反向第一步。从反向切到前向，落在这一步对应的前向步。反向的总览对应前向的总览。读者在前向看到一步后，可以直接查看同一处的梯度，不必从反向第一步重新走。</p>
 <p>进度条下方是两行，规则只有一条：当前项是当前步骤所在的最内层分组。第一行是面包屑，前面几级是从当前段到这个分组上一层的路径，点击一级跳到它的首步；最后一级按执行顺序并排列出上一层的全部内容，子分组写名字，直接步骤写它的公式标签，当前分组用深色加粗、字号略大的文字，其他项用浅色文字，点击跳到它的首步。第二行列出当前分组自己的内容：直接步骤用实线按钮，当前步骤高亮，公式标签保持原样；子分组用虚线按钮，写名字和 ›，点击跳到它的首步。例如在 input_layernorm 里，面包屑最后一级是 decoder layer 的各个模块和 att_res、h_out 两个公式步骤，第二行是 input_layernorm 的步骤；在 self_attn 的直接步骤上，第二行是 self_attn 的步骤，其中 q_norm $\cdot$ k_norm 和 apply_rotary_pos_emb 是虚线按钮；在 att_res 上，当前分组是 decoder layer，它位于段的最外层，面包屑只有它自己，第二行列出它的模块和公式步骤。没有分组的步骤（例如总览、embedding）只有第二行，显示当前段的步骤。相同分组在执行顺序中不连续出现时保留各自的位置。前进、后退或切换方向时，导航自动跟随当前步骤，计算与步骤顺序保持不变。</p>
 <p>「全部步骤」展开当前方向的完整目录，标出分组路径与当前步骤。选择目录项后跳转并关闭目录，按 Escape 也可关闭。模块折叠后按折叠状态更新导航，段名附「（已折叠）」。</p>
@@ -1063,7 +1156,9 @@ interface Mounted { dispose(): void }</code></pre>
   | { attention: Node[]; ids: Node; extra_keys?: string[]; title?: string; note?: string }
   | { sequence: true; labels?: string[]; sgd?: SgdOptions; random?: boolean | { label?: string }; reset?: boolean; title?: string; note?: string }
   | { code: string; title?: string; note?: string }
-  | { note: string; title?: string };
+  | { note: string; title?: string }
+  | { implementations: ImplementationChoice[]; title?: string; note?: string };
+interface ImplementationChoice { name: string; value: string | boolean; options: (string | boolean)[] }
 interface SgdOptions { params: Node[]; lr: number; label?: string }
 type MatrixSource = Node | ((g: Graph, state: StepState) =&gt; Tensor);
 type MatrixHighlight = Node | { node: Node; axis?: 'row' | 'col'; all?: boolean };</code></pre>
@@ -1082,6 +1177,7 @@ type MatrixHighlight = Node | { node: Node; axis?: 'row' | 'col'; all?: boolean 
     <tr><td><code>sequence</code></td><td>序列面板，需要 <code>mountPanels</code> 的 <code>sequence</code> 选项，否则抛错 <code>sequence panel: mountPanels needs the sequence option</code>。每个位置一个下拉框选 token，<code>labels</code> 是各位置的标签（默认写序号）。<code>sgd</code> 与损失面板相同；<code>random</code> 加一个「随机序列」按钮；<code>reset</code> 加一个「重置」按钮，调用 <code>g.reset()</code> 并恢复挂载时的序列。</td></tr>
     <tr><td><code>code</code></td><td>代码卡片，例如对应的 PyTorch 代码。<code>#</code> 到行尾显示为注释色。</td></tr>
     <tr><td><code>note</code></td><td>一段说明文字，可以写公式和数值模板。</td></tr>
+    <tr><td><code>implementations</code></td><td>实现切换，每个 <code>ImplementationChoice</code> 一行：左边是参数名 <code>name</code>，右边是一排按钮，每个 <code>options</code> 一个，bool 的两个按钮写作 False、True，等于 <code>value</code> 的按钮按下。点击另一个按钮时调用 <code>mountPanels</code> 的 <code>configure</code>，参数是 <code>{ [name]: 选中的值 }</code>，面板自己不改变计算图。没有 <code>configure</code> 时按钮禁用。<code>note</code> 是卡片底部的说明文字。<code>&lt;vizflow-page&gt;</code> 从 <code>src</code> 加载时传入 <code>configure</code>，见「页面元素」。</td></tr>
   </tbody>
 </table>
 <h3>显存与计算量</h3>
@@ -1104,9 +1200,12 @@ type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad'
 <p>每一步还活着的张量按 PyTorch eager 模式的 autograd 推算：</p>
 <ul>
   <li>前向第 $i$ 步算出它显示的节点及其所有还没算过的祖先运算。参数、输入、label、buffer 一直在。一个运算的结果在下面两种情况下还活着：后面还有运算要读它（没有后继的节点算作图的输出，一直保留）；它被一个已经执行的运算保存给反向。被保存的归入「为反向保存的激活」，其余归入「临时激活」。</li>
-  <li><code>view</code> 为 <code>true</code> 的运算（view、transpose、narrow、select、identity）与输入共用存储，所有别名中任意一个活着，存储就算一份，记在最初分配它的节点上。参数的转置不另占显存。</li>
+  <li><code>view</code> 为 <code>true</code> 的运算（view、transpose、narrow、select、identity、grad_of、saved）与输入共用存储，所有别名中任意一个活着，存储就算一份，记在最初分配它的节点上。参数的转置不另占显存。</li>
+  <li><code>writes</code> 为 <code>true</code> 的运算（select_scatter、slice_scatter、scatter_tiles）写进第一个输入的存储，结果与它算作同一份，记在最初分配它的节点上；倍数也取那个节点的 <code>copies</code>。HF 和 kernel 代码在循环里反复写同一个缓冲区（例如 FlashAttention 把每个 query 块的输出写进 <code>out</code>），页面每次写入都画出一个新节点，按这条规则显存只算缓冲区本身一份，不按写入次数或循环的倍数增加。</li>
+  <li><code>g.onChip(n)</code> 为真的节点（页面描述文件里 <code>kernel: true</code> 的模块内部的张量）在片上的 shared memory 和寄存器里，不计入显存，也不作为被保存的张量；它们的 FLOP 照常计入。</li>
   <li>一个运算只在它需要梯度、并且至少有一个需要梯度的输入时保存张量，保存的是这些输入的 <code>saves</code> 的并集。「需要梯度」指节点有一条可导的路径通到损失（<code>grad</code> 不是 <code>null</code>）。这和 PyTorch 的 <code>requires_grad</code> 不同：<code>requires_grad</code> 为真、但通不到损失的分支，PyTorch 也会保存张量，面板不计。现有页面里这样的分支（DeepSeek V3.2 的 indexer）在 HF 里位于 <code>no_grad</code> 下，结果一致。图没有损失节点时不保存。</li>
   <li>反向一步执行它对应的前向步骤算出的那些运算的反向（反向步骤的 <code>forwardId</code>），以及这一步和上一个反向步骤之间没有单独反向步骤的前向步骤的运算；没有 <code>forwardId</code> 的反向步骤（自动生成的反向步骤）执行编号大于它显示的节点的运算，显示的是叶子节点时从第一个读它的运算算起。最后一个反向步骤执行剩下的全部运算。运算的反向执行后，它保存的张量释放。</li>
+  <li>自定义反向函数（见「建图」的 <code>defineFunction</code>）：函数内部的前向运算不求梯度，不保存张量，也没有反向 FLOP。<code>saved</code> 节点读的张量从函数的输出算出起归入「为反向保存的激活」，直到这个 <code>saved</code> 节点所在的反向步骤执行后释放。函数的反向步骤（带 <code>computes</code> 的 <code>StepInfo</code>）执行 <code>computes</code> 和它们还没执行的反向祖先，这些运算的 FLOP 按各自的前向公式计算，记为反向；它们算出的结果在后面还有反向运算要读时归入「临时激活」，片上的结果和交给函数输入的梯度除外。一个函数输入的梯度在算出它的反向节点执行后出现。</li>
   <li>节点的梯度在读它的运算中最先执行反向的那个（前向里最后一个读它的运算，穿过 view 一直找到真正的运算）执行反向时出现。激活的梯度在这个节点自己的反向执行后释放，参数和输入的梯度一直保留，归入「参数梯度」和「激活梯度」。损失自己的梯度是一个数，不计。</li>
   <li>总览一步显示峰值时的张量和整次前向、反向的累计计算量。峰值取所有非总览步骤中已分配字节最多的一步。</li>
 </ul>
@@ -1121,7 +1220,7 @@ type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad'
     <tr><td>causal_conv1d</td><td>$2TCK$</td><td>$2TCK$</td></tr>
     <tr><td>add</td><td>$|y|$</td><td>0，被广播的输入 $|y|$</td></tr>
     <tr><td>sub, rsub</td><td>$|y|$</td><td>被减数 0（被广播时 $|y|$），减数 $|y|$</td></tr>
-    <tr><td>mul</td><td>$|y|$</td><td>$|y|$</td></tr>
+    <tr><td>mul, maximum</td><td>$|y|$</td><td>$|y|$</td></tr>
     <tr><td>div</td><td>$|y|$</td><td>被除数 $|y|$，除数 $3|y|$</td></tr>
     <tr><td>neg, rotate_half, abs, clamp_min, remainder, cumsum, cummax</td><td>$|y|$</td><td>$|y|$</td></tr>
     <tr><td>copysign</td><td>$|y|$</td><td>第一个输入 $|y|$，第二个输入 0</td></tr>
@@ -1134,18 +1233,18 @@ type MemoryKind = 'param' | 'input' | 'buffer' | 'saved' | 'temp' | 'param_grad'
     <tr><td>nll_loss</td><td>$|t|$</td><td>$|t|$</td></tr>
     <tr><td>gather, embedding, repeat_interleave, repeat_kv, repeat, expand, index, sort, index_put</td><td>0</td><td>$|y|$（scatter-add）</td></tr>
     <tr><td>index_add</td><td>$|s|$</td><td>0</td></tr>
-    <tr><td>view, reshape, transpose, permute, unsqueeze, contiguous, narrow, select, identity, cat, pad, where, masked_fill, scatter, triu, tril, topk_mask, topk_indices, one_hot, nonzero_static, arange, causal_mask, zeros, ones, eye, zeros_like, select_scatter, slice_scatter</td><td>0</td><td>0</td></tr>
+    <tr><td>view, reshape, transpose, permute, unsqueeze, contiguous, narrow, select, identity, grad_of, saved, cat, pad, where, masked_fill, scatter, triu, tril, topk_mask, topk_indices, one_hot, nonzero_static, arange, causal_mask, zeros, ones, full, eye, zeros_like, select_scatter, slice_scatter, scatter_tiles</td><td>0</td><td>0</td></tr>
   </tbody>
 </table>
 <p>矩阵乘的计数是业界通用的 $2mkn$；逐元素和归约运算的系数是近似值，它们与矩阵乘相差几个数量级，不影响读者对每步计算量的判断。</p>
 <p>卡片从上到下是：页面尺寸与真实尺寸的切换按钮；真实尺寸下的 $B$ 与 $T$ 两个滑块（暂定范围：$B$ 取 1 到 256，$T$ 取 128 到 131072，都按 2 的幂移动；$T$ 的初值是 <code>real</code> 里的 <code>T</code>，<code>real</code> 没有 <code>T</code> 时不显示这个滑块）；「已分配」与峰值（注明峰值所在的步骤）；有推算的层时，下一行写出其中推算的字节数；按类别堆叠的横条，总宽代表峰值，未用到峰值的部分是灰色，每段里推算的部分画斜线；图例；本步 FLOP 与前向、反向的累计；每一步一根柱子的 FLOP 图，叠一条已分配显存的折线，当前步高亮，指针所在的一列也高亮，浏览器提示写出这一步的名称、FLOP 与显存，点一列跳到那一步；所有柱子画成一条 SVG 路径，指针位置按横坐标换算成步骤，图的元素个数不随步骤数增长；最后是折叠起来的「怎么统计的」。指针移到横条的一段或图例上，下方弹出这一类张量的列表（tex、倍数标记、shape、大小，按大小排列，最多 8 个，其余合计；「×N 层」表示按占位模块推算，「×k」表示循环的倍数）；移到「本步」上，列出这一步的运算、它们的 FLOP 公式和数值。点击会固定弹出的列表，再点一次取消，触屏也能查看。</p>
 <p>面板只统计本页计算图里的张量，以及按上面的规则从它推算出来的部分。页面没有画出的层不计入；页面把 softmax 等运算拆成几步时，保存的张量按拆开后的运算统计，可能多于 PyTorch 的融合算子；页面用稠密写法表示 MoE（全部专家的输出拼成一个张量）时，按这个张量的真实 shape 统计。这些差别和上面的推算规则都写在面板的「怎么统计的」里，读者看到的数字与代码的统计方式一致。</p>
 <p>面板的标题、列标题、按钮文字、序列标签和图注都按 <code>renderText</code> 渲染，数学符号只用 LaTeX 写；默认标题里的节点名用节点的 tex，例如 matrix 面板的默认标题是 <code>$W^{\top}$，(4, 5)</code>。</p>
-<p><code>mountSections</code> 画出页面描述文件的讲解段落（<code>SectionItem</code>，见 <a href="dsl.html">vizflow 页面描述文件</a> 的「Panel 与 Section」）。每段是一张卡片，行按 CSS 网格分栏，窄屏下各栏上下排列。正文用 <code>renderMarkdown</code> 渲染，可以写模板，随数值更新；<code>lead</code> 是字号稍大的开头段落。内置组件：<code>rope_dial</code> 画两个随位置 $t$、$s$ 转动的箭头（实线是旋转后的 $\mathbf{q}'$、$\mathbf{k}'$，虚线是旋转前），<code>rope_curve</code> 画一个 head 的点积随 $t-s$ 变化的曲线，两者共用段落的 <code>rope</code> 数据和同一组滑块状态；<code>rope_compare</code> 并排比较每个 head 加与不加 RoPE 的打分和权重；<code>buttons</code> 的每个按钮跳到第一个显示 <code>go</code> 节点的前向步骤，没有这样的步骤时跳到 <code>go</code> 所在模块折叠后的那一步，然后调用 <code>onJump</code>（元素用它把画布滚进视野）。没有传 <code>steps</code> 时按钮抛错 <code>section: buttons need the steps option</code>，找不到步骤时抛错 <code>section: node 'x' is not shown by any forward step</code>；段落没有 <code>rope</code> 却用了 RoPE 组件时抛错 <code>section: rope_dial needs the section's rope option</code>。</p>
+<p><code>mountSections</code> 画出页面描述文件的讲解段落（<code>SectionItem</code>，见 <a href="dsl.html">vizflow 页面描述文件</a> 的「Panel 与 Section」）。每段是一张卡片，行按 CSS 网格分栏，窄屏下各栏上下排列。正文用 <code>renderMarkdown</code> 渲染，可以写模板，随数值更新；<code>lead</code> 是字号稍大的开头段落。内置组件：<code>rope_dial</code> 画两个随位置 $t$、$s$ 转动的箭头（实线是旋转后的 $\mathbf{q}'$、$\mathbf{k}'$，虚线是旋转前），<code>rope_curve</code> 画一个 head 的点积随 $t-s$ 变化的曲线，两者共用段落的 <code>rope</code> 数据和同一组滑块状态；<code>rope_compare</code> 并排比较每个 head 加与不加 RoPE 的打分和 causal softmax 权重，四个矩阵都由段落 <code>rope</code> 数据里的 $\bar{\mathbf{q}}$、$\bar{\mathbf{k}}$ 算出，不读页面里的打分节点，所以与页面采用哪种注意力实现无关；<code>buttons</code> 的每个按钮跳到第一个显示 <code>go</code> 节点的前向步骤，没有这样的步骤时跳到 <code>go</code> 所在模块折叠后的那一步，然后调用 <code>onJump</code>（元素用它把画布滚进视野）。没有传 <code>steps</code> 时按钮抛错 <code>section: buttons need the steps option</code>，找不到步骤时抛错 <code>section: node 'x' is not shown by any forward step</code>；段落没有 <code>rope</code> 却用了 RoPE 组件时抛错 <code>section: rope_dial needs the section's rope option</code>。</p>
 <p><code>ui</code> 内部用 Solid：计算图一更新，面板、步骤条、正文和卡片里许多零散的位置需要各自刷新，Solid 的细粒度响应式让每处只在自己读到的值变化时更新。Solid 只是内部实现，页面通过 <code>mount</code> 调用，不需要编译 JSX，手写 HTML 的静态站可以直接使用。3D 场景用 three.js 命令式编写，不经过 Solid。</p>
 
 <h3>页面元素</h3>
-<p><code>element</code> 入口定义自定义元素 <code>&lt;vizflow-page&gt;</code>。页面只放这个元素，再把数据设为它的 JavaScript 属性，元素按示例页面的布局创建容器并调用 <code>createSteps</code>、<code>mountScene</code>、<code>mountSteps</code>、<code>mountPanels</code>。它是这几个 mount 函数的一层薄包装，不增加新的行为，所以以后要给 React 等框架写包装时，可以照同样的方式只调用 mount 函数。</p>
+<p><code>element</code> 入口定义自定义元素 <code>&lt;vizflow-page&gt;</code>。页面只放这个元素，再把数据设为它的 JavaScript 属性，元素按示例页面的布局创建容器并调用 <code>createSteps</code>、<code>mountScene</code>、<code>mountSteps</code>、<code>mountPanels</code>。除了从页面描述文件加载和切换实现，它只是这几个 mount 函数的一层薄包装，不增加新的行为，所以以后要给 React 等框架写包装时，可以照同样的方式只调用 mount 函数。</p>
 <pre><code class="language-ts">type VizflowPageScene = Omit&lt;SceneOptions, 'steps' | 'edit'&gt;;
 
 class VizflowPage extends HTMLElement {
@@ -1180,6 +1279,8 @@ interface HTMLElementTagNameMap { 'vizflow-page': VizflowPage }</code></pre>
   <li>从 <code>src</code> 挂载时，元素在布局前面放一个 <code>header.vf-header</code>：<code>h1.vf-title</code> 是页面的 <code>title</code>，按纯文本显示。页面之后又直接设置了 <code>graph</code> 时不画这个标题。</li>
   <li>读取或编译出错时，元素清空自己的内容，显示一段 <code>p.vf-load-error</code>，文字是 <code>src: 错误信息</code>，并用 <code>reportError</code> 报告错误。</li>
   <li>加载完成之前 <code>src</code> 又被改变时，只采用最后一次加载的结果。</li>
+  <li>从 <code>src</code> 挂载、并且之后没有直接设置 <code>graph</code> 时，元素给 <code>mountPanels</code> 传入 <code>configure</code>，实现面板的按钮可以点击。点击后元素把这次的改动合并进自己保存的 <code>config</code>，用 <code>loadPage(地址, { config })</code> 重新编译整页，再按新的编译结果重新挂载。重新编译前记下三样东西，编译后恢复：每个参数的值按节点名恢复，元素个数不同的跳过；序列面板的序列在长度相同时恢复；当前步骤先找 id 与方向都相同的步骤，没有时在同一方向里找分组路径（<code>groups</code>）与原来共有的前缀最长的步骤，都没有时不跳转，停在新页面的第一步。显存与计算量面板的尺寸选择（页面尺寸或真实尺寸）以及 $B$、$T$ 两个滑块的值也保留：元素把同一个 <code>settings</code> 对象传给每次挂载的 <code>mountPanels</code>，面板挂载时从 <code>settings.cost</code> 读初值，读者改动时写回；改变 <code>src</code> 时清空。相机不恢复。读者因此可以在训练了几步、走到某一步之后切换实现，比较两种实现在同一处的计算图和显存。</li>
+  <li><code>src</code> 改变时，保存的 <code>config</code> 清空，新页面按自己的 <code>config</code> 编译。</li>
 </ul>
 <p>元素里的布局与 lm_head 示例页相同：有面板时外层是 <code>.vf-split</code>，没有面板时是 <code>.vf-stack</code>；左栏 <code>.vf-main</code> 是纵向排列、间距 14px 的 flex 容器，依次放画布 <code>.vf-stage</code>、步骤条 <code>.vf-steps</code> 和讲解段落 <code>.vf-article</code>；面板放在 <code>aside.vf-side</code>。讲解段落里的跳转按钮把画布平滑滚动到视野顶部。<code>.vf-stage</code> 高度为 <code>var(--vf-stage-height)</code>，最小高度 400px，视口宽度 980px 以下为 360px，圆角 14px，带 <code>--line</code> 色边框和 <code>--surface</code> 底色。这些样式由 <code>element</code> 入口注入，只作用于 <code>vizflow-page</code> 内部。用 JavaScript 属性挂载时，标题、导语等页面自己的内容写在元素外面；从 <code>src</code> 加载时由元素画出，<code>.vf-header</code> 下边距 20px、最大宽度 760px，标题用衬线字体，字号 <code>clamp(28px, 3.6vw, 40px)</code>，导语用 <code>--muted</code> 色。</p>
 

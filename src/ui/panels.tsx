@@ -6,7 +6,7 @@ import { allVisible, compileTemplate, type StepState, type Steps } from '../step
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
-import { CostPanel, type CostPanelOptions } from './cost';
+import { CostPanel, type CostPanelOptions, type CostSettings } from './cost';
 import { Rich, indexed, plain } from './rich';
 
 export interface SgdOptions {
@@ -64,7 +64,14 @@ export type PanelItem =
   | { attention: Node[]; ids: Node; extra_keys?: string[]; title?: string; note?: string }
   | SequenceOptions
   | { code: string; title?: string; note?: string }
-  | { note: string; title?: string };
+  | { note: string; title?: string }
+  | { implementations: ImplementationChoice[]; title?: string; note?: string };
+
+export interface ImplementationChoice {
+  name: string;
+  value: string | boolean;
+  options: (string | boolean)[];
+}
 
 const SLIDER_MIN = -2.5;
 const SLIDER_MAX = 2.5;
@@ -86,6 +93,8 @@ interface Context {
   sequence: PageSequence | undefined;
   steps: Steps | undefined;
   stepsVersion: Accessor<number>;
+  configure: PanelsOptions['configure'];
+  settings: PanelSettings | undefined;
 }
 
 const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGITS[Number(d)]);
@@ -651,11 +660,40 @@ function CodePanel(props: { ctx: Context; item: Extract<PanelItem, { code: strin
   );
 }
 
+const choiceLabel = (option: string | boolean) => (typeof option === 'boolean' ? (option ? 'True' : 'False') : option);
+
+function ImplementationsPanel(props: { ctx: Context; item: Extract<PanelItem, { implementations: unknown }> }) {
+  const configure = props.ctx.configure;
+  return (
+    <Card title={props.item.title}>
+      <div class="vf-impl">
+        <For each={props.item.implementations}>
+          {(choice) => (
+            <div class="vf-impl-row">
+              <code>{choice.name}</code>
+              <div class="vf-seg" role="group" aria-label={choice.name}>
+                <For each={choice.options}>
+                  {(option) => (
+                    <button type="button" aria-pressed={option === choice.value ? 'true' : 'false'} disabled={configure === undefined} onClick={() => option !== choice.value && configure?.({ [choice.name]: option })}>
+                      {choiceLabel(option)}
+                    </button>
+                  )}
+                </For>
+              </div>
+            </div>
+          )}
+        </For>
+      </div>
+      <Show when={props.item.note}>{(note) => <TemplateText ctx={props.ctx} class="vf-note" text={note()} />}</Show>
+    </Card>
+  );
+}
+
 function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
-  if (item === 'cost') return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={{}} />;
-  if ('cost' in item) return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={item.cost} />;
+  if (item === 'cost') return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={{}} settings={props.ctx.settings} />;
+  if ('cost' in item) return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={item.cost} settings={props.ctx.settings} />;
   if ('loss' in item) return <LossPanel ctx={props.ctx} options={item.loss} />;
   if ('sequence' in item) return <SequencePanel ctx={props.ctx} item={item} />;
   if ('attention' in item) return <AttentionPanel ctx={props.ctx} item={item} />;
@@ -663,6 +701,7 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
   if ('tokens' in item) return <TokensPanel ctx={props.ctx} item={item} />;
   if ('matrix' in item || 'matrices' in item) return <MatrixPanel ctx={props.ctx} item={item} />;
   if ('code' in item) return <CodePanel ctx={props.ctx} item={item} />;
+  if ('implementations' in item) return <ImplementationsPanel ctx={props.ctx} item={item} />;
   return (
     <Card title={item.title}>
       <TemplateText ctx={props.ctx} class="vf-note" text={item.note} />
@@ -673,6 +712,12 @@ function Panel(props: { ctx: Context; item: PanelItem }) {
 export interface PanelsOptions {
   steps?: Steps;
   sequence?: PageSequence;
+  configure?: (config: Record<string, string | boolean>) => void;
+  settings?: PanelSettings;
+}
+
+export interface PanelSettings {
+  cost?: CostSettings;
 }
 
 function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOptions }) {
@@ -718,6 +763,8 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOption
     sequence,
     steps,
     stepsVersion,
+    configure: props.options.configure,
+    settings: props.options.settings,
   };
   return (
     <div class="vf-panels">

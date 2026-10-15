@@ -6,6 +6,7 @@ import type { Label } from './labels';
 import type { Vec3 } from './layout';
 import { BRACE_X } from './levels';
 import { LineBatch } from './lines';
+import { moduleHeading } from './slots';
 import { type Brace, type SceneModule, BRACE_OPACITY, BRACE_THICK_OFFSET, blockSpan, braceOffset, braceScale, bracePoints, braceTip, layoutBraces, levelBraces } from './modules';
 
 export class ModuleBraces {
@@ -44,13 +45,14 @@ export class ModuleBraces {
     const folded = id === undefined ? undefined : this.c.steps?.folded?.(id);
     const action = folded === undefined ? '' : folded ? '▸ 展开' : '▾ 折叠';
     const brief = this.c.lod;
-    const subtitle = brief ? undefined : module.subtitle;
+    const heading = moduleHeading(module, this.c.state, (grid) => this.front(grid));
+    const subtitle = brief ? undefined : heading.subtitle;
     const act = brief ? '' : action;
-    label.setContent(`${module.title}\n${subtitle ?? ''}\n${act}`, () => {
+    label.setContent(`${heading.title}\n${subtitle ?? ''}\n${act}`, () => {
       const fragment = document.createDocumentFragment();
       const title = document.createElement('span');
       title.className = 'vf-mod-title';
-      renderText(module.title, title);
+      renderText(heading.title, title);
       fragment.appendChild(title);
       if (subtitle !== undefined) {
         const sub = document.createElement('span');
@@ -66,6 +68,11 @@ export class ModuleBraces {
       }
       return fragment;
     });
+  }
+
+  private front(module: string): readonly number[] | undefined {
+    const grid = this.c.levelLayout?.grids.find((g) => g.module === module);
+    return grid === undefined ? undefined : this.c.frontOf(grid);
   }
 
   update(): void {
@@ -101,9 +108,12 @@ export class ModuleBraces {
     const direction: Vec3 = [view.x, view.y, view.z];
     const modules = this.c.options.modules ?? [];
     const scale = braceScale(this.c.camera.zoom);
+    const ground = this.c.follow ? this.c.focusGround : undefined;
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
       const label = this.labels[modules.indexOf(brace.module)];
+      label.visible = ground === undefined || (brace.y0 <= ground.y && ground.y <= brace.y1);
+      if (!label.visible) return [];
       label.pos = braceTip(brace, offset, scale);
       label.lane = brace.side;
       const points = bracePoints(brace, offset, scale);

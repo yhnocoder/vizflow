@@ -19,6 +19,27 @@ export interface StepNote {
   side?: NoteSide;
 }
 
+export interface CopyText {
+  index: number[];
+  title: string;
+  label?: string;
+  text?: string;
+}
+
+export interface StepGrid {
+  module: string;
+  names: string[];
+  counts: number[];
+}
+
+export function copyName(grid: { names: readonly string[] }, index: readonly number[]): string {
+  return grid.names.map((name, d) => `${name}=${index[d]}`).join(' · ');
+}
+
+export function copyNote(grid: { names: readonly string[] }, copy: { index: readonly number[]; front: boolean }): string | undefined {
+  return copy.front ? undefined : `这一步按 ${copyName(grid, copy.index)} 说明，最前面的副本这一步空闲`;
+}
+
 export interface ForwardStep {
   show: Node | Node[];
   notes?: StepNote[];
@@ -31,11 +52,15 @@ export interface ForwardStep {
   formula?: { title: string; tex: string };
   backward?: BackwardOverride;
   marks?: string[];
+  grid?: string;
+  copies?: CopyText[];
 }
 
 export interface StepGroup {
   id: string;
   title: string;
+  grid?: string;
+  copies?: { index: number[]; title: string }[];
 }
 
 export interface StepBrace {
@@ -45,6 +70,8 @@ export interface StepBrace {
   nodes: Node[];
   depth: number;
   module?: string;
+  grid?: string;
+  copies?: { index: number[]; title: string; subtitle?: string }[];
 }
 
 export type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };
@@ -68,13 +95,36 @@ export interface StepModule extends PageModule {
   backward: BackwardOverride;
 }
 
+export interface FunctionStep {
+  id: string;
+  title: string;
+  label?: string;
+  text?: string;
+  show: Node[];
+  receive: Node[];
+  groups?: string[];
+  notes?: StepNote[];
+  formula?: { title: string; tex: string };
+  marks?: string[];
+  grid?: string;
+  copies?: CopyText[];
+}
+
+export interface FunctionBackward {
+  module: string;
+  after: ForwardStep;
+  steps: FunctionStep[];
+}
+
 export interface StepsSpec {
   forward: ForwardStep[];
+  functions?: FunctionBackward[];
   groups?: StepGroup[];
   braces?: StepBrace[];
   overview?: { title: string; text?: string; label?: string; backward?: BackwardOverride; notes?: StepNote[] };
   backward?: BackwardSpec;
   modules?: StepModule[];
+  grids?: StepGrid[];
 }
 
 export interface StepInfo {
@@ -89,9 +139,11 @@ export interface StepInfo {
   groups: string[];
   module?: string;
   forwardId?: string;
+  computes?: Node[];
   notes?: StepNote[];
   marks?: string[];
   formula?: { title: string; tex: string };
+  copy?: { grid: string; index: number[]; front: boolean };
 }
 
 export interface StepState {
@@ -109,6 +161,7 @@ export interface Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
   readonly groups: readonly StepGroup[];
+  readonly grids: readonly StepGrid[];
   readonly current: number;
   readonly focus: number;
   go(i: number): void;
@@ -121,6 +174,8 @@ export interface Steps {
   folded(id: string): boolean;
   setFolded(id: string, folded: boolean): void;
   setAllFolded(folded: boolean): void;
+  front(grid: string): readonly number[];
+  setFront(grid: string, index: readonly number[]): void;
   dispose(): void;
 }
 
@@ -140,6 +195,16 @@ function withMarks(info: StepInfo, step: ForwardStep): StepInfo {
   if (step.marks !== undefined) info.marks = step.marks;
   if (step.formula !== undefined) info.formula = step.formula;
   return info;
+}
+
+const sameIndex = (a: readonly number[], b: readonly number[]) => a.length === b.length && a.every((v, d) => v === b[d]);
+
+interface Texted {
+  title: string;
+  label?: string;
+  text?: string;
+  grid?: string;
+  copies?: CopyText[];
 }
 
 function withNotes(info: StepInfo, notes: StepNote[] | undefined): StepInfo {
@@ -236,7 +301,7 @@ interface Unit {
 class StepsImpl implements Steps {
   readonly visible: readonly Node[];
   readonly modules: readonly PageModule[];
-  readonly groups: readonly StepGroup[];
+  groups: readonly StepGroup[] = [];
   current = 0;
   focus = 0;
   private entries: Entry[] = [];
@@ -247,6 +312,10 @@ class StepsImpl implements Steps {
   private readonly foldState = new Map<string, boolean>();
   private readonly units: Unit[] = [];
   private readonly reverse: boolean;
+  private readonly forwardVisible: ReadonlySet<Node>;
+  private readonly gridOf = new Map<string, StepGrid>();
+  readonly grids: readonly StepGrid[];
+  private readonly fronts = new Map<string, number[]>();
 
   constructor(
     readonly graph: Graph,
@@ -254,16 +323,22 @@ class StepsImpl implements Steps {
   ) {
     this.reverse = spec.backward === 'reverse';
     this.modules = Object.freeze([...(spec.modules ?? [])]);
-    this.groups = Object.freeze([...(spec.groups ?? [])]);
+    this.grids = Object.freeze([...(spec.grids ?? [])]);
+    for (const grid of this.grids) {
+      this.gridOf.set(grid.module, grid);
+      this.fronts.set(grid.module, grid.counts.map((count) => count - 1));
+    }
+    this.groups = this.frontGroups();
     for (const module of spec.modules ?? []) {
       this.byModule.set(module.id, module);
       this.foldState.set(module.id, module.folded);
     }
-    this.visible = Object.freeze(byId(spec.forward.flatMap((step) => toList(step.show))));
+    this.visible = Object.freeze(byId([...spec.forward.flatMap((step) => toList(step.show)), ...(spec.functions ?? []).flatMap((f) => f.steps.flatMap((step) => step.show))]));
+    this.forwardVisible = new Set(spec.forward.flatMap((step) => toList(step.show)));
     if (this.reverse) {
       spec.forward.forEach((step, index) => {
         const show = toList(step.show);
-        const kind: StepKind = show.length > 0 && this.visible.every((n) => show.includes(n)) ? 'overview' : show.length > 0 && show.every(isLeafLike) ? 'inputs' : 'op';
+        const kind: StepKind = show.length > 0 && [...this.forwardVisible].every((n) => show.includes(n)) ? 'overview' : show.length > 0 && show.every(isLeafLike) ? 'inputs' : 'op';
         const computed = show.filter((n) => !isLeafLike(n));
         const prod = kind === 'op' && computed.length > 0 ? computed : show;
         const use = kind === 'op' ? usesOf(prod).filter((n) => !prod.includes(n)) : [];
@@ -277,6 +352,49 @@ class StepsImpl implements Steps {
 
   get list(): readonly StepInfo[] {
     return this.infos;
+  }
+
+  private frontGroups(): readonly StepGroup[] {
+    return (this.spec.groups ?? []).map((group) => {
+      const chosen = this.chosen(group.grid, group.copies);
+      return chosen === undefined ? group : { ...group, title: chosen.entry.title };
+    });
+  }
+
+  front(grid: string): readonly number[] {
+    const index = this.fronts.get(grid);
+    if (index === undefined) throw new Error(`front: '${grid}' is not a grid module call; the grid calls are ${[...this.gridOf.keys()].join(', ') || '(none)'}`);
+    return index;
+  }
+
+  setFront(grid: string, index: readonly number[]): void {
+    const spec = this.gridOf.get(grid);
+    if (spec === undefined) throw new Error(`setFront: '${grid}' is not a grid module call; the grid calls are ${[...this.gridOf.keys()].join(', ') || '(none)'}`);
+    if (index.length !== spec.counts.length || index.some((v, d) => !Number.isInteger(v) || v < 0 || v >= spec.counts[d])) {
+      throw new Error(`setFront: [${index.join(', ')}] is not a copy of '${grid}', whose grid is ${spec.names.map((name, d) => `${name} < ${spec.counts[d]}`).join(', ')}`);
+    }
+    if (sameIndex(this.front(grid), index)) return;
+    this.fronts.set(grid, [...index]);
+    this.groups = this.frontGroups();
+    this.templates.clear();
+    if (this.reverse) this.rebuild();
+    else this.buildClassic();
+    this.notify();
+  }
+
+  private chosen<T extends { index: number[] }>(grid: string | undefined, copies: readonly T[] | undefined): { entry: T; front: boolean } | undefined {
+    if (grid === undefined || copies === undefined || copies.length === 0) return undefined;
+    const front = this.fronts.get(grid);
+    const found = front === undefined ? undefined : copies.find((copy) => sameIndex(copy.index, front));
+    return found === undefined ? { entry: copies[0], front: false } : { entry: found, front: true };
+  }
+
+  private texts(step: Texted): Pick<StepInfo, 'title' | 'label' | 'text' | 'copy'> {
+    const chosen = this.chosen(step.grid, step.copies);
+    const source: Texted = chosen?.entry ?? step;
+    const out: Pick<StepInfo, 'title' | 'label' | 'text' | 'copy'> = { title: source.title, label: source.label ?? source.title, text: source.text ?? '' };
+    if (chosen !== undefined && step.grid !== undefined) out.copy = { grid: step.grid, index: [...chosen.entry.index], front: chosen.front };
+    return out;
   }
 
   private overviewSpec(): { title: string; text: string; label: string; notes?: StepNote[] } {
@@ -303,9 +421,7 @@ class StepsImpl implements Steps {
         index: k + 1,
         id: `f:${k}`,
         kind: 'op',
-        title: step.title,
-        label: step.label ?? step.title,
-        text: step.text ?? '',
+        ...this.texts(step),
         nodes: show,
         groups: step.groups ?? [],
       };
@@ -335,6 +451,7 @@ class StepsImpl implements Steps {
     const explainer = explain(g);
     const loss = g.findLoss();
     const all = new Set(this.visible);
+    const forwardAll = new Set(this.forwardVisible);
     const entries: Entry[] = [];
     const revealed = new Set<Node>();
     const groups: { unit?: Unit; module?: StepModule }[] = [];
@@ -383,17 +500,15 @@ class StepsImpl implements Steps {
         index,
         id: `f:${unit.index}`,
         kind: unit.kind,
-        title: step.title,
-        label: step.label ?? step.title,
-        text: step.text ?? '',
-        nodes: unit.kind === 'overview' ? [...this.visible] : unit.prod,
+        ...this.texts(step),
+        nodes: unit.kind === 'overview' ? [...this.forwardVisible] : unit.prod,
         groups: step.groups ?? [],
       };
       if (step.module !== undefined) info.module = step.module;
       withNotes(withMarks(info, step), step.notes);
       forwardIds.set(group, info.id);
       if (unit.kind === 'overview') {
-        entries.push(this.entry(info, all, all));
+        entries.push(this.entry(info, forwardAll, forwardAll));
         continue;
       }
       unit.prod.forEach((n) => revealed.add(n));
@@ -402,11 +517,12 @@ class StepsImpl implements Steps {
     }
     const received = new Set<Node>();
     let position = 0;
-    const pushBackward = (info: Omit<StepInfo, 'index' | 'dir'>, recv: Node[]) => {
+    const pushBackward = (info: Omit<StepInfo, 'index' | 'dir'>, recv: Node[], lit: Node[] = recv) => {
       const nodes = position === 0 && loss !== undefined && !recv.includes(loss) ? [loss, ...recv] : recv;
       position++;
       nodes.forEach((n) => received.add(n));
-      entries.push(this.entry({ ...info, nodes, dir: 'backward', index: position }, new Set(received), new Set(nodes)));
+      lit.filter((n) => n.phase === 'backward' && all.has(n)).forEach((n) => received.add(n));
+      entries.push(this.entry({ ...info, nodes, dir: 'backward', index: position }, new Set(received), new Set([...nodes, ...lit])));
     };
     const hasGrad = (n: Node) => n.grad !== null && all.has(n);
     for (const group of [...groups].reverse()) {
@@ -431,6 +547,24 @@ class StepsImpl implements Steps {
         continue;
       }
       const unit = group.unit as Unit;
+      for (const fn of this.spec.functions ?? []) {
+        if (fn.after !== unit.step) continue;
+        fn.steps.forEach((step, k) => {
+          const info: Omit<StepInfo, 'index' | 'dir'> = {
+            id: `x:${fn.module}:${k}`,
+            kind: 'op',
+            ...this.texts(step),
+            nodes: [],
+            groups: step.groups ?? unit.step.groups ?? [],
+            module: fn.module,
+            computes: step.show,
+          };
+          if (step.formula !== undefined) info.formula = step.formula;
+          if (step.marks !== undefined) info.marks = step.marks;
+          if (step.notes !== undefined && step.notes.length > 0) info.notes = step.notes;
+          pushBackward(info, unique([...step.show, ...step.receive]), unique([...step.show, ...step.show.flatMap((n) => n.inputs), ...step.receive]));
+        });
+      }
       if (unit.kind !== 'op') continue;
       const recv = unit.use.filter(hasGrad);
       if ((recv.length === 0 || !unit.prod.some(hasGrad)) && position > 0) continue;

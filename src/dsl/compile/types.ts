@@ -89,6 +89,47 @@ export interface Alias {
   tex: string;
 }
 
+export type Arrangement = 'expand' | 'stack';
+
+export interface GridDim {
+  name: string;
+  count: Num;
+  arrangement: Arrangement;
+}
+
+export interface GridCopy {
+  index: number[];
+  locals: ReadonlyMap<string, Value>;
+}
+
+export class GridRun {
+  readonly copyOf = new Map<Node, number[]>();
+  readonly outputs = new Map<Node, Node[]>();
+
+  constructor(
+    readonly dims: readonly GridDim[],
+    readonly copies: readonly GridCopy[],
+  ) {}
+}
+
+export interface Rounds {
+  outer: string[];
+  values: Map<string, number[]>;
+  loops: Set<object>;
+}
+
+export interface Line {
+  nodes: Node[];
+  calls: Call[];
+  copy?: number[];
+}
+
+export interface Iterations {
+  variables: string[];
+  values: Map<string, Value>;
+  before: Value | undefined;
+}
+
 export class Call {
   readonly values = new Map<string, Value>();
   readonly resultAliases = new Map<string, Map<string, Alias>>();
@@ -100,9 +141,13 @@ export class Call {
   readonly results: string[] = [];
   readonly resultValues: { name: string; value: Value; where: Where }[] = [];
   finished = false;
-  readonly iterations = new Map<string, { variable: string; values: Value[]; before: Value | undefined }>();
-  readonly lines: { nodes: Node[]; calls: Call[] }[] = [];
+  readonly iterations = new Map<string, Iterations>();
+  readonly rounds = new Map<string, Rounds>();
+  readonly slots = new Map<string, Node[]>();
+  readonly lines: Line[] = [];
   created: Node[] = [];
+  grid: GridRun | undefined;
+  readonly shared = new Set<Node>();
 
   constructor(
     readonly instance: Instance,
@@ -122,6 +167,7 @@ export class Result {
   constructor(
     readonly call: Call,
     readonly outputs: ReadonlyMap<string, Node>,
+    readonly none: ReadonlySet<string> = new Set(),
   ) {}
 }
 
@@ -130,11 +176,13 @@ export interface Env {
   call: Call | undefined;
   locals: ReadonlyMap<string, Value>;
   where: Where;
+  copies?: readonly GridCopy[];
 }
 
 export interface Make {
   name: string;
   path: string;
+  suffix?: string;
   tex: string;
   anon: Node[];
 }

@@ -7,6 +7,7 @@ import type { Page } from './types';
 export interface CompileOptions {
   base?: string;
   read?: (url: string) => Promise<string>;
+  config?: Readonly<Record<string, string | number | boolean>>;
 }
 
 export type { CompiledPage } from './compile';

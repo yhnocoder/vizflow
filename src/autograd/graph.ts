@@ -2,7 +2,7 @@ import { type Nested, Tensor, formatShape, inferShape, normDim } from '../tensor
 import { checkOpNamed } from './check';
 import { checkByDefault } from './check-default';
 import { DEFAULT_DTYPE, type Dtype, LABEL_DTYPE, checkDtype, isIntegerDtype } from './dtype';
-import { Node, type NodeCopies, type NodeInit, type NodeKind, type NodeOptions, defaultTex, normalizeName, transposedTex } from './node';
+import { Node, type NodeCopies, type NodeInit, type NodeKind, type NodeOptions, type NodePhase, defaultTex, normalizeName, transposedTex } from './node';
 import type { AnyOpDef, CompositeDef } from './op';
 import type { BuiltinOps } from './ops';
 import { bindComposite, bindOp, compositeDef, inputDifferentiable, opDef, outputDtype } from './registry';
@@ -30,12 +30,22 @@ export interface SplitOptions {
   elem?: string[];
 }
 
+export interface FunctionSpec {
+  inputs: readonly Node[];
+  outputs: readonly Node[];
+  inside: readonly Node[];
+  gradOutputs: readonly { leaf: Node; output: Node }[];
+  gradInputs: readonly { input: Node; grad: Node }[];
+  backward: readonly Node[];
+}
+
 export interface Graph extends BuiltinOps {
   readonly dims: Readonly<Record<string, number>>;
   readonly real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
   readonly nodes: readonly Node[];
   readonly version: number;
+  readonly functions: readonly FunctionSpec[];
   input(name: string, shape: Size[], values: Nested, options?: NodeOptions): Node;
   param(name: string, shape: Size[], values: Nested, options?: NodeOptions): Node;
   label(name: string, values: Nested, options?: LabelOptions): Node;
@@ -46,7 +56,13 @@ export interface Graph extends BuiltinOps {
   addDim(name: string, value: number, real?: number): void;
   realSizes(dims?: Record<string, number>): Readonly<Record<string, number>>;
   realShapes(dims?: Record<string, number>): number[][];
-  realCopies<T>(drawn: number, real: Size, fn: () => T): T;
+  realCopies<T>(drawn: number, real: Size, fn: () => T, base?: NodeCopies): T;
+  copiesNow(): NodeCopies;
+  backwardPhase<T>(fn: () => T): T;
+  defineFunction(spec: FunctionSpec): void;
+  functionOf(node: Node): FunctionSpec | undefined;
+  markOnChip(nodes: readonly Node[]): void;
+  onChip(node: Node): boolean;
   node(name: string): Node | undefined;
   subscribe(fn: () => void): () => void;
   batch(fn: () => void): void;
@@ -144,9 +160,9 @@ function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, sizeOf: Siz
   return resolved;
 }
 
-function checkExact(def: AnyOpDef, inputs: readonly Node[], name: string): void {
+function checkExact(def: AnyOpDef, inputs: readonly Node[], name: string, values: readonly Tensor[] = inputs.map((n) => n.value)): void {
   if (def.int64) return;
-  const exact = inputs.find((n) => n.value.beyondExact());
+  const exact = inputs.find((_, k) => values[k].beyondExact());
   if (exact !== undefined) {
     throw new Error(`${def.name} '${name}': input '${exact.name}' holds int64 values beyond 2^53, which ${def.name} cannot keep exact`);
   }
@@ -157,6 +173,7 @@ class GraphImpl {
   real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
   readonly nodes: Node[] = [];
+  private readonly byName = new Map<string, Node>();
   version = 0;
   self!: Graph;
   private readonly states: NodeState[] = [];
@@ -173,6 +190,11 @@ class GraphImpl {
   private detached = new Set<number>();
   private readonly realDerivations: RealDerivation[] = [];
   private copies: NodeCopies = { drawn: 1, real: [] };
+  private phase: NodePhase = 'forward';
+  readonly functions: FunctionSpec[] = [];
+  private readonly owner = new Map<number, FunctionSpec>();
+  private readonly anchors = new Map<number, FunctionSpec>();
+  private readonly chip = new Set<number>();
 
   constructor(options: GraphOptions) {
     this.dims = Object.freeze({ ...(options.dims ?? {}) });
@@ -221,16 +243,82 @@ class GraphImpl {
     return { sizes, shapes };
   }
 
-  realCopies<T>(drawn: number, real: Size, fn: () => T): T {
+  realCopies<T>(drawn: number, real: Size, fn: () => T, base: NodeCopies = this.copies): T {
     if (!Number.isInteger(drawn) || drawn < 1) throw new Error(`realCopies: ${drawn} drawn copies need a positive integer`);
     resolveShape([real], createdRealSize(this.realDims ?? this.dims), 'realCopies');
     const outer = this.copies;
-    this.copies = Object.freeze({ drawn: outer.drawn * drawn, real: Object.freeze([...outer.real, real]) });
+    this.copies = Object.freeze({ drawn: base.drawn * drawn, real: Object.freeze([...base.real, real]) });
     try {
       return fn();
     } finally {
       this.copies = outer;
     }
+  }
+
+  copiesNow(): NodeCopies {
+    return this.copies;
+  }
+
+  backwardPhase<T>(fn: () => T): T {
+    const outer = this.phase;
+    this.phase = 'backward';
+    try {
+      return fn();
+    } finally {
+      this.phase = outer;
+    }
+  }
+
+  defineFunction(spec: FunctionSpec): void {
+    const outputs = new Set(spec.outputs);
+    for (const node of [...spec.inside, ...spec.backward]) {
+      this.ownNode(node, 'defineFunction');
+      if (this.owner.has(node.id)) throw new Error(`defineFunction: node '${node.name}' already belongs to a function`);
+    }
+    for (const output of spec.outputs) if (!spec.inside.includes(output)) throw new Error(`defineFunction: output '${output.name}' is not computed inside the function`);
+    for (const node of spec.backward) if (node.phase !== 'backward') throw new Error(`defineFunction: backward node '${node.name}' was not created in the backward phase`);
+    for (const { input, grad } of spec.gradInputs) {
+      if (!spec.inputs.includes(input)) throw new Error(`defineFunction: '${input.name}' is not an input of the function`);
+      if (formatShape(grad.shape) !== formatShape(input.shape)) throw new Error(`defineFunction: the gradient '${grad.name}' has shape ${formatShape(grad.shape)}, but input '${input.name}' has ${formatShape(input.shape)}`);
+    }
+    for (const { leaf, output } of spec.gradOutputs) {
+      if (!outputs.has(output)) throw new Error(`defineFunction: '${output.name}' is not an output of the function`);
+      if (!spec.backward.includes(leaf)) throw new Error(`defineFunction: the gradient leaf '${leaf.name}' is not a backward node`);
+    }
+    this.functions.push(spec);
+    for (const node of [...spec.inside, ...spec.backward]) this.owner.set(node.id, spec);
+    this.anchors.set(Math.max(...spec.inside.map((n) => n.id)), spec);
+    this.backwardValid = false;
+    this.detachedKey = '';
+  }
+
+  functionOf(node: Node): FunctionSpec | undefined {
+    return this.owner.get(node.id);
+  }
+
+  markOnChip(nodes: readonly Node[]): void {
+    for (const node of nodes) {
+      this.ownNode(node, 'markOnChip');
+      if (node.kind !== 'op') throw new Error(`markOnChip: '${node.name}' is a ${node.kind}, which lives in device memory`);
+      this.chip.add(node.id);
+    }
+  }
+
+  onChip(node: Node): boolean {
+    return this.chip.has(node.id);
+  }
+
+  private sealed(id: number): boolean {
+    const spec = this.owner.get(id);
+    return spec !== undefined && !spec.outputs.includes(this.nodes[id]);
+  }
+
+  private gradEdges(node: Node): Node[] {
+    const spec = this.owner.get(node.id);
+    if (node.phase === 'backward') return [];
+    if (spec !== undefined) return spec.outputs.includes(node) ? spec.gradInputs.map((g) => g.input) : [];
+    const def = node.kind === 'op' ? opDef(node.op as string) : undefined;
+    return node.inputs.filter((_, k) => def === undefined || inputDifferentiable(def, k));
   }
 
   input(name: string, shape: Size[], values: Nested, options: NodeOptions = {}): Node {
@@ -305,14 +393,13 @@ class GraphImpl {
     const { nodes, states } = this;
     for (let i = nodes.length - 1; i >= 0; i--) {
       const node = nodes[i];
-      if (node.kind === 'op' && states[i].value.size === 1) return node;
+      if (node.kind === 'op' && node.phase === 'forward' && !this.sealed(i) && states[i].value.size === 1) return node;
     }
     return undefined;
   }
 
   node(name: string): Node | undefined {
-    const wanted = normalizeName(name);
-    return this.nodes.find((n) => normalizeName(n.name) === wanted);
+    return this.byName.get(normalizeName(name));
   }
 
   subscribe(fn: () => void): () => void {
@@ -389,9 +476,10 @@ class GraphImpl {
     const name = options.name ?? this.autoName(def.name);
     const explicit = options.dtype === undefined ? undefined : checkDtype(options.dtype, `node '${name}'`);
     const dtype = outputDtype(def, inputs, attrs, this.dtype, `${def.name} '${name}'`, explicit);
-    checkExact(def, inputs, name);
-    if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
-    const value = def.forward(inputs.map((n) => n.value), attrs);
+    const values = inputs.map((n) => this.states[n.id].value);
+    checkExact(def, inputs, name, values);
+    if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, values.map((v) => v.clone()), attrs, name);
+    const value = def.forward(values, attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state, (table, shapes) =>
       def.shape(inputs.map((n) => [...shapes[n.id]]), resolveSizes(def, given, (d) => realSizeOf(d, table, shapes))),
@@ -431,8 +519,9 @@ class GraphImpl {
       tokens: tokens === undefined ? undefined : Object.freeze([...tokens]),
       card: options.card,
       copies: this.copies,
+      phase: this.phase,
       internals: {
-        value: () => this.states[id].value,
+        value: () => this.valueOf(id),
         grad: () => this.gradOf(id),
         set: (values) => this.setLeaf(id, values),
         transpose: () => this.transposeOf(id),
@@ -440,6 +529,7 @@ class GraphImpl {
     };
     const node = new Node(init);
     this.nodes.push(node);
+    this.byName.set(normalizeName(name), node);
     this.states.push(state);
     this.realDerivations.push(deriveReal);
     this.backwardValid = false;
@@ -470,8 +560,14 @@ class GraphImpl {
     }
   }
 
+  private valueOf(id: number): Tensor {
+    if (this.nodes[id].phase === 'backward') this.ensureBackward();
+    return this.states[id].value;
+  }
+
   private gradOf(id: number): Tensor | null {
-    if (CONSTANT_KINDS.has(this.nodes[id].kind) || this.isDetached(id)) return null;
+    const node = this.nodes[id];
+    if (CONSTANT_KINDS.has(node.kind) || node.phase === 'backward' || this.sealed(id) || this.isDetached(id)) return null;
     this.ensureBackward();
     return this.states[id].grad;
   }
@@ -517,7 +613,7 @@ class GraphImpl {
     const savedBackwardValid = this.backwardValid;
     try {
       this.nodes.forEach((node, i) => {
-        if (node.kind !== 'op') return;
+        if (node.kind !== 'op' || node.phase === 'backward') return;
         const def = opDef(node.op as string) as AnyOpDef;
         checkExact(def, node.inputs, node.name);
         this.states[i].value = def.forward(node.inputs.map((n) => n.value), node.attrs);
@@ -525,7 +621,7 @@ class GraphImpl {
       this.computeBackward();
       if (this.check) {
         this.nodes.forEach((node) => {
-          if (node.kind !== 'op' || isIntegerDtype(node.dtype)) return;
+          if (node.kind !== 'op' || node.phase === 'backward' || isIntegerDtype(node.dtype)) return;
           const def = opDef(node.op as string) as AnyOpDef;
           checkOpNamed(def, node.inputs.map((n) => n.value.clone()), node.attrs, node.name);
         });
@@ -556,18 +652,14 @@ class GraphImpl {
   }
 
   private detachedOps(loss: Node | undefined): Set<number> {
-    const differentiableInputs = (node: Node): Node[] => {
-      const def = node.kind === 'op' ? opDef(node.op as string) : undefined;
-      return node.inputs.filter((_, k) => def === undefined || inputDifferentiable(def, k));
-    };
     const tracked = this.nodes.map((node) => node.kind === 'param' || node.kind === 'input');
     for (const node of this.nodes) {
-      if (node.kind === 'op') tracked[node.id] = differentiableInputs(node).some((input) => tracked[input.id]);
+      if (node.kind === 'op') tracked[node.id] = this.gradEdges(node).some((input) => tracked[input.id]);
     }
     const reached = this.nodes.map((node) => loss === undefined || node === loss);
     if (loss !== undefined) {
-      for (let i = loss.id; i >= 0; i--) {
-        if (reached[i]) for (const input of differentiableInputs(this.nodes[i])) reached[input.id] = true;
+      for (let i = this.nodes.length - 1; i >= 0; i--) {
+        if (reached[i]) for (const input of this.gradEdges(this.nodes[i])) reached[input.id] = true;
       }
     }
     return new Set(this.nodes.filter((node) => node.kind === 'op' && !(tracked[node.id] && reached[node.id])).map((node) => node.id));
@@ -614,18 +706,42 @@ class GraphImpl {
     }
     const seed = Tensor.zeros(loss.shape);
     seed.data.fill(1);
-    this.propagate(loss, seed).forEach((grad, i) => {
+    const values = new Map<number, Tensor>();
+    this.propagate(loss, seed, values).forEach((grad, i) => {
       this.states[i].grad = grad;
     });
+    for (const spec of this.functions) {
+      for (const node of spec.backward) this.states[node.id].value = values.get(node.id) ?? Tensor.zeros(node.shape);
+    }
   }
 
-  private propagate(root: Node, seed: Tensor): Tensor[] {
+  private runFunction(spec: FunctionSpec, grads: Tensor[], upstream: Set<Node>, values: Map<number, Tensor>): void {
+    if (!spec.outputs.some((output) => upstream.has(output))) return;
+    const valueIn = (node: Node): Tensor => values.get(node.id) ?? this.states[node.id].value;
+    for (const { leaf, output } of spec.gradOutputs) values.set(leaf.id, grads[output.id].clone());
+    for (const node of spec.backward) {
+      if (node.kind !== 'op' || values.has(node.id)) continue;
+      const def = opDef(node.op as string) as AnyOpDef;
+      values.set(node.id, def.forward(node.inputs.map(valueIn), node.attrs));
+    }
+    for (const { input, grad } of spec.gradInputs) {
+      if (CONSTANT_KINDS.has(input.kind)) continue;
+      const target = grads[input.id].data;
+      const source = valueIn(grad).data;
+      for (let j = 0; j < target.length; j++) target[j] += source[j];
+      upstream.add(input);
+    }
+  }
+
+  private propagate(root: Node, seed: Tensor, values = new Map<number, Tensor>()): Tensor[] {
     const grads = this.nodes.map((node) => Tensor.zeros(node.shape));
     grads[root.id] = seed;
     const upstream = new Set<Node>([root]);
-    for (let i = root.id; i >= 0; i--) {
+    for (let i = this.nodes.length - 1; i >= 0; i--) {
+      const spec = this.anchors.get(i);
+      if (spec !== undefined) this.runFunction(spec, grads, upstream, values);
       const node = this.nodes[i];
-      if (!upstream.has(node)) continue;
+      if (!upstream.has(node) || node.phase === 'backward' || this.owner.has(i)) continue;
       for (const input of node.inputs) upstream.add(input);
       if (node.kind !== 'op') continue;
       const def = opDef(node.op as string) as AnyOpDef;

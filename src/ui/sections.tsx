@@ -20,8 +20,6 @@ export interface RopeSpec {
 }
 
 export interface RopeCompareSpec {
-  scores: Node;
-  weights: Node;
   ids: Node;
 }
 

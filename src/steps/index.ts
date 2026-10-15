@@ -7,16 +7,22 @@ export {
   type StepInfo,
   type StepState,
   type ForwardStep,
+  type FunctionBackward,
+  type FunctionStep,
   type BackwardOverride,
   type BackwardSpec,
   type PageModule,
   type StepModule,
   type StepGroup,
+  type StepGrid,
+  type CopyText,
   type StepBrace,
   type StepKind,
   type StepNote,
   type NoteSide,
   isLeafLike,
+  copyName,
+  copyNote,
 } from './steps';
 export { compileTemplate } from './template';
 export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type Scale, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';

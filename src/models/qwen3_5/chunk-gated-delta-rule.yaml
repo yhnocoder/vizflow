@@ -354,7 +354,7 @@ steps:
       title: 穿过 exp 和取最后一个位置
       text: exp 的导数是它自己，梯度只交给每块最后一个位置的累计值。
   - id: chunk
-    loop: i in range((T + (chunk_size - T % chunk_size) % chunk_size) // chunk_size)
+    loop: i
     defaults:
       title: 第 {{ i }} 块
       subtitle: '<code>for i in range(num_chunks)</code>'

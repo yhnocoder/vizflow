@@ -263,11 +263,9 @@ function causalSoftmax(S: number[][]): number[][] {
   });
 }
 
-const headOf = (node: Node, head: number) => range(node.shape[1]).map((r) => range(node.shape[2]).map((c) => node.value.get([head, r, c])));
-
 export function RopeCompare(props: { version: Accessor<number>; spec: RopeSpec; compare: RopeCompareSpec }) {
   const { spec, compare } = props;
-  const heads = range(compare.scores.shape[0]);
+  const heads = range(headCount(spec.q, spec.dh));
   const [head, setHead] = createSignal(0);
   const view = createMemo(() => {
     props.version();
@@ -277,8 +275,8 @@ export function RopeCompare(props: { version: Accessor<number>; spec: RopeSpec; 
     const k = headMatrix(spec.k, kvHead(spec, h), spec.dh);
     const T = q.length;
     const S0 = range(T).map((t) => range(T).map((s) => q[t].reduce((a, v, c) => a + v * k[s][c], 0) * scale));
-    const S1 = headOf(compare.scores, h);
-    const P1 = headOf(compare.weights, h);
+    const S1 = range(T).map((t) => range(T).map((s) => dotHead(spec, q[t], k[s], t - s) * scale));
+    const P1 = causalSoftmax(S1);
     const lim = Math.max(...S0.flat(), ...S1.flat().filter(Number.isFinite).map(Math.abs), ...S0.flat().map(Math.abs)) || 1;
     const tokens = Array.from(compare.ids.value.data, (id) => compare.ids.tokens?.[Math.round(id)] ?? String(Math.round(id)));
     return {
@@ -286,9 +284,9 @@ export function RopeCompare(props: { version: Accessor<number>; spec: RopeSpec; 
       tokens,
       grids: [
         { M: S0, lim, title: '不加 RoPE：$\\bar{\\mathbf{q}}\\bar{\\mathbf{k}}^{\\top}/\\sqrt{d_h}$' },
-        { M: S1, lim, title: "加了 RoPE：$\\mathbf{q}'\\mathbf{k}'^{\\top}/\\sqrt{d_h}$（页面里的 $\\tilde{S}$）" },
+        { M: S1, lim, title: "加了 RoPE：$\\mathbf{q}'\\mathbf{k}'^{\\top}/\\sqrt{d_h}$" },
         { M: causalSoftmax(S0), lim: 1, title: '不加 RoPE 的注意力权重' },
-        { M: P1, lim: 1, title: '加了 RoPE 的注意力权重（页面里的 $P$）' },
+        { M: P1, lim: 1, title: '加了 RoPE 的注意力权重' },
       ],
       from: S0[T - 1][0],
       to: S1[T - 1][0],

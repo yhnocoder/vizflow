@@ -170,6 +170,10 @@ export const addOp = binary('add', (x, y) => x + y, () => [1, 1], additive([fals
 export const subOp = binary('sub', (x, y) => x - y, () => [1, -1], additive([false, true]));
 export const rsubOp = binary('rsub', (x, y) => y - x, () => [-1, 1], additive([true, false]));
 export const mulOp = withInt64(binary('mul', (x, y) => x * y, (x, y) => [y, x], pointwise(1, 1, [[1], [0]])), (x, y) => x * y);
+export function maximumLocal(x: number, y: number): [number, number] {
+  return x === y ? [0.5, 0.5] : x > y ? [1, 0] : [0, 1];
+}
+export const maximumOp = binary('maximum', (x, y) => Math.max(x, y), maximumLocal, pointwise(1, 1, [[0, 1], [0, 1]]));
 export const remainderOp = withInt64(binary('remainder', floorMod, (x, y) => [1, -Math.floor(x / y)], pointwise(1, 1, [[], [0, 1]])), floorModExact);
 export const divOp: OpDef = { ...binary('div', (x, y) => x / y, (x, y) => [1 / y, -x / (y * y)], {
   saves: [[1], [0, 1]],
@@ -356,6 +360,17 @@ export const erfOp: OpDef = { ...unary('erf', erf, (x) => (2 / Math.sqrt(Math.PI
 export const geluOp = unary('gelu', (x) => x * normalCdf(x), (x) => normalCdf(x) + x * normalPdf(x), nonlinear(0));
 export const identityOp = unary('identity', (x) => x, () => 1, VIEW_COST);
 export const aliasOp = unary('alias', (x) => x, () => 1, VIEW_COST);
+export const savedOp = unary('saved', (x) => x, () => 1, VIEW_COST);
+export const gradOfOp: OpDef = {
+  name: 'grad_of',
+  cost: VIEW_COST,
+  args: ['input'],
+  tensors: ['input'],
+  differentiable: [false],
+  shape: ([a]) => [...a],
+  forward: ([a]) => Tensor.zeros(a.shape),
+  backward: () => [null],
+};
 export const absOp = unary('abs', Math.abs, (x) => Math.sign(x), pointwise(1, 1, [[0]]));
 export const signOp = unary('sign', Math.sign, () => 0, pointwise(1, 0, [[]]));
 export const clampMinOp = unary<{ min: number }>('clamp_min', (x, { min }) => Math.max(x, min), (x, _y, { min }) => (x > min ? 1 : 0), pointwise(1, 1, [[0]]), ['input', 'min']);

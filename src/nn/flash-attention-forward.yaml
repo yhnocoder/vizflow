@@ -1,0 +1,54 @@
+module: flash_attention_forward
+import:
+  flash_attn_func: ./flash-attn-func.yaml
+args:
+  scaling: float
+  block_m: { type: dim, default: 128 }
+  block_n: { type: dim, default: 64 }
+  bwd_block_m: { type: dim, default: 64 }
+  bwd_block_n: { type: dim, default: 128 }
+inputs:
+  q: [num_heads, T, d_head]
+  k: [num_kv_heads, T, d_head]
+  v: [num_kv_heads, T, d_head]
+outputs:
+  attn_output: [T, num_heads, d_head]
+
+init:
+  flash_attn_func:
+    use: flash_attn_func
+    args: { softmax_scale: scaling, block_m: block_m, block_n: block_n, bwd_block_m: bwd_block_m, bwd_block_n: bwd_block_n }
+
+forward:
+  - query: q.transpose(0, 1)
+  - key: k.transpose(0, 1)
+  - value: v.transpose(0, 1)
+  - attn_output: flash_attn_func(query, key, value)
+
+tex:
+  query: '\mathbf{q}'
+  key: '\mathbf{k}'
+  value: '\mathbf{v}'
+  attn_output: '\mathbf{o}'
+
+fold:
+  label: '$\viz{attn_output}$'
+  title: flash_attention_forward
+  text: |
+    $$\viz{attn_output}={{ attn_output | matrix:2 }}$$
+  backward:
+    label: '$\partial\viz{q},\ \partial\viz{k},\ \partial\viz{v}$'
+    title: '$\frac{\partial\ell}{\partial \viz{q}},\ \frac{\partial\ell}{\partial \viz{k}},\ \frac{\partial\ell}{\partial \viz{v}}$'
+    text: |
+      $$\frac{\partial\ell}{\partial \viz{q}}={{ q.grad | matrix:3 }}$$
+
+steps:
+  - id: transpose
+    show: [query, key, value]
+    label: '$\viz{query},\ \viz{key},\ \viz{value}$'
+    title: 换回 $T\times H\times d_h$
+    text: |
+      <code>config._attn_implementation</code> 是 <code>"flash_attention_2"</code> 时，attention 调用 <code>flash_attention_forward</code>。它先用 <code>transpose(1, 2)</code> 把 q、k、v 换回 $T\times H\times d_h$，因为 flash-attn 的接口要求 head 维在序列维后面。和 eager 不同，这里不调用 <code>repeat_kv</code>，GQA 由 kernel 按 head 编号直接读对应的 kv head；也没有 mask 张量，causal 由 <code>causal=True</code> 告诉 kernel。HF 的 <code>_flash_attention_forward</code> 最后调用 <code>flash_attn_func(q, k, v, dropout_p=0.0, softmax_scale=scaling, causal=True)</code>。
+      $$\viz{query}={{ query | matrix:2 }}$$
+  - id: flash_attn_func
+    subtitle: FlashAttention-2

@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import type { Graph } from '../autograd';
 import { FLOP_RULES, type FlopEntry, MEMORY_KINDS, type MemoryEntry, type MemoryKind, type Scale, type StepCost, costTimeline } from '../cost';
 import type { Steps } from '../steps';
@@ -8,6 +8,12 @@ import { Rich } from './rich';
 export interface CostPanelOptions {
   title?: string;
   dims?: 'toy' | 'real';
+}
+
+export interface CostSettings {
+  real: boolean;
+  batch: number;
+  sequence: number | undefined;
 }
 
 const KIND_NAMES: Readonly<Record<MemoryKind, string>> = {
@@ -194,12 +200,16 @@ function Timeline(props: { steps: StepCost[]; peak: number; current: number; go:
   );
 }
 
-export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVersion: () => number; options: CostPanelOptions }) {
+export function CostPanel(props: { g: Graph; steps: Steps | undefined; stepsVersion: () => number; options: CostPanelOptions; settings?: { cost?: CostSettings } }) {
   const { g } = props;
-  const [real, setReal] = createSignal(props.options.dims !== 'toy' && g.real !== undefined);
+  const kept = props.settings?.cost;
   const realT = typeof g.real?.T === 'number' ? g.real.T : undefined;
-  const [sequence, setSequence] = createSignal(realT);
-  const [batch, setBatch] = createSignal(1);
+  const [real, setReal] = createSignal(g.real !== undefined && (kept?.real ?? props.options.dims !== 'toy'));
+  const [sequence, setSequence] = createSignal(realT === undefined ? undefined : (kept?.sequence ?? realT));
+  const [batch, setBatch] = createSignal(kept?.batch ?? 1);
+  createEffect(() => {
+    if (props.settings !== undefined) props.settings.cost = { real: real(), batch: batch(), sequence: sequence() };
+  });
   const [tip, setTip] = createSignal<MemoryKind | 'flops' | null>(null);
   const [pinned, setPinned] = createSignal(false);
   const list = createMemo(() => {

@@ -408,6 +408,22 @@
    ],
    "args": [],
    "output": "int64"
+  },
+  {
+   "op": "sum",
+   "inputs": [
+    "bool"
+   ],
+   "args": [],
+   "output": "int64"
+  },
+  {
+   "op": "sum",
+   "inputs": [
+    "int32"
+   ],
+   "args": [],
+   "output": "int64"
   }
  ]
 }

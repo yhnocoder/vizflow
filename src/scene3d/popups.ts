@@ -8,7 +8,7 @@ import type { SceneController } from './controller';
 import type { DrawnEdge } from './edges';
 import type { Label } from './labels';
 import { plates, rowCol, rowsCols, tokenText } from './layout';
-import { type Renderable, targetOf, valuesOf } from './renderable';
+import { type Renderable, elementValue, showsGrad, targetOf, valuesOf } from './renderable';
 
 export const BOX_CARD_NOTE = '点这个标签可以展开。';
 export const JACOBIAN_CARD_NOTE = '折叠后的整体 Jacobian 元素。';
@@ -34,8 +34,8 @@ export class ScenePopups {
     c.root.append(this.tip, this.pop);
   }
 
-  bindCard(label: Label, node: Node): void {
-    const show = () => this.showNodeCard(node, label.el);
+  bindCard(label: Label, node: () => Node): void {
+    const show = () => this.showNodeCard(node(), label.el);
     label.el.addEventListener('pointerenter', show);
     label.el.addEventListener('click', show);
     label.el.addEventListener('pointerleave', () => this.hideNodeCard());
@@ -53,14 +53,12 @@ export class ScenePopups {
     if (this.pinned === undefined) this.pop.hidden = true;
   }
 
-  private tipContent(renderable: Renderable, index: number): DocumentFragment {
+  private tipContent(renderable: Renderable, index: number, value: number): DocumentFragment {
     const c = this.c;
-    const { block } = renderable;
-    const node = block.node;
+    const { block, node } = renderable;
     const element = block.elements[index];
-    const backward = c.state.dir === 'backward';
+    const backward = showsGrad(c, node);
     const elemTex = c.explainer.elemTex({ node, index: element.index });
-    const value = valuesOf(c, node)[index];
     const label = c.aligned.get(node);
     const token = label?.tokens?.[element.col];
     const fragment = document.createDocumentFragment();
@@ -88,7 +86,12 @@ export class ScenePopups {
   }
 
   showTip(renderable: Renderable, index: number, ev: PointerEvent): void {
-    this.tip.replaceChildren(this.tipContent(renderable, index));
+    const value = elementValue(valuesOf(this.c, renderable.node), renderable, index);
+    if (value === undefined) {
+      this.hideTip();
+      return;
+    }
+    this.tip.replaceChildren(this.tipContent(renderable, index, value));
     this.tip.hidden = false;
     const rect = this.c.root.getBoundingClientRect();
     placeTip(this.c.root, this.tip, ev.clientX - rect.left, ev.clientY - rect.top);
@@ -96,7 +99,7 @@ export class ScenePopups {
 
   private gridOf(node: Node): ValueGrid {
     const [, cols] = rowsCols(node);
-    const backward = this.c.state.dir === 'backward';
+    const backward = showsGrad(this.c, node);
     const values = valuesOf(this.c, node);
     const ordered = new Float64Array(values.length);
     forEachIndex(node.shape, (index, offset) => {

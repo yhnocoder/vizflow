@@ -43,6 +43,7 @@ import {
   bitwiseOrExplain,
   logicalNotExplain,
   copysignExplain,
+  maximumExplain,
 } from './elementwise';
 import {
   catExplain,
@@ -74,8 +75,9 @@ import {
   indexPutExplain,
   selectScatterExplain,
   sliceScatterExplain,
+  scatterTilesExplain,
 } from './index_ops';
-import { arangeExplain, causalMaskExplain, eyeExplain, onesExplain, zerosExplain, zerosLikeExplain } from './creation';
+import { arangeExplain, causalMaskExplain, eyeExplain, fullExplain, gradOfExplain, onesExplain, zerosExplain, zerosLikeExplain } from './creation';
 import { nllLossExplain } from './loss';
 import { groupedLinearExplain, matmulExplain, selectMatmulExplain, solveTriangularExplain } from './matmul';
 import { cumsumExplain, logsumexpExplain, maxExplain, meanExplain, sumExplain, rrmsExplain } from './reduce';
@@ -91,6 +93,8 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   ones: onesExplain,
   eye: eyeExplain,
   zeros_like: zerosLikeExplain,
+  full: fullExplain,
+  grad_of: gradOfExplain,
   mul: mulExplain,
   div: divExplain,
   neg: negExplain,
@@ -111,6 +115,7 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   gelu: geluExplain,
   identity: identityExplain,
   alias: identityExplain,
+  saved: identityExplain,
   rotate_half: rotateHalfExplain,
   clamp: clampExplain,
   transpose: transposeExplain,
@@ -164,11 +169,13 @@ export const builtinExplains: Readonly<Record<string, OpExplain>> = {
   bitwise_or: bitwiseOrExplain,
   logical_not: logicalNotExplain,
   copysign: copysignExplain,
+  maximum: maximumExplain,
   sort: sortExplain,
   scatter: scatterExplain,
   index_put: indexPutExplain,
   select_scatter: selectScatterExplain,
   slice_scatter: sliceScatterExplain,
+  scatter_tiles: scatterTilesExplain,
   expand: expandExplain,
   reshape: reshapeExplain,
   repeat_kv: repeatKvExplain,

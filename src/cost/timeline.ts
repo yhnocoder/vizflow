@@ -64,7 +64,8 @@ class CostModel {
   readonly loss: Node | undefined;
   readonly root: number[] = [];
   readonly consumers: Node[][];
-  readonly savers: number[][];
+  readonly holds: { from: number; until: number }[][];
+  readonly gradNodes = new Set<number>();
   readonly gradFrom: number[][];
   readonly needsGrad: boolean[];
   readonly real: boolean;
@@ -85,15 +86,23 @@ class CostModel {
     this.loss = g.findLoss();
     const loss = this.loss;
     this.consumers = this.nodes.map(() => []);
-    this.savers = this.nodes.map(() => []);
+    this.holds = this.nodes.map(() => []);
     this.needsGrad = this.nodes.map((n) => loss !== undefined && n.id <= loss.id && n.grad !== null);
     for (const n of this.nodes) {
       this.batched[n.id] = n.kind === 'input' || n.kind === 'label' || n.inputs.some((input) => this.batched[input.id]);
-      this.root[n.id] = this.isView(n) ? this.root[n.inputs[0].id] : n.id;
+      this.root[n.id] = this.isView(n) || this.cost(n)?.writes === true ? this.root[n.inputs[0].id] : n.id;
       n.inputs.forEach((input) => this.consumers[input.id].push(n));
-      for (const saved of this.saved(n)) this.savers[saved.id].push(n.id);
+      for (const saved of this.saved(n)) this.holds[saved.id].push({ from: n.id, until: n.id });
     }
     this.gradFrom = this.nodes.map(() => []);
+    for (const spec of g.functions) {
+      const anchor = Math.max(...spec.outputs.map((n) => n.id));
+      for (const n of spec.backward) if (n.op === 'saved') this.holds[n.inputs[0].id].push({ from: anchor, until: n.id });
+      for (const { input, grad } of spec.gradInputs) {
+        this.gradFrom[input.id].push(grad.id);
+        this.gradNodes.add(grad.id);
+      }
+    }
     for (let id = this.nodes.length - 1; id >= 0; id--) {
       if (!this.needsGrad[id]) continue;
       for (const c of this.consumers[id]) {
@@ -133,8 +142,9 @@ class CostModel {
 
   scale(n: Node): Scale {
     const scale: Scale = { batch: this.batched[n.id] ? this.batch : 1 };
-    const real = this.real ? product(n.copies.real.map((d) => realSizeOf(d, this.sizes, this.shapes) as number)) : n.copies.drawn;
-    if (real !== n.copies.drawn) scale.copies = { drawn: n.copies.drawn, real };
+    const { copies } = this.cost(n)?.writes === true ? this.nodes[this.root[n.id]] : n;
+    const real = this.real ? product(copies.real.map((d) => realSizeOf(d, this.sizes, this.shapes) as number)) : copies.drawn;
+    if (real !== copies.drawn) scale.copies = { drawn: copies.drawn, real };
     return scale;
   }
 
@@ -152,9 +162,9 @@ class CostModel {
         kinds.set(n.id, leaf);
         continue;
       }
-      if (!computed[n.id] || !this.computes(n)) continue;
+      if (!computed[n.id] || !this.computes(n) || this.g.onChip(n)) continue;
       const root = this.root[n.id];
-      const saved = this.savers[n.id].some((c) => computed[c]);
+      const saved = this.holds[n.id].some((hold) => computed[hold.from]);
       const pending = this.consumers[n.id].length === 0 || this.consumers[n.id].some((c) => !computed[c.id]);
       if (saved) kinds.set(root, 'saved');
       else if (pending && !kinds.has(root)) kinds.set(root, 'temp');
@@ -168,7 +178,8 @@ class CostModel {
     for (const n of this.nodes) {
       const leaf = LEAF_KINDS[n.kind];
       if (leaf !== undefined) kinds.set(n.id, leaf);
-      else if (this.computes(n) && this.savers[n.id].some((c) => !processed[c])) kinds.set(this.root[n.id], 'saved');
+      else if (n.phase === 'backward') this.backwardTemp(n, processed, kinds);
+      else if (this.computes(n) && !this.g.onChip(n) && this.holds[n.id].some((hold) => !processed[hold.until])) kinds.set(this.root[n.id], 'saved');
       if (!this.needsGrad[n.id] || this.isView(n) || n === this.loss) continue;
       const arrived = this.gradFrom[n.id].some((c) => processed[c]);
       if (arrived && (n.kind !== 'op' || !processed[n.id])) grads.push(this.entry(n, n.kind === 'param' ? 'param_grad' : 'grad'));
@@ -176,10 +187,16 @@ class CostModel {
     return [...[...kinds].map(([id, kind]) => this.entry(this.nodes[id], kind)), ...grads];
   }
 
-  closure(targets: readonly Node[], computed: Uint8Array): Node[] {
+  private backwardTemp(n: Node, processed: Uint8Array, kinds: Map<number, MemoryKind>): void {
+    const root = this.root[n.id];
+    if (!processed[n.id] || this.g.onChip(n) || this.nodes[root].phase === 'forward' || this.gradNodes.has(root) || kinds.has(root)) return;
+    if (this.consumers[n.id].some((c) => !processed[c.id])) kinds.set(root, 'temp');
+  }
+
+  closure(targets: readonly Node[], computed: Uint8Array, phase: Node['phase'] = 'forward'): Node[] {
     const fresh: Node[] = [];
     const visit = (n: Node) => {
-      if (n.kind !== 'op' || computed[n.id]) return;
+      if (n.kind !== 'op' || n.phase !== phase || computed[n.id]) return;
       computed[n.id] = 1;
       n.inputs.forEach(visit);
       fresh.push(n);
@@ -188,13 +205,13 @@ class CostModel {
     return fresh.sort((a, b) => a.id - b.id);
   }
 
-  forwardOps(ops: readonly Node[], uncounted: Set<Node>): FlopEntry[] {
+  forwardOps(ops: readonly Node[], uncounted: Set<Node>, dir: FlopEntry['dir'] = 'forward'): FlopEntry[] {
     const out: FlopEntry[] = [];
     for (const n of ops) {
       const cost = this.cost(n);
       if (cost === undefined) uncounted.add(n);
       const terms = cost === undefined ? [] : [cost.flops(n.inputs.map((i) => [...this.shape(i)]), [...this.shape(n)]).forward];
-      this.push(out, n, 'forward', terms);
+      this.push(out, n, dir, terms);
     }
     return out;
   }
@@ -247,7 +264,11 @@ export function costTimeline(g: Graph, list: readonly StepInfo[], options: CostO
     if (info.kind === 'overview') return { overview: true, memory: [], bytes: 0, ops: [], flops: 0, forward: 0, backward: 0 };
     let memory: MemoryEntry[];
     let ops: FlopEntry[];
-    if (info.dir === 'forward') {
+    if (info.dir === 'backward' && info.computes !== undefined) {
+      const fresh = model.closure(info.computes, processed, 'backward');
+      ops = model.forwardOps(fresh, uncounted, 'backward');
+      memory = model.backwardMemory(processed);
+    } else if (info.dir === 'forward') {
       const fresh = model.closure(info.nodes, computed);
       batches.push({ id: info.id, ops: fresh });
       ops = model.forwardOps(fresh, uncounted);

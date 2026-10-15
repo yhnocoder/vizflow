@@ -61,6 +61,22 @@ export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'jacobianBlock',
   'computeBackward',
   'propagate',
+  'phase',
+  'functions',
+  'owner',
+  'anchors',
+  'chip',
+  'copiesNow',
+  'backwardPhase',
+  'defineFunction',
+  'functionOf',
+  'markOnChip',
+  'onChip',
+  'sealed',
+  'gradEdges',
+  'runFunction',
+  'valueOf',
+  'byName',
 ]);
 
 const registry = new Map<string, AnyOpDef>();
@@ -191,6 +207,7 @@ export function outputDtype(def: AnyOpDef, inputs: readonly { name: string; dtyp
   if (given !== undefined) return given;
   if (typeof def.dtype === 'function') return def.dtype(attrs);
   const promoted = def.dtype ?? promoteDtypes(inputs.map((n) => n.dtype), fallback, where);
+  if (def.integral !== undefined && isIntegerDtype(promoted)) return def.integral;
   return def.floating === true && isIntegerDtype(promoted) ? fallback : promoted;
 }
 

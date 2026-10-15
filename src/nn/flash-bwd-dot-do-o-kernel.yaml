@@ -1,0 +1,31 @@
+module: flash_bwd_dot_do_o_kernel
+kernel: true
+args:
+  block_m: dim
+grid:
+  m: triton.cdiv(T, block_m)
+  h: num_heads
+inputs:
+  dout: [T, num_heads, d_head]
+  out: [T, num_heads, d_head]
+  dsoftmax_sum: { type: tensor, shape: [num_heads, T], dtype: fp32 }
+  dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+outputs:
+  dsoftmax_sum: { type: tensor, shape: [num_heads, T], dtype: fp32 }
+  dq_accum: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+
+forward:
+  - do_tile: dout[m * block_m:min((m + 1) * block_m, T), h].float()
+  - o_tile: out[m * block_m:min((m + 1) * block_m, T), h].float()
+  - dp_sum: (do_tile * o_tile).sum(-1)
+  - 'dsoftmax_sum[h, m * block_m:min((m + 1) * block_m, T)]': dp_sum
+  - 'dq_accum[m * block_m:min((m + 1) * block_m, T), h]': zeros(min((m + 1) * block_m, T) - m * block_m, d_head, dtype=fp32)
+
+tex:
+  dout: '\mathrm{d}O'
+  out: 'O'
+  dsoftmax_sum: 'D'
+  dq_accum: '\mathrm{d}Q^{\mathrm{acc}}'
+  do_tile: '\mathrm{d}O'
+  o_tile: 'O'
+  dp_sum: 'D'

@@ -50,6 +50,7 @@ export interface OpFlops {
 
 export interface OpCost {
   view?: boolean;
+  writes?: boolean;
   saves: Saved[][];
   flops(inputs: number[][], out: number[]): OpFlops;
 }
@@ -69,6 +70,7 @@ export interface OpDef<A extends object = Record<string, unknown>> {
   differentiable?: boolean[];
   dtype?: Dtype | ((attrs: A) => Dtype);
   floating?: boolean;
+  integral?: Dtype;
   sameDtype?: string[];
   int64?: boolean;
   explain?: OpExplain;

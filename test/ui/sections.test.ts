@@ -34,7 +34,6 @@ function attentionGraph() {
   const logp = g.log_softmax(z, -1, { name: 'logp' });
   const lt = g.nll_loss(logp, y, { name: 'lt', reduction: 'none' });
   const loss = g.mean(lt, null, { name: 'loss' });
-  const heads = { S: g.unsqueeze(S, 0, { name: 'S_heads' }), P: g.unsqueeze(P, 0, { name: 'P_heads' }) };
   const steps = createSteps(g, {
     forward: [
       { show: [q, k], title: 'qk' },
@@ -42,7 +41,7 @@ function attentionGraph() {
       { show: [P, z, logp, lt, loss], title: 'rest' },
     ],
   });
-  return { g, ids, y, q, k, W, S, P, z, lt, loss, heads, steps };
+  return { g, ids, y, q, k, W, S, P, z, lt, loss, steps };
 }
 
 const mounted: Mounted[] = [];
@@ -178,14 +177,14 @@ describe('new panels', () => {
 });
 
 function sectionItem(fixture: ReturnType<typeof attentionGraph>): SectionItem {
-  const { q, k, S, heads, ids } = fixture;
+  const { q, k, S, ids } = fixture;
   return {
     title: 'RoPE',
     rope: { q: [q], k: [k], rows: [-1, 1], head: 1, theta: 10, dh: 4, positions: 24 },
     rows: [
       { columns: [300, '1fr'], cells: [['rope_dial'], [{ lead: '开头' }, { text: '### 一、问题\n\n正文 $x$' }]] },
       { columns: [340, '1fr'], cells: [['rope_curve'], [{ text: '### 四' }]] },
-      { cells: [[{ text: '### 七\n\n对比' }, { buttons: [{ label: '看打分', go: S }] }, { rope_compare: { scores: heads.S, weights: heads.P, ids } }]] },
+      { cells: [[{ text: '### 七\n\n对比' }, { buttons: [{ label: '看打分', go: S }] }, { rope_compare: { ids } }]] },
     ],
   };
 }
@@ -245,14 +244,18 @@ describe('mountSections', () => {
     const caps = [...el.querySelectorAll('.vf-ropecmp .vf-cap')].map(text);
     expect(caps).toEqual([
       '不加 RoPE：$\\bar{\\mathbf{q}}\\bar{\\mathbf{k}}^{\\top}/\\sqrt{d_h}$',
-      "加了 RoPE：$\\mathbf{q}'\\mathbf{k}'^{\\top}/\\sqrt{d_h}$（页面里的 $\\tilde{S}$）",
+      "加了 RoPE：$\\mathbf{q}'\\mathbf{k}'^{\\top}/\\sqrt{d_h}$",
       '不加 RoPE 的注意力权重',
-      '加了 RoPE 的注意力权重（页面里的 $P$）',
+      '加了 RoPE 的注意力权重',
     ]);
     const grids = [...el.querySelectorAll('.vf-cmpg')];
     const s0 = (Q[2].reduce((a, v, c) => a + v * K[0][c], 0) / 2).toFixed(2).replace('-', '−');
     expect(text(grids[0].children[13])).toBe(s0);
-    expect(text(grids[1].children[13])).toBe(fixture.S.value.get([2, 0]).toFixed(2).replace('-', '−'));
+    const rotated = [1, 1 / Math.sqrt(10)].reduce((a, w, i) => {
+      const [c, s] = [Math.cos(2 * w), Math.sin(2 * w)];
+      return a + (Q[2][i] * c - Q[2][i + 2] * s) * K[0][i] + (Q[2][i + 2] * c + Q[2][i] * s) * K[0][i + 2];
+    }, 0);
+    expect(text(grids[1].children[13])).toBe((rotated / 2).toFixed(2).replace('-', '−'));
     expect(grids[0].querySelectorAll('.vf-dg')).toHaveLength(3);
     expect(text(grids[2].children[5])).toBe('1.00');
     expect(text(el.querySelector('.vf-cmpnote'))).toContain('比如 “b” 看 “a”，距离是 2');

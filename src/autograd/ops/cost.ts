@@ -32,3 +32,7 @@ export function movement(scatter: boolean, saves: Saved[][]): OpCost {
     flops: (inputs, out): OpFlops => ({ forward: NO_FLOPS, backward: inputs.map(() => (scatter ? [numel(out)] : NO_FLOPS)) }),
   };
 }
+
+export function write(saves: Saved[][]): OpCost {
+  return { ...movement(false, saves), writes: true };
+}

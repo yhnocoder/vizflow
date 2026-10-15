@@ -19,7 +19,7 @@
 <p class="nav"><a href="../index.html">返回索引</a> · <a href="vizflow.html">vizflow 设计</a></p>
 <h1>vizflow 页面描述文件 <span class="tag">第四版</span></h1>
 <p class="lead">由标准模块组成的页面可以只写 YAML 页面描述文件。一个模块对应 PyTorch 里的一个类：<code>init</code> 对应 <code>__init__</code>，<code>forward</code> 对应 <code>forward</code>，参数路径与 <code>state_dict</code> 的键相同。<code>dsl</code> 入口把文件编译成计算图、步骤、布局、面板和讲解段落，<code>&lt;vizflow-page src="x.yaml"&gt;</code> 把它们交给挂载流程。</p>
-<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code>，它导入的模型定义在 <code>src/models/qwen3/</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。其他模型页面还使用旧写法，迁移之前不能编译。</p>
+<p class="hint">完整示例：<code>examples/qwen3/qwen3-dsl.yaml</code>，它导入的模型定义在 <code>src/models/qwen3/</code>。测试 <code>test/dsl/qwen3.test.ts</code> 把 transformers 的 <code>Qwen3ForCausalLM</code> 的参数写进这一页，在 float64 下比较 logits、损失和每个参数的梯度。测试 <code>test/dsl/replaceable.test.ts</code> 把同一页的 <code>attn_implementation</code>（<code>eager</code> 或 <code>flash_attention_2</code>）与 <code>fused_linear_cross_entropy</code>（False 或 True）的另外三种组合编译出来，也在 float64 下与 transformers 的损失和每个参数的梯度比较。其他模型页面还使用旧写法，迁移之前不能编译。</p>
 
 <h2>各部分决定图上的什么</h2>
 <ul>
@@ -29,7 +29,7 @@
   <li><code>steps</code>：步骤条、讲解卡片、每一步亮什么、张量什么时候出现、括号和括号上的文字。</li>
   <li><code>tex</code>、<code>formula</code>、<code>fold</code>：张量的数学记号、公式卡片、折叠时的讲解。</li>
 </ul>
-<p><code>layout</code> 不影响哪一步亮什么，<code>steps</code> 不影响张量的位置。图上每个张量只有一个位置。</p>
+<p><code>layout</code> 不影响哪一步亮什么，<code>steps</code> 不影响张量的位置。图上每个张量只有一个位置；循环各轮里的同名张量、叠放的并行副本里的同名张量共用一个位置，这个位置按当前步骤显示其中一个（规则 14、15）。</p>
 
 <h2>类型</h2>
 <p>类型定义在 <code>src/dsl/types.ts</code>，由 <code>dsl</code> 入口导出。下面各节按类型说明字段的含义。</p>
@@ -42,16 +42,18 @@ export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64
 export type Scalar = string | number | boolean;
 export type Value = Scalar | Value[] | ExpressionValue;
 export type Dimension = number | Expression;
-export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
+export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'str' | 'dtype' | 'module';
 export type ArgDeclaration = ArgType | ArgField;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
+export type LoopVariable = string;
+export type GridArrangement = 'expand' | 'stack';
 export type ArgValue = Expression | number | boolean;
 export type Args = Record&lt;string, ArgValue&gt; | (string | Record&lt;string, ArgValue&gt;)[];
 export type Declaration = Dimension[] | TensorField | ListField;
 export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
 export type Step = NamedStep | LoopStep;
-export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel;
+export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel | ImplementationsPanel;
 
 export interface ExpressionValue {
   expr: Expression;
@@ -60,6 +62,7 @@ export interface ExpressionValue {
 export interface ArgField {
   type: ArgType;
   default?: Value;
+  options?: Scalar[];
 }
 
 export interface TensorField {
@@ -122,6 +125,12 @@ export interface Module {
   layout?: Layout;
   steps?: Step[];
   unshown?: Reference[];
+  kernel?: boolean;
+  grid?: Record&lt;string, Dimension&gt;;
+  shared?: Reference[];
+  save?: Reference[];
+  backward?: Assignment[];
+  backward_steps?: Step[];
 }
 
 export interface ModuleFile extends Module {
@@ -170,6 +179,8 @@ export interface Assignment {
 export interface Layout {
   place?: Record&lt;Reference, Placement&gt;;
   merge?: Reference[][];
+  grid?: Record&lt;string, GridArrangement&gt;;
+  rows?: Reference[][];
 }
 
 export interface Placement {
@@ -216,7 +227,7 @@ export interface NamedStep extends StepOptions {
 
 export interface LoopStep {
   id: string;
-  loop: LoopBinding;
+  loop: LoopBinding | LoopVariable;
   defaults: StepOptions;
   rules?: LoopRule[];
 }
@@ -289,6 +300,10 @@ export interface CodePanel extends PanelText {
   code: string;
 }
 
+export interface ImplementationsPanel extends PanelText {
+  implementations: Reference[];
+}
+
 export interface Section {
   title: TemplateText;
   src: string;
@@ -317,7 +332,7 @@ export interface RopeDisplay {
   <li>张量作下标是高级索引，<code>x[idx]</code> 按 <code>idx</code> 取第一维，<code>w[a, b, None]</code> 按两个下标张量逐对取元素并在末尾加一维，与 torch 相同。</li>
   <li><code>topk</code> 必须紧跟 <code>[0]</code> 或 <code>[1]</code>：<code>[1]</code> 是编号；<code>[0]</code> 是值，编译成先求编号、再用 <code>gather</code> 取值。<code>largest</code> 只能是 True，<code>sorted</code> 不改变结果，编号按值从大到小排。</li>
   <li><code>.bool()</code>、<code>.long()</code>、<code>.int()</code> 与 <code>.float()</code> 一样是类型转换，<code>.type(dtype)</code> 等于 <code>.to(dtype)</code>；<code>float('-inf')</code> 是负无穷。</li>
-  <li>数的函数与 Python 相同：<code>math.log</code>、<code>math.exp</code>、<code>math.sqrt</code>、<code>math.floor</code>、<code>math.ceil</code>，常数 <code>math.pi</code>、<code>math.e</code>、<code>math.inf</code>，以及参数都是数时的 <code>max</code>、<code>min</code>、<code>abs</code>。它们在编译时求值，不产生节点。</li>
+  <li>数的函数与 Python 相同：<code>math.log</code>、<code>math.log2</code>、<code>math.exp</code>、<code>math.sqrt</code>、<code>math.floor</code>、<code>math.ceil</code>，常数 <code>math.pi</code>、<code>math.e</code>、<code>math.inf</code>，以及参数都是数时的 <code>max</code>、<code>min</code>、<code>abs</code>。Triton kernel 里的 <code>triton.cdiv(a, b)</code>（$\lceil a/b\rceil$）和 <code>triton.next_power_of_2(n)</code>（不小于 $n$ 的最小的 2 的幂）也可以用。它们在编译时求值，不产生节点。<code>math</code> 或 <code>triton</code> 被当前作用域里的同名名字遮住时不是这些函数。</li>
   <li><code>x.new_empty(大小...)</code> 与 <code>x.new_zeros(大小...)</code> 建一个 dtype 与 <code>x</code> 相同、没有梯度的张量。torch 的 <code>new_empty</code> 不写初值，这里画成 0，所以随后必须用写入覆盖全部元素，例如两次 <code>slice_scatter</code> 对应 HF 的两次 <code>copy_</code>。</li>
 </ul>
 
@@ -344,18 +359,30 @@ data:
   <li><code>real</code> 的第一个规格用于卡片上的真实形状和显存与计算量面板，不改变示例计算。根模块的模板可以读 <code>{{ real['qwen3-8b'].d_model }}</code>。任何模块的模板都可以写 <code>{{ 表达式 | real }}</code>，按第一个规格求这个数的真实值，例如 attention 里的 <code>{{ kv_lora_rank + qk_rope_head_dim | real }}</code>。</li>
   <li><code>preamble</code> 是只写 <code>\newcommand</code> 的文件，定义的宏在模板、tex 和公式里展开。包内模块用到的宏在 <code>src/models/preamble.sty</code>，每个页面先载入它，页面的 <code>preamble</code> 再追加或覆盖。</li>
 </ul>
+<p>页面可以让读者切换同一个模型的不同实现，例如 HF 的 <code>attn_implementation</code> 和 Liger 的融合损失：</p>
+<pre><code class="language-yaml">config:
+  attn_implementation: eager
+  fused_linear_cross_entropy: false
+panels:
+  - implementations: [attn_implementation, fused_linear_cross_entropy]
+    title: 实现</code></pre>
+<ul>
+  <li><code>implementations</code> 面板的每一项是根模块的一个参数名，<code>config</code> 必须给出它的值，这个值是初始选中的实现。参数写了 <code>options</code> 时，每个选项一个按钮；<code>bool</code> 参数有 False 和 True 两个按钮；其他参数编译报错 <code>'x' needs options or type bool to be switched</code>。</li>
+  <li>读者点一个按钮时，<code>&lt;vizflow-page&gt;</code> 用新的值覆盖 <code>config</code> 里的同名项，重新编译整页，所以计算图、步骤、布局、显存与计算量都按选中的实现生成。参数值、序列和当前步骤怎样保留，见 <a href="vizflow.html">vizflow 设计</a>的「页面元素」。</li>
+</ul>
 
 <h2>Module</h2>
 <p>模块文件用 <code>module</code> 写模块名，页面文件的 <code>modules</code> 也可以直接写模块。模块只能读取自己的参数、输入，以及 <code>init</code> 和 <code>forward</code> 定义的名字，同一作用域里一个名字只能定义一次。</p>
 
 <h3>args</h3>
 <p>类型是 <code>dim</code>、<code>int</code>、<code>float</code>、<code>bool</code>、<code>str</code>、<code>list</code>、<code>dtype</code> 或 <code>module</code>，有默认值时写 <code>{ type: float, default: 1e-6 }</code>。使用处的 <code>args</code> 可以是字典或列表，列表里的裸名字表示传入调用者同名的值。</p>
+<p><code>str</code> 参数可以写 <code>options</code>，列出允许的取值，至少两项，例如 <code>attn_implementation: { type: str, options: [eager, flash_attention_2], default: eager }</code>。传入的值不在其中时编译报错 <code>arg 'attn_implementation' of Qwen3Attention is 'sdpa', which is not one of eager, flash_attention_2</code>。其他类型的参数不能写 <code>options</code>。实现面板按 <code>options</code> 画按钮，见 Page 一节。</p>
 
 <h3>inputs 与 outputs</h3>
 <pre><code class="language-yaml">inputs:
   x: [T, d_model]
   ids: { type: tensor, shape: [T], dtype: int64 }</code></pre>
-<p>dtype 是 <code>dtype</code> 的张量只写形状，<code>[T, d_model]</code> 等于 <code>{ type: tensor, shape: [T, d_model], dtype: dtype }</code>；dtype 不同时写完整。token 列表写 <code>{ type: list, dtype: str }</code>。形状里不是参数的名字从实际输入绑定，已绑定的名字只做检查。从输入绑定的名字在模块里至少还要被引用一次，否则报错，因为只出现一次的名字多半是参数名拼错了。不需要名字的维度写 <code>_</code>，<code>'...'</code> 对上任意个维度；dtype 写 <code>_</code> 时接受任意 dtype，对应 HF 函数收到参数后自己再转换，例如 <code>torch_chunk_gated_delta_rule</code> 的 <code>g</code>。<code>optional: true</code> 的输入可以不传或传 <code>None</code>，模块里它的名字是 <code>None</code>，对应 HF 的 <code>attention_mask: torch.Tensor | None = None</code>。序列长度 <code>T</code> 是数据的维度，根模块输入的维度由显存面板的滑块改变。</p>
+<p>dtype 是 <code>dtype</code> 的张量只写形状，<code>[T, d_model]</code> 等于 <code>{ type: tensor, shape: [T, d_model], dtype: dtype }</code>；dtype 不同时写完整。token 列表写 <code>{ type: list, dtype: str }</code>。形状里不是参数的名字从实际输入绑定，已绑定的名字只做检查。从输入绑定的名字在模块里至少还要被引用一次，否则报错，因为只出现一次的名字多半是参数名拼错了。不需要名字的维度写 <code>_</code>，<code>'...'</code> 对上任意个维度；dtype 写 <code>_</code> 时接受任意 dtype，对应 HF 函数收到参数后自己再转换，例如 <code>torch_chunk_gated_delta_rule</code> 的 <code>g</code>。<code>optional: true</code> 的输入可以不传或传 <code>None</code>，模块里它的名字是 <code>None</code>，对应 HF 的 <code>attention_mask: torch.Tensor | None = None</code>。<code>optional: true</code> 的输出在 <code>forward</code> 里可以是 <code>None</code>（例如只在 <code>if</code> 块的一个分支里算出），这时调用结果里它的名字是 <code>None</code>，模块只有这一个输出时整个调用的结果是 <code>None</code>，对应 Liger 融合损失时 <code>Qwen3ForCausalLM</code> 不返回 logits。序列长度 <code>T</code> 是数据的维度，根模块输入的维度由显存面板的滑块改变。</p>
 
 <h3>init</h3>
 <pre><code class="language-yaml">init:
@@ -407,9 +434,10 @@ data:
   <li>调用子模块写 <code>实例(位置参数, 名字=值)</code>。多输出的模块返回具名结果，用 <code>result.名字</code> 取出。调用是赋值的整个表达式时，模块的输出用调用处的名字命名。</li>
   <li>只持有参数、HF 从不调用其 forward 的模块可以省略 <code>forward</code>，例如 <code>nn.Conv1d</code>：Qwen3.5 只读取 <code>self.conv1d.weight</code>。</li>
   <li>同一个实例可以调用多次，共用参数；第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。层列表依次调用各层，第一个位置参数逐层串联。</li>
-  <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算和类型转换不单独画，画在最近的已画出的源节点上。</li>
+  <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算、类型转换，以及只做整数或切片下标（<code>narrow</code>、<code>select</code>）的间接节点不单独画，画在最近的已画出的源节点上，下标取出的部分在源节点上画框。</li>
   <li>每个 <code>forward</code> 结果都要被某一步展示，或由一个被展示的模块调用算出，否则报错。确实不需要展示的结果写进 <code>unshown</code>。</li>
   <li>循环外的结果可以是 <code>None</code>，对应 HF 里由配置决定、可能不执行的一段，例如 <code>denominator: s.sum(-1) + 1e-20 if norm_topk_prob else None</code>。这时不产生节点，展示它的步骤按规则 12 不生成。</li>
+  <li>结果也可以是数或 bool，例如 <code>masking: n &gt;= n_block_max - n_masking_steps</code>，对应 kernel 代码里的局部变量。计算它时产生了张量就报错。它不是节点，不需要展示，可以在后面的表达式、<code>if</code> 条件、<code>range</code> 和步骤模板里使用；在循环里每一轮记下各自的值，步骤读取时按规则 11 取值。</li>
   <li>表达式支持比较 <code>==</code>、<code>!=</code>、<code>&lt;</code>、<code>&lt;=</code>、<code>&gt;</code>、<code>&gt;=</code>（不能连写），条件表达式 <code>a if 条件 else b</code>（只求值选中的一边，条件必须是 True 或 False），以及数的 <code>%</code>（与 Python 一样，结果与除数同号）。</li>
 </ul>
 <pre><code class="language-yaml">forward:
@@ -421,10 +449,96 @@ data:
       - core_attn_out[:, i]: attn_inter + attn_i @ v_new
       - last_recurrent_state: last_recurrent_state * decay_i + update_i</code></pre>
 <ul>
-  <li>循环写 <code>{ for: i in range(n), do: [...] }</code> 或 <code>range(start, stop)</code>，编译时展开，每一轮的节点路径带 <code>[i]</code>，tex 带下标 $_{i}$，例如 <code>q_i[1]</code>。真实规模下轮数不同时，显存与计算量按真实轮数计算。</li>
+  <li>循环写 <code>{ for: i in range(n), do: [...] }</code>。<code>range</code> 与 Python 相同，接受 <code>range(stop)</code>、<code>range(start, stop)</code>、<code>range(start, stop, step)</code>，<code>step</code> 是非零整数，可以为负，例如 <code>range(n_block - 1, -1, -1)</code> 从后往前。循环在编译时展开，每一轮的节点路径带 <code>[i]</code>，tex 带下标 $_{i}$，例如 <code>q_i[1]</code>。真实规模下轮数不同时，显存与计算量按真实轮数计算。</li>
+  <li>循环可以嵌套，内层的 <code>range</code> 可以读外层的循环变量，节点路径每层循环带一个下标，例如 <code>acc_s[0][1][0]</code>。内层 <code>range</code> 的 <code>start</code> 或 <code>stop</code> 直接写出外层循环变量时，内层循环里的节点按「外层各轮的内层轮数之和」计份数：画出的份数是示例尺寸下各轮内层轮数之和，真实份数是真实尺寸下外层每个取值对应的内层轮数之和。causal 注意力里第 $m$ 个 query 块只处理前几个 kv 块，按这条规则统计时，真实规模下的 kv 块数是三角形的面积，不是 query 块数乘 kv 块数。范围里只出现由外层变量算出的名字（例如 <code>n_block_max</code>）时不按这条规则，内层轮数取当前这一轮的值，再与外层份数相乘，所以 <code>flash_fwd_kernel</code> 在 <code>range</code> 里写出完整的表达式。</li>
   <li><code>layers[i](h, ...)</code> 调用层列表的第 $i$ 层，对应 HF 的 <code>for i, decoder_layer in enumerate(self.layers)</code>，用于每层收到的参数不同的情况，例如按 <code>layer_types[i]</code> 选择 mask。</li>
   <li>循环里可以重新绑定循环外定义的名字，对应 HF 在循环里改写 <code>last_recurrent_state</code>；循环外同一个名字只能定义一次。</li>
+  <li>循环体在图上只画一次：循环里的每个名字占一个位置，各轮的张量都画在这里，步骤走到第几轮就显示第几轮的张量（规则 14）。真实的代码每一轮把这些值写进同一块存储，画一次与它一致。一个名字在循环里重新绑定、下一轮又读到它上一轮的值时（跨轮状态，例如 <code>last_recurrent_state</code>，online softmax 的 $m$、$\ell$ 和累加器），这条连线从这个位置连回它自己，画成自连线。循环后读这个名字，读到的是最后一轮的张量，连线从同一个位置出发。</li>
   <li><code>x[下标]: 表达式</code> 是 HF 的 <code>x[...] = ...</code>，只能写在循环里，得到写入后的新张量，原张量不变。下标里每一维是 <code>:</code>、一个整数或一段切片，可以有一个 <code>...</code>。整数下标编译成 <code>select_scatter</code>，切片编译成 <code>slice_scatter</code>，多个维度从左到右嵌套，例如 <code>attn[..., i, :i]</code> 是 <code>select_scatter(attn, slice_scatter(attn[..., i], 新值, -1, None, i), -2, i)</code>。</li>
+  <li><code>'x[下标] +=': 表达式</code> 把新值加到这一段上，编译成 <code>slice_scatter(x, x[下标] + 新值, ...)</code>，对应 HF 的 <code>x[...] += ...</code>；在 <code>grid</code> 模块里它表示各副本用 atomicAdd 累加，见「grid 与 shared」。</li>
+  <li><code>'x[...]': 表达式</code> 写整个张量，编译成覆盖整个张量的 <code>slice_scatter(x, 新值, 0)</code>，对应循环里的原地更新，例如 Liger 的 <code>grad_weight.addmm_(...)</code> 写成 <code>'grad_weight[...]': grad_weight + grad_logits_chunk.transpose(0, 1) @ _input_chunk</code>。其他覆盖整个张量的下标（例如 <code>x[:]</code>）报错，提示改写成 <code>x[...]</code> 或换一个名字。写入的结果在显存统计里与被写的张量共用存储，在循环里反复写同一个缓冲区不按每次写入新增一份，见 <a href="vizflow.html">vizflow 设计</a>的「显存与计算量」。</li>
+</ul>
+<pre><code class="language-yaml">forward:
+  - h_norm: model(ids)
+  - hidden_states: h_norm
+  - if: fused_linear_cross_entropy
+    then:
+      - loss: liger_flce(hidden_states, lm_head.weight, y)
+    else:
+      - z: lm_head(hidden_states)
+      - logp: log_softmax(z.float())
+      - result: nll_loss(logp=logp, y=y)
+      - loss: result.loss</code></pre>
+<ul>
+  <li><code>{ if: 条件, then: [...], else: [...] }</code> 对应 HF 代码里按配置走不同路径的 <code>if</code>，<code>else</code> 可以省略。条件在编译时求值，可以读参数、常量和 <code>forward</code> 里算出的数与 bool，结果必须是 True 或 False，读到张量时报错；在循环里每一轮单独求值。</li>
+  <li>只执行选中的分支。没有执行的分支里直接定义的名字是 <code>None</code>，在循环里按轮记为 <code>None</code>，所以步骤可以照常引用它们，展示它们的步骤按规则 12 不生成。两个分支可以定义同一个名字，例如上面的 <code>loss</code>。</li>
+  <li>没有执行的分支里调用的子模块在这次 forward 里没有被调用，它的步骤同样按规则 12 不生成。上面的 <code>liger_flce</code>、<code>log_softmax</code> 由 <code>init</code> 的 <code>present</code> 按同一个参数决定是否创建。</li>
+</ul>
+
+<h3>save、backward 与 kernel</h3>
+<pre><code class="language-yaml">module: flash_attn_func
+forward:
+  - out_buffer: zeros_like(q)
+  - lse_buffer: zeros(num_heads, T, dtype=fp32)
+  - fwd_result: fwd(q, k, v, out_buffer, lse_buffer)
+  - out: fwd_result.out
+  - softmax_lse: fwd_result.softmax_lse
+save: [q, k, v, out, softmax_lse]
+backward:
+  - dq: zeros_like(q)
+  - softmax_d: zeros(num_heads, T, dtype=fp32)
+  - dq_accum: zeros(T, num_heads, d_head, dtype=fp32)
+  - dk_expanded: zeros(T, num_heads, d_head, dtype=k.dtype)
+  - dv_expanded: zeros(T, num_heads, d_head, dtype=v.dtype)
+  - dot: dot_do_o(grad_out, out, softmax_d, dq_accum)
+  - main: dq_dk_dv(grad_out, q, k, v, softmax_lse, dot.dsoftmax_sum, dot.dq_accum, dk_expanded, dv_expanded)
+  - grad_q: convert_dq(main.dq_accum, dq)
+  - grad_k: main.dk_expanded
+  - grad_v: main.dv_expanded
+backward_steps:
+  - { id: dq, show: [dq, softmax_d, dq_accum, dk_expanded, dv_expanded] }
+  - { id: dot, show: dot }
+  - { id: main, show: main }
+  - { id: convert, show: convert_dq }
+  - { id: gqa, show: [grad_k, grad_v] }</code></pre>
+<ul>
+  <li>写了 <code>backward</code> 的模块对应 <code>torch.autograd.Function</code>：<code>forward</code> 是 <code>Function.forward</code>，<code>save</code> 是 <code>ctx.save_for_backward</code>，<code>backward</code> 是 <code>Function.backward</code>。计算图反向时执行 <code>backward</code> 里的运算，不对 <code>forward</code> 里的运算求导，所以 <code>forward</code> 里除输出以外的张量没有梯度。这样页面可以画出 FlashAttention 和 Liger 实际执行的反向，它们的反向与对前向逐个运算求导的结果在数学上相同，计算过程不同。</li>
+  <li><code>backward</code> 的写法与 <code>forward</code> 相同，可以用循环、<code>if</code> 和子模块调用。<code>grad_输出名</code> 是这个输出收到的梯度，<code>save</code> 列出的名字是保存下来的张量；<code>save</code> 只能列 <code>forward</code> 里的张量（包括输入），同一个名字不能保存两次。参数、成员和形状里绑定的维度名照常可以读。</li>
+  <li>每个浮点输入的梯度是 <code>backward</code> 里名为 <code>grad_输入名</code> 的张量，形状必须与输入相同；写 <code>grad_x: None</code> 表示这个输入没有梯度。<code>save</code> 里名为 <code>grad_输入名</code> 的张量也算，Liger 在前向算出 <code>grad_weight</code>，保存后直接作为 <code>weight</code> 的梯度。整数 dtype 的输入不需要梯度。浮点输入的梯度没有给出时报错 <code>the backward of M must set grad_x, the gradient of input 'x', or set it to None</code>。</li>
+  <li><code>backward</code> 的节点路径前缀是 <code>调用路径.backward</code>，例如 <code>model.<wbr>layers[0].<wbr>self_attn.<wbr>flash_attention_forward.<wbr>flash_attn_func.<wbr>backward.<wbr>grad_out</code>。<code>grad_输出名</code> 的 tex 默认是 <code>\mathrm{d}</code> 加输出的 tex，模块的 <code>tex</code> 里写 <code>grad_out</code> 可以改写；保存的张量沿用原张量的 tex。</li>
+  <li><code>backward_steps</code> 的写法与 <code>steps</code> 相同，展示 <code>backward</code> 算出的张量和调用。写了 <code>backward</code> 的模块必须写 <code>backward_steps</code>，<code>backward</code> 里定义的每个名字都要被某一步展示，否则编译报错 <code>'x' of the backward of M is not shown by any of its backward_steps</code>。</li>
+</ul>
+<p class="hint">规则 13：<code>backward_steps</code> 编译成反向步骤，放在前向最后一个属于这次调用、或展示这次调用输出的步骤处：反向走到这一步时，先按书写顺序走 <code>backward_steps</code>，再走这一步自己的反向步骤。没有这样的前向步骤时编译报错 <code>no forward step shows the call 'x', so its backward steps have no place</code>。它们在步骤条上位于这次调用的分组之下，有子步骤的步骤成为分组，id 是 <code>调用的分组 id.backward.步骤 id</code>。调用所在的模块折叠时，反向只有折叠模块的一步，不生成这些步骤。</p>
+<p><code>kernel: true</code> 的模块是一个 GPU kernel：一次调用里除输出以外创建的张量都在片上的 shared memory 和寄存器里，显存统计不计它们，FLOP 照常计。<code>flash_fwd_kernel</code> 的分数块和概率块因此不出现在显存里，与 FlashAttention 不把 $T\times T$ 矩阵写回显存一致。<code>kernel</code> 只能是 true 或 false。</p>
+
+<h3>grid 与 shared</h3>
+<pre><code class="language-yaml">module: flash_fwd_kernel
+kernel: true
+grid:                               # dim3 grid(num_m_block, b, h)
+  m: triton.cdiv(T, block_m)        # blockIdx.x
+  h: num_heads                      # blockIdx.z
+shared: [q_tile, k_tile, v_tile]    # sQ、sK、sV，其余是寄存器
+inputs:
+  q: [T, num_heads, d_head]
+  out: [T, num_heads, d_head]       # 调用方分配，kernel 写进去
+outputs:
+  out: [T, num_heads, d_head]
+forward:
+  - q_tile: q[m * block_m:min((m + 1) * block_m, T), h]
+  - acc_o: zeros(min((m + 1) * block_m, T) - m * block_m, d_head, dtype=fp32)
+  - for: n in range(...)
+    do:
+      - acc_o: acc_o_scaled + matmul(rp, v_tile, dtype=fp32)
+  - 'out[m * block_m:min((m + 1) * block_m, T), h]': o_tile</code></pre>
+<ul>
+  <li><code>grid</code> 对应 CUDA 的 <code>dim3 grid</code> 和 Triton 的 <code>grid</code>：每个名字是一维的编号，值是这一维的个数，调用时按参数和维度求值，必须是正整数。<code>forward</code> 写一个 thread block（Triton 里一个 program）的代码，网格里每个编号组合执行一次，这些名字在 <code>forward</code> 里是整数，对应 <code>blockIdx</code> 和 <code>tl.program_id</code>。每个组合是一个副本，副本之间互相独立：每个副本有自己的一份 <code>forward</code> 名字，读不到其他副本算出的值。</li>
+  <li>副本的节点路径在名字后面按 <code>grid</code> 的顺序带每一维的编号，例如 <code>q_tile[3][0]</code> 是 $m=3$、$h=0$ 的副本，副本里的循环再接着带轮次。tex 不加副本的编号，图上同一个位置画的是任意一个副本。一个副本在同一轮里对同一个输入写第二次、第三次时，写入的块的路径再接 <code>#2</code>、<code>#3</code>，与同一个子模块的第二次调用的写法相同。真实规模下副本数按真实尺寸的 <code>grid</code> 计算，显存与计算量按真实副本数统计。</li>
+  <li><code>grid</code> 模块只能写自己的输入，对应 kernel 写调用方传进来的缓冲区。写入用 <code>'x[下标]': 新值</code>，<code>x</code> 必须是输入；所有副本对同一个输入的写入在全部副本执行完以后合成一次 <code>scatter_tiles</code>，结果就是同名的输出。被写的输入必须列在 <code>outputs</code> 里，名字和形状与输入相同；<code>grid</code> 模块的输出只能是被写的输入。</li>
+  <li>一个副本内的读写按程序顺序生效，与 GPU 上一个 thread block 读写自己的缓冲区相同。同一个副本后写的块与先写的块重叠时，重叠的部分以后写的为准：编译时把这几块合成一块，区域是它们的外接区域，值是这个副本此时看到的这一片 <code>x</code>。副本读被写的输入时，读到的是这个副本到这一行为止写入后的值：这个副本写过的元素是它写入的值，没写过的元素是传进来的值，读不到其他副本写的值。图上这次读取画成一个 <code>scatter_tiles</code>，把这个副本到这一行为止写的块放进传进来的张量，读取从它取值。Liger 的 cross entropy kernel 先按列块写回梯度，再读回这一行、覆盖目标那一格，用的就是这条规则。<code>if</code> 的条件和循环的范围里不能读这个副本写过的输入，报错 <code>'x' is read in an if test or a loop bound after this copy writes it; assign the part you need to a name first</code>。</li>
+  <li>不同副本的块写到同一个元素时编译报错 <code>scatter_tiles: tiles a and b write the same element; overlapping tiles need accumulate</code>。一个副本合成的块覆盖整个外接区域，其中这个副本没写的元素也算这个副本写的。</li>
+  <li><code>'x[下标] +=': 新值</code> 表示累加：各副本的块加到 <code>x</code> 上，重叠的部分相加，对应 kernel 用 atomicAdd 累加到同一块显存，例如 FlashAttention 反向的 <code>dq_accum</code>。同一个输入不能既用 <code>=</code> 写又用 <code>+=</code> 写。各副本同时累加，累加之后的值要等全部副本执行完才确定，所以一个副本对 <code>x</code> 累加以后再读 <code>x</code> 报错 <code>'x' is read after this copy adds to it with +=; the copies add to x at the same time, so its value is known only after the grid finishes</code>，累加之前读到的是传进来的值。</li>
+  <li><code>shared</code> 列出 kernel 放在 shared memory 里的张量，只能写在 <code>kernel: true</code> 的模块里，名字必须是 <code>forward</code> 定义的、不是输出的张量。kernel 里其余不是输出的张量都在寄存器里。图上片上存储分成 shared memory 和寄存器两块，见 <a href="vizflow.html">vizflow 设计</a>的「并行副本、循环与片上存储」。</li>
+  <li>调用 <code>grid</code> 模块的方式与其他模块相同。它的 <code>steps</code> 按一个副本来写，每一步亮所有副本里这些名字的张量（规则 15）。<code>show</code> 写被写的输入名字时，亮的是每个副本在这一处写入的块（循环里是这一轮的块），同一处写了几次时几块都亮；全部副本写完以后合成的输出在最后一个亮这些块的步骤里一起亮。</li>
 </ul>
 
 <h2>Layout</h2>
@@ -437,11 +551,21 @@ data:
     z: { after: w }                 # 在 w 后面一层；还有 before
     weight: { right: y }            # weight 和 buffer 也可以放，只能用 with、left、right
   merge:
-    - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画</code></pre>
+    - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画
+  grid: { m: expand, h: stack }     # 只在 grid 模块里：按维度选择并排展开或叠放
+  rows:                             # 只在 kernel 模块里：片上卡片里每行放哪些张量
+    - [acc_s, acc_s_masked]
+    - [row_max, scores_scale]
+    - [p, row_sum]
+    - [acc_o]</code></pre>
 <ul>
   <li><code>place</code> 的值是这个模块 <code>forward</code> 里算出的张量；键是算出的张量，或者 <code>init</code> 里的 weight、buffer。每项只写一个方向。<code>left</code>、<code>right</code>、<code>with</code> 放进目标所在的层，横向位置与已有的张量重叠时向外挪开。</li>
   <li>weight 和 buffer 没有自己的层，只能用 <code>with</code>、<code>left</code>、<code>right</code>。没写 <code>place</code> 时，它们画在第一次用到它们的那一层。做 matmul 的权重画成这个 matmul 的矩阵，<code>place</code> 不能移动它，写了会报错。</li>
   <li><code>merge</code> 的两个调用必须是同一个模块、各调用一次。两边的第 $k$ 层合成一层，左边的调用画在左侧，合并后的层放在后调用的那一行的位置。</li>
+</ul>
+<ul>
+  <li><code>grid</code> 写在 <code>grid</code> 模块的 <code>layout</code> 里，每一维选 <code>expand</code> 或 <code>stack</code>，没写的维度是 <code>stack</code>。<code>expand</code> 的维度上各个副本并排画，每个都画全；<code>stack</code> 的维度上各个副本画在同一个位置，最前面的副本画全，其余副本画成片上卡片下方、向右后方错开的轮廓，读者点一个轮廓就把这个副本换到最前面。副本数多时（Qwen3-8B、$T=8192$ 时 FlashAttention 前向有 $32\times64$ 个）只能叠放。</li>
+  <li><code>rows</code> 写在 <code>kernel: true</code> 模块的 <code>layout</code> 里，是一列行，每行是这个模块 <code>forward</code> 里算出的张量名。kernel 的一次调用画成一块地面，片上卡片里的张量排成行，默认按数据依赖深度自动分行（见 <a href="vizflow.html">vizflow 设计</a>的「并行副本、循环与片上存储」）；<code>rows</code> 把列出的张量放进对应的行，行内按列出的顺序从左往右。一个名字包括它在 <code>forward</code> 里的全部赋值（循环里每一轮重新赋值的累加器、循环前的初值）和这些赋值表达式里的匿名中间节点。一行里 shared memory 的张量放在 shared memory 底板的一行，其余的放在寄存器底板的一行。没有列出的张量放在它依赖的已放张量中最深的那一行，没有列出的 shared memory 张量放在 shared memory 的第一行。名字是 <code>forward</code> 里的名字、但当前配置下没有算出（例如只在某个分支里赋值）时忽略。以下情况报错：<code>rows</code> 不是由名字列表组成的列表；名字不是这个模块 <code>forward</code> 里算出的张量；名字是输出（输出留在显存，画在 HBM 卡片上）；模块不是 <code>kernel: true</code>。</li>
 </ul>
 <p class="hint">规则 4：<code>merge</code> 只影响位置，不会让两边的步骤一起亮；一起亮要在 <code>steps</code> 里写 <code>zip</code>。</p>
 
@@ -509,15 +633,26 @@ data:
       subtitle: 最后一层</code></pre>
 <p><code>loop</code> 对列表的每一项生成一步，<code>i</code> 从 0 开始。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则，再求值模板。<code>show</code> 默认是循环变量。</p>
 <pre><code class="language-yaml">- id: chunk
-  loop: i in range(num_chunks)
+  loop: i
   defaults:
     title: 第 {{ i }} 块
     steps:
       - { id: v_new, show: [v_prime, v_new] }
       - { id: state, show: last_recurrent_state }</code></pre>
-<p><code>loop: i in range(n)</code> 对 forward 循环的每一轮生成一步，步骤的 id 是 <code>chunk[i]</code>，<code>at</code> 按轮的序号匹配。<code>show</code> 必须写。</p>
-<p class="hint">规则 11：在 <code>range</code> 循环步骤里，forward 循环里绑定的名字取第 <code>i</code> 轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
-<p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
+<p><code>loop: i</code> 的 <code>i</code> 是这个模块 <code>forward</code> 里一个循环的变量，按执行顺序每一轮生成一步，步骤的 id 是 <code>chunk[k]</code>，$k$ 是轮次，从 0 开始，<code>at</code> 按轮次匹配。<code>show</code> 必须写。名字不是 <code>forward</code> 里的循环变量时报错 <code>loop 'i' is not a loop of the forward of M</code>。</p>
+<pre><code class="language-yaml">- id: kv_block
+  loop: n
+  defaults:
+    title: '第 {{ round + 1 }} 轮，kv 块 {{ n }}'
+    steps:
+      - { id: qk, show: [k_tile, acc_s, cols, future, acc_s_masked] }
+      - { id: pv, show: [v_tile, rp, acc_o] }</code></pre>
+<p>在 <code>grid</code> 模块里，第 $k$ 步是每个副本自己执行的第 $k$ 轮，步骤数取各副本轮数的最大值。轮数用完的副本在这一步空闲，不亮；causal 的 FlashAttention 里第 $m$ 个 query 块只有 $m+1$ 轮，读者能看到负载不均衡。各副本在同一轮处理的 kv 块编号可以不同（FA2 从后往前处理 kv 块），所以模板里 <code>n</code> 是最前面的副本这一轮的值，<code>round</code> 是轮次。循环步骤可以嵌套，与 <code>forward</code> 的嵌套循环对应，内层的模板可以读外层的循环变量。</p>
+<p class="hint">规则 11：在循环步骤里，forward 循环里绑定的名字取当前这一轮的值；嵌套时取各层当前这一轮的值，名字只在外层循环里绑定时取外层这一轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
+<p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字，或者是一个这次 forward 没有调用的子模块（创建了但调用写在没有执行的 <code>if</code> 分支里，或者根本没有调用）时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。<code>show</code> 是列表时，值为 <code>None</code> 的项跳过，全部是 <code>None</code> 时这一步不生成。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
+
+<p class="hint">规则 14：循环体只画一次，一个名字的各轮张量共用一个位置。步骤亮某一轮的张量时，这个位置显示这一轮；没亮时显示已经出现过的最后一轮。悬停卡片、连线卡片和模板里的矩阵读的是显示的这一轮。</p>
+<p class="hint">规则 15：<code>grid</code> 模块的一步亮所有副本里这些名字的张量，副本不另外生成步骤。步骤的文字和模板按最前面的副本求值；最前面的副本这一步空闲时，按编号最小的、这一步有工作的副本求值，步骤条上写出文字说的是哪个副本。读者换了最前面的副本，文字随之重新求值。</p>
 
 <h2>tex 与 formula</h2>
 <p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。tex 末尾已经是上标时并进同一个上标，例如 $\mathbf{s}^{\mathrm{grp},[1]}$；tex 在顶层有其他上标或撇号时先加花括号，例如 ${\mathbf{k}'}^{[1]}$；tex 在顶层有 <code>+ - = ,</code>、<code>\cdot</code>、<code>\times</code> 等运算时是复合表达式，整体加括号再加上标，例如 $\left(\sum\mathbf{w}+10^{-20}\right)^{[1]}$。</p>
@@ -526,7 +661,11 @@ data:
 
 
 <h2>编译接口</h2>
-<pre><code class="language-ts">interface CompileOptions { base?: string; read?: (url: string) =&gt; Promise&lt;string&gt;; }
+<pre><code class="language-ts">interface CompileOptions {
+  base?: string;
+  read?: (url: string) =&gt; Promise&lt;string&gt;;
+  config?: Readonly&lt;Record&lt;string, string | number | boolean&gt;&gt;;
+}
 interface CompiledPage {
   graph: Graph;
   steps: StepsSpec;
@@ -543,11 +682,27 @@ interface LevelSpec {
   lines: Node[][];
   sides: { node: Node; side: 'with' | 'left' | 'right'; of: Node }[];
   merges: { left: Node[]; right: Node[] }[];
+  slots: Node[][];
+  grids: LevelGrid[];
+}
+interface LevelGrid {
+  module: string;
+  names: string[];
+  counts: number[];
+  real: Size[];
+  arrangement: ('expand' | 'stack')[];
+  copyOf: ReadonlyMap&lt;Node, number[]&gt;;
+  shared: ReadonlySet&lt;Node&gt;;
+  registers: ReadonlySet&lt;Node&gt;;
+  inputs: Node[];
+  outputs: Node[];
+  rows: Node[][];
 }
 function compilePage(spec: Page, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
 function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;</code></pre>
 <ul>
-  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。</li>
+  <li><code>config</code> 覆盖页面 <code>config</code> 里的同名值，再按同名传给根模块的 <code>args</code>。名字不在页面的 <code>config</code> 里时报错 <code>config has no 'x' to override</code>。<code>&lt;vizflow-page&gt;</code> 切换实现时用它重新编译。</li>
+  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>slots</code> 是共用一个位置的节点组，每组至少两个节点：同一个调用的同一个循环体里同名的各轮节点，以及 <code>stack</code> 维度上 <code>expand</code> 编号相同的各副本里的同名节点，组内先按副本编号、再按轮次排列；<code>lines</code> 只放每组的第一个节点。<code>expand</code> 维度上编号不同的副本在 <code>lines</code> 里逐层并排，第 $k$ 层是各副本第 $k$ 层的节点按编号顺序拼接，场景用 <code>copyOf</code> 区分它们。<code>grids</code> 对每个 <code>grid</code> 调用和每个 <code>kernel: true</code> 的调用各有一项：<code>module</code> 是调用路径，<code>names</code>、<code>counts</code>、<code>real</code>、<code>arrangement</code> 是各维的名字、示例个数、真实尺寸下的个数和排法（没有 <code>grid</code> 的 kernel 这几项是空列表），<code>copyOf</code> 把副本里创建的节点映射到副本编号（每维一个整数），<code>shared</code> 是 <code>shared</code> 列出的张量，<code>registers</code> 是 kernel 里其余不是输出的张量，<code>inputs</code>、<code>outputs</code> 是这次调用的输入和输出张量（场景据此排 HBM 卡片），<code>rows</code> 是 <code>layout.rows</code> 每行的名字解析成的节点，没写 <code>rows</code> 时是空列表。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。<code>steps.functions</code> 是 <code>backward_steps</code> 编译出的反向步骤，见 <a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。</li>
   <li><code>nodes</code> 按路径查节点：根模块的名字没有前缀，子模块里是 <code>实例路径.名字</code>，参数是 <code>state_dict</code> 的键。</li>
   <li>错误信息的格式是 <code>文件:行:列 路径: 说明</code>。</li>
 </ul>

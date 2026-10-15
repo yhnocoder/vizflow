@@ -42,13 +42,8 @@ export function compileSections(c: PageCompiler, env: Env, sectionSources: Secti
     }
     if (key === 'rope_compare') {
       const spec = record(value.rope_compare, keyAt, 'rope_compare');
-      checkKeys(spec, new Set(['scores', 'weights', 'ids']), keyAt);
-      const scores = nodeAt(spec.scores, child(keyAt, spec, 'scores'));
-      const weights = nodeAt(spec.weights, child(keyAt, spec, 'weights'));
-      for (const [name, node] of [['scores', scores], ['weights', weights]] as const) {
-        if (node.shape.length !== 3) fail(child(keyAt, spec, name), `${name} must be a (heads, T, T) tensor, got shape (${node.shape.join(', ')})`);
-      }
-      return { rope_compare: { scores, weights, ids: nodeAt(spec.ids, child(keyAt, spec, 'ids')) } };
+      checkKeys(spec, new Set(['ids']), keyAt);
+      return { rope_compare: { ids: nodeAt(spec.ids, child(keyAt, spec, 'ids')) } };
     }
     return fail(keyAt, `unknown block '${key}'`);
   };

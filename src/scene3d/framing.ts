@@ -58,13 +58,16 @@ function pointsOf(renderable: Renderable): Vec3[] {
   if (known !== undefined && known.value === value && known.grad === grad) return known.points;
   const points: Vec3[] = [];
   const [w, d] = block.footprint;
-  const values = value.data;
   let high = 0;
   let low = 0;
-  for (let i = 0; i < values.length; i++) {
-    for (const h of [values[i] * renderable.scale.forward, grad === null ? 0 : grad.data[i] * renderable.scale.backward]) {
-      high = Math.max(high, Math.min(h, renderable.cap));
-      low = Math.min(low, Math.max(h, -renderable.cap));
+  for (const member of block.slot ?? [block.node]) {
+    const values = member.value.data;
+    const grads = member.grad?.data;
+    for (let i = 0; i < values.length; i++) {
+      for (const h of [values[i] * renderable.scale.forward, grads === undefined ? 0 : grads[i] * renderable.scale.backward]) {
+        high = Math.max(high, Math.min(h, renderable.cap));
+        low = Math.min(low, Math.max(h, -renderable.cap));
+      }
     }
   }
   const top = renderable.nodes === undefined ? high : renderable.nodes.height;

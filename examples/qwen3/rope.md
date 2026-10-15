@@ -108,11 +108,8 @@ q_norm、k_norm 在 RoPE 之前，旋转不改变模长，所以 norm 给出的�
 
 ::: buttons
 - { label: 在图上看 RoPE 这几步, go: 'model.layers[0].self_attn.apply_rotary_pos_emb.qc' }
-- { label: '看打分 $\mathbf{q}\mathbf{k}^{\top}$', go: 'model.layers[0].self_attn.eager_attention_forward.S' }
 :::
 
 ::: rope_compare
-scores: 'model.layers[0].self_attn.eager_attention_forward.Ss'
-weights: 'model.layers[0].self_attn.eager_attention_forward.P'
 ids: ids
 :::

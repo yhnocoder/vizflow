@@ -1,0 +1,155 @@
+module: flash_fwd_kernel
+kernel: true
+args:
+  softmax_scale: float
+  block_m: dim
+  block_n: dim
+grid:
+  m: triton.cdiv(T, block_m)
+  h: num_heads
+shared: [q_tile, k_tile, v_tile]
+inputs:
+  q: [T, num_heads, d_head]
+  k: [T, num_kv_heads, d_head]
+  v: [T, num_kv_heads, d_head]
+  out: [T, num_heads, d_head]
+  softmax_lse: { type: tensor, shape: [num_heads, T], dtype: fp32 }
+outputs:
+  out: [T, num_heads, d_head]
+  softmax_lse: { type: tensor, shape: [num_heads, T], dtype: fp32 }
+
+forward:
+  - scale_softmax_log2: softmax_scale * math.log2(math.e)
+  - n_masking_steps: triton.cdiv(block_m, block_n) if T % block_m == 0 and T % block_n == 0 else triton.cdiv(block_m, block_n) + 1
+  - n_block_max: min(triton.cdiv(T, block_n), triton.cdiv((m + 1) * block_m, block_n))
+  - q_tile: q[m * block_m:min((m + 1) * block_m, T), h]
+  - rows: arange(m * block_m, min((m + 1) * block_m, T))
+  - acc_o: zeros(min((m + 1) * block_m, T) - m * block_m, d_head, dtype=fp32)
+  - for: n in range(min(triton.cdiv(T, block_n), triton.cdiv((m + 1) * block_m, block_n)) - 1, -1, -1)
+    do:
+      - k_tile: k[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
+      - v_tile: v[n * block_n:min((n + 1) * block_n, T), h // (num_heads // num_kv_heads)]
+      - acc_s: matmul(q_tile, k_tile.transpose(0, 1), dtype=fp32)
+      - masking: n >= n_block_max - n_masking_steps
+      - if: masking
+        then:
+          - cols: arange(n * block_n, min((n + 1) * block_n, T))
+          - future: cols.unsqueeze(0) > rows.unsqueeze(1)
+          - acc_s_masked: acc_s.masked_fill(future, float('-inf'))
+      - if: n == n_block_max - 1
+        then:
+          - row_max: (acc_s_masked if masking else acc_s).max(-1)
+          - max_scaled: (row_max * scale_softmax_log2).masked_fill(row_max == float('-inf'), 0.0)
+          - p: 2 ** ((acc_s_masked if masking else acc_s) * scale_softmax_log2 - max_scaled.unsqueeze(-1))
+          - row_sum: p.sum(-1)
+          - rp: p.to(q.dtype)
+          - acc_o: acc_o + matmul(rp, v_tile, dtype=fp32)
+        else:
+          - prev_max: row_max
+          - row_max: maximum(prev_max, (acc_s_masked if masking else acc_s).max(-1))
+          - if: masking
+            then:
+              - cur_max: row_max.masked_fill(row_max == float('-inf'), 0.0)
+              - scores_scale: 2 ** ((prev_max - cur_max) * scale_softmax_log2)
+            else:
+              - scores_scale: 2 ** ((prev_max - row_max) * scale_softmax_log2)
+          - row_sum_scaled: row_sum * scores_scale
+          - acc_o_scaled: acc_o * scores_scale.unsqueeze(-1)
+          - max_scaled: (row_max * scale_softmax_log2).masked_fill(row_max == float('-inf'), 0.0)
+          - p: 2 ** ((acc_s_masked if masking else acc_s) * scale_softmax_log2 - max_scaled.unsqueeze(-1))
+          - row_sum: row_sum_scaled + p.sum(-1)
+          - rp: p.to(q.dtype)
+          - acc_o: acc_o_scaled + matmul(rp, v_tile, dtype=fp32)
+  - lse: row_max * softmax_scale + row_sum.log()
+  - o_tile: (acc_o * (1 / row_sum).unsqueeze(-1)).to(q.dtype)
+  - 'out[m * block_m:min((m + 1) * block_m, T), h]': o_tile
+  - 'softmax_lse[h, m * block_m:min((m + 1) * block_m, T)]': lse
+
+tex:
+  out: 'O'
+  softmax_lse: 'L'
+  q_tile: 'Q'
+  rows: 'r'
+  acc_o: 'O^{\mathrm{acc}}'
+  k_tile: 'K'
+  v_tile: 'V'
+  acc_s: 'S'
+  cols: 'c'
+  future: 'F'
+  acc_s_masked: '\bar{S}'
+  prev_max: 'm^{\mathrm{prev}}'
+  row_max: 'm'
+  cur_max: 'm^{*}'
+  scores_scale: '\alpha'
+  row_sum_scaled: '\alpha\ell'
+  acc_o_scaled: '\alpha O^{\mathrm{acc}}'
+  max_scaled: 'm^{\log_2}'
+  p: 'P'
+  row_sum: '\ell'
+  rp: '\tilde{P}'
+  lse: 'L'
+  o_tile: 'O'
+
+layout:
+  rows:
+    - [acc_s, rows, cols, future, acc_s_masked]
+    - [prev_max, row_max, cur_max, scores_scale, max_scaled]
+    - [p, row_sum_scaled, row_sum, rp]
+    - [acc_o_scaled, acc_o]
+    - [lse, o_tile]
+
+fold:
+  label: '$\viz{out},\ \viz{softmax_lse}$'
+  title: flash_fwd_kernel
+  text: |
+    一次 kernel 算出全部 head 的注意力输出 $\viz{out}$ 和每行的 $\viz{softmax_lse}$。$T\times T$ 的分数矩阵只按块出现在片上，不写回 HBM。
+
+steps:
+  - id: load
+    show: [q_tile, rows, acc_o]
+    label: '$\viz{q_tile}$'
+    title: 读入 query 块
+    text: |
+      kernel 的入口是 <code>flash_fwd_kernel</code> 里的 <code>compute_attn_1rowblock</code>。<code>run_flash_fwd</code> 的网格是 <code>dim3 grid(num_m_block, b, h)</code>：每个 thread block 负责一个 head 的一个 query 块，这一页有 {{ triton.cdiv(T, block_m) }} 个 query 块、{{ num_heads }} 个 head，共 {{ triton.cdiv(T, block_m) * num_heads }} 个 thread block。它们同时执行、互不通信，每一步亮的是所有 thread block 在这一步做的事。块大小由 <code>run_mha_fwd_hdim128</code> 按 GPU 选择，A100 上 causal 时是 $B_m=128$ 行 query、$B_n=64$ 行 key，这一页的 $T={{ T }}$，取 $B_m={{ block_m }}$、$B_n={{ block_n }}$。
+
+      以 head {{ h }}、query 块 {{ m }} 的 thread block 为例：它把 query 的第 {{ m * block_m }} 到 {{ min((m + 1) * block_m, T) - 1 }} 行从 HBM 读进 shared memory，之后一直留在片上，key、value 的块轮流读进来与它计算。$\viz{acc_o}$ 是输出的 fp32 累加器，放在寄存器里，初值为 0。GQA 不复制 key、value：head {{ h }} 直接读 kv head {{ h // (num_heads // num_kv_heads) }}，也就是 <code>bidh / h_h_k_ratio</code>。
+      $$\viz{q_tile}={{ q_tile | matrix:2 }}$$
+  - id: kv_block
+    loop: n
+    defaults:
+      title: '第 {{ round + 1 }} 轮：kv 块 {{ n }}'
+      subtitle: '第 {{ n * block_n }} 到 {{ min((n + 1) * block_n, T) - 1 }} 列'
+      steps:
+        - id: qk
+          show: [k_tile, acc_s, cols, future, acc_s_masked]
+          label: '$\viz{acc_s}$'
+          title: '分数块 $S=QK^{\top}$'
+          text: |
+            每个 thread block 按自己的顺序循环 kv 块，同一轮里不同的 thread block 读的 kv 块可以不同。causal 下 query 块 {{ m }} 只用到第 {{ min((m + 1) * block_m, T) - 1 }} 列以前的 key，所以只有 $n<{{ n_block_max }}$ 的 {{ n_block_max }} 个块参与，<code>n_block</code> 从 {{ n_block_max - 1 }} 递减到 0。query 块越靠后轮数越多，靠前的 thread block 先做完，之后空闲。
+
+            这一轮读入第 {{ n }} 个 key 块，$\viz{acc_s}=\viz{q_tile}\,{\viz{k_tile}}^{\top}$ 是 ${{ min((m + 1) * block_m, T) - m * block_m }}\times{{ min((n + 1) * block_n, T) - n * block_n }}$ 的分数块，bf16 相乘、fp32 累加。这里还没有乘 $1/\sqrt{d_h}$，缩放合并到下一步的 exp2 里。最先处理的 {{ n_masking_steps }} 个块可能与对角线相交，要用 <code>apply_mask_causal</code> 按行号和列号把 $s>t$ 的格子置为 $-\infty$；之后的块完全在对角线左下方，不需要 mask。{{ '这一轮属于前者，按行号 $r$ 和列号 $c$ 得到 $\bar S$。' if n >= n_block_max - n_masking_steps else '这一轮属于后者，直接使用分数块 $S$。' }}HF 的 eager 实现读入一个 $T\times T$ 的 mask 张量，而这里的 mask 由行号、列号直接算出，不占显存。
+            $$\viz{acc_s}={{ acc_s | matrix:3 }}$$
+        - id: softmax
+          show: [prev_max, row_max, cur_max, scores_scale, row_sum_scaled, acc_o_scaled, max_scaled, p, row_sum]
+          label: '$\viz{p},\ \viz{row_sum}$'
+          title: online softmax
+          text: |
+            <code>softmax_rescale_o</code> 在只看到一部分列时维护每行的最大值 $\viz{row_max}$ 和指数和 $\viz{row_sum}$，并把已经累加的输出调整到新的最大值下。设缩放后的以 2 为底的指数 $c=\log_2 e/\sqrt{d_h}$，代码里是 <code>scale_softmax_log2</code>：
+            $$m\leftarrow\max\big(m,\ \max_s S_{t,s}\big),\qquad \alpha=2^{(m_{\mathrm{old}}-m)c},\qquad P_{t,s}=2^{S_{t,s}c-mc},\qquad \ell\leftarrow\alpha\ell+\sum_s P_{t,s},\qquad O^{\mathrm{acc}}\leftarrow\alpha O^{\mathrm{acc}}$$
+            {{ '这是这个 thread block 处理的第一个 kv 块（模板参数 Is_first），没有旧的最大值，直接取这一块的最大值，也不需要调整累加器。' if n == n_block_max - 1 else '旧的最大值变大以后，之前按旧最大值算出的指数都要乘 $\alpha$ 才能与这一块的指数相加，所以 $\ell$ 和累加器都先乘 $\alpha$。' }}
+            一行全部被 mask 时最大值是 $-\infty$，<code>max_scaled</code> 和 <code>scores_max_cur</code> 把它当作 0，避免算出 $-\infty-(-\infty)$。用 exp2 是因为 GPU 的指数指令是以 2 为底的，$e^x=2^{x\log_2 e}$。
+            $$\viz{p}={{ p | matrix:3 }}$$
+        - id: pv
+          show: [v_tile, rp, acc_o]
+          label: '$\viz{acc_o}$'
+          title: '累加 $PV$'
+          text: |
+            <code>convert_type</code> 把 $\viz{p}$ 转成 bf16，记作 $\viz{rp}$，再与第 {{ n }} 个 value 块相乘、加进 fp32 累加器。eager 实现也在 bf16 里乘 $PV$，区别是 eager 在 softmax 之后转一次，这里每个块的 $P$ 还没有除以 $\ell$ 就转换。
+            $$\viz{acc_o}={{ acc_o | matrix:3 }}$$
+  - id: finalize
+    show: [lse, o_tile, out, softmax_lse]
+    label: '$\viz{o_tile},\ \viz{lse}$'
+    title: 写回输出
+    text: |
+      一个 thread block 处理完自己的全部 kv 块以后，<code>normalize_softmax_lse</code> 把累加器除以 $\ell$，得到这个 query 块的输出 $\viz{o_tile}$，转回 bf16 写进 $\viz{out}$ 的第 {{ m * block_m }} 到 {{ min((m + 1) * block_m, T) - 1 }} 行、head {{ h }}；同时算出 $L=m/\sqrt{d_h}+\log\ell$ 写进 <code>softmax_lse</code>，它就是 softmax 分母的对数 $\log\sum_s e^{S_{t,s}/\sqrt{d_h}}$。各个 thread block 写的区域互不重叠，全部写完后 $\viz{out}$ 就是完整的输出。$P$ 本身不保存，反向用 $L$ 重新算出 $P_{t,s}=e^{S_{t,s}/\sqrt{d_h}-L_t}$。
+      $$\viz{o_tile}={{ o_tile | matrix:3 }},\qquad \viz{lse}={{ lse | matrix:3 }}$$

@@ -84,7 +84,7 @@ export class SceneBatches {
     const solid: { owners: Renderable[]; plates: Plate[] } = { owners: [], plates: [] };
     const clear: { owners: Renderable[]; plates: Plate[] } = { owners: [], plates: [] };
     for (const renderable of renderables) {
-      if (renderable.block.hidden === true) continue;
+      if (renderable.block.hidden === true || renderable.away) continue;
       if (renderable.bars !== undefined) barInk.push(renderable.bars.outline);
       if (renderable.nodes !== undefined) ink.push(renderable.nodes.outline);
       const plate = renderable.plate;

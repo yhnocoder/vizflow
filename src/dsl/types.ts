@@ -7,16 +7,18 @@ export type TensorDtype = 'bool' | 'uint8' | 'int8' | 'int16' | 'int32' | 'int64
 export type Scalar = string | number | boolean;
 export type Value = Scalar | Value[] | ExpressionValue;
 export type Dimension = number | Expression;
-export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'dtype' | 'module';
+export type ArgType = 'dim' | 'int' | 'float' | 'bool' | 'str' | 'dtype' | 'module';
 export type ArgDeclaration = ArgType | ArgField;
 export type ModuleList = `list[${string}]`;
 export type LoopBinding = `${string} = ${string}[${string}]`;
+export type LoopVariable = string;
+export type GridArrangement = 'expand' | 'stack';
 export type ArgValue = Expression | number | boolean;
 export type Args = Record<string, ArgValue> | (string | Record<string, ArgValue>)[];
 export type Declaration = Dimension[] | TensorField | ListField;
 export type ModuleInitializer = string | ModuleInstance | ModuleListInstance;
 export type Step = NamedStep | LoopStep;
-export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel;
+export type Panel = 'cost' | LossPanel | SequencePanel | AttentionPanel | MatrixPanel | CodePanel | ImplementationsPanel;
 
 export interface ExpressionValue {
   expr: Expression;
@@ -25,6 +27,7 @@ export interface ExpressionValue {
 export interface ArgField {
   type: ArgType;
   default?: Value;
+  options?: Scalar[];
 }
 
 export interface TensorField {
@@ -86,6 +89,12 @@ export interface Module {
   layout?: Layout;
   steps?: Step[];
   unshown?: Reference[];
+  kernel?: boolean;
+  grid?: Record<string, Dimension>;
+  shared?: Reference[];
+  save?: Reference[];
+  backward?: Assignment[];
+  backward_steps?: Step[];
 }
 
 export interface ModuleFile extends Module {
@@ -125,6 +134,8 @@ export interface Assignment {
 export interface Layout {
   place?: Record<Reference, Placement>;
   merge?: Reference[][];
+  grid?: Record<string, GridArrangement>;
+  rows?: Reference[][];
 }
 
 export interface Placement {
@@ -171,7 +182,7 @@ export interface NamedStep extends StepOptions {
 
 export interface LoopStep {
   id: string;
-  loop: LoopBinding;
+  loop: LoopBinding | LoopVariable;
   defaults: StepOptions;
   rules?: LoopRule[];
 }
@@ -242,6 +253,10 @@ export interface Highlight {
 
 export interface CodePanel extends PanelText {
   code: string;
+}
+
+export interface ImplementationsPanel extends PanelText {
+  implementations: Reference[];
 }
 
 export interface Section {

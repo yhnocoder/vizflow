@@ -1,4 +1,5 @@
 module: SiLU
+kernel: true
 import:
   Sigmoid: vizflow/nn/sigmoid
 inputs:

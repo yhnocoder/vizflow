@@ -2,7 +2,7 @@ import { type InstancedMesh, type Object3D, Raycaster, Vector2 } from 'three';
 import type { Node } from '../autograd';
 import type { SceneController } from './controller';
 import type { Block } from './layout';
-import { type Renderable, renderableFor, shown } from './renderable';
+import { type Renderable, renderableFor, revealedOf, shown } from './renderable';
 
 const CLICK_SLOP = 5;
 
@@ -29,7 +29,7 @@ export function blockAt(c: SceneController, clientX: number, clientY: number): {
 
 function hit(c: SceneController, ev: PointerEvent): { renderable: Renderable; index: number } | undefined {
   aim(c, ev.clientX, ev.clientY);
-  const pickables = c.renderables.filter((r) => c.state.revealed(r.block.node) && shown(r.block)).flatMap((r) => r.pickables);
+  const pickables = c.renderables.filter((r) => revealedOf(c, r) && shown(r.block) && !r.away).flatMap((r) => r.pickables);
   const hits = raycaster.intersectObjects(pickables, false);
   if (hits.length === 0) return undefined;
   const object = hits[0].object;
@@ -72,7 +72,7 @@ export function bindPointer(c: SceneController): () => void {
       const edge = edgeLines.edgeAt(ev.clientX - rect.left, ev.clientY - rect.top);
       edgeLines.setHover(edge);
       canvas.classList.toggle('vf-cursor-help', edge !== undefined);
-      canvas.classList.remove('vf-cursor-pointer');
+      canvas.classList.toggle('vf-cursor-pointer', edge === undefined && c.kernels.outlineAt(ev.clientX - rect.left, ev.clientY - rect.top) !== undefined);
       if (edge !== undefined) popups.showEdgeCard(edge, ev);
       else popups.hideUnpinned();
       return;
@@ -99,6 +99,8 @@ export function bindPointer(c: SceneController): () => void {
     downAt = undefined;
     if (moved > CLICK_SLOP) return;
     const found = hit(c, ev);
+    const rect = c.root.getBoundingClientRect();
+    if (found === undefined && c.kernels.click(ev.clientX - rect.left, ev.clientY - rect.top)) return;
     if (found === undefined || !c.aligned.has(found.renderable.block.node) || c.state.dir !== 'forward') return;
     setTarget(c, found.renderable, found.index);
     popups.showTip(found.renderable, found.index, ev);

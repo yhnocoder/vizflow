@@ -13,6 +13,11 @@ args:
   num_layers: int
   rope_theta: float
   dtype: dtype
+  attn_implementation: { type: str, options: [eager, flash_attention_2], default: eager }
+  flash_block_m: { type: dim, default: 128 }
+  flash_block_n: { type: dim, default: 64 }
+  flash_bwd_block_m: { type: dim, default: 64 }
+  flash_bwd_block_n: { type: dim, default: 128 }
 inputs:
   ids: { type: tensor, shape: [T], dtype: int64 }
 outputs:
@@ -25,7 +30,7 @@ init:
   layers:
     use: list[Qwen3DecoderLayer]
     count: num_layers
-    args: [d_model, d_head, d_ff, num_heads, num_kv_heads]
+    args: [d_model, d_head, d_ff, num_heads, num_kv_heads, attn_implementation, flash_block_m, flash_block_n, flash_bwd_block_m, flash_bwd_block_n]
   norm:
     use: Qwen3RMSNorm
     args: { hidden_size: d_model }
@@ -37,7 +42,7 @@ forward:
   - e: embed_tokens(ids)
   - position_ids: arange(T)
   - position_embeddings: rotary_emb(e, position_ids)
-  - M: causal_mask(T, dtype=e.dtype)
+  - M: causal_mask(T, dtype=e.dtype) if attn_implementation == 'eager' else None
   - cos: position_embeddings.cos
   - sin: position_embeddings.sin
   - h_last: layers(e, mask=M, cos=cos, sin=sin)
@@ -87,7 +92,7 @@ steps:
             append: |
               HF 在 <code>Qwen3Model.forward</code> 里调用一次 <code>self.rotary_emb(hidden_states, position_ids)</code>，把同一组 cos、sin 传给所有 {{ num_layers }} 层。
       - id: mask
-        show: [M, position_ids]
+        show: M
         label: '$\viz{M}$'
         title: causal mask
         text: |
