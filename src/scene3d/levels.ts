@@ -171,6 +171,7 @@ export interface LevelContext {
 export interface LevelPlan {
   readonly modules: SceneModule[];
   resolve(ctx: LevelContext): LevelLayout;
+  dump(): string;
 }
 
 export const CHIP_SIDE = 0.55;
@@ -1202,6 +1203,12 @@ class Plan implements LevelPlan {
       this.modules.push(module);
       spans.set(span, module);
     }
+  }
+
+  dump(): string {
+    const laneOf = (e: Entry) => (e.lane === undefined ? '-1' : e.lane === this.stream ? 's' : String(this.lanes.indexOf(e.lane)));
+    const entry = (e: Entry) => `${e.node.name}[${e.kind}|${e.offsets.join(',')}]@${laneOf(e)}:${(e.xs ?? []).map((x) => x.toFixed(1)).join(',')}`;
+    return this.levels.map((level, i) => `${String(i).padStart(3)} ${level.entries.map(entry).join('  ')}\n`).join('');
   }
 
   resolve(ctx: LevelContext): LevelLayout {
