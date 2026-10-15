@@ -17,6 +17,8 @@ export const TILE_DENSE_ROWS = 5;
 export const VECTOR_BACK = 1.35;
 export const STREAM_X = -7.2;
 export const STREAM_SPACING = 0.95;
+export const STREAM_BESIDE = 3;
+export const STREAM_PARALLEL = 6;
 export const BOARD_GAP = 1.45;
 export const COLUMN_BREAK = 0.6;
 export const TITLE_ROOM = 3.5;
@@ -774,7 +776,7 @@ class Plan implements LevelPlan {
           const partners = new Set(this.consumers(n).flatMap((u) => u.inputs).filter((i) => i !== n).map((i) => this.entryOf.get(this.sourceOf.get(i) ?? i)));
           const taken = this.occupied(level, this.stream, e);
           const blocked = level.entries.some((o) => partners.has(o) && o.lane === this.stream && consecutive(0, e.cols).some((k) => o.offsets.includes(k)));
-          const start = blocked ? Math.max(...taken) + 3 : 0;
+          const start = blocked ? Math.max(...taken) + this.besideOffset() : 0;
           this.setLane(e, this.stream, consecutive(start, e.cols));
           continue;
         }
@@ -782,7 +784,7 @@ class Plan implements LevelPlan {
         const main = inputs[0];
         if (main === undefined) {
           const taken = this.occupied(level, this.stream, e);
-          this.setLane(e, this.stream, consecutive(e.kind === 'plate' && consecutive(0, e.cols).some((k) => taken.has(k)) ? Math.max(...taken) + 3 : 0, e.cols));
+          this.setLane(e, this.stream, consecutive(e.kind === 'plate' && consecutive(0, e.cols).some((k) => taken.has(k)) ? Math.max(...taken) + this.besideOffset() : 0, e.cols));
           continue;
         }
         if (e.kind === 'disc' || e.kind === 'box' || e.cols === 1) {
@@ -1019,6 +1021,10 @@ class Plan implements LevelPlan {
     });
   }
 
+  private besideOffset(): number {
+    return (this.layout.scheme ?? 'lines') === 'lines' ? STREAM_BESIDE : STREAM_PARALLEL;
+  }
+
   private sideXs(e: Entry, main: Entry): number[] {
     const n = e.node;
     const mainXs = main.xs ?? (main.lane === undefined ? [0] : main.offsets.map((o) => position(main.lane!, o)));
@@ -1167,9 +1173,11 @@ class Plan implements LevelPlan {
         throw new Error(`steps: the brace of '${brace.id}' (${brace.title}) frames tensors that are not next to each other; ${between} lies between them`);
       }
       const nested = this.braces.some((other) => other !== brace && other.nodes.length < brace.nodes.length && other.nodes.every((n) => brace.nodes.includes(n)));
-      const side = brace.depth >= 2 ? 'left' : brace.depth === 0 && nested ? 'outer' : 'right';
+      const chosen = brace.side;
+      const side = chosen ?? (brace.depth >= 2 ? 'left' : brace.depth === 0 && nested ? 'outer' : 'right');
       const module: SceneModule = { id: brace.module ?? brace.id, title: brace.title, subtitle: brace.subtitle, nodes: brace.nodes, side, depth: brace.depth };
-      if (side === 'left') module.column = brace.depth - 2;
+      if (side === 'left') module.column = Math.max(0, brace.depth - 2);
+      if (chosen !== undefined) module.chosen = true;
       this.modules.push(module);
       spans.set(span, module);
     }

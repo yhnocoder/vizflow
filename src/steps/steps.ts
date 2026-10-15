@@ -45,6 +45,7 @@ export interface StepBrace {
   nodes: Node[];
   depth: number;
   module?: string;
+  side?: 'left' | 'right';
 }
 
 export type BackwardSpec = 'auto' | 'reverse' | { auto: true; merge?: Node[][]; override?: Record<number, BackwardOverride> };

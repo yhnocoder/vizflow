@@ -46,6 +46,7 @@ interface Leaf {
   call?: Call;
   subtitle?: string;
   braceTitle?: string;
+  side?: BraceSide;
 }
 
 interface Group {
@@ -60,7 +61,11 @@ interface Group {
   formula?: Formula;
   fold: Fold;
   expand?: boolean;
+  side?: BraceSide;
 }
+
+type BraceSide = 'left' | 'right';
+const BRACE_SIDES: readonly unknown[] = ['left', 'right'];
 
 export type Tree = Leaf | Group;
 
@@ -371,15 +376,19 @@ export class StepCompiler {
     if (options.append !== undefined) step.text = step.text ? `${step.text}\n${this.text(options, 'append', env)}` : this.text(options, 'append', env);
     if (options.subtitle !== undefined) leaf.subtitle = this.text(options, 'subtitle', env);
     if (options.brace !== undefined) {
-      if (typeof options.brace !== 'boolean') fail(child(env.where, options, 'brace'), 'brace must be true or false');
-      leaf.brace = options.brace;
+      if (typeof options.brace !== 'boolean' && !BRACE_SIDES.includes(options.brace)) fail(child(env.where, options, 'brace'), 'brace is true, false, left or right');
+      leaf.brace = options.brace !== false;
+      if (typeof options.brace === 'string') leaf.side = options.brace as BraceSide;
     }
     if (options.notes !== undefined) step.notes = [...(step.notes ?? []), ...notesOf(this.c, options.notes, this.field(env, options, 'notes'))];
     if (options.backward !== undefined) step.backward = this.backward(options.backward, this.field(env, options, 'backward'), step.backward ?? {});
   }
 
   private groupOptions(group: Group, options: Options, env: Env): void {
-    if (options.brace !== undefined) fail(child(env.where, options, 'brace'), 'a step with steps always has a brace; brace applies to a step that shows tensors');
+    if (options.brace !== undefined) {
+      if (!BRACE_SIDES.includes(options.brace)) fail(child(env.where, options, 'brace'), 'a step with steps always has a brace; brace takes left or right here to choose its side');
+      group.side = options.brace as BraceSide;
+    }
     if (options.title !== undefined) group.title = this.text(options, 'title', env);
     if (options.subtitle !== undefined) group.subtitle = this.text(options, 'subtitle', env);
     if (options.flat !== undefined) {
@@ -495,6 +504,7 @@ export class StepCompiler {
           if (tree.brace || tree.call !== undefined) {
             const brace: StepBrace = { id, title: tree.braceTitle ?? tree.rec.step.title, nodes: framed(tree.rec.step.show, tree.call), depth };
             if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
+            if (tree.side !== undefined) brace.side = tree.side;
             braces.push(brace);
           }
           continue;
@@ -513,6 +523,7 @@ export class StepCompiler {
         const brace: StepBrace = { id, title, nodes: framed(shows([tree]), tree.call), depth };
         if (tree.subtitle !== undefined) brace.subtitle = tree.subtitle;
         if (tree.call !== undefined && tree.call.parent !== undefined) brace.module = tree.call.prefix;
+        if (tree.side !== undefined) brace.side = tree.side;
         braces.push(brace);
         if (tree.intro !== undefined) {
           lightEntering(tree, tree.intro);

@@ -105,10 +105,8 @@ export class ModuleBraces {
       const offset = braceOffset(brace, direction);
       const label = this.labels[modules.indexOf(brace.module)];
       const tip = braceTip(brace, offset, scale);
-      if (brace.side === 'left') {
-        const covering = this.braces.filter((other) => other.side === 'left' && other.y0 <= tip[1] && tip[1] <= other.y1);
-        tip[0] = Math.min(tip[0], ...covering.map((other) => braceTip(other, offset, scale)[0]));
-      }
+      const covering = this.braces.filter((other) => other.side === brace.side && other.thick === brace.thick && other.y0 <= tip[1] && tip[1] <= other.y1).map((other) => braceTip(other, offset, scale)[0]);
+      tip[0] = brace.side === 'left' ? Math.min(tip[0], ...covering) : Math.max(tip[0], ...covering);
       label.pos = tip;
       label.lane = brace.side;
       label.anchor = brace.side === 'left' ? 'right-middle' : 'left-middle';

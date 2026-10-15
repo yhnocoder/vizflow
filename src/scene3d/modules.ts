@@ -10,6 +10,7 @@ export interface SceneModule {
   side?: 'left' | 'right' | 'outer';
   depth?: number;
   column?: number;
+  chosen?: boolean;
 }
 
 export const MODULE_GAP = 1.6;
@@ -118,26 +119,34 @@ export function levelBraces(
   bounds: SceneBounds & { z: number; cx: number; cz: number },
   gaps: { left: number; right: number; outer: number },
 ): Brace[] {
-  const placed: { module: SceneModule; side: 'left' | 'right'; column: number; range: [number, number] }[] = [];
-  const crosses = (p: SceneModule, q: SceneModule, a: [number, number], b: [number, number]) => a[0] < b[1] && b[0] < a[1] && !contains(p, q) && !contains(q, p);
-  const free = (module: SceneModule, side: 'left' | 'right', range: [number, number], from: number) => {
-    let column = from;
-    while (placed.some((other) => other.side === side && other.column === column && crosses(module, other.module, range, other.range))) column++;
+  type Placed = { module: SceneModule; side: 'left' | 'right' | 'outer'; column: number; range: [number, number] };
+  const placed: Placed[] = [];
+  const overlaps = (a: [number, number], b: [number, number]) => a[0] < b[1] && b[0] < a[1];
+  const crosses = (module: SceneModule, range: [number, number], other: Placed) => overlaps(range, other.range) && !contains(module, other.module) && !contains(other.module, module);
+  const columnOn = (module: SceneModule, side: Placed['side'], range: [number, number], from: number) => {
+    const inner = placed.filter((other) => other.side === side && overlaps(range, other.range) && contains(module, other.module));
+    let column = Math.max(from, ...inner.map((other) => other.column + 1));
+    while (placed.some((other) => other.side === side && other.column === column && crosses(module, range, other))) column++;
     return column;
   };
-  const sized = modules.map((module, i) => ({ module, i, range: module.id === undefined ? undefined : ranges.get(module.id) }));
-  sized.sort((p, q) => (p.range === undefined || q.range === undefined ? 0 : q.range[1] - q.range[0] - (p.range[1] - p.range[0])) || p.i - q.i);
+  const sized = modules.flatMap((module, i) => {
+    const range = module.id === undefined ? undefined : ranges.get(module.id);
+    return range === undefined ? [] : [{ module, i, range }];
+  });
+  const order = (side: string) => sized.filter((p) => (p.module.side ?? 'left') === side).sort((p, q) => (side === 'left' ? 1 : -1) * (p.range[1] - p.range[0] - (q.range[1] - q.range[0])) || p.i - q.i);
+  for (const side of ['left', 'right', 'outer'] as const) {
+    for (const { module, range } of order(side)) {
+      const crowded = side !== 'left' && placed.some((other) => other.side === side && crosses(module, range, other));
+      const leftFree = !placed.some((other) => other.side === 'left' && crosses(module, range, other));
+      const lane = side !== 'left' && crowded && leftFree && module.chosen !== true ? 'left' : side;
+      placed.push({ module, side: lane, column: columnOn(module, lane, range, lane === 'left' ? (module.column ?? 0) : 0), range });
+    }
+  }
+  const widest = Math.max(0, ...placed.filter((p) => p.side === 'right').map((p) => p.column));
   const out = new Map<SceneModule, Brace>();
-  for (const { module, range } of sized) {
-    if (range === undefined) continue;
-    const side = module.side ?? 'left';
-    const wanted = side === 'left' ? 'left' : 'right';
-    const moved = wanted === 'right' && free(module, 'right', range, 0) > 0;
-    const lane = moved ? 'left' : wanted;
-    const column = free(module, lane, range, lane === 'left' && !moved ? (module.column ?? 0) : 0);
-    placed.push({ module, side: lane, column, range });
-    const x = lane === 'left' ? bounds.xMin - gaps.left - MODULE_STEP * column : side === 'right' ? bounds.xMax + gaps.right : bounds.xMax + gaps.right + gaps.outer;
-    out.set(module, { module, side: lane, thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz });
+  for (const { module, side, column, range } of placed) {
+    const x = side === 'left' ? bounds.xMin - gaps.left - MODULE_STEP * column : side === 'right' ? bounds.xMax + gaps.right + MODULE_STEP * column : bounds.xMax + gaps.right + gaps.outer + MODULE_STEP * (widest + column);
+    out.set(module, { module, side: side === 'left' ? 'left' : 'right', thick: side === 'outer', nodes: [], column: 0, x, y0: range[0], y1: range[1], z: bounds.z, cx: bounds.cx, cz: bounds.cz });
   }
   return modules.flatMap((module) => out.get(module) ?? []);
 }
