@@ -24,6 +24,7 @@ function toyGraph(toys: Toy[], places: { node: string; key: Place['key']; of: st
     parent: () => null,
     pack: (n) => toyOf.get(n)!.pack,
     rides: (n) => toyOf.get(n)!.rides ?? false,
+    late: () => false,
     iteration: (n) => toyOf.get(n)!.iteration,
     places: places.map((p) => ({ node: node(p.node), key: p.key, of: node(p.of) })),
   };

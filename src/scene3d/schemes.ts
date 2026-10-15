@@ -29,6 +29,7 @@ export interface SchemeGraph {
   parent(id: string): string | null;
   pack(n: Node): string | undefined;
   rides(n: Node): boolean;
+  late(n: Node): boolean;
   iteration(n: Node): string | undefined;
   places: Place[];
 }
@@ -198,7 +199,7 @@ function nested(g: SchemeGraph, options: SchemeOptions): Map<Node, number> {
     const pinned = new Set(own.flatMap((r) => [r.low, r.high]));
     const latest = (item: Item) => Math.min(...[...succs.get(item)!].map((s) => start.get(s)! + lead.get(s)!.get(item)! - item.height));
     for (const item of [...order].reverse()) {
-      if (!item.constant || pinned.has(item) || succs.get(item)!.size === 0) continue;
+      if (!item.nodes.every((n) => g.late(n)) || pinned.has(item) || succs.get(item)!.size === 0) continue;
       start.set(item, Math.max(start.get(item)!, latest(item)));
     }
     const height = () => Math.max(0, ...items.map((item) => start.get(item)! + item.height));

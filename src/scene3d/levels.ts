@@ -560,6 +560,7 @@ class Plan implements LevelPlan {
         return n.kind === 'op' && typeof group === 'string' ? `${n.op}:${group}` : undefined;
       },
       rides: (n) => this.ridesBoards(n),
+      late: (n) => n.kind === 'op' && n.op === 'alias',
       iteration: (n) => this.layout.iterations?.get(n),
       places: this.layout.places ?? [],
     }, this.layout.options);
