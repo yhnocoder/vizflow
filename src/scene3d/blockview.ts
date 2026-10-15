@@ -6,9 +6,9 @@ import { formatNumber } from '../tensor';
 import type { LinearRgb } from '../theme';
 import type { BarMesh } from './blocks';
 import { barColor, nodeColor, outlineOpacity } from './colors';
+import { TITLE } from './columns';
 import type { SceneController } from './controller';
 import { IDLE_FLAG, type Label } from './labels';
-import type { Vec3 } from './layout';
 import { type Renderable, targetOf, valuesOf } from './renderable';
 import { barHeight } from './scales';
 
@@ -19,7 +19,6 @@ export const SEE_THROUGH_MIN_OVERLAP = 6;
 export const SEE_THROUGH_DEPTH_GAP = 0.3;
 
 const VALUE_LABEL_GAP = 0.1;
-const NODE_TITLE_OFFSET: Vec3 = [0.05, 0.28, -0.2];
 const NODE_VALUE_OFFSET = 0.32;
 const LEVEL_PRECISION = 1000;
 
@@ -184,7 +183,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
     const mesh = renderable.nodes;
     const first = block.elements[0];
     const middle = first.y + mesh.height / 2;
-    title.pos = [first.x + NODE_TITLE_OFFSET[0], middle + NODE_TITLE_OFFSET[1], first.z + NODE_TITLE_OFFSET[2]];
+    title.pos = [first.x + TITLE.node[0], middle + TITLE.node[1], first.z + TITLE.node[2]];
     title.anchor = 'above-right';
     renderable.values.forEach((label, i) => {
       const element = block.elements[i];

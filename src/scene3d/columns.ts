@@ -29,6 +29,7 @@ export const TITLE = {
   below: [-0.55, 0.9] as const,
   right: [0.6, 0.35] as const,
   vector: [0.55, 0.35] as const,
+  node: [0.05, 0.28, -0.2] as const,
 };
 
 export type Kind = 'plate' | 'tile' | 'vector' | 'disc' | 'box';
@@ -571,7 +572,8 @@ export class Columns {
     const first = out[0];
     const last = out[out.length - 1];
     if (e.title === 'left') first.lo = Math.min(first.lo, first.lo + BLOCK_HALF + TITLE.left[0] - width);
-    if (e.title === 'right') last.hi = Math.max(last.hi, last.hi - BLOCK_HALF + (e.kind === 'vector' ? TITLE.vector[0] : TITLE.right[0]) + width);
+    if (e.title === 'right' && (e.kind === 'disc' || e.kind === 'box')) first.hi = Math.max(first.hi, first.lo + BLOCK_HALF + TITLE.node[0] + width);
+    else if (e.title === 'right') last.hi = Math.max(last.hi, last.hi - BLOCK_HALF + (e.kind === 'vector' ? TITLE.vector[0] : TITLE.right[0]) + width);
     if (e.title === 'below') {
       const mid = (first.lo + last.hi) / 2;
       first.lo = Math.min(first.lo, mid - width / 2);
@@ -793,7 +795,7 @@ export class Columns {
     for (const level of this.g.levels) {
       for (const e of level.entries) {
         if (e.kind === 'disc' || e.kind === 'box') {
-          e.title = 'left';
+          e.title = 'right';
           continue;
         }
         if (e.kind === 'vector') continue;
