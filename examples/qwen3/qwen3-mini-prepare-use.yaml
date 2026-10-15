@@ -1,0 +1,68 @@
+title: 'Qwen3 Mini (prepare: use)'
+layout: { levels: nested, prepare: use }
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  Qwen3ForCausalLM: vizflow/models/qwen3/for-causal-lm
+
+model: Qwen3ForCausalLM
+
+config:
+  V: 5
+  d_model: 4
+  d_head: 4
+  d_ff: 6
+  num_heads: 2
+  num_kv_heads: 1
+  num_layers: 1
+  rope_theta: 10
+  dtype: bf16
+  seed: 20261010
+  tokenizer:
+    vocab: [on, mat, the, sat, cat]
+  real:
+    qwen3-8b: { name: Qwen3-8B, T: 8192, V: 151936, d_model: 4096, d_head: 128, d_ff: 12288, num_heads: 32, num_kv_heads: 8, num_layers: 36, rope_theta: 1000000 }
+
+data:
+  tokens: [the, cat, sat, on]
+  ids: { expr: 'tokens_to_ids(tokens[:-1])' }
+  y: { expr: 'tokens_to_ids(tokens[1:])' }
+
+panels:
+  - loss: { parts: lt, hint: 走几步看损失下降 }
+  - cost
+  - sequence: true
+    tokens: tokens
+    input: ids
+    label: y
+    title: Sequence
+    sgd: { params: all, lr: 0.5, label: Update }
+    random: true
+    reset: true
+  - title: 对应的 PyTorch 计算
+    code: |-
+      e = embed_tokens(ids)
+      h_last = e
+      for layer in layers:
+          h_last = layer(h_last)
+      h_norm = norm(h_last)
+      hidden_states = h_norm
+      z = lm_head(hidden_states)
+      zf = z.float()
+      logp = F.log_softmax(zf, dim=-1)
+      lt = F.nll_loss(logp, y, reduction='none')
+      loss = lt.mean()
+    note: |
+      这里的 ids 和 y 已经按相邻位置对齐，形状都是 (T,)，没有额外的 batch 维。layers 中的各层依次执行，使用各自的参数。
+      示例使用 {{ num_layers }} 层，隐藏维度 {{ d_model }}，query head 数 {{ num_heads }}，kv head 数 {{ num_kv_heads }}，每个 head 的维度 {{ d_head }}，MLP 中间维度 {{ d_ff }}，词表大小 {{ V }}，输入长度 {{ T }}。
+
+sections:
+  - title: RoPE：用旋转来编码位置
+    src: ./rope.md
+    rope:
+      q: model.layers[0].self_attn.qn
+      k: model.layers[0].self_attn.kn
+      rows: [-1, 0]
+      head: 0
+      theta: rope_theta
+      d_head: d_head
+      positions: 24
