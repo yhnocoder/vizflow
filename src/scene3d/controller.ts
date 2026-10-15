@@ -6,7 +6,7 @@ import { type StepInfo, type StepState, type Steps, allVisible } from '../steps'
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
 import { SceneBatches } from './batches';
 import { PlateMesh } from './blocks';
-import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
+import { blockBoxes, markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
 import { FOLLOW_RATE, CameraRig } from './camera';
 import { buildChrome, buildTools } from './chrome';
 import { TokenChips } from './chips';
@@ -390,7 +390,7 @@ export class SceneController implements EditHost {
     }
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
-      this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
+      this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays(), () => blockBoxes(this));
       this.notes.place();
       this.labelsDirty = false;
       this.screenVersion++;

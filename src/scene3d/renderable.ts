@@ -4,7 +4,7 @@ import { offsetOf } from '../tensor';
 import { BarMesh, NodeMesh, PlateMesh, barBottom, barTop } from './blocks';
 import type { SceneController } from './controller';
 import type { Label } from './labels';
-import { type Block, type Element, type Vec3, elementAt, elementPosition, isLayoutOp, layoutSourceIndex, targetColumn } from './layout';
+import { type Block, type Element, type Vec3, elementAt, elementPosition, isView, targetColumn, viewSourceIndex } from './layout';
 import { TICK_COUNT, capFor, niceTicks, scaleFor } from './scales';
 import { Transition } from './transition';
 
@@ -135,8 +135,8 @@ export function elementOf(block: Block, node: Node, index: readonly number[]): E
   const members = membersOf(block);
   let at = [...index];
   let n = node;
-  while (!members.has(n) && isLayoutOp(n)) {
-    at = layoutSourceIndex(n, at);
+  while (!members.has(n) && isView(n)) {
+    at = viewSourceIndex(n, at);
     n = n.inputs[0];
   }
   return members.has(n) ? elementAt(block, at) : block.elements[offsetOf(node.shape, index as number[])];

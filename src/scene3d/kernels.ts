@@ -12,6 +12,7 @@ import { busyCopies, copyIndices, currentGrid, sameCopy } from './slots';
 export const STACK_DX = 0.5;
 export const STACK_DZ = 0.9;
 export const STACK_MAX = 15;
+export const STACK_CORNER = 1.5;
 export const SHARED_TEXT = 'shared memory';
 export const REGISTER_TEXT = '寄存器';
 export const OUTLINE_HOVER_DISTANCE = 6;
@@ -61,7 +62,7 @@ export function stackEdge(box: ChipBox, j: number): number[] {
   const [y0, y1] = box.y;
   const dx = j * STACK_DX;
   const z = box.z[1] - j * STACK_DZ;
-  return [x0 + dx, y1, z, x1 + dx, y1, z, x1 + dx, y0, z];
+  return [x0 + dx, y1, z, x1 + dx, y1, z, x1 + dx, Math.max(y0, y1 - STACK_CORNER), z];
 }
 
 interface Rung {
@@ -116,7 +117,8 @@ export class KernelRegions {
     mesh.add(new LineSegments(this.edges, edgeMaterial));
     this.c.scene.add(mesh);
     const label = this.c.labels.add('tag');
-    label.anchor = 'above-right';
+    label.anchor = 'below-right';
+    label.avoidsBlocks = true;
     label.setText(text);
     return { mesh, material, edgeMaterial, label };
   }
@@ -125,10 +127,13 @@ export class KernelRegions {
     while (this.views.length <= i) {
       const frameLabel = this.c.labels.add('copy');
       frameLabel.anchor = 'left-middle';
+      frameLabel.group = frameLabel;
       const total = this.c.labels.add('tag');
       total.anchor = 'above-right';
+      total.avoidsBlocks = true;
       const more = this.c.labels.add('tag');
       more.anchor = 'left-middle';
+      more.group = frameLabel;
       this.views.push({ shared: this.chip(SHARED_TEXT, SHARED_OPACITY), registers: this.chip(REGISTER_TEXT, REGISTER_OPACITY), frameLabel, total, more, copies: [] });
     }
     return this.views[i];
@@ -138,6 +143,7 @@ export class KernelRegions {
     while (view.copies.length <= k) {
       const label = this.c.labels.add('copy');
       label.anchor = 'left-middle';
+      label.group = view.frameLabel;
       label.el.addEventListener('click', () => {
         const outline = this.labelled.get(label);
         if (outline !== undefined) this.setFront(outline);
@@ -174,7 +180,6 @@ export class KernelRegions {
   update(): void {
     const c = this.c;
     const regions: readonly KernelRegion[] = c.levelLayout?.kernels ?? [];
-    const named = !c.lod;
     const busyLines: Polyline[] = [];
     const idleLines: Polyline[] = [];
     const outlines: Outline[] = [];
@@ -182,12 +187,13 @@ export class KernelRegions {
     const ladder: Rung[] = [];
     regions.forEach((region, i) => {
       const view = this.view(i);
+      const grid = currentGrid(region.grids, c.state);
+      const busy = busyCopies(grid, (n) => c.state.active(n));
+      const named = !c.lod && busy.some((index) => sameCopy(index.filter((_, d) => grid.arrangement[d] === 'expand'), region.expand));
       this.placeChip(view.shared, region.shared, named);
       this.placeChip(view.registers, region.registers, named);
-      const grid = currentGrid(region.grids, c.state);
       const stacked = grid.arrangement.some((a, d) => a === 'stack' && grid.counts[d] > 1);
       const front = frontIn(grid, c.frontOf(grid), region.expand);
-      const busy = busyCopies(grid, (n) => c.state.active(n));
       const isBusy = (index: readonly number[]) => busy.some((b) => sameCopy(b, index));
       const frame = region.frame;
       (isBusy(front) ? busyLines : idleLines).push({ points: faceRect(frame), opacity: FRAME_OPACITY });
@@ -242,22 +248,23 @@ export class KernelRegions {
   }
 
   place(): void {
-    const camera = this.c.camera;
-    const perUnit = (this.c.height / (camera.top - camera.bottom)) * camera.zoom;
-    const step = perUnit > 0 ? COPY_LABEL_STEP_PX / perUnit : 0;
     const tops = new Map<ChipBox, number>();
     for (const { label, frame, x, z, j } of this.ladder) {
-      const top = tops.get(frame) ?? tops.set(frame, this.visibleTop(frame, x, z)).get(frame)!;
-      label.pos = [x, Math.max(frame.y[0], top - j * step), z];
+      const top = tops.get(frame) ?? tops.set(frame, this.screenY(x, this.visibleTop(frame, x, z), z)).get(frame)!;
+      const s0 = this.screenY(x, 0, z);
+      const perUnit = this.screenY(x, 1, z) - s0;
+      const y = perUnit === 0 ? frame.y[1] : (top + j * COPY_LABEL_STEP_PX - s0) / perUnit;
+      label.pos = [x, Math.max(frame.y[0], y), z];
     }
   }
 
+  private screenY(x: number, y: number, z: number): number {
+    projected.set(x, y, z).project(this.c.camera);
+    return ((1 - projected.y) / 2) * this.c.height;
+  }
+
   private visibleTop(frame: ChipBox, x: number, z: number): number {
-    const c = this.c;
-    const screenY = (y: number) => {
-      projected.set(x, y, z).project(c.camera);
-      return ((1 - projected.y) / 2) * c.height;
-    };
+    const screenY = (y: number) => this.screenY(x, y, z);
     let [lo, hi] = frame.y;
     if (screenY(hi) >= COPY_LABEL_TOP_PX) return hi;
     if (screenY(lo) < COPY_LABEL_TOP_PX) return lo;

@@ -433,7 +433,7 @@ panels:
   <li>调用子模块写 <code>实例(位置参数, 名字=值)</code>。多输出的模块返回具名结果，用 <code>result.名字</code> 取出。调用是赋值的整个表达式时，模块的输出用调用处的名字命名。</li>
   <li>只持有参数、HF 从不调用其 forward 的模块可以省略 <code>forward</code>，例如 <code>nn.Conv1d</code>：Qwen3.5 只读取 <code>self.conv1d.weight</code>。</li>
   <li>同一个实例可以调用多次，共用参数；第 $k$ 次调用（$k\ge2$）的节点路径前缀是 <code>实例路径#k</code>。层列表依次调用各层，第一个位置参数逐层串联。</li>
-  <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算和类型转换不单独画，画在最近的已画出的源节点上。</li>
+  <li>表达式里间接产生的节点名是结果名加 <code>/序号</code>，例如 <code>ex/1</code>。布局运算、类型转换，以及只做整数或切片下标（<code>narrow</code>、<code>select</code>）的间接节点不单独画，画在最近的已画出的源节点上，下标取出的部分在源节点上画框。</li>
   <li>每个 <code>forward</code> 结果都要被某一步展示，或由一个被展示的模块调用算出，否则报错。确实不需要展示的结果写进 <code>unshown</code>。</li>
   <li>循环外的结果可以是 <code>None</code>，对应 HF 里由配置决定、可能不执行的一段，例如 <code>denominator: s.sum(-1) + 1e-20 if norm_topk_prob else None</code>。这时不产生节点，展示它的步骤按规则 12 不生成。</li>
   <li>结果也可以是数或 bool，例如 <code>masking: n &gt;= n_block_max - n_masking_steps</code>，对应 kernel 代码里的局部变量。计算它时产生了张量就报错。它不是节点，不需要展示，可以在后面的表达式、<code>if</code> 条件、<code>range</code> 和步骤模板里使用；在循环里每一轮记下各自的值，步骤读取时按规则 11 取值。</li>

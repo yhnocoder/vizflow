@@ -2,7 +2,7 @@ import { DTYPES, type Dtype, type Graph, Node, ProgramBuilder } from '../../auto
 import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
-import { isLayoutOp } from '../../scene3d/layout';
+import { isView } from '../../scene3d/layout';
 import type { ForwardStep, FunctionBackward, PageModule, StepsSpec } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
@@ -385,7 +385,7 @@ function placeLeaves(c: PageCompiler, forward: ForwardStep[]): void {
 
 function drawnOn(node: Node, shown: (n: Node) => boolean): boolean {
   if (shown(node)) return true;
-  return isLayoutOp(node) && drawnOn(node.inputs[0], shown);
+  return isView(node) && drawnOn(node.inputs[0], shown);
 }
 
 function checkBackwardShown(c: PageCompiler, sc: StepCompiler, functions: FunctionBackward[]): void {

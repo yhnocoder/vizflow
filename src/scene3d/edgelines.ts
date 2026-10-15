@@ -114,6 +114,7 @@ export class EdgeLines {
     const places = [...spots.values()];
     while (this.roundLabels.length < places.length) {
       const label = this.c.labels.add('tag');
+      label.avoidsBlocks = true;
       label.setText(PREVIOUS_ROUND);
       this.roundLabels.push(label);
     }

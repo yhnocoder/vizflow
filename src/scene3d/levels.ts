@@ -2,7 +2,7 @@ import type { Node, Size } from '../autograd';
 import { batchedCells, explainOf } from '../explain';
 import { type StepBrace, type StepModule, type StepsSpec, isLeafLike } from '../steps';
 import { forEachIndex, indexOf } from '../tensor';
-import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isLayoutOp, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
+import { type Anchor, type Block, type BoardGeometry, type Element, type Plate, type Slab, type Vec3, isIndexView, isView, labelBehind, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { SceneModule } from './modules';
 
 export const LEVEL_FRONT = 2.9;
@@ -249,6 +249,8 @@ export interface LevelGrid {
   registers: ReadonlySet<Node>;
 }
 
+const ROUND_SUFFIX = /\[\d+\]$/;
+
 export const PLACE_GAP = 1.6;
 export const COPY_GAP = 3.0;
 export const CHIP_GAP = 1.6;
@@ -287,7 +289,7 @@ class Plan implements LevelPlan {
   private readonly stream: Lane;
 
   constructor(
-    spec: StepsSpec,
+    private readonly spec: StepsSpec,
     private readonly layout: LevelSpec,
   ) {
     this.braces = spec.braces ?? [];
@@ -306,6 +308,7 @@ class Plan implements LevelPlan {
     this.assignTitles();
     this.makeTitleRoom();
     this.placeApart();
+    this.packDiscs();
     this.kernelGroups = this.findKernels();
     this.placeChips();
     this.placeCopies();
@@ -387,7 +390,7 @@ class Plan implements LevelPlan {
     const operands = new Set([...this.computed].filter((u) => u.kind === 'op' && (u.op === 'matmul' || u.op === 'select_matmul')).map((u) => u.inputs[1]));
     for (const n of this.visible[0]?.graph.nodes ?? []) {
       if (n.kind === 'op' && n.op === 'unsqueeze' && n.shape.length === 2 && n.shape[1] === 1) this.columns.add(n.inputs[0]);
-      if (!isLayoutOp(n) || shown.has(n) || isLeafLike(n) || operands.has(n)) continue;
+      if (!isView(n) || (shown.has(n) && !isIndexView(n)) || isLeafLike(n) || operands.has(n)) continue;
       const source = this.source(n.inputs[0]);
       this.sourceOf.set(n, source);
       if (n.shape.length >= 3 && drawnAlike(n, source)) this.drawnOn.set(source, [...(this.drawnOn.get(source) ?? []), n]);
@@ -566,27 +569,48 @@ class Plan implements LevelPlan {
     return rowsCols(n, shape);
   }
 
-  private discMemo = new Map<Node, boolean>();
+  private discs: Set<Node> | undefined;
 
   private isDisc(n: Node): boolean {
-    const known = this.discMemo.get(n);
-    if (known !== undefined) return known;
-    this.discMemo.set(n, false);
-    const cols = this.shapeOf(n)[1];
-    const result =
-      !this.boards.has(n) && !isLeafLike(n) && n.inputs.length > 0 &&
-      (n.shape.length === 2 || (n.shape.length >= 3 && plates(n).width === 1)) &&
-      n.shape[n.shape.length - 1] === 1 &&
-      this.consumers(n).some((u) => {
+    this.discs ??= this.findDiscs();
+    return (this.slotOf.get(n) ?? [n]).some((m) => this.discs!.has(m));
+  }
+
+  private findDiscs(): Set<Node> {
+    const sameShape = (a: Node, b: Node) => a.shape.join() === b.shape.join();
+    const sameDrawn = (a: Node, b: Node) => this.shapeOf(a).join() === this.shapeOf(b).join();
+    const columnLike = (n: Node) => {
+      if (this.boards.has(n) || isLeafLike(n) || n.inputs.length === 0) return false;
+      if (n.shape.length === 1) return this.shapeOf(n)[1] === 1;
+      return (n.shape.length === 2 || (n.shape.length >= 3 && plates(n).width === 1)) && n.shape[n.shape.length - 1] === 1;
+    };
+    const broadcastsWider = (n: Node) => {
+      const cols = this.shapeOf(n)[1];
+      return this.consumers(n).some((u) => {
         const main = u.inputs[0];
-        if (this.source(main) === n) return u.shape.join() === main.shape.join() && this.isDisc(u);
         const used = u.inputs.slice(1).find((i) => this.source(i) === n);
-        if (used === undefined) return false;
+        if (used === undefined || this.source(main) === n) return false;
         const broadcasts = explainOf(u.op as string)?.pattern === 'elementwise' && used.shape.length <= u.shape.length && used.shape.every((size, i) => size === 1 || size === u.shape[u.shape.length - used.shape.length + i]);
-        return main.shape.join() === u.shape.join() && broadcasts && used.shape[used.shape.length - 1] === 1 && u.shape[u.shape.length - 1] > 1 && this.shapeOf(u)[1] > cols;
+        return sameShape(main, u) && broadcasts && used.shape[used.shape.length - 1] === 1 && u.shape[u.shape.length - 1] > 1 && this.shapeOf(u)[1] > cols;
       });
-    this.discMemo.set(n, result);
-    return result;
+    };
+    const candidates = [...this.computed].filter((n) => (this.slotOf.get(n) ?? [n]).every(columnLike));
+    const discs = new Set(candidates.filter(broadcastsWider));
+    const isDisc = (n: Node) => (this.slotOf.get(n) ?? [n]).some((m) => discs.has(m));
+    for (let grown = true; grown; ) {
+      grown = false;
+      for (const n of candidates) {
+        if (discs.has(n)) continue;
+        const feeds = this.consumers(n).some((u) => sameDrawn(u, n) && isDisc(u));
+        const inputs = n.inputs.map((i) => this.source(i)).filter((i) => i.shape.length > 0);
+        const fed = explainOf(n.op as string)?.pattern === 'elementwise' && inputs.length > 0 && inputs.every((i) => sameDrawn(i, n) && isDisc(i));
+        if (feeds || fed) {
+          discs.add(n);
+          grown = true;
+        }
+      }
+    }
+    return discs;
   }
 
   private entry(node: Node, level: Level, key = `node:${node.id}`): Entry {
@@ -900,6 +924,53 @@ class Plan implements LevelPlan {
         }
       });
     }
+  }
+
+  private packDiscs(): void {
+    const indexOf = new Map<Level, number>();
+    const reindex = () => this.levels.forEach((level, k) => indexOf.set(level, k));
+    reindex();
+    const groupOf = new Map<Node, string>();
+    const sizeOf = new Map<Node, number>();
+    for (const step of [...this.spec.forward, ...(this.spec.functions ?? []).flatMap((f) => f.steps)]) {
+      const shown = list(step.show);
+      const group = (step.groups?.[step.groups.length - 1] ?? '').replace(ROUND_SUFFIX, '');
+      for (const n of shown) {
+        if ((sizeOf.get(n) ?? Infinity) <= shown.length) continue;
+        groupOf.set(n, group);
+        sizeOf.set(n, shown.length);
+      }
+    }
+    const stepKey = (level: Level) => {
+      const keys = new Set(level.entries.map((e) => groupOf.get(e.node)));
+      return keys.size === 1 ? [...keys][0] : undefined;
+    };
+    for (let i = 0; i < this.levels.length; i++) {
+      const level = this.levels[i];
+      const key = stepKey(level);
+      if (key === undefined) continue;
+      let start = i;
+      while (start > 0 && stepKey(this.levels[start - 1]) === key) start--;
+      for (const e of [...level.entries]) {
+        if (e.kind !== 'disc' || e.xs === undefined) continue;
+        const inputs = (this.slotOf.get(e.node) ?? [e.node]).flatMap((m) => m.inputs);
+        const below = inputs.map((n) => indexOf.get(this.entryOf.get(this.source(n))?.level as Level) ?? -1).filter((k) => k < i);
+        const floor = Math.max(start, ...below.map((k) => k + 1));
+        for (let t = floor; t <= i; t++) {
+          const target = this.levels[t];
+          if (this.overlapping(e, target.entries.filter((o) => o !== e)).length > 0) continue;
+          if (t < i) {
+            level.entries.splice(level.entries.indexOf(e), 1);
+            target.entries.push(e);
+            e.level = target;
+          }
+          break;
+        }
+        const own = e.level.entries.filter((o) => o !== e);
+        while (this.overlapping(e, own).length > 0) e.xs = e.xs!.map((x) => x + DISC_SIDE);
+      }
+    }
+    this.levels.splice(0, this.levels.length, ...this.levels.filter((level) => level.entries.length > 0));
   }
 
   private tracedOffsets(e: Entry, lane: Lane): number[] | undefined {

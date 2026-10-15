@@ -28,6 +28,7 @@ export const FOLLOW_SLAB_ZOOM = 1.4;
 const FOLLOW_SETTLE_Y = 0.01;
 const FOLLOW_SETTLE_ZOOM = 0.002;
 const UP = new Vector3(0, 1, 0);
+const ROUND_GROUP = /\[\d+\]$/;
 
 interface FollowGoal {
   y: number;
@@ -182,7 +183,13 @@ export class CameraRig {
   private followGoal(): FollowGoal {
     const c = this.c;
     const hh = this.halfHeight();
-    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && activeOf(c, r));
+    const info = c.currentInfo();
+    const round = info?.copy === undefined ? undefined : info.groups.at(-1);
+    const inRound = round !== undefined && ROUND_GROUP.test(round);
+    const roundSteps = inRound ? (c.options.steps?.list ?? []).filter((s) => s.dir === info!.dir && s.groups.at(-1) === round) : [];
+    const framedNodes = inRound ? new Set(roundSteps.flatMap((s) => s.computes ?? s.nodes)) : info?.computes === undefined ? undefined : c.stepNodes;
+    const framed = (r: Renderable) => framedNodes === undefined || (r.block.slot ?? [r.block.node]).some((n) => framedNodes.has(n));
+    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && (inRound || activeOf(c, r)) && framed(r));
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;

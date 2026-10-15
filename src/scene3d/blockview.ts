@@ -4,6 +4,7 @@ import { render } from '../formula';
 import { isLeafLike } from '../steps';
 import { formatNumber } from '../tensor';
 import type { LinearRgb } from '../theme';
+import type { Box } from './avoid';
 import type { BarMesh } from './blocks';
 import { barColor, nodeColor, outlineOpacity } from './colors';
 import type { SceneController } from './controller';
@@ -95,6 +96,15 @@ function screenBox(c: SceneController, renderable: Renderable, direction: Vector
   corner.set((lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2).sub(c.camera.position);
   box.depth = corner.dot(direction);
   return box;
+}
+
+export function blockBoxes(c: SceneController): Box[] {
+  const direction = c.camera.getWorldDirection(new Vector3());
+  return c.renderables.flatMap((r) => {
+    const box = screenBox(c, r, direction);
+    if (box === undefined || box.x1 < 0 || box.y1 < 0 || box.x0 > c.width || box.y0 > c.height) return [];
+    return [{ x: box.x0, y: box.y0, w: box.x1 - box.x0, h: box.y1 - box.y0 }];
+  });
 }
 
 function stepInvolved(c: SceneController): Set<Node> {

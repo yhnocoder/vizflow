@@ -178,6 +178,23 @@ export function isLayoutOp(n: Node): boolean {
   return n.kind === 'op' && LAYOUT_OPS.has(n.op as string);
 }
 
+const INDEX_OPS: ReadonlySet<string> = new Set(['narrow', 'select']);
+const ANONYMOUS = /\/\d+$/;
+
+export function isIndexView(n: Node): boolean {
+  return n.kind === 'op' && INDEX_OPS.has(n.op as string) && ANONYMOUS.test(n.name);
+}
+
+export function isView(n: Node): boolean {
+  return isLayoutOp(n) || isIndexView(n);
+}
+
+export function viewSourceIndex(n: Node, index: readonly number[]): number[] {
+  if (!isIndexView(n)) return layoutSourceIndex(n, index);
+  const ctx = { node: n, inputs: n.inputs.map((i) => i.value), out: n.value, attrs: n.attrs };
+  return [...explainOf(n.op as string)!.selected!(ctx, [...index])[0].index];
+}
+
 export function layoutSourceIndex(n: Node, index: readonly number[]): number[] {
   const input = n.inputs[0];
   if (n.op === 'transpose') {
@@ -204,8 +221,8 @@ export function sourceIndex(n: Node, source: Node, index: readonly number[]): nu
   let node = n;
   let at = [...index];
   while (node !== source) {
-    if (!isLayoutOp(node)) return undefined;
-    at = layoutSourceIndex(node, at);
+    if (!isView(node)) return undefined;
+    at = viewSourceIndex(node, at);
     node = node.inputs[0];
   }
   return at;

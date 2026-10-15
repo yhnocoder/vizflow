@@ -1,5 +1,5 @@
 import { Node } from '../../autograd';
-import { isLayoutOp } from '../../scene3d/layout';
+import { isView } from '../../scene3d/layout';
 import { type BackwardOverride, type CopyText, type ForwardStep, type FunctionBackward, type StepBrace, type StepGroup, type StepModule, isLeafLike } from '../../steps';
 import type { Ast } from '../expr';
 import { type Where, child, fail, merged } from '../source';
@@ -433,7 +433,7 @@ export class StepCompiler {
       const rec = first(t);
       if (call !== undefined && rec !== undefined) {
         const named = new Set([...(call.parent?.values.values() ?? [])]);
-        const added = [...call.inputs.values()].filter((n) => named.has(n) && !shown.has(n) && n.kind === 'op' && !isLayoutOp(n));
+        const added = [...call.inputs.values()].filter((n) => named.has(n) && !shown.has(n) && n.kind === 'op' && !isView(n));
         if (added.length > 0) {
           rec.step.show = unique([...added, ...rec.step.show]);
           this.carried.set(call, added);
@@ -474,7 +474,7 @@ export class StepCompiler {
   }
 
   private withAnon(nodes: Node[]): Node[] {
-    return unique(nodes.flatMap((n) => [...(this.c.anon.get(n) ?? []).filter((a) => !isLayoutOp(a)), n]));
+    return unique(nodes.flatMap((n) => [...(this.c.anon.get(n) ?? []).filter((a) => !isView(a)), n]));
   }
 
   private stepless(call: Call): Node[] {
