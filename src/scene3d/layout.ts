@@ -663,6 +663,56 @@ export function resolveLayout(items: LayoutItem[], ctx: LayoutContext): Resolved
   return { blocks: blocks.filter((block) => ctx.visible.includes(block.node)), boards, levels };
 }
 
+export function sameData(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameData(a[i], b[i])) return false;
+    return true;
+  }
+  if (a instanceof Map) {
+    if (!(b instanceof Map) || a.size !== b.size) return false;
+    for (const [k, v] of a) if (!b.has(k) || !sameData(v, b.get(k))) return false;
+    return true;
+  }
+  if (Object.getPrototypeOf(a) !== Object.prototype || Object.getPrototypeOf(b) !== Object.prototype) return false;
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let count = 0;
+  for (const k in x) {
+    if (!(k in y) || !sameData(x[k], y[k])) return false;
+    count++;
+  }
+  for (const _ in y) count--;
+  return count === 0;
+}
+
+interface ElementIndex {
+  byIndex: Map<string, Element>;
+  byCell: Map<string, Element>;
+}
+
+const elementIndexes = new WeakMap<readonly Element[], ElementIndex>();
+
+function elementIndex(elements: readonly Element[]): ElementIndex {
+  const known = elementIndexes.get(elements);
+  if (known !== undefined) return known;
+  const index: ElementIndex = { byIndex: new Map(), byCell: new Map() };
+  for (const e of elements) {
+    const key = e.index.join(',');
+    if (!index.byIndex.has(key)) index.byIndex.set(key, e);
+    const cell = `${e.row},${e.col}`;
+    if (!index.byCell.has(cell)) index.byCell.set(cell, e);
+  }
+  elementIndexes.set(elements, index);
+  return index;
+}
+
 export function elementAt(block: Block, index: readonly number[]): Element {
-  return block.elements.find((e) => e.index.length === index.length && e.index.every((v, d) => v === index[d]))!;
+  return elementIndex(block.elements).byIndex.get(index.join(','))!;
+}
+
+export function elementInCell(block: Block, row: number, col: number): Element | undefined {
+  return elementIndex(block.elements).byCell.get(`${row},${col}`);
 }

@@ -4,6 +4,7 @@ import type { Graph, Node } from '../autograd';
 import { type Explainer, explain } from '../explain';
 import { type StepInfo, type StepState, type Steps, allVisible } from '../steps';
 import { type ThemeColors, onThemeChange, readTheme } from '../theme';
+import { SceneBatches } from './batches';
 import { PlateMesh } from './blocks';
 import { markFar, markSeeThrough, refreshBlock, updateBars } from './blockview';
 import { FOLLOW_RATE, CameraRig } from './camera';
@@ -15,7 +16,7 @@ import { EdgeLines } from './edgelines';
 import { buildEdges } from './edges';
 import type { Box } from './avoid';
 import { LabelLayer } from './labels';
-import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetColumn } from './layout';
+import { type BoardGeometry, type ResolvedLayout, type Vec3, classAlignment, resolveLayout, sameData, targetColumn } from './layout';
 import type { LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
@@ -46,6 +47,7 @@ export class SceneController implements EditHost {
   readonly reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
   readonly rig: CameraRig;
   readonly popups: ScenePopups;
+  readonly batches: SceneBatches;
   readonly edgeLines: EdgeLines;
   readonly moduleBraces: ModuleBraces;
   readonly boxes: FoldBoxes;
@@ -53,8 +55,16 @@ export class SceneController implements EditHost {
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
+  private readonly overlayObserver = new ResizeObserver(() => {
+    this.overlayBoxes = undefined;
+    this.labelsDirty = true;
+    this.requestFrame();
+  });
+  private overlayBoxes: Box[] | undefined;
   readonly unsubscribe: (() => void)[] = [];
   private stepKey: string | undefined;
+  private resolvedKey: string | undefined;
+  private resolved: ResolvedLayout | undefined;
   private lastFrame: number | undefined;
   private far = true;
   private seeThrough = true;
@@ -104,6 +114,7 @@ export class SceneController implements EditHost {
     sun.position.set(...LIGHT_POSITION);
     this.scene.add(sun);
     this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    this.batches = new SceneBatches(this.scene, this.theme);
     this.edgeLines = new EdgeLines(this);
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
@@ -161,13 +172,9 @@ export class SceneController implements EditHost {
   }
 
   relayout(reframe: boolean): void {
-    this.resolve();
+    this.resolve(true);
     for (const renderable of this.renderables) {
-      if (renderable.plate === undefined) continue;
-      this.scene.remove(renderable.plate.group);
-      renderable.plate.dispose();
-      renderable.plate = new PlateMesh(renderable.block, this.theme);
-      this.scene.add(renderable.plate.group);
+      if (renderable.plate !== undefined) renderable.plate = new PlateMesh(renderable.block);
     }
     this.refresh();
     if (reframe) this.resetView();
@@ -196,7 +203,16 @@ export class SceneController implements EditHost {
     return steps === undefined ? undefined : (steps.list[steps.current] as PageStepInfo);
   }
 
-  private resolve(): void {
+  private layoutKey(): string {
+    const steps = this.steps;
+    const folded = steps === undefined ? [] : steps.modules.filter((m) => steps.folded(m.id)).map((m) => m.id);
+    return JSON.stringify([this.g.version, this.state.focus, folded]);
+  }
+
+  private resolve(force = false): void {
+    const key = this.layoutKey();
+    if (!force && key === this.resolvedKey) return;
+    this.resolvedKey = key;
     const steps = this.steps;
     const resolved = resolveLayout(this.options.layout, {
       visible: this.visible,
@@ -206,6 +222,8 @@ export class SceneController implements EditHost {
       folded: steps === undefined ? undefined : (id) => steps.folded(id),
       plan: this.options.levels,
     });
+    if (this.resolved !== undefined && sameData(resolved, this.resolved)) return;
+    this.resolved = resolved;
     this.boards = resolved.boards;
     this.levelLayout = resolved.levels;
     if (this.renderables.length === 0) {
@@ -217,12 +235,7 @@ export class SceneController implements EditHost {
         const before = renderable.block.plate;
         const moved = before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.d !== block.plate?.d;
         renderable.block = block;
-        if (moved && renderable.plate !== undefined) {
-          this.scene.remove(renderable.plate.group);
-          renderable.plate.dispose();
-          renderable.plate = new PlateMesh(block, this.theme);
-          this.scene.add(renderable.plate.group);
-        }
+        if (moved && renderable.plate !== undefined) renderable.plate = new PlateMesh(block);
       }
     }
   }
@@ -232,7 +245,6 @@ export class SceneController implements EditHost {
     for (const renderable of this.renderables) {
       const group = renderable.bars?.group ?? renderable.nodes?.group;
       if (group !== undefined) this.scene.add(group);
-      if (renderable.plate !== undefined) this.scene.add(renderable.plate.group);
     }
   }
 
@@ -272,7 +284,11 @@ export class SceneController implements EditHost {
   }
 
   private overlays(): Box[] {
-    return [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-formula, .vf-key, .vf-hint')].flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
+    if (this.overlayBoxes !== undefined) return this.overlayBoxes;
+    const elements = [...this.root.querySelectorAll<HTMLElement>('.vf-stage-tools, .vf-formula, .vf-key, .vf-hint')];
+    for (const el of elements) this.overlayObserver.observe(el);
+    this.overlayBoxes = elements.flatMap((el) => (el.offsetHeight > 0 ? [{ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }] : []));
+    return this.overlayBoxes;
   }
 
   private updateGeometry(): void {
@@ -301,16 +317,20 @@ export class SceneController implements EditHost {
     const k = this.reduceMotion.matches ? 1 : 1 - Math.exp(-dt * FOLLOW_RATE);
     const following = this.rig.applyGoal(k);
     const running = this.renderables.some((r) => r.transition.active) || this.rig.goal !== undefined;
+    let rebuilt = false;
     if (this.geometryDirty || stepped) {
       this.updateGeometry();
       this.geometryDirty = false;
       this.labelsDirty = true;
+      rebuilt = true;
     }
     const moved = this.controls.update();
     if ((moved || stepped || following || this.labelsDirty) && markSeeThrough(this)) {
       for (const renderable of this.renderables) refreshBlock(this, renderable, now, this.rig.zoomNow());
       this.labelsDirty = true;
+      rebuilt = true;
     }
+    if (rebuilt) this.batches.update(this.renderables);
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
@@ -327,6 +347,7 @@ export class SceneController implements EditHost {
     this.width = Math.max(1, this.root.clientWidth);
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
+    this.overlayBoxes = undefined;
     this.rig.reframe();
     this.labelsDirty = true;
   }
@@ -377,9 +398,8 @@ export class SceneController implements EditHost {
     this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
     for (const renderable of this.renderables) {
       renderable.bars?.setTheme(this.theme);
-      renderable.nodes?.setTheme(this.theme);
-      renderable.plate?.setTheme(this.theme);
     }
+    this.batches.setTheme(this.theme);
     this.edgeLines.setTheme(this.theme);
     this.moduleBraces.setTheme(this.theme);
     this.refresh();
@@ -398,13 +418,14 @@ export class SceneController implements EditHost {
     if (this.frameHandle !== 0) cancelAnimationFrame(this.frameHandle);
     clearTimeout(this.rig.wheelTimer);
     this.resizeObserver.disconnect();
+    this.overlayObserver.disconnect();
     this.unsubscribe.forEach((fn) => fn());
     this.controls.dispose();
     for (const renderable of this.renderables) {
       renderable.bars?.dispose();
       renderable.nodes?.dispose();
-      renderable.plate?.dispose();
     }
+    this.batches.dispose();
     this.edgeLines.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();

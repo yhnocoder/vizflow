@@ -74,6 +74,8 @@ function lines(value: Tensor, args: FigureArgs): string {
 
 const DRAW: Record<string, (value: Tensor, args: FigureArgs) => string> = { lines };
 
+const drawn = new WeakMap<HTMLElement, string>();
+
 export function renderFigures(root: HTMLElement, g: Graph): void {
   for (const el of root.querySelectorAll<HTMLElement>('vf-figure')) {
     const name = el.getAttribute('name') ?? '';
@@ -93,7 +95,10 @@ export function renderFigures(root: HTMLElement, g: Graph): void {
     });
     const problem = checkFigure(name, value.shape, given);
     if (problem !== undefined) throw new Error(`figure ${name}: ${problem}`);
-    el.innerHTML = DRAW[name](value, figureArgs(name, given) as FigureArgs);
+    const markup = DRAW[name](value, figureArgs(name, given) as FigureArgs);
+    if (drawn.get(el) === markup) continue;
+    drawn.set(el, markup);
+    el.innerHTML = markup;
     fillTex(el);
   }
 }

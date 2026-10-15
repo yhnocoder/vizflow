@@ -6,7 +6,8 @@ import type { SceneController } from './controller';
 import { LONG_EDGE } from './edgelines';
 import { tokenAxes } from './hover';
 import { indexOf } from '../tensor';
-import { type Block, type Element, LINE_HEIGHT, type Vec3, elementAt } from './layout';
+import type { LevelLayout } from './levels';
+import { type Block, type BoardGeometry, type Element, LINE_HEIGHT, type Vec3, elementAt, elementInCell } from './layout';
 import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
 
@@ -36,13 +37,13 @@ export interface DrawnEdge {
 type EdgeEntry = Omit<DrawnEdge, 'points' | 'style' | 'screen'>;
 
 const crossRowCache = new WeakMap<object, Set<Node>>();
-const jacobianCache = new WeakMap<Graph, { version: number; byOutput: Map<string, Map<Node, number[][]>> }>();
+const jacobianMatrices = new WeakMap<Graph, { version: number; byOutput: Map<string, Map<Node, number[][]>> }>();
 
 function cachedJacobian(g: Graph, module: StepModule, input: Node, output: Node): number[][] {
-  let cache = jacobianCache.get(g);
+  let cache = jacobianMatrices.get(g);
   if (cache === undefined || cache.version !== g.version) {
     cache = { version: g.version, byOutput: new Map() };
-    jacobianCache.set(g, cache);
+    jacobianMatrices.set(g, cache);
   }
   const key = `${module.id}:${output.id}`;
   let byInput = cache.byOutput.get(key);
@@ -68,14 +69,55 @@ function crossRowOps(c: SceneController): Set<Node> {
   return ops;
 }
 
+interface Candidate {
+  entry: EdgeEntry;
+  from: Renderable;
+  to: Renderable;
+  rows: (number | undefined)[];
+  zeroGrad: boolean;
+  constant: boolean;
+  jacobian: boolean;
+}
+
+interface CandidateSet {
+  boards: readonly BoardGeometry[];
+  edgesVersion: number;
+  frontRow: boolean;
+  candidates: Candidate[];
+}
+
+interface JacobianSet {
+  levels: LevelLayout | undefined;
+  version: number;
+  candidates: Candidate[];
+}
+
+const candidateCache = new WeakMap<SceneController, CandidateSet>();
+const jacobianCache = new WeakMap<SceneController, JacobianSet>();
+
+function candidatesOf(c: SceneController): Candidate[] {
+  const edgesVersion = c.explainer.edgesVersion();
+  let known = candidateCache.get(c);
+  if (known === undefined || known.boards !== c.boards || known.edgesVersion !== edgesVersion || known.frontRow !== c.frontRowOnly) {
+    known = { boards: c.boards, edgesVersion, frontRow: c.frontRowOnly, candidates: collectCandidates(c) };
+    candidateCache.set(c, known);
+  }
+  let jacobian = jacobianCache.get(c);
+  if (jacobian === undefined || jacobian.levels !== c.levelLayout || jacobian.version !== c.g.version) {
+    jacobian = { levels: c.levelLayout, version: c.g.version, candidates: jacobianCandidates(c) };
+    jacobianCache.set(c, jacobian);
+  }
+  return jacobian.candidates.length === 0 ? known.candidates : [...known.candidates, ...jacobian.candidates];
+}
+
 export function buildEdges(c: SceneController): DrawnEdge[] {
   const drawn: DrawnEdge[] = [];
   if (c.lod) return drawn;
-  const levels = c.levelLayout;
   const backward = c.state.dir === 'backward';
   const overview = c.state.dir === 'forward' && c.state.kind === 'overview';
-  const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
-  const push = (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean) => {
+  for (const { entry, from, to, rows, zeroGrad, constant, jacobian } of candidatesOf(c)) {
+    if (backward && constant) continue;
+    if (jacobian && from.far && to.far) continue;
     const style = edgeStyle({
       dir: c.state.dir,
       overview,
@@ -88,6 +130,15 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       revealedTo: c.state.revealed(entry.toNode),
     });
     if (style !== null) drawn.push({ ...entry, points: [], style, screen: [] });
+  }
+  return drawn;
+}
+
+function collectCandidates(c: SceneController): Candidate[] {
+  const candidates: Candidate[] = [];
+  const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
+  const push = (entry: EdgeEntry, from: Renderable, to: Renderable, rows: (number | undefined)[], zeroGrad: boolean, constant = false, jacobian = false) => {
+    candidates.push({ entry, from, to, rows, zeroGrad, constant, jacobian });
   };
   const crossRow = c.frontRowOnly ? crossRowOps(c) : new Set<Node>();
   const frontZ = new Map<Block, number>();
@@ -96,9 +147,11 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     block.rowGroups === undefined ? element.z >= frontOf(block) - SAME_LEVEL : block.rowGroups[element.row + 1] !== block.rowGroups[element.row];
   const isBackRow = (op: Node, fromIndex: number[], toIndex: number[], block: Block, element: Element) =>
     c.frontRowOnly && !crossRow.has(op) && fromIndex.length > 1 && toIndex.length > 1 && !isFrontRow(block, element);
+  const boardOf = new Map<Node, BoardGeometry>();
+  for (const b of c.boards) if (!boardOf.has(b.op)) boardOf.set(b.op, b);
   for (const edge of c.explainer.edges()) {
     if ('cell' in edge.from || 'cell' in edge.to) {
-      const board = c.boards.find((b) => b.op === edge.op);
+      const board = boardOf.get(edge.op);
       if (board === undefined || edge.arg === 1) continue;
       const aR = renderableFor(c, board.a);
       const bR = renderableFor(c, board.b);
@@ -109,7 +162,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       const batch = index.slice(0, -3);
       const operands = matmulOperands(edge.op, index);
       const y = board.y + LINE_HEIGHT;
-      const tile = (block: Block, kk: number, ii: number) => (block === board.b ? elementAt(block, matmulOperands(edge.op, [...batch, r, kk, ii]).b) : block.elements.find((e) => e.row === kk && e.col === ii)!);
+      const tile = (block: Block, kk: number, ii: number) => (block === board.b ? elementAt(block, matmulOperands(edge.op, [...batch, r, kk, ii]).b) : elementInCell(block, kk, ii)!);
       const [tileW, tileD] = board.b.footprint;
       const outElement = elementAt(board.out, operands.out);
       const rows = [board.out.batched ? r : undefined];
@@ -139,7 +192,6 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
     }
     const from = edge.from;
     const to = edge.to;
-    if (backward && edge.constant) continue;
     const fromR = renderableOf(c, from.node);
     const toR = renderableOf(c, to.node);
     if (fromR === undefined || toR === undefined || fromR === toR || !shown(fromR.block) || !shown(toR.block)) continue;
@@ -166,13 +218,20 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
       };
     }
     if (isBackRow(edge.op, from.index, to.index, toR.block, toElement)) entry.backRow = true;
-    push(entry, fromR, toR, rows, c.explainer.zeroGrad(edge));
+    push(entry, fromR, toR, rows, c.explainer.zeroGrad(edge), edge.constant === true);
   }
-  if (levels === undefined) return drawn;
+  return candidates;
+}
+
+function jacobianCandidates(c: SceneController): Candidate[] {
+  const candidates: Candidate[] = [];
+  const levels = c.levelLayout;
+  if (levels === undefined) return candidates;
+  const rowOf = (renderable: Renderable, index: number[]) => (renderable.block.batched ? elementAt(renderable.block, index).row : undefined);
   for (const pair of levels.io) {
     const inR = renderableOf(c, pair.input);
     const outR = renderableFor(c, pair.outputBlock);
-    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block) || (inR.far && outR.far)) continue;
+    if (inR === undefined || outR === undefined || !shown(inR.block) || !shown(outR.block)) continue;
     const J = cachedJacobian(c.g, pair.module, pair.input, pair.output);
     const grad = pair.output.grad;
     J.forEach((row, oi) => {
@@ -193,9 +252,9 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
           bow: pair.split ? SPLIT_JACOBIAN_BOW : 0,
           jac: { module: pair.module, value },
         };
-        push(entry, inR, outR, [rowOf(inR, fromElement.index), rowOf(outR, toElement.index)], (grad === null ? 0 : grad.data[oi]) === 0);
+        candidates.push({ entry, from: inR, to: outR, rows: [rowOf(inR, fromElement.index), rowOf(outR, toElement.index)], zeroGrad: (grad === null ? 0 : grad.data[oi]) === 0, constant: false, jacobian: true });
       });
     });
   }
-  return drawn;
+  return candidates;
 }

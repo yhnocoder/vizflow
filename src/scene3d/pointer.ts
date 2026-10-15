@@ -20,12 +20,11 @@ export function blockAt(c: SceneController, clientX: number, clientY: number): {
   const owners = new Map<Object3D, Renderable>();
   for (const renderable of c.renderables) {
     for (const object of renderable.pickables) owners.set(object, renderable);
-    for (const mesh of renderable.plate?.meshes ?? []) owners.set(mesh, renderable);
   }
-  const hits = raycaster.intersectObjects([...owners.keys()], false);
+  const hits = raycaster.intersectObjects([...owners.keys(), ...c.batches.plateMeshes()], false);
   if (hits.length === 0) return undefined;
-  const block = owners.get(hits[0].object)!.block;
-  return { node: block.node, y: block.elements[0].y };
+  const block = (owners.get(hits[0].object) ?? c.batches.plateOwner(hits[0].object, hits[0].instanceId))?.block;
+  return block === undefined ? undefined : { node: block.node, y: block.elements[0].y };
 }
 
 function hit(c: SceneController, ev: PointerEvent): { renderable: Renderable; index: number } | undefined {

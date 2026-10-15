@@ -61,13 +61,13 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     if (block.shape === 'bar') renderable.values = block.elements.map(() => c.labels.add('val'));
     renderable.title = c.labels.add('ttl');
   } else {
-    renderable.nodes = new NodeMesh(block, c.theme);
-    renderable.pickables.push(...renderable.nodes.meshes);
+    renderable.nodes = new NodeMesh(block);
+    renderable.pickables.push(renderable.nodes.mesh);
     renderable.values = block.elements.map(() => c.labels.add('nv'));
     renderable.title = c.labels.add('ntl');
   }
   c.popups.bindCard(renderable.title, node);
-  if (block.plate !== undefined) renderable.plate = new PlateMesh(block, c.theme);
+  if (block.plate !== undefined) renderable.plate = new PlateMesh(block);
   renderable.classes = block.classLabels.map((text) => {
     const label = c.labels.add(block.role === 'board-b' || text.anchor === 'above' ? 'colh' : 'cls');
     if (block.role === 'planar' && text.anchor === 'below') label.under = renderable.values.filter((_, i) => block.elements[i].col === text.col);
