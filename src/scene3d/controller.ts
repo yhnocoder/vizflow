@@ -41,7 +41,6 @@ const LIGHT_POSITION: Vec3 = [-4, 12, 8];
 export class SceneController implements EditHost {
   readonly renderer: WebGLRenderer;
   readonly scene = new Scene();
-  readonly compactScene = new Scene();
   readonly explainer: Explainer;
   readonly aligned: Map<Node, Node>;
   readonly labels: LabelLayer;
@@ -62,7 +61,6 @@ export class SceneController implements EditHost {
   private stepKey: string | undefined;
   private lastFrame: number | undefined;
   private far = true;
-  private compactShown = false;
   private seeThrough = true;
   private frontRow = true;
   lod = false;
@@ -105,13 +103,11 @@ export class SceneController implements EditHost {
     this.popups = new ScenePopups(this);
     this.rig = new CameraRig(this);
 
-    for (const scene of [this.scene, this.compactScene]) {
-      scene.add(new AmbientLight(0xffffff, AMBIENT_INTENSITY * LEGACY_LIGHT_FACTOR));
-      const sun = new DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY * LEGACY_LIGHT_FACTOR);
-      sun.position.set(...LIGHT_POSITION);
-      scene.add(sun);
-      scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
-    }
+    this.scene.add(new AmbientLight(0xffffff, AMBIENT_INTENSITY * LEGACY_LIGHT_FACTOR));
+    const sun = new DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY * LEGACY_LIGHT_FACTOR);
+    sun.position.set(...LIGHT_POSITION);
+    this.scene.add(sun);
+    this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
     this.edgeLines = new EdgeLines(this);
     this.moduleBraces = new ModuleBraces(this);
     this.boxes = new FoldBoxes(this);
@@ -210,7 +206,7 @@ export class SceneController implements EditHost {
 
   private resolve(): void {
     const steps = this.steps;
-    const resolved = resolveLayout(this.options.layout, {
+    const raw = resolveLayout(this.options.layout, {
       visible: this.visible,
       aligned: this.aligned,
       targetOf: targetColumn,
@@ -218,6 +214,7 @@ export class SceneController implements EditHost {
       folded: steps === undefined ? undefined : (id) => steps.folded(id),
       plan: this.options.levels,
     });
+    const resolved = this.compactView?.layout(raw) ?? raw;
     this.boards = resolved.boards;
     this.levelLayout = resolved.levels;
     if (this.renderables.length === 0) {
@@ -227,8 +224,9 @@ export class SceneController implements EditHost {
         const renderable = renderableFor(this, block);
         if (renderable === undefined) continue;
         const before = renderable.block.plate;
-        const moved = before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.d !== block.plate?.d;
+        const moved = before?.x !== block.plate?.x || before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.w !== block.plate?.w || before?.d !== block.plate?.d || renderable.block.chunks?.length !== block.chunks?.length;
         renderable.block = block;
+        while (renderable.rows.length < block.rowLabels.length) renderable.rows.push(this.labels.add('kk'));
         if (moved && renderable.plate !== undefined) {
           this.scene.remove(renderable.plate.group);
           renderable.plate.dispose();
@@ -252,10 +250,6 @@ export class SceneController implements EditHost {
     if (this.disposed) return;
     this.state = this.currentState();
     this.resolve();
-    const compact = this.compactView?.active === true;
-    this.labels.only = compact ? this.compactView!.labelSet : undefined;
-    if (compact !== this.compactShown && !this.follow) this.rig.reset();
-    this.compactShown = compact;
     const now = performance.now();
     const dir = this.state.dir;
     const info = this.currentInfo();
@@ -330,7 +324,7 @@ export class SceneController implements EditHost {
       this.labelsDirty = true;
     }
     if (this.labelsDirty || moved || following) this.moduleBraces.place();
-    this.renderer.render(this.compactShown ? this.compactScene : this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {
       this.labels.project(this.camera, this.width, this.height, !this.follow, this.overlays());
       this.notes.place();
@@ -392,7 +386,7 @@ export class SceneController implements EditHost {
 
   private applyTheme(): void {
     this.theme = readTheme();
-    for (const scene of [this.scene, this.compactScene]) scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
+    this.scene.background = new Color(...this.theme.surface).convertSRGBToLinear();
     for (const renderable of this.renderables) {
       renderable.bars?.setTheme(this.theme);
       renderable.nodes?.setTheme(this.theme);

@@ -133,7 +133,7 @@ export class KvPoolView {
   }
 
   private shown(): boolean {
-    return this.c.state.generation !== undefined && !this.c.lod;
+    return this.c.state.generation !== undefined && this.c.state.generation.compact === undefined && !this.c.lod;
   }
 
   private frame(): PoolFrame {

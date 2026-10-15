@@ -3,7 +3,7 @@ import type { SceneController } from './controller';
 import { LABEL_SAFE_MARGIN, type Label, anchorOffset } from './labels';
 import { DISC_RADIUS, type Vec3 } from './layout';
 import { braceTip } from './modules';
-import type { Renderable } from './renderable';
+import { type Renderable, shown } from './renderable';
 
 export const CAMERA_DISTANCE = 150;
 
@@ -88,7 +88,7 @@ export function graphPoints(c: SceneController): Vec3[] {
 }
 
 export function allPoints(c: SceneController): Vec3[] {
-  if (c.compactView?.active === true) return c.compactView.points();
+  if (c.compactView?.active === true) return [...c.compactView.points(), ...framingPoints(c.renderables.filter((r) => shown(r.block)))];
   return [...graphPoints(c), ...(c.kvPool?.points() ?? [])];
 }
 
@@ -165,7 +165,7 @@ function computeFrame(c: SceneController, points: Vec3[], labels: readonly Label
 
 export function frameAll(c: SceneController): void {
   const points = allPoints(c);
-  const frame = computeFrame(c, points, c.labels.labels.filter((label) => c.labels.allows(label)), center(points), c.rig.direction);
+  const frame = computeFrame(c, points, c.labels.labels, center(points), c.rig.direction);
   const camera = c.camera;
   camera.left = frame.left;
   camera.right = frame.right;

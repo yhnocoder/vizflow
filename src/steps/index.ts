@@ -28,4 +28,4 @@ export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, t
 export { analyzeCache, checkCache, type CacheAnalysis, type CacheDecl, type CacheKind } from './cache';
 export { drawToken, isGreedy, type SampleDraw, type SamplerSpec, uniforms } from './sampling';
 export { PAGE_REQUEST, engineStepAt, kvScenario, kvTokenText, pageTokens, slotOf, slotSources, touchedPositions, writtenPositions, type KvBlocksRequest, type KvBlocksSpec, type KvSlotSource } from './kv-blocks';
-export { moduleTiles, tileLeaves, tileStates, type CompactStep, type CompactViewSpec, type ModuleTile, type TileState } from './compact';
+export { INPUT_TITLE, OUTPUT_TITLE, moduleTiles, tileLeaves, tileStates, type CompactStep, type CompactViewSpec, type ModuleTile, type TileState } from './compact';

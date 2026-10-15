@@ -96,7 +96,10 @@ export class ModuleBraces {
   }
 
   place(): void {
-    if (this.braces.length === 0) return;
+    if (this.braces.length === 0) {
+      this.ink.setPolylines([]);
+      return;
+    }
     const view = this.c.rig.viewDirection();
     const direction: Vec3 = [view.x, view.y, view.z];
     const modules = this.c.options.modules ?? [];

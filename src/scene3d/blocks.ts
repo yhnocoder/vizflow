@@ -217,6 +217,8 @@ export class NodeMesh {
   }
 }
 
+export type PlateSource = Pick<Block, 'plate' | 'slabs' | 'chunks' | 'frameHalf' | 'frameRows' | 'axis' | 'elements'>;
+
 export class PlateMesh {
   readonly group = new Group();
   readonly meshes: Mesh[] = [];
@@ -232,7 +234,7 @@ export class PlateMesh {
   private readonly axisMaterial: LineBasicMaterial;
 
   constructor(
-    readonly block: Block,
+    readonly block: PlateSource,
     theme: ThemeColors,
   ) {
     const plates = block.slabs?.map((slab) => slab.plate) ?? block.chunks ?? [block.plate!];
@@ -279,6 +281,10 @@ export class PlateMesh {
     for (const material of this.outlineMaterials) material.color.setRGB(...theme.ink);
     this.frameMaterial.color.setRGB(...theme.ink);
     this.axisMaterial.color.setRGB(...theme.ink);
+  }
+
+  setFill(color: LinearRgb): void {
+    this.material.color.setRGB(...color);
   }
 
   update(state: { revealed: boolean; far: boolean; seeThrough: boolean }, frameXs: number[], ticks: number[], scale: number, frameZs?: number[]): void {

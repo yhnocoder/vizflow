@@ -96,6 +96,7 @@ export interface RowSpec {
   labels: number;
   ranges?: ReadonlyMap<Node, [number, number]>;
   reads?: ReadonlyMap<Node, ReadonlySet<number>>;
+  kept?: ReadonlyMap<Node, number>;
 }
 
 export type RowState = 'hidden' | 'inactive';
@@ -657,7 +658,11 @@ class StepsImpl implements Steps {
       const entry = this.entry(full, shownBy(rows.shown), new Set(active));
       entry.rows = rows;
       entry.generation = generationAt(current, Math.max(current + 1, rows.labels + 1));
-      if (compact !== undefined) entry.generation.compact = compact;
+      if (compact !== undefined) {
+        entry.generation.compact = compact;
+        entry.rows = { ...rows, kept: windowStarts(current) };
+        for (const c of entry.generation.caches) if (c.kind === 'state') [...c.nodes, ...c.previous].forEach((n) => entry.revealed.add(n));
+      }
       entries.push(entry);
     };
     let current = P - 1;
@@ -671,6 +676,7 @@ class StepsImpl implements Steps {
         return { decl, kind, nodes: at(position), previous: at(position - 1), read: cache.window(decl, position), values, perToken: kind === 'rows' ? values - cache.stored(decl, position) : 0 };
       }),
     });
+    const windowStarts = (t: number) => new Map(infer.caches.filter((c) => cache.kind(c) === 'window').flatMap((c) => c.nodes.map((n) => [n, cache.window(c, t)[0] ?? t] as const)));
     const decodeRows = (t: number, extra: Partial<RowSpec> = {}): RowSpec => ({ shown: t + 1, lit: [t, t + 1], labels: t, ...extra });
     for (const group of all) {
       if (group.unit === undefined || group.unit.kind === 'op') continue;
@@ -845,11 +851,15 @@ class StepsImpl implements Steps {
       const groupIndex = new Map(kept.map((group, k) => [group, k]));
       const growing = infer.caches.filter((c) => kinds.get(c) === 'rows');
       const done = new Set<ForwardStep>();
+      const ran = new Set<ForwardStep>();
       const covering = (covered: Group[]): CompactStep | undefined => {
         if (detailed) return undefined;
         const steps = new Set(covered.flatMap(stepsOf));
-        const compact = { steps, done: new Set(done), sample: false };
-        steps.forEach((step) => done.add(step));
+        const compact = { steps, row: ran, done: new Set(done), sample: false };
+        steps.forEach((step) => {
+          done.add(step);
+          ran.add(step);
+        });
         return compact;
       };
       const recompute: Node[] = [];
@@ -946,9 +956,9 @@ class StepsImpl implements Steps {
             : `读上一个位置留下的缓存，算出这个位置的输出${writes.length > 0 ? `，并把 ${tex(writes)} 写回缓存` : ''}。这部分缓存的大小固定，每一步的计算量和位置无关。`;
           push(
             { id: `d:${row}:${k}`, title: runGrowing ? `${phase}：读取 ${pos} 行缓存` : `${phase}：读取并更新缓存`, label: '读缓存', text, nodes: prod, groups: within(phaseId, parts) },
-            unique([...active, ...readNodes.filter((n) => members.has(n) || cacheSet.has(n))]),
+            unique([...active, ...readNodes.filter((n) => runCaches.some((c) => c.members.includes(n) || c.nodes.includes(n)))]),
             decodeRows(row, show),
-            undefined,
+            cacheNotes(runCaches, row, true),
             covering(live),
           );
           afterWrite(...live);
@@ -1037,7 +1047,7 @@ class StepsImpl implements Steps {
         });
         flush();
       });
-      sample(row, phaseId, detailed ? undefined : { steps: new Set(), done: new Set(done), sample: true });
+      sample(row, phaseId, detailed ? undefined : { steps: new Set(), row: ran, done: new Set(done), sample: true });
     }
   }
 
@@ -1243,7 +1253,7 @@ function rowState(entry: Entry, infer: InferSpec | undefined, positions: Positio
   const offset = offsetOf(shape, index);
   const h = positions.horizon(node, offset);
   if (h === undefined) return undefined;
-  if (h >= rows.shown || skipped(node, offset, h)) return 'hidden';
+  if (h >= rows.shown || h < (rows.kept?.get(node) ?? 0) || skipped(node, offset, h)) return 'hidden';
   if (!entry.active.has(node)) return undefined;
   if (rows.reads?.get(node)?.has(offset) === true) return undefined;
   const [from, to] = rows.ranges?.get(node) ?? rows.lit;

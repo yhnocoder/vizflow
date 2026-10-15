@@ -179,9 +179,25 @@ export const ROW_NAME_LIFT = 0.03;
 export const BRACE_FRONT = 0.6;
 export const ROW_GROUP_GAP = 0.45;
 
-const zPlate = (r: number) => LEVEL_FRONT + r * LEVEL_ROW;
+export const zPlate = (r: number) => LEVEL_FRONT + r * LEVEL_ROW;
 const zTile = (r: number, rows: number) => LEVEL_FRONT - TILE_BACK - (rows - 1 - r) * (rows > TILE_DENSE_ROWS ? TILE_ROW_DENSE : TILE_ROW);
 const zVector = LEVEL_FRONT - VECTOR_BACK;
+
+export function rowBands(rows: readonly number[], span: number, keepEmpty: boolean): { start: number[]; height: number[] } {
+  const start: number[] = [];
+  const height: number[] = [];
+  let z = LEVEL_FRONT;
+  rows.forEach((count, g) => {
+    start.push(z);
+    if (count === 0 && !keepEmpty) {
+      height.push(0);
+      return;
+    }
+    height.push(Math.max((count - 1) * LEVEL_ROW, span));
+    z += height[g] + LEVEL_ROW + ROW_GROUP_GAP;
+  });
+  return { start, height };
+}
 
 function laneSpacing(cols: number): number {
   return Math.min(SPACING_MAX, Math.max(SPACING_MIN, SPACING_SPAN / cols));
@@ -360,19 +376,7 @@ class Plan implements LevelPlan {
     const count = Math.max(0, ...weights.map((w) => w.shape[0]), ...data.map((g) => g + 1));
     const span = Math.max(0, ...weights.map((w) => (w.shape[1] - 1) * TILE_ROW_DENSE));
     const rows = Array.from({ length: count }, (_, g) => data.filter((v) => v === g).length);
-    const start: number[] = [];
-    const height: number[] = [];
-    let z = LEVEL_FRONT;
-    for (let g = 0; g < count; g++) {
-      start.push(z);
-      if (rows[g] === 0 && weights.length === 0) {
-        height.push(0);
-        continue;
-      }
-      height.push(Math.max((rows[g] - 1) * LEVEL_ROW, span));
-      z += height[g] + LEVEL_ROW + ROW_GROUP_GAP;
-    }
-    return { start, height, rows };
+    return { ...rowBands(rows, span, weights.length > 0), rows };
   }
 
   private rowZs(n: Node, rows: number): number[] {

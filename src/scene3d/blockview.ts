@@ -40,7 +40,7 @@ export function markFar(c: SceneController): void {
   const levels = [...new Set(c.renderables.map((r) => levelKey(r.block.elements[0].y)))].sort((a, b) => a - b);
   const levelOf = (r: Renderable) => levels.indexOf(levelKey(r.block.elements[0].y));
   const stepLevels = c.renderables.filter((r) => r.block.copyOf === undefined && !isLeafLike(r.block.node) && c.state.active(r.block.node)).map(levelOf);
-  const enabled = c.follow && c.farOn && !c.lod && stepLevels.length > 0;
+  const enabled = c.follow && c.farOn && !c.lod && stepLevels.length > 0 && c.compactView?.active !== true;
   for (const r of c.renderables) {
     const level = levelOf(r);
     r.far = enabled && !c.state.active(r.block.node) && Math.min(...stepLevels.map((s) => Math.abs(s - level))) > FAR_LEVELS;
@@ -211,6 +211,10 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   });
   renderable.rows.forEach((label, i) => {
     const text = block.rowLabels[i];
+    if (text === undefined) {
+      label.visible = false;
+      return;
+    }
     label.setText(text.text);
     label.pos = [text.x, text.y, text.z];
     label.anchor = text.anchor === 'right' ? 'left-middle' : 'right-middle';

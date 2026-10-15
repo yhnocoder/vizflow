@@ -153,7 +153,6 @@ const projected = new Vector3();
 export class LabelLayer {
   readonly root: HTMLDivElement;
   readonly labels: Label[] = [];
-  only: ReadonlySet<Label> | undefined = undefined;
 
   constructor(parent: HTMLElement, onRemeasure: () => void) {
     this.root = document.createElement('div');
@@ -165,10 +164,6 @@ export class LabelLayer {
     });
   }
 
-  allows(label: Label): boolean {
-    return this.only === undefined || this.only.has(label);
-  }
-
   add(kind: LabelKind, extraClass = ''): Label {
     const label = new Label(kind, extraClass, this.root);
     this.labels.push(label);
@@ -178,7 +173,7 @@ export class LabelLayer {
   project(camera: Camera, width: number, height: number, avoidAll = true, obstacles: readonly Box[] = []): void {
     const shown: Label[] = [];
     for (const label of this.labels) {
-      let off = label.pos === undefined || !label.visible || !this.allows(label);
+      let off = label.pos === undefined || !label.visible;
       if (!off) {
         projected.set(...label.pos!).project(camera);
         off = Math.abs(projected.x) > LABEL_CLIP || Math.abs(projected.y) > LABEL_CLIP;
