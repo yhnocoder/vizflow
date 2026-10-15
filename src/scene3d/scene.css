@@ -722,8 +722,9 @@
 
 .vf-lb.vf-tile {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   font-family: var(--sans);
   color: var(--fg);
   line-height: 1.3;

@@ -227,6 +227,7 @@ export class SceneController implements EditHost {
         const moved = before?.x !== block.plate?.x || before?.y !== block.plate?.y || before?.z !== block.plate?.z || before?.w !== block.plate?.w || before?.d !== block.plate?.d || renderable.block.chunks?.length !== block.chunks?.length;
         renderable.block = block;
         while (renderable.rows.length < block.rowLabels.length) renderable.rows.push(this.labels.add('kk'));
+        while (renderable.classes.length < block.classLabels.length) renderable.classes.push(this.labels.add('colh'));
         if (moved && renderable.plate !== undefined) {
           this.scene.remove(renderable.plate.group);
           renderable.plate.dispose();
@@ -340,6 +341,10 @@ export class SceneController implements EditHost {
     this.height = Math.max(1, this.root.clientHeight);
     this.renderer.setSize(this.width, this.height, false);
     this.rig.reframe();
+    if (this.compactView?.active === true) {
+      this.refresh();
+      this.rig.followStep();
+    }
     this.labelsDirty = true;
   }
 

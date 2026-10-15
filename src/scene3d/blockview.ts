@@ -201,6 +201,10 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   }
   renderable.classes.forEach((label, i) => {
     const text = block.classLabels[i];
+    if (text === undefined) {
+      label.visible = false;
+      return;
+    }
     const target = targetOf(c, block, block.rows - 1);
     const isTarget = c.aligned.has(node) && !block.batched && block.rows === 1 && target === text.col;
     label.setText(block.role === 'planar' && isTarget ? `${text.text} · 目标` : text.text);

@@ -3,7 +3,7 @@ import { type CompiledPage, loadPage } from '../../src/dsl';
 import { positionsOf } from '../../src/explain';
 import { INPUT_TITLE, type ModuleTile, OUTPUT_TITLE, type Steps, createSteps, tileLeaves, tileStates } from '../../src/steps';
 import { autoLayout } from '../../src/scene3d/auto';
-import { compactBlocks } from '../../src/scene3d/compactlayout';
+import { BLOCK_TEXT, COMPACT_MAX_ZOOM, COMPACT_MIN_ZOOM, type CompactPool, SHARED_TABLE_TEXT, compactBlocks } from '../../src/scene3d/compactlayout';
 import { resolveLayout, targetColumn } from '../../src/scene3d/layout';
 import { forEachIndex } from '../../src/tensor';
 import { examplesUrl, loadExample, readFileUrl } from './load';
@@ -144,32 +144,103 @@ describe('module tiles of the compact decode view', () => {
     expect(s.tiles[1].children[0].caches).toHaveLength(ds.modes!.infer.infer!.caches.length / 2);
   });
 
-  it('moves the cache blocks next to their module tile and hides every other block', () => {
+  function planAt(id: string, pool?: CompactPool, perUnit = 44) {
     const { layout, levels } = autoLayout(page.tree, page.steps, page.levels);
     const resolved = resolveLayout(layout, { visible: steps.visible, aligned: new Map(), targetOf: targetColumn, focus: 0, folded: () => false, plan: levels });
-    steps.go(steps.list.findIndex((info) => info.id === 'd:3:1'));
+    steps.go(steps.list.findIndex((info) => info.id === id));
     const generation = steps.state().generation!;
     const positions = positionsOf(page.graph, page.compactView!.infer.input.shape[0]);
-    const plan = compactBlocks(resolved, steps.tiles, generation, undefined, {
-      tileWidth: 8,
-      tileDepth: 2,
+    const plan = compactBlocks(resolved, steps.tiles, generation, pool, {
       up: [0, 0.8, -0.6],
       side: [1, 0, 0],
       tokens: ['a', 'b', 'c', 'd', 'e'],
       horizon: (node, offset) => positions.horizon(node, offset),
+      perUnit,
+      room: 700,
+      tile: [300, 30],
+      measure: (text) => [text.length * 7, 14],
     });
+    return { resolved, plan };
+  }
+
+  it('moves the cache blocks next to their module tile and hides every other block', () => {
+    const { resolved, plan } = planAt('d:3:1');
     const shown = plan.layout.blocks.filter((block) => block.hidden !== true);
     expect(shown.map((block) => block.node.name).sort()).toEqual(['model.layers[0].self_attn.kr', 'model.layers[0].self_attn.v_linear', 'model.layers[1].self_attn.kr', 'model.layers[1].self_attn.v_linear']);
     expect(plan.layout.blocks).toHaveLength(resolved.blocks.length);
     expect(plan.tiles.map((tile) => tile.tile?.title ?? '')).toEqual([INPUT_TITLE, 'self_attn', 'mlp', 'self_attn', 'mlp', OUTPUT_TITLE, '']);
     expect(plan.tiles.map((tile) => tile.state)).toEqual(['done', 'lit', 'idle', 'idle', 'idle', 'idle', 'idle']);
     const ys = plan.tiles.map((tile) => tile.y);
-    expect(ys.every((y, i) => i === 0 || y > ys[i - 1])).toBe(true);
+    expect(ys.every((y, i) => i === 0 || y > ys[i - 1] + plan.tiles[i].size[1] / 0.8)).toBe(true);
     for (const board of plan.boards) {
       expect(board.y).toBe(plan.tiles[board.leaf].y);
-      expect(board.x[0]).toBeGreaterThan(8);
       expect(board.block.elements.every((e) => e.y === board.y)).toBe(true);
     }
     expect(plan.boards.map((board) => board.leaf)).toEqual([1, 1, 3, 3]);
+  });
+
+  it('sizes the tiles from their labels, zooms so the boards fill the rest of the row, and keeps the tiles left of the boards', () => {
+    const { plan } = planAt('d:3:1');
+    expect(plan.zoom).toBeGreaterThanOrEqual(COMPACT_MIN_ZOOM);
+    expect(plan.zoom).toBeLessThanOrEqual(COMPACT_MAX_ZOOM);
+    expect(plan.scale).toBeCloseTo(plan.zoom * 44);
+    for (const tile of plan.tiles) {
+      expect(tile.size[0] * plan.scale).toBeCloseTo(300);
+      expect(tile.size[1] * plan.scale).toBeCloseTo(30);
+    }
+    const right = plan.tiles[0].center[0] + plan.tiles[0].size[0] / 2;
+    for (const board of plan.boards) {
+      expect(right).toBeLessThan(board.x[0]);
+      for (const label of board.block.rowLabels) expect(label.x).toBeGreaterThan(board.x[1]);
+    }
+  });
+
+  it('labels every cached row of the first board in each layer with its token', () => {
+    const { plan } = planAt('d:3:1');
+    const [k0, v0] = plan.boards;
+    expect(k0.block.rowLabels.map((label) => label.text).sort()).toEqual(['a', 'b', 'c', 'd']);
+    expect(v0.block.rowLabels).toEqual([]);
+    expect(new Set(k0.block.rowLabels.map((label) => label.z)).size).toBe(4);
+    const crowded = planAt('d:3:1', undefined, 4).plan;
+    const texts = crowded.boards[0].block.rowLabels.map((label) => label.text);
+    expect(texts[0]).toBe('d');
+    expect(texts.length).toBeLessThan(4);
+  });
+
+  it('labels the time columns of a transposed window cache and states the size of a state cache', async () => {
+    const q35 = await loadExample('qwen3_5/qwen3_5-infer-dsl.yaml');
+    const s = createSteps(q35.graph, q35.modes!.infer);
+    const { layout, levels } = autoLayout(q35.tree, q35.steps, q35.levels);
+    const resolved = resolveLayout(layout, { visible: s.visible, aligned: new Map(), targetOf: targetColumn, focus: 0, folded: () => false, plan: levels });
+    s.go(s.list.findIndex((info) => info.id === 'd:4:1'));
+    const generation = s.state().generation!;
+    const positions = positionsOf(q35.graph, q35.modes!.infer.infer!.input.shape[0]);
+    const plan = compactBlocks(resolved, s.tiles, generation, undefined, {
+      up: [0, 0.8, -0.6],
+      side: [1, 0, 0],
+      tokens: ['a', 'b', 'c', 'd', 'e', 'f'],
+      horizon: (node, offset) => positions.horizon(node, offset),
+      perUnit: 44,
+      room: 2000,
+      tile: [300, 30],
+      measure: (text) => [text.length * 7, 14],
+    });
+    const window = plan.boards.find((board) => board.block.node.name.endsWith('mixed_t'))!;
+    expect(window.block.rowLabels).toEqual([]);
+    expect(window.block.classLabels.map((label) => label.text).sort()).toEqual(['b', 'c', 'd', 'e']);
+    expect(window.block.classLabels.every((label) => label.anchor === 'above' && label.z < window.z[0])).toBe(true);
+    const state = plan.boards.find((board) => board.decl.nodes[0].name.includes('last_recurrent_state'))!;
+    expect(state.note?.text).toMatch(/^固定 \d+ 个数$/);
+  });
+
+  it('puts the block labels right of the last board of the first layer and the shared table note below it', () => {
+    const { plan } = planAt('d:3:1', { blockSize: 2, table: [3, 1, 4] });
+    const v0 = plan.boards[1];
+    expect(v0.block.rowLabels.filter((label) => label.text.startsWith(BLOCK_TEXT)).map((label) => label.text)).toEqual([`${BLOCK_TEXT} 3`, `${BLOCK_TEXT} 1`]);
+    expect(v0.note?.text).toBe(SHARED_TABLE_TEXT);
+    const top = v0.note!.pos[1] * 0.8 - v0.note!.pos[2] * 0.6;
+    const lowest = Math.min(...v0.block.elements.map((e) => e.y * 0.8 - e.z * 0.6));
+    expect(top).toBeLessThan(lowest);
+    expect(plan.boards.filter((board) => board.note !== undefined)).toEqual([v0]);
   });
 });

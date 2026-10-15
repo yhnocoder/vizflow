@@ -23,7 +23,6 @@ export const FOLLOW_BOTTOM_SLACK = 2;
 export const FOLLOW_TOP_SLACK = 1;
 export const FOLLOW_SIDE_ROOM = 4;
 export const FOLLOW_SLAB_ZOOM = 1.4;
-export const COMPACT_MIN_ZOOM = 0.6;
 
 const FOLLOW_SETTLE_Y = 0.01;
 const FOLLOW_SETTLE_ZOOM = 0.002;
@@ -182,7 +181,7 @@ export class CameraRig {
   private followGoal(): FollowGoal {
     const c = this.c;
     const hh = this.halfHeight();
-    if (c.compactView?.active === true) return this.compactGoal(hh);
+    if (c.compactView?.active === true) return this.compactGoal();
     const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && c.state.active(r.block.node));
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
@@ -199,35 +198,41 @@ export class CameraRig {
     return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, stepPoints, points), zoom };
   }
 
-  private compactGoal(hh: number): FollowGoal {
+  private compactGoal(): FollowGoal {
+    const view = this.c.compactView!;
     const points = allPoints(this.c);
-    const overview = this.overviewGoal(points, true);
-    const lit = this.c.compactView!.litPoints();
-    if (overview.zoom >= COMPACT_MIN_ZOOM || lit.length === 0) return overview;
-    const zoom = Math.min(COMPACT_MIN_ZOOM, this.sideZoom(lit, 1, points));
-    const ys = lit.map((p) => p[1]);
-    return { y: this.clampFollowY((Math.min(...ys) + Math.max(...ys)) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, lit, points), zoom };
+    const zoom = view.zoom;
+    const { lo, hi, up, perUnit, room, marginTop, marginBottom } = this.screenRange(points);
+    const half = room / (2 * perUnit * zoom);
+    const lit = view.litPoints().map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
+    const focus = lit.length === 0 ? (lo + hi) / 2 : (Math.min(...lit) + Math.max(...lit)) / 2;
+    const middle = hi - lo <= 2 * half ? (lo + hi) / 2 : Math.min(Math.max(focus, lo + half), hi - half);
+    const target = this.controls.target;
+    const now = target.x * up.x + target.y * up.y + target.z * up.z;
+    const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
+    const side = this.sideRange(points);
+    return { y: target.y + (middle + shift - now) / Math.max(1e-6, up.y), side: (side.lo + side.hi) / 2, zoom };
   }
 
-  private overviewGoal(points: Vec3[], fitWidth = false): FollowGoal {
+  private screenRange(points: Vec3[]): { lo: number; hi: number; up: Vector3; perUnit: number; room: number; marginTop: number; marginBottom: number } {
     const c = this.c;
     const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
     const ys = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
-    const lo = Math.min(...ys);
-    const hi = Math.max(...ys);
     const labelPad = Math.max(0, ...c.labels.labels.filter((l) => l.kind === 'mod' && l.visible && l.pos !== undefined).map((l) => l.frameSize()[1] / 2));
     const marginTop = Math.max(chromeBottom(c, '.vf-stage-tools'), LABEL_SAFE_MARGIN) + LABEL_SAFE_MARGIN + labelPad;
     const marginBottom = 2 * LABEL_SAFE_MARGIN + labelPad;
     const perUnit = c.height / (2 * this.halfHeight());
-    const room = Math.max(1, c.height - marginTop - marginBottom);
-    const side = this.sideRange(points);
-    const across = fitWidth ? (2 * this.halfWidth() - (4 * LABEL_SAFE_MARGIN) / perUnit) / Math.max(1e-6, side.hi - side.lo) : Infinity;
-    const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit), across);
+    return { lo: Math.min(...ys), hi: Math.max(...ys), up, perUnit, room: Math.max(1, c.height - marginTop - marginBottom), marginTop, marginBottom };
+  }
+
+  private overviewGoal(points: Vec3[]): FollowGoal {
+    const { lo, hi, up, perUnit, room, marginTop, marginBottom } = this.screenRange(points);
+    const zoom = Math.min(1, room / Math.max(1e-6, (hi - lo) * perUnit));
     const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
     const target = this.controls.target;
     const now = target.x * up.x + target.y * up.y + target.z * up.z;
     const y = target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y);
-    return { y, side: fitWidth ? (side.lo + side.hi) / 2 : this.followSide(zoom, [], points), zoom };
+    return { y, side: this.followSide(zoom, [], points), zoom };
   }
 
   placeCamera(): void {

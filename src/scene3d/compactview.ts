@@ -1,30 +1,26 @@
-import { Group, Vector3 } from 'three';
+import { BufferGeometry, Color, DoubleSide, Group, LineBasicMaterial, LineLoop, Mesh, MeshBasicMaterial, PlaneGeometry, Vector3 } from 'three';
 import type { Node } from '../autograd';
 import { positionsOf } from '../explain';
 import { renderText } from '../formula';
 import { type CompactViewSpec, type ModuleTile, PAGE_REQUEST, type TileState, engineStepAt, pageTokens, tileLeaves } from '../steps';
-import { PlateMesh } from './blocks';
-import { COMPACT_MIN_ZOOM } from './camera';
 import { mix } from './colors';
-import { type CompactPlan, type CompactPool, compactBlocks } from './compactlayout';
+import { COMPACT_MAX_ZOOM, type CompactPlan, type CompactPool, type CompactText, compactBlocks } from './compactlayout';
 import type { SceneController } from './controller';
-import type { Label } from './labels';
+import type { Box } from './avoid';
+import { LABEL_SAFE_MARGIN, type Label } from './labels';
 import type { ResolvedLayout, Vec3 } from './layout';
 import { LineBatch } from './lines';
-import { BRACE_LABEL_GAP, type Brace, bracePoints, braceScale, braceTip } from './modules';
+import { BRACE_LABEL_GAP, BRACE_WIDTH, type Brace, bracePoints, braceScale, braceTip } from './modules';
 
 export const SAMPLE_TITLE = '采样';
-export const SHARED_TABLE_TEXT = '每一层按同一张块表存放';
 
 const TILE_PAD_PX = 14;
-const TILE_PAD_Y_PX = 8;
-const TILE_MIN_WIDTH = 5;
-const TILE_MIN_DEPTH = 1.2;
-const CHIP_GAP = 0.4;
-const BRACE_GAP = 0.5;
+const TILE_PAD_Y_PX = 10;
+const CHIP_GAP_PX = 12;
+const BRACE_GAP_PX = 10;
 const LIT_MIX = 0.45;
 const IDLE_MIX = 0.55;
-const NOTE_FRONT = 1.2;
+const OUTLINE_OPACITY = 0.5;
 
 const UP = new Vector3(0, 1, 0);
 
@@ -46,6 +42,17 @@ function twoLines(label: Label, key: string, title: string, caption: string, tit
   });
 }
 
+function along(point: Vec3, axis: Vector3, distance: number): Vec3 {
+  return [point[0] + axis.x * distance, point[1] + axis.y * distance, point[2] + axis.z * distance];
+}
+
+interface Card {
+  group: Group;
+  fill: MeshBasicMaterial;
+  outline: LineBasicMaterial;
+  geometries: BufferGeometry[];
+}
+
 export class CompactView {
   private readonly group = new Group();
   private readonly leaves: ModuleTile[];
@@ -53,11 +60,12 @@ export class CompactView {
   private readonly loopLabels: Label[];
   private readonly chip: Label;
   private readonly notes: Label[];
+  private readonly probes: Record<CompactText, Label>;
   private readonly braces: LineBatch;
   private readonly horizon: (node: Node, offset: number) => number | undefined;
-  private plates: PlateMesh[] = [];
-  private plateKey = '';
-  private usedScale = 0;
+  private up = new Vector3(0, 1, 0);
+  private cards: Card[] = [];
+  private cardKey = '';
   plan: CompactPlan | undefined;
 
   constructor(
@@ -87,24 +95,31 @@ export class CompactView {
       return label;
     });
     this.chip = c.labels.add('kk', 'vf-tile-chip');
-    this.chip.anchor = 'right-middle';
+    this.chip.anchor = 'left-middle';
     this.notes = spec.infer.caches.map(() => {
       const label = c.labels.add('kk', 'vf-tile-note');
-      label.anchor = 'bottom-center';
+      label.anchor = 'top-center';
       return label;
     });
+    this.probes = { row: c.labels.add('kk'), note: c.labels.add('kk', 'vf-tile-note') };
+    for (const probe of Object.values(this.probes)) probe.visible = false;
     this.braces = new LineBatch(c.theme.ink);
     this.group.add(this.braces.object);
     c.scene.add(this.group);
+    c.controls.addEventListener('change', this.face);
   }
 
   get active(): boolean {
     return this.c.state.generation?.compact !== undefined;
   }
 
-  private pixelsPerUnit(): number {
+  get zoom(): number {
+    return this.plan?.zoom ?? 1;
+  }
+
+  private perUnit(): number {
     const camera = this.c.camera;
-    return (this.c.height / (camera.top - camera.bottom)) * COMPACT_MIN_ZOOM;
+    return this.c.height / (camera.top - camera.bottom);
   }
 
   private pool(t: number): CompactPool | undefined {
@@ -113,6 +128,18 @@ export class CompactView {
     if (view === undefined || spec === undefined) return undefined;
     const steps = view.steps();
     return { blockSize: spec.blockSize, table: steps[engineStepAt(steps, t)].requests.find((r) => r.id === PAGE_REQUEST)?.table ?? [] };
+  }
+
+  private measure(text: string, kind: CompactText): [number, number] {
+    const probe = this.probes[kind];
+    probe.setText(text);
+    return probe.measure();
+  }
+
+  private leftPx(): number {
+    const loop = Math.max(0, ...this.loopLabels.map((label) => label.measure()[0]));
+    const brace = (BRACE_LABEL_GAP + BRACE_WIDTH) * this.perUnit() * Math.max(1, COMPACT_MAX_ZOOM);
+    return 2 * LABEL_SAFE_MARGIN + loop + brace + BRACE_GAP_PX;
   }
 
   layout(resolved: ResolvedLayout): ResolvedLayout {
@@ -127,35 +154,46 @@ export class CompactView {
     const sampled = generation.compact.sample ? `抽到 ${tokens[t + 1]}` : '';
     twoLines(this.titles[this.leaves.length], `${SAMPLE_TITLE}\n${sampled}`, SAMPLE_TITLE, sampled, 'vf-tile-title', 'vf-tile-caption');
     this.chip.setText(`位置 ${t}：${tokens[t]}`);
-    this.usedScale = this.pixelsPerUnit();
-    const widest = Math.max(...this.titles.map((label) => label.measure()[0]));
+    const chipRoom = this.chip.measure()[0] + CHIP_GAP_PX;
+    const widest = Math.max(...this.titles.map((label) => Math.max(label.measure()[0], this.titleWidth(label) + chipRoom)));
     const tallest = Math.max(...this.titles.map((label) => label.measure()[1]));
     const direction = this.c.rig.direction;
-    const up = UP.clone().addScaledVector(direction, -direction.y).normalize();
+    this.up = UP.clone().addScaledVector(direction, -direction.y).normalize();
     const side = new Vector3().crossVectors(UP, direction).normalize();
     this.plan = compactBlocks(resolved, this.c.steps!.tiles, generation, this.pool(t), {
-      tileWidth: Math.max(TILE_MIN_WIDTH, (widest + 2 * TILE_PAD_PX) / this.usedScale),
-      tileDepth: Math.max(TILE_MIN_DEPTH, (tallest + 2 * TILE_PAD_Y_PX) / (this.usedScale * Math.max(0.1, Math.abs(up.z)))),
-      up: [up.x, up.y, up.z],
+      up: [this.up.x, this.up.y, this.up.z],
       side: [side.x, side.y, side.z],
       tokens,
       horizon: this.horizon,
+      perUnit: this.perUnit(),
+      room: this.c.width - this.leftPx(),
+      tile: [widest + 2 * TILE_PAD_PX, tallest + 2 * TILE_PAD_Y_PX],
+      measure: (text, kind) => this.measure(text, kind),
     });
     return this.plan.layout;
   }
 
-  private chipRoom(): number {
-    return (this.chip.measure()[0] + TILE_PAD_PX) / this.usedScale + CHIP_GAP;
+  private corners(center: Vec3, size: [number, number], left = 0): Vec3[] {
+    const side = this.facing();
+    const w = size[0];
+    const h = size[1] / this.upY();
+    return [
+      along(along(center, side, -w / 2 - left), UP, -h / 2),
+      along(along(center, side, -w / 2 - left), UP, h / 2),
+      along(along(center, side, w / 2), UP, -h / 2),
+      along(along(center, side, w / 2), UP, h / 2),
+    ];
+  }
+
+  private leftEdge(): number {
+    return this.plan === undefined ? 0 : (this.leftPx() - 2 * LABEL_SAFE_MARGIN) / this.plan.scale;
   }
 
   points(): Vec3[] {
     const plan = this.plan;
     if (plan === undefined) return [];
-    const left = -this.chipRoom() - BRACE_GAP - BRACE_LABEL_GAP * braceScale(COMPACT_MIN_ZOOM) - Math.max(0, ...this.loopLabels.map((label) => label.measure()[0])) / this.usedScale;
-    return plan.tiles.flatMap((tile) => [
-      [left, tile.y, tile.z[0]],
-      [tile.x[1], tile.y, tile.z[1]],
-    ]);
+    const left = this.leftEdge();
+    return [...plan.tiles.flatMap((tile) => this.corners(tile.center, tile.size, left)), ...plan.extent];
   }
 
   litPoints(): Vec3[] {
@@ -164,15 +202,28 @@ export class CompactView {
     const lit = plan.tiles.filter((tile) => tile.state === 'lit');
     const ys = new Set(lit.map((tile) => tile.y));
     return [
-      ...lit.flatMap((tile): Vec3[] => [
-        [tile.x[0], tile.y, tile.z[0]],
-        [tile.x[1], tile.y, tile.z[1]],
-      ]),
+      ...lit.flatMap((tile) => this.corners(tile.center, tile.size)),
       ...plan.boards.filter((board) => ys.has(board.y)).flatMap((board): Vec3[] => [
         [board.x[0], board.y, board.z[0]],
         [board.x[1], board.y, board.z[1]],
       ]),
     ];
+  }
+
+  screenBoxes(): Box[] {
+    const plan = this.plan;
+    if (plan === undefined || !this.group.visible) return [];
+    const { camera, width, height } = this.c;
+    return plan.tiles.map((tile) => {
+      const xs: number[] = [];
+      const ys: number[] = [];
+      for (const corner of this.corners(tile.center, tile.size)) {
+        const p = new Vector3(...corner).project(camera);
+        xs.push(((p.x + 1) / 2) * width);
+        ys.push(((1 - p.y) / 2) * height);
+      }
+      return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) };
+    });
   }
 
   update(): void {
@@ -184,67 +235,123 @@ export class CompactView {
     for (const label of [...this.titles, ...this.loopLabels, this.chip, ...this.notes]) label.visible = false;
     if (!shown) return;
     const theme = c.theme;
-    this.syncPlates(plan);
+    this.syncCards(plan);
     const fill = (state: TileState) => (state === 'lit' ? mix(theme.line, theme.pos, LIT_MIX) : state === 'done' ? theme.line : mix(theme.line, theme.surface, IDLE_MIX));
     plan.tiles.forEach((tile, i) => {
-      const plate = this.plates[i];
-      plate.setTheme(theme);
-      plate.setFill(fill(tile.state));
-      plate.update({ revealed: tile.state !== 'idle', far: false, seeThrough: false }, [], [], 0);
+      const card = this.cards[i];
+      card.fill.color.setRGB(...fill(tile.state));
+      card.outline.color.setRGB(...theme.ink);
+      card.outline.opacity = tile.state === 'idle' ? OUTLINE_OPACITY / 2 : OUTLINE_OPACITY;
       const label = this.titles[i];
-      label.pos = [tile.x[0] + TILE_PAD_PX / this.usedScale, tile.y, (tile.z[0] + tile.z[1]) / 2];
       label.setFlag('vf-tile-lit', tile.state === 'lit');
       label.setFlag('vf-tile-idle', tile.state === 'idle');
       label.visible = true;
     });
+    this.chip.visible = plan.tiles.some((tile) => tile.state === 'lit');
+    for (const label of this.loopLabels) label.visible = true;
+    this.braces.setColor(theme.ink);
+    this.place(plan);
+    for (const board of plan.boards) {
+      if (board.note === undefined) continue;
+      const label = this.notes[this.spec.infer.caches.indexOf(board.decl)];
+      if (label.visible) continue;
+      label.setText(board.note.text);
+      label.pos = board.note.pos;
+      label.visible = true;
+    }
+  }
+
+  private facing(): Vector3 {
+    const view = this.c.camera.position.clone().sub(this.c.controls.target);
+    return new Vector3(view.z, 0, -view.x).normalize();
+  }
+
+  private place(plan: CompactPlan): void {
+    const side = this.facing();
+    const pad = TILE_PAD_PX / plan.scale;
+    plan.tiles.forEach((tile, i) => {
+      this.titles[i].pos = along(tile.center, side, -tile.size[0] / 2 + pad);
+    });
     const running = plan.tiles.map((tile) => tile.state).lastIndexOf('lit');
     if (running >= 0) {
       const tile = plan.tiles[running];
-      this.chip.pos = [tile.x[0] - CHIP_GAP, tile.y, (tile.z[0] + tile.z[1]) / 2];
-      this.chip.visible = true;
+      const title = this.titles[running];
+      const lift = (title.measure()[1] - this.titleHeight(title)) / 2 / plan.scale / this.upY();
+      this.chip.pos = along(along(tile.center, side, -tile.size[0] / 2 + pad + (this.titleWidth(title) + CHIP_GAP_PX) / plan.scale), UP, lift);
     }
-    const x = -this.chipRoom() - BRACE_GAP;
-    const z = (plan.tiles[0].z[0] + plan.tiles[0].z[1]) / 2;
-    const scale = braceScale(c.rig.zoomNow());
-    const braces = plan.loops.map(({ y }, k) => {
-      const brace: Brace = { module: { title: '', nodes: [] }, side: 'left', thick: false, nodes: [], column: 0, x, y0: y[0] - 0.4, y1: y[1] + 0.4, z, cx: x, cz: z };
-      const label = this.loopLabels[k];
-      label.pos = braceTip(brace, 0, scale);
-      label.visible = true;
-      return { points: bracePoints(brace, 0, scale), opacity: 0.55 };
-    });
-    this.braces.setColor(theme.ink);
-    this.braces.setPolylines(braces);
-    plan.boards.forEach((board) => {
-      const k = this.spec.infer.caches.indexOf(board.decl);
-      const entry = generation.caches.find((e) => e.decl === board.decl)!;
-      const label = this.notes[k];
-      const text = entry.kind === 'state' ? `固定 ${entry.values} 个数` : plan.shared === board ? SHARED_TABLE_TEXT : '';
-      if (text === '' || label.visible) return;
-      label.setText(text);
-      label.pos = [(board.x[0] + board.x[1]) / 2, board.y, board.z[1] + NOTE_FRONT];
-      label.visible = true;
-    });
+    const first = plan.tiles[0];
+    const base = along(first.center, side, -first.size[0] / 2 - BRACE_GAP_PX / plan.scale);
+    const halfY = first.size[1] / 2 / this.upY();
+    const scale = braceScale(this.c.rig.zoomNow());
+    this.braces.setPolylines(
+      plan.loops.map(({ y }, k) => {
+        const brace: Brace = { module: { title: '', nodes: [] }, side: 'left', thick: false, nodes: [], column: 0, x: base[0], y0: y[0] - halfY, y1: y[1] + halfY, z: base[2], cx: base[0], cz: base[2] };
+        this.loopLabels[k].pos = braceTip(brace, 0, scale);
+        return { points: bracePoints(brace, 0, scale), opacity: 0.55 };
+      }),
+    );
   }
 
-  private syncPlates(plan: CompactPlan): void {
-    const key = plan.tiles.map((tile) => `${tile.y}:${tile.x[1]}`).join('|');
-    if (key === this.plateKey) return;
-    this.plateKey = key;
-    for (const plate of this.plates) {
-      this.group.remove(plate.group);
-      plate.dispose();
-    }
-    this.plates = plan.tiles.map((tile) => {
-      const plate = new PlateMesh({ plate: { x: (tile.x[0] + tile.x[1]) / 2, y: tile.y, z: (tile.z[0] + tile.z[1]) / 2, w: tile.x[1] - tile.x[0], d: tile.z[1] - tile.z[0] }, frameRows: [], elements: [] }, this.c.theme);
-      this.group.add(plate.group);
-      return plate;
+  private upY(): number {
+    return Math.max(1e-6, this.up.y);
+  }
+
+  private titleWidth(label: Label): number {
+    label.measure();
+    return (label.el.firstElementChild as HTMLElement | null)?.offsetWidth ?? 0;
+  }
+
+  private titleHeight(label: Label): number {
+    label.measure();
+    return (label.el.firstElementChild as HTMLElement | null)?.offsetHeight ?? 0;
+  }
+
+  private readonly face = (): void => {
+    const side = this.facing();
+    for (const card of this.cards) card.group.rotation.set(0, Math.atan2(-side.z, side.x), 0);
+    if (this.plan !== undefined && this.group.visible) this.place(this.plan);
+  };
+
+  private syncCards(plan: CompactPlan): void {
+    const key = plan.tiles.map((tile) => `${tile.center.join(',')}:${tile.size.join(',')}`).join('|');
+    if (key === this.cardKey) return;
+    this.cardKey = key;
+    this.disposeCards();
+    this.cards = plan.tiles.map((tile) => {
+      const w = tile.size[0];
+      const h = tile.size[1] / this.upY();
+      const group = new Group();
+      group.position.set(...tile.center);
+      const plane = new PlaneGeometry(w, h);
+      const fill = new MeshBasicMaterial({ color: new Color(...this.c.theme.line), side: DoubleSide, depthWrite: false });
+      const mesh = new Mesh(plane, fill);
+      mesh.renderOrder = -1;
+      group.add(mesh);
+      const edge = new BufferGeometry().setFromPoints([new Vector3(-w / 2, -h / 2, 0), new Vector3(w / 2, -h / 2, 0), new Vector3(w / 2, h / 2, 0), new Vector3(-w / 2, h / 2, 0)]);
+      const outline = new LineBasicMaterial({ color: new Color(...this.c.theme.ink), transparent: true, opacity: OUTLINE_OPACITY, depthWrite: false });
+      const loop = new LineLoop(edge, outline);
+      loop.renderOrder = -1;
+      group.add(loop);
+      this.group.add(group);
+      return { group, fill, outline, geometries: [plane, edge] };
     });
+    this.face();
+  }
+
+  private disposeCards(): void {
+    for (const card of this.cards) {
+      this.group.remove(card.group);
+      card.fill.dispose();
+      card.outline.dispose();
+      for (const geometry of card.geometries) geometry.dispose();
+    }
+    this.cards = [];
   }
 
   dispose(): void {
+    this.c.controls.removeEventListener('change', this.face);
     this.c.scene.remove(this.group);
-    for (const plate of this.plates) plate.dispose();
+    this.disposeCards();
     this.braces.dispose();
   }
 }

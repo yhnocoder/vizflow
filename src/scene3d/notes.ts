@@ -300,7 +300,7 @@ export class SceneNotes {
       const g = this.geometry({ nodes: [node] });
       return g === undefined ? [] : [{ x: g.rect.x - 4, y: g.rect.y - 4, w: g.rect.w + 8, h: g.rect.h + 8 }];
     });
-    return [...chrome, ...labels, ...blocks];
+    return [...chrome, ...labels, ...blocks, ...(c.compactView?.screenBoxes() ?? [])];
   }
 
   place(): void {
