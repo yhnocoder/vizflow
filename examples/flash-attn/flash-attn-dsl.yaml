@@ -1,0 +1,77 @@
+title: FlashAttention-2
+camera: { direction: [0.3, 0.5, 1], polar: [0.2, 1.45], follow: true }
+import:
+  flash_attn_func: vizflow/nn/flash-attn-func
+
+model: FlashAttention2
+
+config:
+  softmax_scale: 0.5
+  block_m: 2
+  block_n: 2
+  bwd_block_m: 2
+  bwd_block_n: 2
+  real:
+    qwen3-8b: { name: Qwen3-8B 的一层注意力, T: 8192, num_heads: 32, num_kv_heads: 8, d_head: 128, block_m: 128, block_n: 64, bwd_block_m: 64, bwd_block_n: 128 }
+
+data:
+  q: [[[0.3, -0.8, 0.1, 0.5], [1.1, 0.2, -0.4, 0.3]], [[-0.5, 0.9, 0.2, -0.1], [0.4, -1.2, 0.6, 0.2]], [[0.7, 0.1, -0.3, 0.8], [-0.3, 0.6, 0.9, -0.7]], [[0.2, 0.4, -0.6, 0.1], [0.5, -0.2, 0.3, 0.9]]]
+  k: [[[0.6, 0.2, -0.1, 0.4]], [[0.1, -0.7, 0.5, 0.3]], [[-0.8, 0.5, 0.2, -0.6]], [[0.3, 0.1, 0.9, -0.2]]]
+  v: [[[0.5, -1.0, 0.3, 0.2]], [[-0.2, 0.4, 1.1, -0.5]], [[0.9, 0.6, -0.8, 0.2]], [[0.4, -0.3, 0.7, 0.6]]]
+  g: [[[0.2, -0.5, 0.7, 0.1], [-0.3, 0.4, 0.6, -0.8]], [[0.9, 0.3, -0.2, 0.5], [0.1, -0.6, 0.4, 0.2]], [[-0.7, 0.8, 0.3, -0.4], [0.5, 0.2, -0.9, 0.6]], [[0.3, 0.1, -0.5, 0.8], [-0.2, 0.7, 0.4, -0.6]]]
+
+panels:
+  - cost
+  - title: 对应的 PyTorch 计算
+    code: |-
+      from flash_attn import flash_attn_func
+      o = flash_attn_func(q, k, v, softmax_scale=d_head ** -0.5, causal=True)
+      loss = (o * g).sum()
+      loss.backward()
+    note: |
+      q、k、v 的形状是 $T\times H\times d_h$ 与 $T\times H_{kv}\times d_h$，没有 batch 维。示例取 $T={{ T }}$、$H={{ num_heads }}$、$H_{kv}={{ num_kv_heads }}$、$d_h={{ d_head }}$，前向与反向的块大小都取 2。
+
+modules:
+  FlashAttention2:
+    args: { softmax_scale: float, block_m: dim, block_n: dim, bwd_block_m: dim, bwd_block_n: dim }
+    inputs:
+      q: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+      k: { type: tensor, shape: [T, num_kv_heads, d_head], dtype: fp32 }
+      v: { type: tensor, shape: [T, num_kv_heads, d_head], dtype: fp32 }
+      g: { type: tensor, shape: [T, num_heads, d_head], dtype: fp32 }
+    outputs:
+      loss: { type: tensor, shape: [], dtype: fp32 }
+    init:
+      flash_attn_func:
+        use: flash_attn_func
+        args: { softmax_scale: softmax_scale, block_m: block_m, block_n: block_n, bwd_block_m: bwd_block_m, bwd_block_n: bwd_block_n }
+    forward:
+      - o: flash_attn_func(q, k, v)
+      - loss: (o * g).sum()
+    tex:
+      q: '\mathbf{q}'
+      k: '\mathbf{k}'
+      v: '\mathbf{v}'
+      g: 'G'
+      o: '\mathbf{o}'
+      loss: '\ell'
+    steps:
+      - id: inputs
+        label: 输入
+        title: q、k、v
+        show: [q, k, v, g]
+        text: |
+          这一页只有一次 <code>flash_attn_func</code> 调用。q 有 $H={{ num_heads }}$ 个 head，k、v 只有 $H_{kv}={{ num_kv_heads }}$ 个（GQA），每个 head 宽 $d_h={{ d_head }}$，序列长度 $T={{ T }}$，causal。
+          $$\viz{q}={{ q | matrix:2 }}$$
+          $\viz{g}$ 只用来定义损失 $\ell=\sum\mathbf{o}\odot G$，于是反向传进 flash_attn_func 的梯度就是 $\frac{\partial\ell}{\partial\mathbf{o}}=G$。
+      - id: flash_attn_func
+      - id: loss
+        show: loss
+        label: '$\viz{loss}$'
+        title: 损失
+        text: |
+          $$\viz{loss}=\sum_{t,h,i}o_{t,h,i}\,G_{t,h,i}={{ loss }}$$
+        backward:
+          title: '$\frac{\partial\ell}{\partial\viz{o}}=G$'
+          text: |
+            $$\frac{\partial\ell}{\partial\viz{o}}=\viz{g}={{ g | matrix:2 }}$$

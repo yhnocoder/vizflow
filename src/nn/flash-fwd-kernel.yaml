@@ -119,7 +119,7 @@ steps:
           text: |
             每个 thread block 按自己的顺序循环 kv 块，同一轮里不同的 thread block 读的 kv 块可以不同。causal 下 query 块 {{ m }} 只用到第 {{ min((m + 1) * block_m, T) - 1 }} 列以前的 key，所以只有 $n<{{ n_block_max }}$ 的 {{ n_block_max }} 个块参与，<code>n_block</code> 从 {{ n_block_max - 1 }} 递减到 0。query 块越靠后轮数越多，靠前的 thread block 先做完，之后空闲。
 
-            这一轮读入第 {{ n }} 个 key 块，$\viz{acc_s}=\viz{q_tile}\,{\viz{k_tile}}^{\top}$ 是 ${{ min((m + 1) * block_m, T) - m * block_m }}\times{{ min((n + 1) * block_n, T) - n * block_n }}$ 的分数块，bf16 相乘、fp32 累加。这里还没有乘 $1/\sqrt{d_h}$，缩放合并到下一步的 exp2 里。最先处理的 {{ n_masking_steps }} 个块与对角线相交，<code>apply_mask_causal</code> 按行号 $\viz{rows}$ 和列号 $\viz{cols}$ 把 $s>t$ 的格子置为 $-\infty$，得到 $\viz{acc_s_masked}$；之后的块完全在对角线左下方，不需要 mask。HF 的 eager 实现读入一个 $T\times T$ 的 mask 张量，而这里的 mask 由行号、列号直接算出，不占显存。
+            这一轮读入第 {{ n }} 个 key 块，$\viz{acc_s}=\viz{q_tile}\,{\viz{k_tile}}^{\top}$ 是 ${{ min((m + 1) * block_m, T) - m * block_m }}\times{{ min((n + 1) * block_n, T) - n * block_n }}$ 的分数块，bf16 相乘、fp32 累加。这里还没有乘 $1/\sqrt{d_h}$，缩放合并到下一步的 exp2 里。最先处理的 {{ n_masking_steps }} 个块可能与对角线相交，要用 <code>apply_mask_causal</code> 按行号和列号把 $s>t$ 的格子置为 $-\infty$；之后的块完全在对角线左下方，不需要 mask。{{ '这一轮属于前者，按行号 $r$ 和列号 $c$ 得到 $\bar S$。' if n >= n_block_max - n_masking_steps else '这一轮属于后者，直接使用分数块 $S$。' }}HF 的 eager 实现读入一个 $T\times T$ 的 mask 张量，而这里的 mask 由行号、列号直接算出，不占显存。
             $$\viz{acc_s}={{ acc_s | matrix:3 }}$$
         - id: softmax
           show: [prev_max, row_max, cur_max, scores_scale, row_sum_scaled, acc_o_scaled, max_scaled, p, row_sum]

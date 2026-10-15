@@ -18,6 +18,7 @@
   <li><a href="qwen3-structure.html">Qwen3 一层的前向与反向</a>：从 token id 到损失，一个 decoder 层完整展开。页面代码按 HF 的模块层级写成嵌套函数，每个模块在场景侧面有一个大括号，相机跟随当前步骤。</li>
   <li><a href="auto-layout-qwen3.html">Qwen3 一层：自动布局</a>：建图代码与上一页相同，布局由 <code>autoLayout</code> 按模块层级生成，用来和手写布局对比。</li>
   <li><a href="qwen3/qwen3-dsl.html">Qwen3（YAML）</a>：和上一页同样的模型与数值，用 <code>qwen3/qwen3-dsl.yaml</code> 页面描述文件写成，由 <code>&lt;vizflow-page src&gt;</code> 在浏览器里编译。</li>
+  <li><a href="flash-attn/flash-attn-dsl.html">FlashAttention-2（YAML）</a>：只有一次 <code>flash_attn_func</code> 调用的页面，用来单独查看前向与反向 kernel 的画法。</li>
   <li><a href="qwen3_5/qwen3_5-dsl.html">Qwen3.5（YAML）</a>：Qwen3.5 的混合结构，第 0 层是 Gated DeltaNet 线性注意力，按块计算并在块之间传递状态；第 1 层是带输出门、只转部分维度 RoPE 的 softmax 注意力。用 <code>qwen3_5/qwen3_5-dsl.yaml</code> 写成，模型定义在包内的 <code>src/models/qwen3_5/</code>。</li>
   <li><a href="qwen3_moe-dsl.html">Qwen3 MoE 最后一层（YAML 页面描述）</a>：Qwen3-30B-A3B 的最后一层，注意力和 Qwen3 相同，MLP 换成 softmax 路由、选 top-k 个专家的稀疏 MoE，没有共享专家。用 <code>qwen3_moe-dsl.yaml</code> 写成。</li>
   <li><a href="qwen3_5_moe-dsl.html">Qwen3.5 MoE 最后两层（YAML 页面描述）</a>：Qwen3.5-397B-A17B 的最后两层，token mixer 与 Qwen3.5 相同，MLP 换成稀疏 MoE 加一个带 sigmoid 门的共享专家。用 <code>qwen3_5_moe-dsl.yaml</code> 写成。</li>

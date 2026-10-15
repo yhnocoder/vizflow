@@ -109,3 +109,11 @@ it.each([
   for (const name of ['o', 'loss']) expectTensor(flash.nodes.get(name)!.value, { shape: [...eager.nodes.get(name)!.shape], values: [...eager.nodes.get(name)!.value.data] }, name);
   for (const name of ['q', 'k', 'v']) expectTensor(flash.nodes.get(name)!.grad, { shape: [...eager.nodes.get(name)!.shape], values: [...eager.nodes.get(name)!.grad!.data] }, `grad of ${name}`);
 });
+
+it('flash-attn-dsl.yaml builds every step with T divisible by the block sizes', async () => {
+  const page = await loadPage(new URL('flash-attn/flash-attn-dsl.yaml', examplesUrl).href, { read: readFileUrl });
+  const steps = createSteps(page.graph, page.steps);
+  steps.list.forEach((_, i) => steps.text(i));
+  expect(steps.list.some((s) => s.dir === 'backward')).toBe(true);
+  steps.dispose();
+});
