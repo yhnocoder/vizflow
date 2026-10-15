@@ -29,7 +29,7 @@
   <li><code>steps</code>：步骤条、讲解卡片、每一步亮什么、张量什么时候出现、括号和括号上的文字。</li>
   <li><code>tex</code>、<code>formula</code>、<code>fold</code>：张量的数学记号、公式卡片、折叠时的讲解。</li>
 </ul>
-<p><code>layout</code> 不影响哪一步亮什么，<code>steps</code> 不影响张量的位置。图上每个张量只有一个位置。</p>
+<p><code>layout</code> 不影响哪一步亮什么，<code>steps</code> 不影响张量的位置。图上每个张量只有一个位置；循环各轮里的同名张量、叠放的并行副本里的同名张量共用一个位置，这个位置按当前步骤显示其中一个（规则 14、15）。</p>
 
 <h2>类型</h2>
 <p>类型定义在 <code>src/dsl/types.ts</code>，由 <code>dsl</code> 入口导出。下面各节按类型说明字段的含义。</p>
@@ -447,7 +447,9 @@ panels:
   <li>循环可以嵌套，内层的 <code>range</code> 可以读外层的循环变量，节点路径每层循环带一个下标，例如 <code>acc_s[0][1][0]</code>。内层 <code>range</code> 的 <code>start</code> 或 <code>stop</code> 直接写出外层循环变量时，内层循环里的节点按「外层各轮的内层轮数之和」计份数：画出的份数是示例尺寸下各轮内层轮数之和，真实份数是真实尺寸下外层每个取值对应的内层轮数之和。causal 注意力里第 $m$ 个 query 块只处理前几个 kv 块，按这条规则统计时，真实规模下的 kv 块数是三角形的面积，不是 query 块数乘 kv 块数。范围里只出现由外层变量算出的名字（例如 <code>n_block_max</code>）时不按这条规则，内层轮数取当前这一轮的值，再与外层份数相乘，所以 <code>flash_fwd_kernel</code> 在 <code>range</code> 里写出完整的表达式。</li>
   <li><code>layers[i](h, ...)</code> 调用层列表的第 $i$ 层，对应 HF 的 <code>for i, decoder_layer in enumerate(self.layers)</code>，用于每层收到的参数不同的情况，例如按 <code>layer_types[i]</code> 选择 mask。</li>
   <li>循环里可以重新绑定循环外定义的名字，对应 HF 在循环里改写 <code>last_recurrent_state</code>；循环外同一个名字只能定义一次。</li>
+  <li>循环体在图上只画一次：循环里的每个名字占一个位置，各轮的张量都画在这里，步骤走到第几轮就显示第几轮的张量（规则 14）。真实的代码每一轮把这些值写进同一块存储，画一次与它一致。一个名字在循环里重新绑定、下一轮又读到它上一轮的值时（跨轮状态，例如 <code>last_recurrent_state</code>，online softmax 的 $m$、$\ell$ 和累加器），这条连线从这个位置连回它自己，画成自连线。循环后读这个名字，读到的是最后一轮的张量，连线从同一个位置出发。</li>
   <li><code>x[下标]: 表达式</code> 是 HF 的 <code>x[...] = ...</code>，只能写在循环里，得到写入后的新张量，原张量不变。下标里每一维是 <code>:</code>、一个整数或一段切片，可以有一个 <code>...</code>。整数下标编译成 <code>select_scatter</code>，切片编译成 <code>slice_scatter</code>，多个维度从左到右嵌套，例如 <code>attn[..., i, :i]</code> 是 <code>select_scatter(attn, slice_scatter(attn[..., i], 新值, -1, None, i), -2, i)</code>。</li>
+  <li><code>'x[下标] +=': 表达式</code> 把新值加到这一段上，编译成 <code>slice_scatter(x, x[下标] + 新值, ...)</code>，对应 HF 的 <code>x[...] += ...</code>；在 <code>grid</code> 模块里它表示各副本用 atomicAdd 累加，见「grid 与 shared」。</li>
   <li><code>'x[...]': 表达式</code> 写整个张量，编译成覆盖整个张量的 <code>slice_scatter(x, 新值, 0)</code>，对应循环里的原地更新，例如 Liger 的 <code>grad_weight.addmm_(...)</code> 写成 <code>'grad_weight[...]': grad_weight + grad_logits_chunk.transpose(0, 1) @ _input_chunk</code>。其他覆盖整个张量的下标（例如 <code>x[:]</code>）报错，提示改写成 <code>x[...]</code> 或换一个名字。写入的结果在显存统计里与被写的张量共用存储，在循环里反复写同一个缓冲区不按每次写入新增一份，见 <a href="vizflow.html">vizflow 设计</a>的「显存与计算量」。</li>
 </ul>
 <pre><code class="language-yaml">forward:
@@ -497,6 +499,34 @@ backward_steps:
 <p class="hint">规则 13：<code>backward_steps</code> 编译成反向步骤，放在前向最后一个属于这次调用、或展示这次调用输出的步骤处：反向走到这一步时，先按书写顺序走 <code>backward_steps</code>，再走这一步自己的反向步骤。没有这样的前向步骤时编译报错 <code>no forward step shows the call 'x', so its backward steps have no place</code>。它们在步骤条上位于这次调用的分组之下，有子步骤的步骤成为分组，id 是 <code>调用的分组 id.backward.步骤 id</code>。调用所在的模块折叠时，反向只有折叠模块的一步，不生成这些步骤。</p>
 <p><code>kernel: true</code> 的模块是一个 GPU kernel：一次调用里除输出以外创建的张量都在片上的 shared memory 和寄存器里，显存统计不计它们，FLOP 照常计。<code>flash_fwd_kernel</code> 的分数块和概率块因此不出现在显存里，与 FlashAttention 不把 $T\times T$ 矩阵写回显存一致。<code>kernel</code> 只能是 true 或 false。</p>
 
+<h3>grid 与 shared</h3>
+<pre><code class="language-yaml">module: flash_fwd_kernel
+kernel: true
+grid:                               # dim3 grid(num_m_block, b, h)
+  m: triton.cdiv(T, block_m)        # blockIdx.x
+  h: num_heads                      # blockIdx.z
+shared: [q_tile, k_tile, v_tile]    # sQ、sK、sV，其余是寄存器
+inputs:
+  q: [T, num_heads, d_head]
+  out: [T, num_heads, d_head]       # 调用方分配，kernel 写进去
+outputs:
+  out: [T, num_heads, d_head]
+forward:
+  - q_tile: q[m * block_m:min((m + 1) * block_m, T), h]
+  - acc_o: zeros(min((m + 1) * block_m, T) - m * block_m, d_head, dtype=fp32)
+  - for: n in range(...)
+    do:
+      - acc_o: acc_o_scaled + matmul(rp, v_tile, dtype=fp32)
+  - 'out[m * block_m:min((m + 1) * block_m, T), h]': o_tile</code></pre>
+<ul>
+  <li><code>grid</code> 对应 CUDA 的 <code>dim3 grid</code> 和 Triton 的 <code>grid</code>：每个名字是一维的编号，值是这一维的个数，调用时按参数和维度求值，必须是正整数。<code>forward</code> 写一个 thread block（Triton 里一个 program）的代码，网格里每个编号组合执行一次，这些名字在 <code>forward</code> 里是整数，对应 <code>blockIdx</code> 和 <code>tl.program_id</code>。每个组合是一个副本，副本之间互相独立：每个副本有自己的一份 <code>forward</code> 名字，读不到其他副本算出的值。</li>
+  <li>副本的节点路径在名字后面按 <code>grid</code> 的顺序带每一维的编号，例如 <code>q_tile[3][0]</code> 是 $m=3$、$h=0$ 的副本，副本里的循环再接着带轮次。tex 不加副本的编号，图上同一个位置画的是任意一个副本。真实规模下副本数按真实尺寸的 <code>grid</code> 计算，显存与计算量按真实副本数统计。</li>
+  <li><code>grid</code> 模块只能写自己的输入，对应 kernel 写调用方传进来的缓冲区。写入用 <code>'x[下标]': 新值</code>，<code>x</code> 必须是输入；所有副本对同一个输入的写入在全部副本执行完以后合成一次 <code>scatter_tiles</code>，结果就是同名的输出。被写的输入必须列在 <code>outputs</code> 里，名字和形状与输入相同；<code>grid</code> 模块的输出只能是被写的输入。两个副本写到同一个元素时编译报错 <code>scatter_tiles: tiles a and b write the same element; overlapping tiles need accumulate</code>。</li>
+  <li><code>'x[下标] +=': 新值</code> 表示累加：各副本的块加到 <code>x</code> 上，重叠的部分相加，对应 kernel 用 atomicAdd 累加到同一块显存，例如 FlashAttention 反向的 <code>dq_accum</code>。同一个输入不能既用 <code>=</code> 写又用 <code>+=</code> 写。写入以后再读这个输入报错 <code>'x' is read after this copy writes it; the copies write x together after the grid finishes</code>，写入之前读到的是传进来的值。</li>
+  <li><code>shared</code> 列出 kernel 放在 shared memory 里的张量，只能写在 <code>kernel: true</code> 的模块里，名字必须是 <code>forward</code> 定义的、不是输出的张量。kernel 里其余不是输出的张量都在寄存器里。图上片上存储分成 shared memory 和寄存器两块，见 <a href="vizflow.html">vizflow 设计</a>的「并行副本、循环与片上存储」。</li>
+  <li>调用 <code>grid</code> 模块的方式与其他模块相同。它的 <code>steps</code> 按一个副本来写，每一步亮所有副本里这些名字的张量（规则 15）。</li>
+</ul>
+
 <h2>Layout</h2>
 <p class="hint">规则 1：布局默认每行 <code>forward</code> 一层，按 <code>forward</code> 的顺序从前往后排。同一层里的左右顺序按数据来源自动排。调用子模块的一行展开成子模块 <code>forward</code> 的各层。</p>
 <p>只把一个已有张量赋给新名字的一行（例如 <code>x1: x</code>，对应 HF 的 <code>residual = hidden_states</code>）也画成一层，数值与原张量相同，梯度原样传回，不占额外显存。它和原张量之间的连线画成虚线，表示中间没有计算。没有步骤 show 它、它又是某个模块调用的输入时，它随这个调用的第一步出现，不单独成为一步，也不在这个调用的括号里。</p>
@@ -507,11 +537,15 @@ backward_steps:
     z: { after: w }                 # 在 w 后面一层；还有 before
     weight: { right: y }            # weight 和 buffer 也可以放，只能用 with、left、right
   merge:
-    - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画</code></pre>
+    - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画
+  grid: { m: expand, h: stack }     # 只在 grid 模块里：按维度选择并排展开或叠放</code></pre>
 <ul>
   <li><code>place</code> 的值是这个模块 <code>forward</code> 里算出的张量；键是算出的张量，或者 <code>init</code> 里的 weight、buffer。每项只写一个方向。<code>left</code>、<code>right</code>、<code>with</code> 放进目标所在的层，横向位置与已有的张量重叠时向外挪开。</li>
   <li>weight 和 buffer 没有自己的层，只能用 <code>with</code>、<code>left</code>、<code>right</code>。没写 <code>place</code> 时，它们画在第一次用到它们的那一层。做 matmul 的权重画成这个 matmul 的矩阵，<code>place</code> 不能移动它，写了会报错。</li>
   <li><code>merge</code> 的两个调用必须是同一个模块、各调用一次。两边的第 $k$ 层合成一层，左边的调用画在左侧，合并后的层放在后调用的那一行的位置。</li>
+</ul>
+<ul>
+  <li><code>grid</code> 写在 <code>grid</code> 模块的 <code>layout</code> 里，每一维选 <code>expand</code> 或 <code>stack</code>，没写的维度是 <code>stack</code>。<code>expand</code> 的维度上各个副本并排画，每个都画全；<code>stack</code> 的维度上各个副本画在同一个位置，最前面的副本画全，其余副本画成它后面的轮廓，读者点一个轮廓就把这个副本换到最前面。副本数多时（Qwen3-8B、$T=8192$ 时 FlashAttention 前向有 $32\times64$ 个）只能叠放。</li>
 </ul>
 <p class="hint">规则 4：<code>merge</code> 只影响位置，不会让两边的步骤一起亮；一起亮要在 <code>steps</code> 里写 <code>zip</code>。</p>
 
@@ -579,27 +613,26 @@ backward_steps:
       subtitle: 最后一层</code></pre>
 <p><code>loop</code> 对列表的每一项生成一步，<code>i</code> 从 0 开始。先合并 <code>defaults</code> 与 <code>at</code> 匹配的规则，再求值模板。<code>show</code> 默认是循环变量。</p>
 <pre><code class="language-yaml">- id: chunk
-  loop: i in range(num_chunks)
+  loop: i
   defaults:
     title: 第 {{ i }} 块
     steps:
       - { id: v_new, show: [v_prime, v_new] }
       - { id: state, show: last_recurrent_state }</code></pre>
-<p><code>loop: i in range(n)</code> 对 forward 循环的每一轮生成一步，步骤的 id 是 <code>chunk[i]</code>，<code>at</code> 按轮的序号匹配。<code>show</code> 必须写。<code>range</code> 与 forward 一样接受一到三个整数，<code>step</code> 不能为 0，可以为负。</p>
-<pre><code class="language-yaml">- id: row_block
-  loop: m in range(triton.cdiv(T, block_m))
+<p><code>loop: i</code> 的 <code>i</code> 是这个模块 <code>forward</code> 里一个循环的变量，按执行顺序每一轮生成一步，步骤的 id 是 <code>chunk[k]</code>，$k$ 是轮次，从 0 开始，<code>at</code> 按轮次匹配。<code>show</code> 必须写。名字不是 <code>forward</code> 里的循环变量时报错 <code>loop 'i' is not a loop of the forward of M</code>。</p>
+<pre><code class="language-yaml">- id: kv_block
+  loop: n
   defaults:
-    title: 'query 块 {{ m }}'
+    title: '第 {{ round + 1 }} 轮，kv 块 {{ n }}'
     steps:
-      - id: kv_block
-        loop: n in range(min(triton.cdiv(T, block_n), triton.cdiv((m + 1) * block_m, block_n)) - 1, -1, -1)
-        defaults:
-          title: 'kv 块 {{ n }}'
-          steps:
-            - { id: qk, show: [k_tile, acc_s, cols, future, acc_s_masked] }</code></pre>
-<p>循环步骤可以写在另一个循环步骤的 <code>defaults.steps</code> 里，与 forward 的嵌套循环对应。内层的 <code>range</code> 和模板可以读外层的循环变量，以及 forward 在外层这一轮算出的名字。</p>
-<p class="hint">规则 11：在 <code>range</code> 循环步骤里，forward 循环里绑定的名字取第 <code>i</code> 轮的值；嵌套时取各层当前这一轮的值，名字只在外层循环里绑定时取外层这一轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
+      - { id: qk, show: [k_tile, acc_s, cols, future, acc_s_masked] }
+      - { id: pv, show: [v_tile, rp, acc_o] }</code></pre>
+<p>在 <code>grid</code> 模块里，第 $k$ 步是每个副本自己执行的第 $k$ 轮，步骤数取各副本轮数的最大值。轮数用完的副本在这一步空闲，不亮；causal 的 FlashAttention 里第 $m$ 个 query 块只有 $m+1$ 轮，读者能看到负载不均衡。各副本在同一轮处理的 kv 块编号可以不同（FA2 从后往前处理 kv 块），所以模板里 <code>n</code> 是最前面的副本这一轮的值，<code>round</code> 是轮次。循环步骤可以嵌套，与 <code>forward</code> 的嵌套循环对应，内层的模板可以读外层的循环变量。</p>
+<p class="hint">规则 11：在循环步骤里，forward 循环里绑定的名字取当前这一轮的值；嵌套时取各层当前这一轮的值，名字只在外层循环里绑定时取外层这一轮的值。在循环步骤外，循环前已经定义、循环里又重新绑定的名字取循环前的值，只在循环里定义的名字取最后一轮的值。步骤按 forward 的顺序写，循环前的步骤展示初值，最后一轮的步骤展示终值。</p>
 <p class="hint">规则 12：<code>show</code> 或省略 <code>show</code> 时的 <code>id</code> 是一个值为 <code>None</code> 的名字，或者是一个这次 forward 没有调用的子模块（创建了但调用写在没有执行的 <code>if</code> 分支里，或者根本没有调用）时，这一步不生成，<code>edit</code> 与 <code>formula</code> 里对它的引用一起忽略。<code>show</code> 是列表时，值为 <code>None</code> 的项跳过，全部是 <code>None</code> 时这一步不生成。不同类型的层共用一份 <code>steps</code> 时，只有这一层创建的子模块有步骤。</p>
+
+<p class="hint">规则 14：循环体只画一次，一个名字的各轮张量共用一个位置。步骤亮某一轮的张量时，这个位置显示这一轮；没亮时显示已经出现过的最后一轮。悬停卡片、连线卡片和模板里的矩阵读的是显示的这一轮。</p>
+<p class="hint">规则 15：<code>grid</code> 模块的一步亮所有副本里这些名字的张量，副本不另外生成步骤。步骤的文字和模板按最前面的副本求值；最前面的副本这一步空闲时，按编号最小的、这一步有工作的副本求值，步骤条上写出文字说的是哪个副本。读者换了最前面的副本，文字随之重新求值。</p>
 
 <h2>tex 与 formula</h2>
 <p>节点的 tex 按以下顺序决定，先找到的生效：外层模块 <code>tex</code> 里按相对路径写的名字（例如 <code>mlp.a</code>），调用处的名字的 tex，模块自己的 <code>tex</code>，由名字推出（<code>W_q</code> 是 $W_{q}$）。层列表里的模块给 tex 加上标 <code>^{[i]}</code>，序号从 0 开始。tex 末尾已经是上标时并进同一个上标，例如 $\mathbf{s}^{\mathrm{grp},[1]}$；tex 在顶层有其他上标或撇号时先加花括号，例如 ${\mathbf{k}'}^{[1]}$；tex 在顶层有 <code>+ - = ,</code>、<code>\cdot</code>、<code>\times</code> 等运算时是复合表达式，整体加括号再加上标，例如 $\left(\sum\mathbf{w}+10^{-20}\right)^{[1]}$。</p>
