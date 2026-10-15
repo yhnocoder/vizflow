@@ -704,6 +704,25 @@ class Plan implements LevelPlan {
     return rank(e) + (this.computed.has(e.node) && !fed && e.kind === 'plate' ? 1 : 0);
   }
 
+  private vectorHost(e: Entry): Entry | undefined {
+    const n = e.node;
+    const user = this.consumers(n)[0];
+    const target = this.entryOf.get(user);
+    const placed = this.layout.sides.find((side) => side.node === n);
+    return placed !== undefined ? this.entryOf.get(placed.of) : target?.level === e.level ? target : this.entryOf.get(user.inputs.find((i) => this.source(i) !== n) ?? user);
+  }
+
+  private laneAnchor(e: Entry): Entry | undefined {
+    const seen = new Set<Entry>();
+    let at: Entry | undefined = e;
+    while (at !== undefined && at.lane === undefined && !seen.has(at)) {
+      seen.add(at);
+      const input: Node | undefined = at.node.inputs[0];
+      at = input === undefined ? undefined : (this.entryOf.get(input) ?? this.entryOf.get(this.source(input)));
+    }
+    return at?.lane === undefined ? undefined : at;
+  }
+
   private setLane(e: Entry, lane: Lane, offsets: number[]): void {
     e.lane = lane;
     e.offsets = offsets;
@@ -749,7 +768,8 @@ class Plan implements LevelPlan {
     const beside: [Entry, Entry][] = [];
     for (const level of this.levels) {
       const ordered = [...level.entries].sort((p, q) => this.order(p) - this.order(q));
-      for (const e of ordered) {
+      const hosted = (e: Entry) => e.kind === 'vector' && this.vectorHost(e)?.lane === undefined;
+      for (const e of [...ordered.filter((e) => !hosted(e)), ...ordered.filter(hosted)]) {
         if (done.has(e) || this.copies.has(e)) continue;
         done.add(e);
         const n = e.node;
@@ -765,10 +785,7 @@ class Plan implements LevelPlan {
           continue;
         }
         if (e.kind === 'vector') {
-          const user = this.consumers(n)[0];
-          const target = this.entryOf.get(user);
-          const placed = this.layout.sides.find((side) => side.node === n);
-          const host = placed !== undefined ? this.entryOf.get(placed.of)! : target?.level === e.level ? target : this.entryOf.get(user.inputs.find((i) => this.source(i) !== n) ?? user)!;
+          const host = this.vectorHost(e)!;
           if (host.lane !== undefined) this.setLane(e, host.lane, host.offsets.length >= e.cols ? host.offsets.slice(0, e.cols) : consecutive(host.offsets[0] ?? 0, e.cols));
           continue;
         }
@@ -787,12 +804,16 @@ class Plan implements LevelPlan {
           this.setLane(e, this.stream, consecutive(e.kind === 'plate' && consecutive(0, e.cols).some((k) => taken.has(k)) ? Math.max(...taken) + this.besideOffset() : 0, e.cols));
           continue;
         }
-        if (e.kind === 'disc' || e.kind === 'box' || e.cols === 1) {
+        if (e.kind === 'disc' || e.kind === 'box' || (e.cols === 1 && main.lane === undefined)) {
           beside.push([e, main]);
           continue;
         }
         if (main.lane === undefined) {
-          this.setLane(e, this.stream, consecutive(0, e.cols));
+          const anchor = this.laneAnchor(main);
+          const lane = anchor?.lane ?? this.stream;
+          const taken = this.occupied(level, lane, e);
+          const wanted = consecutive(anchor?.offsets[0] ?? 0, e.cols);
+          this.setLane(e, lane, wanted.some((k) => taken.has(k)) ? consecutive(Math.max(...taken) + this.besideOffset(), e.cols) : wanted);
           continue;
         }
         const traced = this.tracedOffsets(e, main.lane);
