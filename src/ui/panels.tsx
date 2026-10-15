@@ -2,7 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, createUniqueId, onCl
 import { render } from 'solid-js/web';
 import { Node, type Graph } from '../autograd';
 import { renderText } from '../formula';
-import { type InferSpec, allVisible, compileTemplate, type StepState, type Steps } from '../steps';
+import { type InferSpec, type KvBlocksSpec, allVisible, compileTemplate, type StepState, type Steps } from '../steps';
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
@@ -49,19 +49,6 @@ export interface MatrixEntry {
   limit?: number;
 }
 
-export interface KvBlocksRequest {
-  id: string;
-  prompt: string[];
-  arrive: number;
-}
-
-export interface KvBlocksOptions {
-  infer: InferSpec;
-  blockSize: number;
-  numBlocks: number;
-  others: KvBlocksRequest[];
-}
-
 export type MatrixSource = Node | ((g: Graph, state: StepState) => Tensor);
 export type MatrixHighlight = Node | { node: Node; axis?: 'row' | 'col'; all?: boolean };
 export type TokenColumn = Node | { node: Node; grad?: boolean; title?: string };
@@ -79,7 +66,7 @@ export type PanelItem =
   | SequenceOptions
   | { code: string; title?: string; note?: string }
   | { generation: InferSpec; title?: string; note?: string }
-  | { kvBlocks: KvBlocksOptions; title?: string; note?: string }
+  | { kvBlocks: KvBlocksSpec; title?: string; note?: string }
   | { note: string; title?: string };
 
 const SLIDER_MIN = -2.5;

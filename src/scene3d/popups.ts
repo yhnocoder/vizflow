@@ -169,6 +169,14 @@ export class ScenePopups {
     placePop(c.root, this.pop, anchor.right - 8 - rect.left, anchor.top - 22 - rect.top, anchor.width);
   }
 
+  showCard(content: DocumentFragment, x: number, y: number): void {
+    this.pinned = undefined;
+    this.pop.replaceChildren(content);
+    this.pop.hidden = false;
+    this.tip.hidden = true;
+    placePop(this.c.root, this.pop, x, y);
+  }
+
   showEdgeCard(d: DrawnEdge, ev: PointerEvent): void {
     this.pop.replaceChildren(d.jac !== undefined ? this.jacobianCard(d, d.jac) : edgeCardElement(this.c.explainer.edgeCard(d.edge), d.edge.id, d.fromNode.dtype));
     this.pop.hidden = false;

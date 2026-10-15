@@ -3,13 +3,13 @@ import type { CameraOptions, LayoutTree } from '../../scene3d';
 import type { LevelSpec } from '../../scene3d/levels';
 import { layoutOf } from './layout';
 import { isLayoutOp } from '../../scene3d/layout';
-import { type ForwardStep, type InferSpec, type PageModule, type SampleDraw, type SamplerSpec, type StepsSpec, type UpdateSpec, checkCache, drawToken, uniforms } from '../../steps';
+import { type ForwardStep, type InferSpec, type KvBlocksSpec, type PageModule, type SampleDraw, type SamplerSpec, type StepsSpec, type UpdateSpec, checkCache, drawToken, uniforms } from '../../steps';
 import { type Nested, Tensor } from '../../tensor';
 import type { PanelItem, SectionItem } from '../../ui';
 import type { ModuleDef } from '../load';
 import { DslError, type Where, child, fail } from '../source';
 import { elemOf } from '../tex';
-import { PENDING_INFER, compilePanels, panelModes } from './panels';
+import { PENDING_INFER, compilePanels, panelModes, scenePanels } from './panels';
 import { type SectionSources, compileSections } from './sections';
 import { StepCompiler } from './steps';
 import { Texts } from './texts';
@@ -29,6 +29,7 @@ export interface CompiledPage {
   sequence?: PageSequence;
   modes?: { train: StepsSpec; infer: StepsSpec };
   modePanels?: { train: PanelItem[]; infer: PanelItem[] };
+  kvPool?: KvBlocksSpec;
   train?: CompiledPage;
   page: { title: string; camera?: CameraOptions };
 }
@@ -312,7 +313,8 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
   if (sequence !== undefined) compiled.sequence = sequence;
   if (c.trainTokens !== undefined) {
     const modes = panelModes(c);
-    compiled.panels = compiled.panels.filter((_, i) => modes[i] !== 'infer');
+    const inScene = scenePanels(c);
+    compiled.panels = compiled.panels.filter((_, i) => modes[i] !== 'infer' && !inScene[i]);
   } else if (prompt !== undefined) {
     if (sequence === undefined) fail(child(where, page, 'generate'), 'generate needs a sequence panel that names the tokens, input and label');
     sequence.prompt = prompt.tokens.length;
@@ -327,7 +329,11 @@ export function compilePage(c: PageCompiler, root: ModuleDef, sectionSources: Se
       if (typeof item === 'object' && 'kvBlocks' in item) return { ...item, kvBlocks: { ...item.kvBlocks, infer } };
       return item;
     });
-    const inMode = (mode: 'train' | 'infer') => panels.filter((_, i) => modes[i] === undefined || modes[i] === mode);
+    const inScene = scenePanels(c);
+    const pools = panels.flatMap((item, i) => (inScene[i] && typeof item === 'object' && 'kvBlocks' in item ? [item.kvBlocks] : []));
+    if (pools.length > 1) fail(child(where, page, 'panels'), 'only one kv_blocks panel can set scene: true');
+    if (pools.length === 1) compiled.kvPool = pools[0];
+    const inMode = (mode: 'train' | 'infer') => panels.filter((_, i) => !inScene[i] && (modes[i] === undefined || modes[i] === mode));
     compiled.modePanels = { train: inMode('train'), infer: inMode('infer') };
     compiled.panels = compiled.modePanels.infer;
   } else if (compiled.panels.some((item) => typeof item === 'object' && 'generation' in item && item.generation === PENDING_INFER)) {

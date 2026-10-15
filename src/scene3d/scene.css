@@ -707,3 +707,15 @@
     bottom: 12px;
   }
 }
+
+.vf-lb.vf-boxlb.vf-pool-title {
+  pointer-events: none;
+  cursor: default;
+  border: none;
+  font-size: 13px;
+}
+
+.vf-lb.vf-pool-lb,
+.vf-lb.vf-pool-tok {
+  color: var(--fg);
+}

@@ -1,9 +1,6 @@
 import { For, Show, createMemo, createSignal, type Accessor } from 'solid-js';
-import { type PagedEngine, type PagedStep, type RadixNodeView, type Token, simulatePages } from '../sim';
-import type { StepState } from '../steps';
-import type { KvBlocksOptions } from './panels';
-
-const PAGE_REQUEST = 'A';
+import { type PagedEngine, type PagedStep, type RadixNodeView, simulatePages } from '../sim';
+import { type KvBlocksSpec, PAGE_REQUEST, type StepState, engineStepAt, kvScenario, kvTokenText } from '../steps';
 
 const ENGINE_LABEL: Record<PagedEngine, string> = { vllm: 'vLLM', sglang: 'SGLang' };
 
@@ -13,16 +10,6 @@ const ENGINE_NOTE: Record<PagedEngine, (blockSize: number) => string> = {
   sglang: () =>
     'SGLang 的 RadixAttention 按 token 分配槽位（page_size 为 1），用 radix 树记录已经算过的 token 序列和它们所在的槽位。新请求到达时在树上逐个 token 匹配最长前缀，匹配到的槽位直接复用，只给剩下的 token 分配槽位。prefill 算完以后，prompt 插入树中；decode 生成的 token 在请求结束时才插入。SGLang 默认一步只跑 prefill 或只跑 decode，新请求的 prefill 那一步，正在 decode 的请求等一步。',
 };
-
-function wordOf(token: Token | null): string {
-  if (token === null) return '';
-  return typeof token === 'string' && /^[A-Z]\d+$/.test(token) ? '·' : String(token);
-}
-
-function stepFor(steps: readonly PagedStep[], position: number): number {
-  const at = steps.findIndex((s) => (s.requests.find((r) => r.id === PAGE_REQUEST)?.computed ?? 0) >= position + 1);
-  return at < 0 ? steps.length - 1 : at;
-}
 
 function scheduledText(step: PagedStep): string {
   return step.scheduled
@@ -49,7 +36,7 @@ function VllmView(props: { step: PagedStep; blockSize: number }) {
                 <span>{block.refCnt > 0 ? `引用 ${block.refCnt}` : block.hashed ? '可复用' : ''}</span>
               </div>
               <div class="vf-kv-cells" style={{ 'grid-template-columns': `repeat(${props.blockSize}, minmax(0, 1fr))` }}>
-                <For each={block.tokens}>{(token) => <span class="vf-kv-cell">{wordOf(token)}</span>}</For>
+                <For each={block.tokens}>{(token) => <span class="vf-kv-cell">{kvTokenText(token)}</span>}</For>
               </div>
             </div>
           )}
@@ -85,7 +72,7 @@ function TreeRows(props: { nodes: readonly RadixNodeView[]; id: number; depth: n
     <>
       <Show when={node().parent !== null}>
         <div class="vf-kv-node" style={{ 'padding-left': `${(props.depth - 1) * 16}px` }}>
-          <span class="vf-kv-key">{node().key.map(wordOf).join(' ')}</span>
+          <span class="vf-kv-key">{node().key.map(kvTokenText).join(' ')}</span>
           <span class="vf-kv-meta">
             槽位 {node().slots.join(',')}；{node().lockRef > 0 ? `${node().lockRef} 个请求在用` : '可被驱逐'}
           </span>
@@ -112,7 +99,7 @@ function SglangView(props: { step: PagedStep }) {
           {(slot, k) => (
             <div class={`vf-kv-slot ${ownerClass(ownerOf(k()))} ${slot.cached ? 'vf-kv-cached' : ''}`}>
               <span class="vf-kv-index">{k() + 1}</span>
-              <span class="vf-kv-cell">{wordOf(slot.token)}</span>
+              <span class="vf-kv-cell">{kvTokenText(slot.token)}</span>
             </div>
           )}
         </For>
@@ -145,20 +132,12 @@ function SglangView(props: { step: PagedStep }) {
   );
 }
 
-export function KvBlocksPanel(props: { options: KvBlocksOptions; version: Accessor<number>; state: Accessor<StepState> }) {
-  const { infer, blockSize, numBlocks, others } = props.options;
-  const vocab = infer.label.tokens ?? infer.input.tokens ?? [];
+export function KvBlocksPanel(props: { options: KvBlocksSpec; version: Accessor<number>; state: Accessor<StepState> }) {
+  const { blockSize, others } = props.options;
   const [engine, setEngine] = createSignal<PagedEngine>('vllm');
-  const tokens = createMemo(() => {
-    props.version();
-    const ids = [...Array.from(infer.input.value.data.subarray(0, 1)), ...Array.from(infer.label.value.data)].map(Math.round);
-    return ids.map((id) => vocab[id] ?? String(id));
-  });
   const runs = createMemo(() => {
-    const words = tokens();
-    const requests = [{ id: PAGE_REQUEST, prompt: words.slice(0, infer.prompt), outputs: words.slice(infer.prompt), arrive: 0 }, ...others.map((o) => ({ id: o.id, prompt: o.prompt, outputs: [], arrive: o.arrive }))];
-    const steps = words.length - infer.prompt + 1 + others.length;
-    const scenario = { requests, blockSize, numBlocks, steps };
+    props.version();
+    const scenario = kvScenario(props.options);
     return { vllm: simulatePages('vllm', scenario), sglang: simulatePages('sglang', scenario) };
   });
   const generation = () => props.state().generation;
@@ -166,7 +145,7 @@ export function KvBlocksPanel(props: { options: KvBlocksOptions; version: Access
     const state = generation();
     if (state === undefined) return undefined;
     const steps = runs()[engine()];
-    return steps[stepFor(steps, state.position)];
+    return steps[engineStepAt(steps, state.position)];
   };
   return (
     <>

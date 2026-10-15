@@ -78,17 +78,17 @@ export class BarMesh {
   private readonly material: MeshLambertMaterial;
 
   constructor(
-    readonly block: Block,
+    count: number,
+    private readonly footprint: readonly [number, number],
     theme: ThemeColors,
   ) {
     this.geometry = new BoxGeometry(1, 1, 1);
     this.geometry.translate(0, 0.5, 0);
     this.material = new MeshLambertMaterial({ side: DoubleSide });
-    this.mesh = new InstancedMesh(this.geometry, this.material, block.elements.length);
-    this.mesh.userData.block = block;
+    this.mesh = new InstancedMesh(this.geometry, this.material, count);
     this.breakGeometry = new BoxGeometry(BREAK_SIZE, BREAK_THICKNESS, BREAK_SIZE);
     this.breakMaterial = new MeshBasicMaterial({ color: new Color(...theme.surface) });
-    this.breaks = new InstancedMesh(this.breakGeometry, this.breakMaterial, block.elements.length);
+    this.breaks = new InstancedMesh(this.breakGeometry, this.breakMaterial, count);
     this.outline = new LineBatch(theme.ink, theme.surface);
     this.group.add(this.mesh, this.breaks, this.outline.object);
     this.setTheme(theme);
@@ -99,8 +99,8 @@ export class BarMesh {
     this.outline.setColor(theme.ink, theme.surface);
   }
 
-  update(elements: Element[], data: BarUpdate): void {
-    const [w, d] = this.block.footprint;
+  update(elements: readonly Pick<Element, 'x' | 'y' | 'z'>[], data: BarUpdate): void {
+    const [w, d] = this.footprint;
     seeThroughFill(this.material, data.seeThrough);
     this.breaks.visible = !data.seeThrough;
     const ink = inkFactor(data.seeThrough);

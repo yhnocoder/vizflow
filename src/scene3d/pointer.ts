@@ -70,6 +70,14 @@ export function bindPointer(c: SceneController): () => void {
     edgeLines.setBar(found);
     if (found === undefined) {
       popups.hideTip();
+      const card = c.kvPool?.cardAt(raycaster);
+      if (card !== undefined) {
+        edgeLines.setHover(undefined);
+        canvas.classList.add('vf-cursor-help');
+        canvas.classList.remove('vf-cursor-pointer');
+        popups.showCard(card, ev.clientX - rect.left, ev.clientY - rect.top);
+        return;
+      }
       const edge = edgeLines.edgeAt(ev.clientX - rect.left, ev.clientY - rect.top);
       edgeLines.setHover(edge);
       canvas.classList.toggle('vf-cursor-help', edge !== undefined);

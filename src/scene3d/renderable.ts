@@ -56,7 +56,8 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     pickables: [],
   };
   if (block.shape === 'bar' || block.shape === 'tile') {
-    renderable.bars = new BarMesh(block, c.theme);
+    renderable.bars = new BarMesh(block.elements.length, block.footprint, c.theme);
+    renderable.bars.mesh.userData.block = block;
     renderable.pickables.push(renderable.bars.mesh);
     if (block.shape === 'bar') renderable.values = block.elements.map(() => c.labels.add('val'));
     renderable.title = c.labels.add('ttl');

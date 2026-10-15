@@ -81,10 +81,14 @@ export function framingPoints(renderables: Renderable[]): Vec3[] {
   return points;
 }
 
-export function allPoints(c: SceneController): Vec3[] {
+export function graphPoints(c: SceneController): Vec3[] {
   const points = framingPoints(c.renderables);
   for (const brace of c.moduleBraces.braces) points.push([brace.x, brace.y0, brace.z], [brace.x, brace.y1, brace.z], braceTip(brace));
   return points;
+}
+
+export function allPoints(c: SceneController): Vec3[] {
+  return [...graphPoints(c), ...(c.kvPool?.points() ?? [])];
 }
 
 export function center(points: Vec3[]): Vector3 {

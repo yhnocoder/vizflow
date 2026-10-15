@@ -4,7 +4,6 @@ import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
 import { LABEL_SAFE_MARGIN } from './labels';
-import type { Renderable } from './renderable';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
@@ -131,20 +130,20 @@ export class CameraRig {
     return { lo, hi };
   }
 
-  private followSide(zoom: number, keys: Renderable[], points: Vec3[]): number {
+  private followSide(zoom: number, stepPoints: Vec3[], points: Vec3[]): number {
     const scene = this.sideRange(points);
-    const middle = center(points).dot(this.sideAxis());
+    const middle = (scene.lo + scene.hi) / 2;
     const half = this.halfWidth() / zoom - FOLLOW_SIDE_ROOM;
-    if (keys.length === 0 || scene.hi - scene.lo <= 2 * half) return middle;
-    const step = this.sideRange(framingPoints(keys));
+    if (stepPoints.length === 0 || scene.hi - scene.lo <= 2 * half) return middle;
+    const step = this.sideRange(stepPoints);
     return Math.min(Math.max((step.lo + step.hi) / 2, scene.lo + half), scene.hi - half);
   }
 
-  private sideZoom(keys: Renderable[], cap: number, points: Vec3[]): number {
+  private sideZoom(stepPoints: Vec3[], cap: number, points: Vec3[]): number {
     const scene = this.sideRange(points);
     const width = 2 * (this.halfWidth() - FOLLOW_SIDE_ROOM);
     if (cap === 1 && scene.hi - scene.lo <= width) return 1;
-    const step = this.sideRange(framingPoints(keys));
+    const step = this.sideRange(stepPoints);
     return Math.min(cap, width / (step.hi - step.lo));
   }
 
@@ -187,16 +186,18 @@ export class CameraRig {
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
     const points = allPoints(c);
-    if (keys.length === 0) return this.overviewGoal(points, keys);
-    const ys = keys.map((r) => r.block.elements[0].y);
+    if (keys.length === 0) return this.overviewGoal(points);
+    const pool = c.kvPool?.followPoints() ?? [];
+    const stepPoints = [...framingPoints(keys), ...pool];
+    const ys = [...keys.map((r) => r.block.elements[0].y), ...pool.map((p) => p[1])];
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
     const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
-    const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap, points));
-    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom };
+    const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(stepPoints, cap, points));
+    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, stepPoints, points), zoom };
   }
 
-  private overviewGoal(points: Vec3[], keys: Renderable[]): FollowGoal {
+  private overviewGoal(points: Vec3[]): FollowGoal {
     const c = this.c;
     const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
     const ys = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
@@ -212,7 +213,7 @@ export class CameraRig {
     const target = this.controls.target;
     const now = target.x * up.x + target.y * up.y + target.z * up.z;
     const y = target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y);
-    return { y, side: this.followSide(zoom, keys, points), zoom };
+    return { y, side: this.followSide(zoom, [], points), zoom };
   }
 
   placeCamera(): void {

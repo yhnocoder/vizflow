@@ -26,3 +26,4 @@ export { compileTemplate } from './template';
 export { costTimeline, scaleFactor, FLOP_RULES, MEMORY_KINDS, type MemoryKind, type MemoryEntry, type FlopEntry, type Scale, type StepCost, type CostTimeline, type CostOptions, type FlopRule } from '../cost';
 export { analyzeCache, checkCache, type CacheAnalysis, type CacheDecl, type CacheKind } from './cache';
 export { drawToken, isGreedy, type SampleDraw, type SamplerSpec, uniforms } from './sampling';
+export { PAGE_REQUEST, engineStepAt, kvScenario, kvTokenText, pageTokens, slotOf, slotSources, touchedPositions, writtenPositions, type KvBlocksRequest, type KvBlocksSpec, type KvSlotSource } from './kv-blocks';

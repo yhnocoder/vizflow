@@ -142,7 +142,7 @@ export class VizflowPage extends HTMLElement {
       if (loading !== this.#loading) return;
       const layoutOf = (page: CompiledPage): VizflowPageScene => {
         const { layout, modules, levels } = autoLayout(page.tree, page.steps, page.levels);
-        return { layout, modules, levels, sequence: page.sequence, camera: compiled.page.camera };
+        return { layout, modules, levels, sequence: page.sequence, camera: compiled.page.camera, kvPool: page.kvPool };
       };
       this.#layoutOf = layoutOf;
       this.#compiled = compiled;

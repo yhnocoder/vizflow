@@ -18,6 +18,11 @@ export function panelModes(c: PageCompiler): (PanelMode | undefined)[] {
   return panels.map((panel) => (isRecord(panel) ? (panel.mode as PanelMode | undefined) : undefined));
 }
 
+export function scenePanels(c: PageCompiler): boolean[] {
+  const panels = Array.isArray(c.page.panels) ? c.page.panels : [];
+  return panels.map((panel) => isRecord(panel) && isRecord(panel.kv_blocks) && panel.kv_blocks.scene === true);
+}
+
 export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
   const page = c.page;
   if (page.panels === undefined) return [];
@@ -88,11 +93,13 @@ export function compilePanels(c: PageCompiler, env: Env): PanelItem[] {
       return { generation: PENDING_INFER, ...texts(TEXT_KEYS) };
     }
     if (panel.kv_blocks !== undefined) {
-      checkKeys(panel, new Set(['mode', 'kv_blocks', ...TEXT_KEYS]), at);
+      const inScene = isRecord(panel.kv_blocks) && panel.kv_blocks.scene === true;
+      checkKeys(panel, new Set(['mode', 'kv_blocks', ...(inScene ? [] : TEXT_KEYS)]), at);
       if (page.generate === undefined) fail(field('kv_blocks').where, 'a kv_blocks panel needs generate on the page');
       const specWhere = field('kv_blocks').where;
       const spec = record(panel.kv_blocks, specWhere, 'kv_blocks');
-      checkKeys(spec, new Set(['block_size', 'num_blocks', 'requests']), specWhere);
+      checkKeys(spec, new Set(['block_size', 'num_blocks', 'requests', 'scene']), specWhere);
+      if (spec.scene !== undefined && typeof spec.scene !== 'boolean') fail(child(specWhere, spec, 'scene'), 'scene must be true or false');
       const count = (key: string, min: number) => {
         const value = spec[key];
         if (typeof value !== 'number' || !Number.isInteger(value) || value < min) fail(child(specWhere, spec, key), `${key} must be an integer of at least ${min}`);

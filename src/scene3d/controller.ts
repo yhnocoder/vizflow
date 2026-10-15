@@ -19,6 +19,7 @@ import { type BoardGeometry, type Vec3, classAlignment, resolveLayout, targetCol
 import type { LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
+import { KvPoolView } from './kvpool';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
@@ -50,6 +51,7 @@ export class SceneController implements EditHost {
   readonly moduleBraces: ModuleBraces;
   readonly boxes: FoldBoxes;
   readonly chips: TokenChips;
+  readonly kvPool: KvPoolView | undefined;
   private readonly formula: FormulaPanel | undefined;
   readonly notes: SceneNotes;
   private readonly resizeObserver: ResizeObserver;
@@ -110,6 +112,7 @@ export class SceneController implements EditHost {
     this.chips = new TokenChips(this);
 
     this.buildBlocks();
+    this.kvPool = options.kvPool === undefined ? undefined : new KvPoolView(this, options.kvPool);
     const modules = options.modules ?? [];
     checkModules(modules, this.renderables.map((r) => r.block.node));
     this.moduleBraces.mountLabels(modules);
@@ -189,6 +192,7 @@ export class SceneController implements EditHost {
       revealed: (node) => state.revealed(node) || views.some(([view, source]) => source === node && state.revealed(view)),
       active: (node) => state.active(node) || views.some(([view, source]) => source === node && state.active(view)),
       row: (node, index) => state.row?.(node, index) ?? viewRow(views, state, node, index),
+      ...(state.generation === undefined ? {} : { generation: state.generation }),
     };
   }
 
@@ -257,6 +261,7 @@ export class SceneController implements EditHost {
     this.moduleBraces.update();
     this.boxes.update();
     this.chips.update();
+    this.kvPool?.update();
     this.edgeLines.edges = buildEdges(this);
     this.formula?.update();
     this.notes.update(info?.notes ?? [], info?.id ?? 'all');
@@ -407,6 +412,7 @@ export class SceneController implements EditHost {
       renderable.plate?.dispose();
     }
     this.edgeLines.dispose();
+    this.kvPool?.dispose();
     this.moduleBraces.dispose();
     this.labels.dispose();
     this.notes.dispose();
