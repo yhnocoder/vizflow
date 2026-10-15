@@ -4,6 +4,7 @@ import { formatShape, indexOf, normDim, offsetOf } from '../tensor';
 import type { LevelLayout, LevelPlan } from './levels';
 
 export type Vec3 = [number, number, number];
+export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 
 export interface Scales {
   forward?: number;

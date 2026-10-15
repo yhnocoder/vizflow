@@ -2,7 +2,7 @@ import type { Node } from '../autograd';
 import { explainOf } from '../explain';
 import { isLeafLike } from '../steps';
 import { forEachIndex } from '../tensor';
-import { plates, rowCol, rowsCols, sourceIndex } from './layout';
+import { DEFAULT_DIRECTION, plates, rowCol, rowsCols, sourceIndex } from './layout';
 import type { LayoutOptions } from './schemes';
 
 export const STREAM_X = -7.2;
@@ -105,13 +105,46 @@ export interface ColumnGraph {
 
 type Span = [number, number];
 
-interface Piece {
-  entry: Entry;
-  index: number;
+interface Extent {
   lo: number;
   hi: number;
+  body: Span;
+  reach: number;
+  title?: Span;
+}
+
+interface Piece extends Extent {
+  entry: Entry;
+  index: number;
   offset?: number;
   count?: number;
+}
+
+const SKEW = DEFAULT_DIRECTION[0] / DEFAULT_DIRECTION[2];
+
+function shadow(e: Extent): Span {
+  return [e.body[0], e.reach];
+}
+
+function rightOf(left: Extent, right: Extent): number {
+  const plain = left.hi - right.lo;
+  return right.title === undefined ? plain : Math.max(plain, shadow(left)[1] - right.title[0]);
+}
+
+function shifted(e: Extent, by: number): Extent {
+  const move = (s: Span): Span => [s[0] + by, s[1] + by];
+  return { lo: e.lo + by, hi: e.hi + by, body: move(e.body), reach: e.reach + by, title: e.title === undefined ? undefined : move(e.title) };
+}
+
+function merged(a: Extent | undefined, b: Extent): Extent {
+  if (a === undefined) return b;
+  const title = a.title === undefined || (b.title !== undefined && b.title[0] < a.title[0]) ? b.title : a.title;
+  return { lo: Math.min(a.lo, b.lo), hi: Math.max(a.hi, b.hi), body: [Math.min(a.body[0], b.body[0]), Math.max(a.body[1], b.body[1])], reach: Math.max(a.reach, b.reach), title };
+}
+
+function clashes(a: Extent, b: Extent, gap: number): boolean {
+  if (overlaps([a.lo, a.hi], [b.lo, b.hi], gap)) return true;
+  return (b.title !== undefined && overlaps(shadow(a), b.title, gap)) || (a.title !== undefined && overlaps(shadow(b), a.title, gap));
 }
 
 const TEX_WRAPPERS = /\\(?:mathbf|mathrm|mathit|mathcal|boldsymbol|operatorname|text|textrm|tilde|hat|bar|overline|vec|widehat|widetilde)\s*(?=\{)/g;
@@ -557,35 +590,37 @@ export class Columns {
   private pieces(e: Entry): Piece[] {
     const xs = e.xs ?? [0];
     const out: Piece[] = [];
-    if (e.track === undefined) xs.forEach((x, index) => out.push({ entry: e, index, lo: x - BLOCK_HALF, hi: x + BLOCK_HALF }));
+    const depth = (e.rows - 1) * LEVEL_ROW + 2 * BLOCK_HALF;
+    const piece = (x: number, index: number, offset?: number): Piece => ({ entry: e, index, lo: x - BLOCK_HALF, hi: x + BLOCK_HALF, body: [x - BLOCK_HALF, x + BLOCK_HALF], reach: x + BLOCK_HALF + depth * SKEW, offset, count: offset === undefined ? undefined : 1 });
+    if (e.track === undefined) xs.forEach((x, index) => out.push(piece(x, index)));
     else {
       const cols = e.offsets.map((o, i) => ({ o, x: xs[i] })).sort((p, q) => p.o - q.o);
       for (let i = 0; i < cols.length; i++) {
         const last = out[out.length - 1];
         if (last !== undefined && last.offset! + last.count! === cols[i].o) {
           last.hi = cols[i].x + BLOCK_HALF;
+          last.body = [last.body[0], last.hi];
+          last.reach = last.hi + depth * SKEW;
           last.count!++;
-        } else out.push({ entry: e, index: out.length, lo: cols[i].x - BLOCK_HALF, hi: cols[i].x + BLOCK_HALF, offset: cols[i].o, count: 1 });
+        } else out.push(piece(cols[i].x, out.length, cols[i].o));
       }
     }
     const width = texWidth(e.node.tex);
     const first = out[0];
     const last = out[out.length - 1];
-    if (e.title === 'left') first.lo = Math.min(first.lo, first.lo + BLOCK_HALF + TITLE.left[0] - width);
-    if (e.title === 'right' && (e.kind === 'disc' || e.kind === 'box')) first.hi = Math.max(first.hi, first.lo + BLOCK_HALF + TITLE.node[0] + width);
-    else if (e.title === 'right') last.hi = Math.max(last.hi, last.hi - BLOCK_HALF + (e.kind === 'vector' ? TITLE.vector[0] : TITLE.right[0]) + width);
-    if (e.title === 'below') {
-      const mid = (first.lo + last.hi) / 2;
-      first.lo = Math.min(first.lo, mid - width / 2);
-      last.hi = Math.max(last.hi, mid + width / 2);
+    if (e.title === 'left') first.title = [first.body[0] + BLOCK_HALF + TITLE.left[0] - width, first.body[0] + BLOCK_HALF + TITLE.left[0]];
+    if (e.title === 'right' && (e.kind === 'disc' || e.kind === 'box')) first.title = [first.body[0] + BLOCK_HALF + TITLE.node[0], first.body[0] + BLOCK_HALF + TITLE.node[0] + width];
+    else if (e.title === 'right') {
+      const start = last.body[1] - BLOCK_HALF + (e.kind === 'vector' ? TITLE.vector[0] : TITLE.right[0]);
+      last.title = [start, start + width];
     }
-    if (e.kind === 'plate' && this.g.labelled(e.node)) last.hi = Math.max(last.hi, last.hi - BLOCK_HALF + CHIP_LABEL_SIDE + CHIP_ROOM);
+    if (e.title === 'below') {
+      const mid = (first.body[0] + last.body[1]) / 2;
+      [first.lo, first.hi] = [Math.min(first.lo, mid - width / 2), Math.max(first.hi, mid + width / 2)];
+    }
+    for (const p of out) if (p.title !== undefined) [p.lo, p.hi] = [Math.min(p.lo, p.title[0]), Math.max(p.hi, p.title[1])];
+    if (e.kind === 'plate' && this.g.labelled(e.node)) last.hi = Math.max(last.hi, last.body[1] - BLOCK_HALF + CHIP_LABEL_SIDE + CHIP_ROOM);
     return out;
-  }
-
-  private extent(e: Entry): Span {
-    const pieces = this.pieces(e);
-    return [Math.min(...pieces.map((p) => p.lo)), Math.max(...pieces.map((p) => p.hi))];
   }
 
   private crowded(): boolean {
@@ -597,10 +632,10 @@ export class Columns {
         byLevel.set(e.level, [...(byLevel.get(e.level) ?? []), e]);
       }
       for (const entries of byLevel.values()) {
-        const sorted = entries.flatMap((e) => this.pieces(e)).sort((p, q) => p.lo - q.lo || p.entry.node.id - q.entry.node.id);
+        const sorted = entries.flatMap((e) => this.pieces(e)).sort((p, q) => p.body[0] - q.body[0] || p.entry.node.id - q.entry.node.id);
         for (let i = 1; i < sorted.length; i++) {
           const q = sorted[i];
-          const need = Math.max(...sorted.slice(0, i).filter((p) => p.entry !== q.entry).map((p) => p.hi)) - q.lo;
+          const need = Math.max(...sorted.slice(0, i).filter((p) => p.entry !== q.entry).map((p) => rightOf(p, q)));
           if (need <= 1e-9) continue;
           if (q.offset !== undefined) {
             const key = this.levelKey(q.entry);
@@ -624,26 +659,21 @@ export class Columns {
     for (let round = 0; round < this.g.entries.length && this.crowded(); round++) this.relativeXs();
   }
 
-  private occupancy(track: Track): { levels: Map<number, Span>; columns: Span } {
-    const members = new Map<number, Span>();
-    const add = (l: number, span: Span) => {
-      const known = members.get(l);
-      members.set(l, known === undefined ? span : [Math.min(known[0], span[0]), Math.max(known[1], span[1])]);
-    };
+  private occupancy(track: Track): { levels: Map<number, Extent>; columns: Span } {
+    const members = new Map<number, Extent>();
     const xs: number[] = [];
     for (const e of this.g.entries) {
       if (this.ownTrack(e) !== track || this.g.copies.has(e)) continue;
-      add(this.levelIndex(e), this.extent(e));
+      const l = this.levelIndex(e);
+      for (const p of this.pieces(e)) members.set(l, merged(members.get(l), p));
       if (e.track === track) xs.push(...(e.xs ?? []));
     }
     const columns: Span = xs.length === 0 ? [0, 0] : [Math.min(...xs) - BLOCK_HALF, Math.max(...xs) + BLOCK_HALF];
     if (this.g.options.span === 'members') return { levels: members, columns };
+    const whole: Extent = { lo: columns[0], hi: columns[1], body: columns, reach: columns[1] };
     const indices = [...members.keys()];
-    const levels = new Map<number, Span>();
-    for (let l = Math.min(...indices); l <= Math.max(...indices); l++) {
-      const own = members.get(l);
-      levels.set(l, own === undefined ? columns : [Math.min(own[0], columns[0]), Math.max(own[1], columns[1])]);
-    }
+    const levels = new Map<number, Extent>();
+    for (let l = Math.min(...indices); l <= Math.max(...indices); l++) levels.set(l, merged(members.get(l), whole));
     return { levels, columns };
   }
 
@@ -652,16 +682,17 @@ export class Columns {
     const placed = new Set<Track>();
     const relOf = (t: Track): number => (t.bound === undefined || t.anchor === undefined ? 0 : Math.max(...(t.bound.xs ?? [0])) + BOARD_GAP + relOf(t.anchor));
     const unit = (root: Track): Track[] => [root, ...this.tracks.filter((t) => t.bound !== undefined && t.anchor === root).flatMap(unit)];
-    const conflict = (members: Track[], x0: number): { lo: number; hi: number; at: number; rel: number } | undefined => {
+    const next = (members: Track[], x0: number, side: Side): number | undefined => {
       for (const t of members) {
         const rel = relOf(t) - relOf(members[0]);
-        for (const [l, span] of occupancy.get(t)!.levels) {
+        for (const [l, extent] of occupancy.get(t)!.levels) {
+          const mine = shifted(extent, x0 + rel);
           for (const other of placed) {
-            const theirs = occupancy.get(other)!.levels.get(l);
-            if (theirs === undefined) continue;
-            const mine: Span = [span[0] + x0 + rel, span[1] + x0 + rel];
-            const abs: Span = [theirs[0] + other.x0, theirs[1] + other.x0];
-            if (overlaps(mine, abs, this.gap)) return { lo: abs[0], hi: abs[1], at: span[members[0].side === 'left' ? 1 : 0], rel };
+            const known = occupancy.get(other)!.levels.get(l);
+            if (known === undefined) continue;
+            const theirs = shifted(known, other.x0);
+            if (!clashes(mine, theirs, this.gap)) continue;
+            return side === 'right' ? x0 + rightOf(theirs, mine) + this.gap : x0 - rightOf(mine, theirs) - this.gap;
           }
         }
       }
@@ -682,15 +713,10 @@ export class Columns {
       const anchor = root.anchor !== undefined && placed.has(root.anchor) ? root.anchor : this.stream;
       const members = unit(root);
       const columns = occupancy.get(anchor)!.columns;
-      if (root.side === 'right') {
-        let x0 = anchor.x0 + columns[0] - occupancy.get(root)!.columns[0];
-        for (let hit = conflict(members, x0); hit !== undefined; hit = conflict(members, x0)) x0 = hit.hi + this.gap - hit.at - hit.rel;
-        settle(root, x0);
-      } else {
-        let x0 = anchor.x0 + columns[1] - occupancy.get(root)!.columns[1];
-        for (let hit = conflict(members, x0); hit !== undefined; hit = conflict(members, x0)) x0 = hit.lo - this.gap - hit.at - hit.rel;
-        settle(root, x0);
-      }
+      const own = occupancy.get(root)!.columns;
+      let x0 = root.side === 'right' ? anchor.x0 + columns[0] - own[0] : anchor.x0 + columns[1] - own[1];
+      for (let moved = next(members, x0, root.side); moved !== undefined; moved = next(members, x0, root.side)) x0 = moved;
+      settle(root, x0);
     }
   }
 

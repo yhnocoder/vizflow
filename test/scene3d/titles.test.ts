@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
-import type { Block } from '../../src/scene3d/layout';
+import { type Block, DEFAULT_DIRECTION } from '../../src/scene3d/layout';
 import { levelPlan } from '../../src/scene3d/levels';
 import { texWidth } from '../../src/scene3d/columns';
 import { loadExample } from '../dsl/load';
@@ -8,8 +8,10 @@ import { loadExample } from '../dsl/load';
 const MINI = ['', '-gap-2', '-gap-labels', '-lines', '-prepare-side', '-prepare-start', '-prepare-use', '-span-members'].map((v) => `qwen3/qwen3-mini${v}.yaml`);
 const PAGES = [...MINI, 'qwen3/qwen3-nested.yaml', 'qwen3_5/qwen3_5-nested.yaml'];
 
+const SKEW = DEFAULT_DIRECTION[0] / DEFAULT_DIRECTION[2];
+
 type Range = [number, number];
-type Rect = { name: string; x: Range; depth: Range };
+type Rect = { name: string; x: Range; depth: Range; beside: boolean };
 
 function boxes(block: Block): { x: Range; z: Range }[] {
   const plates = block.slabs?.map((slab) => slab.plate) ?? block.chunks ?? (block.plate === undefined ? [] : [block.plate]);
@@ -22,8 +24,8 @@ function depth(block: Block): Range {
   return [Math.min(...zs), Math.max(...zs)];
 }
 
-function blockRects(block: Block): Rect[] {
-  return boxes(block).map((b) => ({ name: block.node.name, x: b.x, depth: depth(block) }));
+function blockRects(block: Block, title: Rect): Rect[] {
+  return boxes(block).map((b) => ({ name: block.node.name, x: title.beside && b.x[0] + b.x[1] < title.x[0] + title.x[1] ? [b.x[0], b.x[1] + (b.z[1] - b.z[0]) * SKEW] : b.x, depth: depth(block), beside: false }));
 }
 
 function titleRect(block: Block): Rect | undefined {
@@ -31,7 +33,7 @@ function titleRect(block: Block): Rect | undefined {
   const w = texWidth(block.node.tex);
   const { x, anchor } = block.title;
   const span: Range = anchor === 'left' ? [x - w, x] : anchor === 'right' ? [x, x + w] : [x - w / 2, x + w / 2];
-  return { name: `title of ${block.node.name}`, x: span, depth: depth(block) };
+  return { name: `title of ${block.node.name}`, x: span, depth: depth(block), beside: anchor !== 'below' };
 }
 
 function meets(a: Range, b: Range): boolean {
@@ -56,7 +58,7 @@ describe('titles on the example pages', () => {
           if (title === undefined) continue;
           for (const other of blocks) {
             if (other === block) continue;
-            const rects = [...blockRects(other), titleRect(other)].filter((r): r is Rect => r !== undefined);
+            const rects = [...blockRects(other, title), titleRect(other)].filter((r): r is Rect => r !== undefined);
             const hit = rects.find((r) => meets(title.x, r.x) && meets(title.depth, r.depth));
             if (hit !== undefined) clashes.push(`${title.name} [${title.x.map((v) => v.toFixed(2))}] meets ${hit.name} [${hit.x.map((v) => v.toFixed(2))}]`);
           }

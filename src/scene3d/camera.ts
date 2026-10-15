@@ -2,11 +2,10 @@ import { OrthographicCamera, Vector3 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
-import type { Vec3 } from './layout';
+import { DEFAULT_DIRECTION, type Vec3 } from './layout';
 import { LABEL_SAFE_MARGIN } from './labels';
 import type { Renderable } from './renderable';
 
-export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
 export const DEFAULT_POLAR: [number, number] = [0.3, 1.5];
 export const DEFAULT_ZOOM: [number, number] = [0.1, 4];
