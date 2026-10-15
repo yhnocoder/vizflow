@@ -887,22 +887,7 @@ def function_support_cases():
     cases.append(op_case("grad_of", "(2, 3)", torch.zeros_like, [("input", randn(2, 3))], [tensor_arg(0)]))
     cases.append(op_case("full", "(2, 3) of -2.5", lambda: torch.full((2, 3), -2.5), [], [[2, 3], -2.5]))
     cases.append(op_case("full", "(3,) of 0.5", lambda: torch.full((3,), 0.5), [], [[3], 0.5]))
-    for title, base, tiles, regions, accumulate in [
-        ("disjoint tiles of (4, 2, 3)", (4, 2, 3), [(2, 3), (2, 3), (4, 3)], [[[0, 2], 0, None], [[2, 4], 0, None], [None, 1, None]], False),
-        ("overlapping tiles of (3, 4) accumulate", (3, 4), [(2, 4), (2, 4)], [[[0, 2], None], [[1, 3], None]], True),
-        ("tiles cover part of (2, 5)", (2, 5), [(2, 2)], [[None, [1, 3]]], False),
-    ]:
-        tensors = [("input", randn(*base))] + [("input", randn(*shape)) for shape in tiles]
-        cases.append(op_case("scatter_tiles", title, lambda x, *ts, regions=regions, accumulate=accumulate: scatter_tiles(x, ts, regions, accumulate), tensors, [tensor_arg(0), [tensor_arg(k + 1) for k in range(len(tiles))], regions, accumulate]))
     return cases
-
-
-def scatter_tiles(base, tiles, regions, accumulate):
-    out = base.clone()
-    for tile, region in zip(tiles, regions):
-        index = tuple(slice(None) if entry is None else entry if isinstance(entry, int) else slice(entry[0], entry[1]) for entry in region)
-        out[index] = out[index] + tile if accumulate else tile
-    return out
 
 
 DTYPE_NAMES = {torch.bool: "bool", torch.int32: "int32", torch.int64: "int64", torch.bfloat16: "bf16", torch.float32: "fp32"}

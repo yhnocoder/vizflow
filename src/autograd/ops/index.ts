@@ -81,8 +81,6 @@ import {
   indexPutOp,
   selectScatterOp,
   sliceScatterOp,
-  scatterTilesOp,
-  type TileRegion,
 } from './index_ops';
 import { type Reduction, nllLossOp } from './loss';
 import { groupedLinearOp, linearComposite, matmulOp, selectMatmulOp, solveTriangularOp } from './matmul';
@@ -248,7 +246,6 @@ export interface BuiltinOps {
   index_put(input: Node, mask: Node, values: Node, options?: OpOptions): Node;
   select_scatter(input: Node, src: Node, dim: number, index: number, options?: OpOptions): Node;
   slice_scatter(input: Node, src: Node, dim?: number, start?: number | null, end?: number | null, step?: number, options?: OpOptions): Node;
-  scatter_tiles(input: Node, tiles: Node[], regions: TileRegion[], accumulate?: boolean, options?: OpOptions): Node;
 }
 
 export const builtinOps: readonly AnyOpDef[] = [
@@ -346,7 +343,6 @@ export const builtinOps: readonly AnyOpDef[] = [
   trilOp,
   selectScatterOp,
   sliceScatterOp,
-  scatterTilesOp,
   squeezeOp,
 ];
 

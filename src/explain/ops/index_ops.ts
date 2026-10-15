@@ -1,6 +1,6 @@
 import type { Node, OpCtx, OpExplain } from '../../autograd';
 import { elemTexWith } from '../elem';
-import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, type ScatterTilesAttrs, selectScatterTarget, sliceScatterSource, tileSources, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
+import { type PadAttrs, type SelectAttrs, type SliceScatterAttrs, selectScatterTarget, sliceScatterSource, type PermuteAttrs, type RepeatKvAttrs, type ScatterAttrs, type SortAttrs, convTaps, cummaxSources, indexAddTarget, indexPutRows, indexSource, padSource, permuteSource, repeatKvAsInterleave, repeatSource, repeatSourceIndex, scatterPairs, sortSources } from '../../autograd/ops/index_ops';
 import { broadcastIndex, formatNumber, indexOf, normDim, offsetOf } from '../../tensor';
 
 const INDEX_LETTERS = ['i', 'j', 'k', 'l', 'm'];
@@ -441,14 +441,4 @@ export const sliceScatterExplain: OpExplain = {
     local: () => '1',
   },
   selected: (ctx, out) => [sliceScatterSource(ctx.inputs[0].shape, ctx.inputs[1].shape, ctx.attrs as SliceScatterAttrs, out)],
-};
-
-export const scatterTilesExplain: OpExplain = {
-  pattern: 'select',
-  local: (ctx, out, arg) => (tileSources(ctx.inputs[0].shape, ctx.inputs.slice(1).map((t) => t.shape), ctx.attrs as ScatterTilesAttrs, out).some((source) => source.arg === arg) ? 1 : 0),
-  tex: {
-    forward: (s) => `\\operatorname{scatter\\_tiles}(${s.in.join(',')})`,
-    local: () => '1',
-  },
-  selected: (ctx, out) => tileSources(ctx.inputs[0].shape, ctx.inputs.slice(1).map((t) => t.shape), ctx.attrs as ScatterTilesAttrs, out),
 };

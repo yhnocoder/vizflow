@@ -24,5 +24,5 @@ export const FLOP_RULES: readonly FlopRule[] = [
   { ops: ['nll_loss'], forward: '|t|', backward: '|t|' },
   { ops: ['gather', 'embedding', 'repeat_interleave', 'repeat_kv', 'repeat', 'expand', 'index', 'sort', 'index_put'], forward: '0', backward: '|y|' },
   { ops: ['index_add'], forward: '|s|', backward: '0' },
-  { ops: ['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'narrow', 'select', 'identity', 'alias', 'grad_of', 'saved', 'cat', 'pad', 'where', 'masked_fill', 'triu', 'tril', 'squeeze', 'select_scatter', 'slice_scatter', 'scatter_tiles', 'zeros', 'ones', 'full', 'eye', 'zeros_like', 'scatter', 'topk_mask', 'topk_indices', 'one_hot', 'nonzero_static', 'arange', 'causal_mask'], forward: '0', backward: '0' },
+  { ops: ['view', 'reshape', 'transpose', 'permute', 'unsqueeze', 'contiguous', 'narrow', 'select', 'identity', 'alias', 'grad_of', 'saved', 'cat', 'pad', 'where', 'masked_fill', 'triu', 'tril', 'squeeze', 'select_scatter', 'slice_scatter', 'zeros', 'ones', 'full', 'eye', 'zeros_like', 'scatter', 'topk_mask', 'topk_indices', 'one_hot', 'nonzero_static', 'arange', 'causal_mask'], forward: '0', backward: '0' },
 ];
