@@ -76,6 +76,7 @@ export const RESERVED_GRAPH_NAMES: ReadonlySet<string> = new Set([
   'gradEdges',
   'runFunction',
   'valueOf',
+  'byName',
 ]);
 
 const registry = new Map<string, AnyOpDef>();

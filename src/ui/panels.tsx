@@ -6,7 +6,7 @@ import { allVisible, compileTemplate, type StepState, type Steps } from '../step
 import { formatNumber, formatShape, type Tensor } from '../tensor';
 import { resolveElement, trackGraph, trackSteps } from './mount';
 import type { Mounted } from './mounted';
-import { CostPanel, type CostPanelOptions } from './cost';
+import { CostPanel, type CostPanelOptions, type CostSettings } from './cost';
 import { Rich, indexed, plain } from './rich';
 
 export interface SgdOptions {
@@ -94,6 +94,7 @@ interface Context {
   steps: Steps | undefined;
   stepsVersion: Accessor<number>;
   configure: PanelsOptions['configure'];
+  settings: PanelSettings | undefined;
 }
 
 const subscript = (n: number) => String(n).replace(/\d/g, (d) => SUBSCRIPT_DIGITS[Number(d)]);
@@ -691,8 +692,8 @@ function ImplementationsPanel(props: { ctx: Context; item: Extract<PanelItem, { 
 function Panel(props: { ctx: Context; item: PanelItem }) {
   const item = props.item;
   if (item === 'loss') return <LossPanel ctx={props.ctx} options={{}} />;
-  if (item === 'cost') return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={{}} />;
-  if ('cost' in item) return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={item.cost} />;
+  if (item === 'cost') return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={{}} settings={props.ctx.settings} />;
+  if ('cost' in item) return <CostPanel g={props.ctx.g} steps={props.ctx.steps} stepsVersion={props.ctx.stepsVersion} options={item.cost} settings={props.ctx.settings} />;
   if ('loss' in item) return <LossPanel ctx={props.ctx} options={item.loss} />;
   if ('sequence' in item) return <SequencePanel ctx={props.ctx} item={item} />;
   if ('attention' in item) return <AttentionPanel ctx={props.ctx} item={item} />;
@@ -712,6 +713,11 @@ export interface PanelsOptions {
   steps?: Steps;
   sequence?: PageSequence;
   configure?: (config: Record<string, string | boolean>) => void;
+  settings?: PanelSettings;
+}
+
+export interface PanelSettings {
+  cost?: CostSettings;
 }
 
 function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOptions }) {
@@ -758,6 +764,7 @@ function PanelsView(props: { g: Graph; items: PanelItem[]; options: PanelsOption
     steps,
     stepsVersion,
     configure: props.options.configure,
+    settings: props.options.settings,
   };
   return (
     <div class="vf-panels">

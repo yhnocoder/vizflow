@@ -160,9 +160,9 @@ function resolveSizes(def: AnyOpDef, attrs: Record<string, unknown>, sizeOf: Siz
   return resolved;
 }
 
-function checkExact(def: AnyOpDef, inputs: readonly Node[], name: string): void {
+function checkExact(def: AnyOpDef, inputs: readonly Node[], name: string, values: readonly Tensor[] = inputs.map((n) => n.value)): void {
   if (def.int64) return;
-  const exact = inputs.find((n) => n.value.beyondExact());
+  const exact = inputs.find((_, k) => values[k].beyondExact());
   if (exact !== undefined) {
     throw new Error(`${def.name} '${name}': input '${exact.name}' holds int64 values beyond 2^53, which ${def.name} cannot keep exact`);
   }
@@ -173,6 +173,7 @@ class GraphImpl {
   real: Readonly<Record<string, number | string>> | undefined;
   readonly dtype: Dtype;
   readonly nodes: Node[] = [];
+  private readonly byName = new Map<string, Node>();
   version = 0;
   self!: Graph;
   private readonly states: NodeState[] = [];
@@ -398,8 +399,7 @@ class GraphImpl {
   }
 
   node(name: string): Node | undefined {
-    const wanted = normalizeName(name);
-    return this.nodes.find((n) => normalizeName(n.name) === wanted);
+    return this.byName.get(normalizeName(name));
   }
 
   subscribe(fn: () => void): () => void {
@@ -476,9 +476,10 @@ class GraphImpl {
     const name = options.name ?? this.autoName(def.name);
     const explicit = options.dtype === undefined ? undefined : checkDtype(options.dtype, `node '${name}'`);
     const dtype = outputDtype(def, inputs, attrs, this.dtype, `${def.name} '${name}'`, explicit);
-    checkExact(def, inputs, name);
-    if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, inputs.map((n) => n.value.clone()), attrs, name);
-    const value = def.forward(inputs.map((n) => n.value), attrs);
+    const values = inputs.map((n) => this.states[n.id].value);
+    checkExact(def, inputs, name, values);
+    if (this.check && !isIntegerDtype(dtype)) checkOpNamed(def, values.map((v) => v.clone()), attrs, name);
+    const value = def.forward(values, attrs);
     const state: NodeState = { value, grad: Tensor.zeros(shape), initial: undefined, transposed: undefined };
     return this.addNode('op', name, def.name, inputs, attrs, shape, realShape, options, dtype, undefined, state, (table, shapes) =>
       def.shape(inputs.map((n) => [...shapes[n.id]]), resolveSizes(def, given, (d) => realSizeOf(d, table, shapes))),
@@ -528,6 +529,7 @@ class GraphImpl {
     };
     const node = new Node(init);
     this.nodes.push(node);
+    this.byName.set(normalizeName(name), node);
     this.states.push(state);
     this.realDerivations.push(deriveReal);
     this.backwardValid = false;

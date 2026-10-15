@@ -18,6 +18,7 @@ export {
   mountPanels,
   type PanelItem,
   type PanelsOptions,
+  type PanelSettings,
   type ImplementationChoice,
   type LossOptions,
   type SgdOptions,
@@ -30,4 +31,4 @@ export {
 } from './panels';
 export { mountSections, type SectionItem, type SectionRow, type SectionBlock, type SectionsOptions, type JumpButton, type RopeSpec, type RopeCompareSpec } from './sections';
 export type { Mounted } from './mounted';
-export type { CostPanelOptions } from './cost';
+export type { CostPanelOptions, CostSettings } from './cost';

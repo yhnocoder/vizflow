@@ -2,7 +2,7 @@ import type { Graph } from '../autograd';
 import type { CompiledPage } from '../dsl';
 import type { SceneOptions } from '../scene3d';
 import { createSteps, type StepInfo, type Steps, type StepsSpec } from '../steps';
-import { mountPanels, mountSections, mountSteps, type Mounted, type PageSequence, type PanelItem, type SectionItem } from '../ui';
+import { mountPanels, mountSections, mountSteps, type Mounted, type PageSequence, type PanelItem, type PanelSettings, type SectionItem } from '../ui';
 import elementCss from './element.css?inline';
 
 const styleId = 'vf-element-style';
@@ -46,6 +46,7 @@ export class VizflowPage extends HTMLElement {
   #compiled: CompiledPage | undefined;
   #loading = 0;
   #config: Record<string, string | boolean> = {};
+  #settings: PanelSettings = {};
 
   static readonly observedAttributes = ['src'];
 
@@ -138,6 +139,7 @@ export class VizflowPage extends HTMLElement {
   attributeChangedCallback(name: string, previous: string | null, value: string | null): void {
     if (name !== 'src' || previous === value || value === null) return;
     this.#config = {};
+    this.#settings = {};
     void this.#load(value);
   }
 
@@ -270,7 +272,7 @@ export class VizflowPage extends HTMLElement {
     this.replaceChildren(...(header === undefined ? [] : [header]), layout);
     this.#mounted.push(mountSteps(stepsBox, steps));
     const configure = this.src === null || this.#graph !== this.#compiled?.graph ? undefined : (change: Record<string, string | boolean>) => void this.#configure(change);
-    if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps, sequence: this.#sequence, ...(configure === undefined ? {} : { configure }) }));
+    if (panels !== undefined) this.#mounted.push(mountPanels(side, g, panels, { steps, sequence: this.#sequence, settings: this.#settings, ...(configure === undefined ? {} : { configure }) }));
     if (sections !== undefined) {
       const onJump = () => stage.scrollIntoView({ behavior: 'smooth', block: 'start' });
       this.#mounted.push(mountSections(sectionsBox, g, sections, { steps, onJump }));
