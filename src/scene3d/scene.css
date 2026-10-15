@@ -722,6 +722,10 @@
   color: var(--pos);
 }
 
+.vf-lb.vf-tag.vf-hbm {
+  color: var(--neg);
+}
+
 .vf-lb.vf-copy {
   pointer-events: auto;
   cursor: pointer;

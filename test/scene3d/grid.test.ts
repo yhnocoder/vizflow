@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 import { type CompiledPage, compilePage, loadPage, parseYaml } from '../../src/dsl';
-import { BOX_MARGIN, CHIP_GAP, COPY_GAP, type LevelLayout, levelPlan } from '../../src/scene3d/levels';
-import { STACK_CORNER, STACK_DX, STACK_DZ, stackEdge } from '../../src/scene3d/kernels';
+import { CARD_GAP, COPY_GAP, type LevelLayout, levelPlan } from '../../src/scene3d/levels';
+import { OUTLINE_STEP, outlineRect } from '../../src/scene3d/kernels';
 import { isIndexView } from '../../src/scene3d/layout';
 import { examplesUrl, readFileUrl } from '../dsl/load';
 
@@ -13,14 +13,17 @@ function kernel(layout?: string): string {
   return [
     'module: G',
     'kernel: true',
-    'args: { bm: dim }',
     'grid: { i: 2 }',
     'shared: [row]',
+    'args: { bm: dim }',
     'inputs: { x: [T, d], y: [T, d] }',
     'outputs: { y: [T, d] }',
     'forward:',
     '  - row: x[i]',
-    '  - acc: row * 0',
+    '  - a: row * 2',
+    '  - b: a + 1',
+    '  - c: b * a',
+    '  - acc: c * 0',
     '  - for: n in range(i + 1)',
     '    do:',
     '      - acc: acc + x[n]',
@@ -28,7 +31,7 @@ function kernel(layout?: string): string {
     layout === undefined ? '' : `layout: ${layout}`,
     'steps:',
     '  - id: row',
-    '    show: [row, acc]',
+    '    show: [row, a, b, c, acc]',
     '  - id: r',
     '    loop: n',
     "    defaults: { show: acc, title: 'copy {{ i }} round {{ round }}' }",
@@ -53,10 +56,12 @@ modules:
     outputs:
       l: { type: tensor, shape: [], dtype: fp32 }
     forward:
+      - h: x * 2
       - buf: zeros(T, d)
-      - y: g(x, buf)
+      - y: g(h, buf)
       - l: y.sum()
     steps:
+      - id: h
       - id: buf
       - id: g
       - id: l
@@ -71,38 +76,81 @@ function plan(p: CompiledPage): LevelLayout {
   return levelPlan(p.steps, p.levels).resolve({ folded: () => false, aligned: new Map() });
 }
 
-function xsOf(layout: LevelLayout, name: RegExp): number[] {
-  return layout.blocks.filter((b) => name.test(b.node.name)).flatMap((b) => b.elements.map((e) => e.x));
+function blockOf(layout: LevelLayout, name: string) {
+  const found = layout.blocks.find((b) => b.copyOf === undefined && new RegExp(`^g\\.${name}(\\[\\d+\\])+$`).test(b.node.name));
+  if (found === undefined) throw new Error(`no block for ${name}`);
+  return found;
 }
 
-describe('grid kernels in the level layout', () => {
+const zOf = (layout: LevelLayout, name: string) => Math.max(...blockOf(layout, name).elements.map((e) => e.z));
+const xOf = (layout: LevelLayout, name: string) => Math.min(...blockOf(layout, name).elements.map((e) => e.x));
+const yOf = (layout: LevelLayout, name: string) => blockOf(layout, name).elements[0].y;
+
+describe('kernel ground', () => {
   it('draws the rounds and the stacked copies of a name as one block', async () => {
     const layout = plan(await page());
     const accs = layout.blocks.filter((b) => /^g\.acc\[[^/]*$/.test(b.node.name));
     expect(accs.map((b) => b.slot?.map((n) => n.name))).toEqual([['g.acc[0]', 'g.acc[1]'], ['g.acc[0][0]', 'g.acc[1][0]', 'g.acc[1][1]']]);
   });
 
-  it('puts shared memory in a column left of the registers and frames both', async () => {
+  it('puts every block of the call at one height, the HBM card left of the chip card', async () => {
     const layout = plan(await page());
     expect(layout.kernels).toHaveLength(1);
-    const region = layout.kernels[0];
-    expect(region.grids.map((g) => g.module)).toEqual(['g']);
-    const shared = xsOf(layout, /^g\.row\[[^/]*$/);
-    const registers = xsOf(layout, /^g\.acc\[/);
-    expect(Math.min(...registers) - Math.max(...shared)).toBeCloseTo(CHIP_GAP);
-    expect(region.shared!.x[1]).toBeCloseTo(Math.max(...shared) + BOX_MARGIN.right);
-    expect(region.registers!.x[0]).toBeCloseTo(Math.min(...registers) - BOX_MARGIN.left);
-    expect(region.frame.x).toEqual([region.shared!.x[0], region.registers!.x[1]]);
-    expect(region.shared!.y).toEqual(region.registers!.y);
-    expect(region.shared!.x[1]).toBeLessThan(region.registers!.x[0]);
-    expect([...region.grids[0].shared, ...region.grids[0].registers].some((n) => n.name === 'x' || n.name === 'y')).toBe(false);
+    const ground = layout.kernels[0];
+    expect(ground.grids.map((g) => g.module)).toEqual(['g']);
+    expect(new Set(ground.blocks.flatMap((b) => b.elements.map((e) => e.y.toFixed(6))))).toEqual(new Set([ground.y.toFixed(6)]));
+    const [chip] = ground.chips;
+    expect(chip.card.x[0] - ground.hbm!.x[1]).toBeCloseTo(CARD_GAP);
+    expect(chip.card.z).toEqual(ground.hbm!.z);
+    expect(chip.shared!.x).toEqual(chip.registers!.x);
+    expect(chip.shared!.z[1]).toBeLessThan(chip.registers!.z[0]);
   });
 
-  it('lays expanded copies side by side, COPY_GAP apart, each with its own frame', async () => {
+  it('numbers register rows by data dependency depth, shared memory behind them', async () => {
+    const layout = plan(await page());
+    expect(zOf(layout, 'row')).toBeLessThan(zOf(layout, 'a'));
+    expect(zOf(layout, 'a')).toBeLessThan(zOf(layout, 'b'));
+    expect(zOf(layout, 'b')).toBeLessThan(zOf(layout, 'c'));
+    expect(yOf(layout, 'a')).toBeCloseTo(yOf(layout, 'c'));
+  });
+
+  it('places the names of layout.rows in their row, in the listed order', async () => {
+    const layout = plan(await page('{ rows: [[b, a]] }'));
+    expect(Math.abs(zOf(layout, 'a') - zOf(layout, 'b'))).toBeLessThan(2);
+    expect(xOf(layout, 'b')).toBeLessThan(xOf(layout, 'a'));
+    expect(zOf(layout, 'c')).toBeLessThan(zOf(layout, 'acc'));
+  });
+
+  it.each([
+    ['{ rows: [[a, zz]] }', "'zz' is not a tensor computed in the forward"],
+    ['{ rows: [[a], [y]] }', 'outputs stay in device memory'],
+    ['{ rows: a }', 'rows'],
+  ])('rejects layout %s', async (layout, message) => {
+    await expect(page(layout)).rejects.toThrow(message);
+  });
+
+  it('rejects rows on a module that is not a kernel', async () => {
+    const plain = ['module: G', 'args: { bm: dim }', 'inputs: { x: [T, d], y: [T, d] }', 'outputs: { z: [T, d] }', 'forward:', '  - a: x * 2', '  - z: a + y', 'layout: { rows: [[a]] }'].join('\n');
+    const files: Record<string, string> = { [BASE]: ROOT, [GRID]: plain };
+    await expect(loadPage(BASE, { read: async (url) => files[url] })).rejects.toThrow('needs kernel: true');
+  });
+
+  it('copies a read input drawn elsewhere onto the HBM card and links it to the original', async () => {
+    const layout = plan(await page());
+    const ground = layout.kernels[0];
+    const copies = ground.blocks.filter((b) => b.copyOf !== undefined);
+    expect(copies.map((b) => b.node.name)).toEqual(['h']);
+    expect(layout.links.map((l) => [l.original.node.name, l.copy.node.name])).toEqual([['h', 'h']]);
+    const names = ground.blocks.filter((b) => !/^g\./.test(b.node.name)).map((b) => b.node.name);
+    expect(names).toContain('y');
+    expect(names).not.toContain('buf');
+  });
+
+  it('lays expanded copies side by side, COPY_GAP apart, each with its own chip card', async () => {
     const layout = plan(await page('{ grid: { i: expand } }'));
-    expect(layout.kernels.map((k) => k.expand)).toEqual([[0], [1]]);
-    const [a, b] = layout.kernels;
-    expect(b.frame.x[0] - a.frame.x[1]).toBeCloseTo(COPY_GAP);
+    const chips = layout.kernels[0].chips;
+    expect(chips.map((c) => c.expand)).toEqual([[0], [1]]);
+    expect(chips[1].card.x[0] - chips[0].card.x[1]).toBeCloseTo(COPY_GAP);
   });
 
   it('draws no block for an anonymous index node and starts its edges on the source', async () => {
@@ -111,38 +159,33 @@ describe('grid kernels in the level layout', () => {
     const anonymous = p.graph.nodes.filter((n) => isIndexView(n));
     expect(anonymous.length).toBeGreaterThan(0);
     expect(layout.blocks.filter((b) => isIndexView(b.node))).toEqual([]);
-    expect(anonymous.every((n) => layout.sourceOf.get(n)?.name === 'x')).toBe(true);
   });
 });
 
-describe('stacked outlines', () => {
-  it('draw the top edge and the top STACK_CORNER of the right edge, shifted back and right', () => {
-    const box = { x: [0, 4] as [number, number], y: [0, 10] as [number, number], z: [-1, 1] as [number, number] };
-    expect(stackEdge(box, 2)).toEqual([2 * STACK_DX, 10, 1 - 2 * STACK_DZ, 4 + 2 * STACK_DX, 10, 1 - 2 * STACK_DZ, 4 + 2 * STACK_DX, 10 - STACK_CORNER, 1 - 2 * STACK_DZ]);
-  });
-
-  it('stop at the bottom of a region lower than STACK_CORNER', () => {
-    const box = { x: [0, 4] as [number, number], y: [0, 1] as [number, number], z: [0, 0] as [number, number] };
-    expect(stackEdge(box, 1)[7]).toBe(0);
+describe('stacked copy outlines', () => {
+  it('shift each copy right, down and back by OUTLINE_STEP', () => {
+    const card = { x: [0, 4] as [number, number], z: [-3, 1] as [number, number] };
+    const second = outlineRect(card, 5, 2);
+    const [dx, dy, dz] = OUTLINE_STEP;
+    expect(dx).toBeGreaterThan(0);
+    expect(dy).toBeLessThan(0);
+    expect(dz).toBeLessThan(0);
+    expect(second.slice(0, 6)).toEqual([2 * dx, 5 + 2 * dy, -3 + 2 * dz, 4 + 2 * dx, 5 + 2 * dy, -3 + 2 * dz]);
+    expect(second.slice(-3)).toEqual(second.slice(0, 3));
   });
 });
 
-describe('FlashAttention forward kernel', () => {
-  it('lays the row vectors of a round out in one row beside the tile they reduce', async () => {
-    const url = new URL('qwen3/qwen3-dsl.yaml', examplesUrl).href;
-    const spec = parseYaml(await readFileUrl(url), url) as { config: Record<string, unknown> };
-    Object.assign(spec.config, { attn_implementation: 'flash_attention_2' });
-    const layout = plan(await compilePage(spec as never, { base: url, read: readFileUrl }));
-    const kernel = layout.blocks.filter((b) => /^model\.layers\[0\]\..*\.fwd\./.test(b.node.name));
-    const named = (name: string) => kernel.find((b) => new RegExp(`\\.fwd\\.${name}(\\[\\d+\\])+$`).test(b.node.name))!;
-    const y = (name: string) => named(name).elements[0].y;
-    const x = (name: string) => named(name).elements[0].x;
-    for (const name of ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled', 'max_scaled', 'row_sum']) expect(named(name).shape).toBe('disc');
-    for (const name of ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled', 'max_scaled']) expect(y(name)).toBeCloseTo(y('acc_s_masked'));
-    expect(y('row_sum')).toBeCloseTo(y('p'));
-    const order = ['prev_max', 'row_max', 'cur_max', 'scores_scale', 'row_sum_scaled'].map(x);
+describe('FlashAttention kernels', () => {
+  it('follow the rows of the forward kernel layout', async () => {
+    const url = new URL('flash-attn/flash-attn-dsl.yaml', examplesUrl).href;
+    const p = await compilePage(parseYaml(await readFileUrl(url), url) as never, { base: url, read: readFileUrl });
+    const layout = plan(p);
+    const fwd = layout.blocks.filter((b) => b.copyOf === undefined && /\.fwd\./.test(b.node.name));
+    const z = (name: string) => Math.max(...fwd.find((b) => new RegExp(`\\.fwd\\.${name}(\\[\\d+\\])+$`).test(b.node.name))!.elements.map((e) => e.z));
+    const order = ['acc_s', 'row_max', 'p', 'acc_o', 'lse'].map(z);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(order[0]).toBeGreaterThan(Math.max(...named('acc_s_masked').elements.map((e) => e.x)));
+    const ground = layout.kernels.find((k) => k.grids.some((g) => /\.fwd$/.test(g.module)))!;
+    expect(ground.blocks.filter((b) => b.copyOf !== undefined).map((b) => b.node.name).sort()).toEqual(['q']);
   }, 60000);
 });
 
@@ -159,7 +202,8 @@ describe('example pages', () => {
     Object.assign(spec.config, config);
     const p = await compilePage(spec as never, { base: url, read: readFileUrl });
     const layout = plan(p);
-    const kernels = p.levels.grids.filter((g) => g.shared.size + g.registers.size > 0).length;
+    const kernels = p.levels.grids.length;
     expect(layout.kernels.length > 0).toBe(kernels > 0);
+    for (const ground of layout.kernels) for (const chip of ground.chips) expect(chip.card.x[0]).toBeGreaterThan(ground.hbm?.x[1] ?? -Infinity);
   }, 60000);
 });

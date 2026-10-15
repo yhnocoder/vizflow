@@ -19,14 +19,14 @@ import { buildEdges } from './edges';
 import type { Box } from './avoid';
 import { LabelLayer } from './labels';
 import { type BoardGeometry, type ResolvedLayout, type Vec3, classAlignment, resolveLayout, sameData, targetColumn } from './layout';
-import type { LevelGrid, LevelLayout } from './levels';
+import type { KernelGround, LevelGrid, LevelLayout } from './levels';
 import { checkModules } from './modules';
 import { FormulaPanel } from './formulapanel';
 import { ModuleBraces } from './moduleview';
 import { SceneNotes } from './notes';
 import { blockAt, bindPointer } from './pointer';
 import { ScenePopups } from './popups';
-import { type Renderable, createRenderable, renderableFor, showMember } from './renderable';
+import { type Renderable, activeOf, createRenderable, renderableFor, showMember } from './renderable';
 import { type CopyRef, copiesOf, sameStack, shownMember } from './slots';
 import type { SceneOptions } from './scene';
 
@@ -81,6 +81,7 @@ export class SceneController implements EditHost {
   renderables: Renderable[] = [];
   boards: BoardGeometry[] = [];
   levelLayout: LevelLayout | undefined;
+  focusGround: KernelGround | undefined;
   theme: ThemeColors;
   state: StepState;
   width = 1;
@@ -239,6 +240,14 @@ export class SceneController implements EditHost {
     }
   }
 
+  private findFocusGround(): KernelGround | undefined {
+    if (this.lod) return undefined;
+    const computes = this.currentInfo()?.computes;
+    const framed = (r: Renderable) => computes === undefined || (r.block.slot ?? [r.block.node]).some((n) => this.stepNodes.has(n));
+    const active = this.renderables.filter((r) => r.block.copyOf === undefined && activeOf(this, r) && framed(r));
+    return this.levelLayout?.kernels.find((k) => active.some((r) => k.blocks.includes(r.block)));
+  }
+
   copyOf(node: Node): CopyRef | undefined {
     const levels = this.levelLayout;
     if (levels === undefined) return undefined;
@@ -309,6 +318,7 @@ export class SceneController implements EditHost {
     const overview = this.state.kind === 'overview';
     this.lod = this.follow && (overview || info?.kind === 'inputs');
     this.stepNodes = new Set(info?.nodes ?? this.visible);
+    this.focusGround = this.findFocusGround();
     markFar(this);
     markSeeThrough(this);
     const stepKey = `${dir}:${this.state.index}:${info?.id ?? ''}`;
@@ -386,7 +396,6 @@ export class SceneController implements EditHost {
     if (rebuilt) this.batches.update(this.renderables);
     if (this.labelsDirty || moved || following) {
       this.moduleBraces.place();
-      this.kernels.place();
     }
     this.renderer.render(this.scene, this.camera);
     if (this.labelsDirty || moved) {

@@ -20,6 +20,7 @@ export interface Renderable {
   clipped: boolean[];
   cap: number;
   far: boolean;
+  away: boolean;
   seeThrough: boolean;
   scale: { forward: number; backward: number };
   ticks: { forward: number[]; backward: number[] };
@@ -55,6 +56,7 @@ export function createRenderable(c: SceneController, block: Block): Renderable {
     clipped: block.elements.map(() => false),
     cap,
     far: false,
+    away: false,
     seeThrough: false,
     scale,
     ticks: {
@@ -115,6 +117,11 @@ export function renderableOf(c: SceneController, node: Node): Renderable | undef
   const levels = c.levelLayout;
   const source = levels?.sourceOf.get(node) ?? node;
   return indexOfRenderables(c.renderables).bySource.get(levels?.leadOf.get(source) ?? source);
+}
+
+export function renderableIn(c: SceneController, node: Node, consumer: Node): Renderable | undefined {
+  const copy = c.levelLayout?.copyFor(node, consumer);
+  return copy === undefined ? renderableOf(c, node) : renderableFor(c, copy);
 }
 
 export function renderableFor(c: SceneController, block: Block): Renderable | undefined {

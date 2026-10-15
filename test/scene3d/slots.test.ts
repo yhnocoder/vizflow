@@ -17,7 +17,7 @@ function stateOf(active: Node[], revealed: Node[]) {
 }
 
 function gridOf(copyOf: Map<Node, number[]>, extra: Partial<LevelGrid> = {}): LevelGrid {
-  return { module: 'g', names: ['m', 'h'], counts: [2, 2], real: [2, 2], arrangement: ['stack', 'stack'], copyOf, shared: new Set(), registers: new Set(), ...extra };
+  return { module: 'g', names: ['m', 'h'], counts: [2, 2], real: [2, 2], arrangement: ['stack', 'stack'], copyOf, shared: new Set(), registers: new Set(), inputs: [], outputs: [], rows: [], ...extra };
 }
 
 describe('shownMember', () => {

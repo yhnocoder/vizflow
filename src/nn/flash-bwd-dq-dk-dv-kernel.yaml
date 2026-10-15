@@ -82,6 +82,16 @@ tex:
   acc_dq: '\mathrm{d}Q'
   acc_dk_scaled: '\mathrm{d}K'
 
+layout:
+  rows:
+    - [k_tile, v_tile, q_tile, do_tile]
+    - [p, rp]
+    - [ds, rds]
+    - [cols, rows, future]
+    - [lse_tile, dpsum_tile, acc_s, acc_s_masked, acc_dp]
+    - [acc_dv, acc_dq, acc_dk]
+    - [acc_dk_scaled]
+
 steps:
   - id: load
     show: [k_tile, v_tile, cols, acc_dk, acc_dv]

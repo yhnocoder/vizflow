@@ -4,9 +4,9 @@ import type { SceneController } from './controller';
 import { CAMERA_DISTANCE, allPoints, center, frameAll, framingPoints } from './framing';
 import type { Vec3 } from './layout';
 import { LABEL_SAFE_MARGIN } from './labels';
-import { type Renderable, activeOf, renderableOf } from './renderable';
-import type { Node } from '../autograd';
-import { VALUE_MIN_ZOOM } from './blockview';
+import { type Renderable, activeOf, renderableFor } from './renderable';
+import type { KernelGround } from './levels';
+import { OUTLINE_MAX, OUTLINE_STEP } from './kernels';
 
 export const DEFAULT_DIRECTION: Vec3 = [0.42, 0.55, 1];
 export const DEFAULT_AZIMUTH: [number, number] = [-0.8, 0.7];
@@ -26,16 +26,18 @@ export const FOLLOW_BOTTOM_SLACK = 2;
 export const FOLLOW_TOP_SLACK = 1;
 export const FOLLOW_SIDE_ROOM = 4;
 export const FOLLOW_SLAB_ZOOM = 1.4;
+export const GROUND_DIRECTION: Vec3 = [0, 2, 1];
 
 const FOLLOW_SETTLE_Y = 0.01;
 const FOLLOW_SETTLE_ZOOM = 0.002;
 const UP = new Vector3(0, 1, 0);
-const ROUND_GROUP = /\[\d+\]$/;
+const FOLLOW_SETTLE_ANGLE = 0.001;
 
 interface FollowGoal {
   y: number;
   side: number;
   zoom: number;
+  direction: Vector3;
 }
 
 interface SideRange {
@@ -93,22 +95,27 @@ export class CameraRig {
   }
 
   jumpTo(y: number): void {
-    this.goal = { y: this.clampFollowY(y, this.halfHeight()), side: this.controls.target.dot(this.sideAxis()), zoom: 1 };
+    this.goal = { y: this.clampFollowY(y, this.halfHeight()), side: this.controls.target.dot(this.sideAxis()), zoom: 1, direction: this.direction.clone() };
   }
 
   applyGoal(k: number): boolean {
     const goal = this.goal;
     if (goal === undefined) return false;
-    const axis = this.sideAxis();
+    const axis = sideAxisOf(goal.direction);
     const dy = (goal.y - this.controls.target.y) * k;
     const ds = (goal.side - this.controls.target.dot(axis)) * k;
     this.controls.target.y += dy;
     this.camera.position.y += dy;
     this.controls.target.addScaledVector(axis, ds);
     this.camera.position.addScaledVector(axis, ds);
+    const offset = this.camera.position.clone().sub(this.controls.target);
+    const distance = offset.length();
+    const turned = offset.normalize().lerp(goal.direction, k).normalize();
+    this.camera.position.copy(this.controls.target).addScaledVector(turned, distance);
+    this.camera.lookAt(this.controls.target);
     this.camera.zoom += (goal.zoom - this.camera.zoom) * k;
     this.camera.updateProjectionMatrix();
-    const settled = Math.abs(goal.y - this.controls.target.y) < FOLLOW_SETTLE_Y && Math.abs(goal.side - this.controls.target.dot(axis)) < FOLLOW_SETTLE_Y;
+    const settled = Math.abs(goal.y - this.controls.target.y) < FOLLOW_SETTLE_Y && Math.abs(goal.side - this.controls.target.dot(axis)) < FOLLOW_SETTLE_Y && turned.angleTo(goal.direction) < FOLLOW_SETTLE_ANGLE;
     if (settled && Math.abs(goal.zoom - this.camera.zoom) < FOLLOW_SETTLE_ZOOM) this.goal = undefined;
     this.c.markLabelsDirty();
     return true;
@@ -119,7 +126,7 @@ export class CameraRig {
   }
 
   private sideAxis(): Vector3 {
-    return new Vector3().crossVectors(UP, this.direction).normalize();
+    return sideAxisOf(this.direction);
   }
 
   private sideRange(points: Vec3[]): SideRange {
@@ -186,46 +193,45 @@ export class CameraRig {
     const c = this.c;
     const hh = this.halfHeight();
     const info = c.currentInfo();
-    const round = info?.copy === undefined ? undefined : info.groups.at(-1);
-    const inRound = round !== undefined && ROUND_GROUP.test(round);
-    const roundSteps = inRound ? (c.options.steps?.list ?? []).filter((s) => s.dir === info!.dir && s.groups.at(-1) === round) : [];
-    const framedNodes = inRound ? new Set(roundSteps.flatMap((s) => s.computes ?? s.nodes)) : info?.computes === undefined ? undefined : c.stepNodes;
+    const framedNodes = info?.computes === undefined ? undefined : c.stepNodes;
     const framed = (r: Renderable) => framedNodes === undefined || (r.block.slot ?? [r.block.node]).some((n) => framedNodes.has(n));
-    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && (inRound || activeOf(c, r)) && framed(r));
+    const active = c.lod ? [] : c.renderables.filter((r) => r.block.copyOf === undefined && activeOf(c, r) && framed(r));
+    if (c.focusGround !== undefined) return this.fitGoal(this.groundPoints(c.focusGround), new Vector3(...GROUND_DIRECTION).normalize());
     const slabbed = active.some((r) => r.block.slabs !== undefined);
     const groups = new Set(active.flatMap((r) => (r.block.node.kind === 'op' && r.block.node.op === 'grouped_linear' ? [r.block.node.inputs[2]] : [])));
     const keys = slabbed ? active.filter((r) => !groups.has(r.block.node)) : active;
     const points = allPoints(c);
     if (keys.length === 0) return this.overviewGoal(points, keys);
-    if (inRound) {
-      const withMemory = this.fitGoal(framingPoints([...keys, ...this.memoryOf(framedNodes!)]));
-      return withMemory.zoom >= VALUE_MIN_ZOOM ? withMemory : this.fitGoal(framingPoints(keys));
-    }
     const ys = keys.map((r) => r.block.elements[0].y);
     const kLo = Math.min(...ys);
     const kHi = Math.max(...ys);
     const cap = slabbed ? FOLLOW_SLAB_ZOOM : 1;
     const zoom = Math.min(cap, (2 * hh) / (kHi - kLo + FOLLOW_STEP_MARGIN), this.sideZoom(keys, cap, points));
-    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom };
+    return { y: this.clampFollowY((kLo + kHi) / 2 + FOLLOW_STEP_LIFT, hh / zoom), side: this.followSide(zoom, keys, points), zoom, direction: this.direction.clone() };
   }
 
-  private memoryOf(nodes: ReadonlySet<Node>): Renderable[] {
-    const grids = this.c.levelLayout?.grids ?? [];
-    const onChip = (r: Renderable) => (r.block.slot ?? [r.block.node]).some((n) => grids.some((g) => g.shared.has(n) || g.registers.has(n)));
-    const out = new Set<Renderable>();
-    for (const n of nodes) {
-      for (const input of n.inputs) {
-        const r = renderableOf(this.c, input);
-        if (r !== undefined && r.block.copyOf === undefined && !onChip(r)) out.add(r);
-      }
-    }
-    return [...out];
-  }
-
-  private fitGoal(points: Vec3[]): FollowGoal {
+  private groundPoints(ground: KernelGround): Vec3[] {
     const c = this.c;
-    const up = new Vector3().setFromMatrixColumn(this.camera.matrixWorld, 1);
-    const side = this.sideAxis();
+    const renderables = ground.blocks.flatMap((block) => renderableFor(c, block) ?? []);
+    const points = framingPoints(renderables);
+    const y = ground.y;
+    const grid = ground.grids[0];
+    const stacked = Math.min(OUTLINE_MAX, grid.counts.reduce((p, n, d) => (grid.arrangement[d] === 'stack' ? p * n : p), 1) - 1);
+    const corners = (x: [number, number], z: [number, number], j: number) => {
+      for (const cx of x) for (const cz of z) points.push([cx + OUTLINE_STEP[0] * j, y + OUTLINE_STEP[1] * j, cz + OUTLINE_STEP[2] * j]);
+    };
+    if (ground.hbm !== undefined) corners(ground.hbm.x, ground.hbm.z, 0);
+    for (const chip of ground.chips) {
+      corners(chip.card.x, chip.card.z, 0);
+      corners(chip.card.x, chip.card.z, stacked);
+    }
+    return points;
+  }
+
+  private fitGoal(points: Vec3[], direction: Vector3): FollowGoal {
+    const c = this.c;
+    const side = sideAxisOf(direction);
+    const up = new Vector3().crossVectors(direction, side).normalize();
     const ups = points.map(([x, y, z]) => x * up.x + y * up.y + z * up.z);
     const sides = points.map(([x, , z]) => x * side.x + z * side.z);
     const [lo, hi] = [Math.min(...ups), Math.max(...ups)];
@@ -239,7 +245,7 @@ export class CameraRig {
     const shift = (marginTop - marginBottom) / 2 / (perUnit * zoom);
     const target = this.controls.target;
     const now = target.x * up.x + target.y * up.y + target.z * up.z;
-    return { y: target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y), side: (left + right) / 2, zoom };
+    return { y: target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y), side: (left + right) / 2, zoom, direction };
   }
 
   private overviewGoal(points: Vec3[], keys: Renderable[]): FollowGoal {
@@ -258,20 +264,23 @@ export class CameraRig {
     const target = this.controls.target;
     const now = target.x * up.x + target.y * up.y + target.z * up.z;
     const y = target.y + ((lo + hi) / 2 + shift - now) / Math.max(1e-6, up.y);
-    return { y, side: this.followSide(zoom, keys, points), zoom };
+    return { y, side: this.followSide(zoom, keys, points), zoom, direction: this.direction.clone() };
   }
 
   placeCamera(): void {
     const middle = center(allPoints(this.c));
     let zoom = 1;
+    let direction = this.direction;
     if (this.c.follow) {
       const goal = this.followGoal();
+      const axis = sideAxisOf(goal.direction);
       middle.y = goal.y;
-      middle.addScaledVector(this.sideAxis(), goal.side - middle.dot(this.sideAxis()));
+      middle.addScaledVector(axis, goal.side - middle.dot(axis));
       zoom = goal.zoom;
+      direction = goal.direction;
     }
     this.goal = undefined;
-    this.camera.position.copy(middle).addScaledVector(this.direction, CAMERA_DISTANCE);
+    this.camera.position.copy(middle).addScaledVector(direction, CAMERA_DISTANCE);
     this.camera.lookAt(middle);
     this.controls.target.copy(middle);
     this.camera.zoom = zoom;
@@ -304,6 +313,10 @@ export class CameraRig {
     clearTimeout(this.wheelTimer);
     this.wheelTimer = window.setTimeout(() => this.c.refresh(), WHEEL_SETTLE_MS);
   }
+}
+
+function sideAxisOf(direction: Vector3): Vector3 {
+  return new Vector3().crossVectors(UP, direction).normalize();
 }
 
 function chromeBottom(c: SceneController, selector: string): number {

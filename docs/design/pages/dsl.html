@@ -180,6 +180,7 @@ export interface Layout {
   place?: Record&lt;Reference, Placement&gt;;
   merge?: Reference[][];
   grid?: Record&lt;string, GridArrangement&gt;;
+  rows?: Reference[][];
 }
 
 export interface Placement {
@@ -551,14 +552,20 @@ forward:
     weight: { right: y }            # weight 和 buffer 也可以放，只能用 with、left、right
   merge:
     - [q_norm, k_norm]              # 两个结构相同的调用逐层对齐，并排画
-  grid: { m: expand, h: stack }     # 只在 grid 模块里：按维度选择并排展开或叠放</code></pre>
+  grid: { m: expand, h: stack }     # 只在 grid 模块里：按维度选择并排展开或叠放
+  rows:                             # 只在 kernel 模块里：片上卡片里每行放哪些张量
+    - [acc_s, acc_s_masked]
+    - [row_max, scores_scale]
+    - [p, row_sum]
+    - [acc_o]</code></pre>
 <ul>
   <li><code>place</code> 的值是这个模块 <code>forward</code> 里算出的张量；键是算出的张量，或者 <code>init</code> 里的 weight、buffer。每项只写一个方向。<code>left</code>、<code>right</code>、<code>with</code> 放进目标所在的层，横向位置与已有的张量重叠时向外挪开。</li>
   <li>weight 和 buffer 没有自己的层，只能用 <code>with</code>、<code>left</code>、<code>right</code>。没写 <code>place</code> 时，它们画在第一次用到它们的那一层。做 matmul 的权重画成这个 matmul 的矩阵，<code>place</code> 不能移动它，写了会报错。</li>
   <li><code>merge</code> 的两个调用必须是同一个模块、各调用一次。两边的第 $k$ 层合成一层，左边的调用画在左侧，合并后的层放在后调用的那一行的位置。</li>
 </ul>
 <ul>
-  <li><code>grid</code> 写在 <code>grid</code> 模块的 <code>layout</code> 里，每一维选 <code>expand</code> 或 <code>stack</code>，没写的维度是 <code>stack</code>。<code>expand</code> 的维度上各个副本并排画，每个都画全；<code>stack</code> 的维度上各个副本画在同一个位置，最前面的副本画全，其余副本画成它后面的轮廓，读者点一个轮廓就把这个副本换到最前面。副本数多时（Qwen3-8B、$T=8192$ 时 FlashAttention 前向有 $32\times64$ 个）只能叠放。</li>
+  <li><code>grid</code> 写在 <code>grid</code> 模块的 <code>layout</code> 里，每一维选 <code>expand</code> 或 <code>stack</code>，没写的维度是 <code>stack</code>。<code>expand</code> 的维度上各个副本并排画，每个都画全；<code>stack</code> 的维度上各个副本画在同一个位置，最前面的副本画全，其余副本画成片上卡片下方、向右后方错开的轮廓，读者点一个轮廓就把这个副本换到最前面。副本数多时（Qwen3-8B、$T=8192$ 时 FlashAttention 前向有 $32\times64$ 个）只能叠放。</li>
+  <li><code>rows</code> 写在 <code>kernel: true</code> 模块的 <code>layout</code> 里，是一列行，每行是这个模块 <code>forward</code> 里算出的张量名。kernel 的一次调用画成一块地面，片上卡片里的张量排成行，默认按数据依赖深度自动分行（见 <a href="vizflow.html">vizflow 设计</a>的「并行副本、循环与片上存储」）；<code>rows</code> 把列出的张量放进对应的行，行内按列出的顺序从左往右。一个名字包括它在 <code>forward</code> 里的全部赋值（循环里每一轮重新赋值的累加器、循环前的初值）和这些赋值表达式里的匿名中间节点。一行里 shared memory 的张量放在 shared memory 底板的一行，其余的放在寄存器底板的一行。没有列出的张量放在它依赖的已放张量中最深的那一行，没有列出的 shared memory 张量放在 shared memory 的第一行。名字是 <code>forward</code> 里的名字、但当前配置下没有算出（例如只在某个分支里赋值）时忽略。以下情况报错：<code>rows</code> 不是由名字列表组成的列表；名字不是这个模块 <code>forward</code> 里算出的张量；名字是输出（输出留在显存，画在 HBM 卡片上）；模块不是 <code>kernel: true</code>。</li>
 </ul>
 <p class="hint">规则 4：<code>merge</code> 只影响位置，不会让两边的步骤一起亮；一起亮要在 <code>steps</code> 里写 <code>zip</code>。</p>
 
@@ -687,12 +694,15 @@ interface LevelGrid {
   copyOf: ReadonlyMap&lt;Node, number[]&gt;;
   shared: ReadonlySet&lt;Node&gt;;
   registers: ReadonlySet&lt;Node&gt;;
+  inputs: Node[];
+  outputs: Node[];
+  rows: Node[][];
 }
 function compilePage(spec: Page, options?: CompileOptions): Promise&lt;CompiledPage&gt;;
 function loadPage(url: string, options?: CompileOptions): Promise&lt;CompiledPage&gt;;</code></pre>
 <ul>
   <li><code>config</code> 覆盖页面 <code>config</code> 里的同名值，再按同名传给根模块的 <code>args</code>。名字不在页面的 <code>config</code> 里时报错 <code>config has no 'x' to override</code>。<code>&lt;vizflow-page&gt;</code> 切换实现时用它重新编译。</li>
-  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>slots</code> 是共用一个位置的节点组，每组至少两个节点：同一个调用的同一个循环体里同名的各轮节点，以及 <code>stack</code> 维度上 <code>expand</code> 编号相同的各副本里的同名节点，组内先按副本编号、再按轮次排列；<code>lines</code> 只放每组的第一个节点。<code>expand</code> 维度上编号不同的副本在 <code>lines</code> 里逐层并排，第 $k$ 层是各副本第 $k$ 层的节点按编号顺序拼接，场景用 <code>copyOf</code> 区分它们。<code>grids</code> 对每个 <code>grid</code> 调用和每个 <code>kernel: true</code> 的调用各有一项：<code>module</code> 是调用路径，<code>names</code>、<code>counts</code>、<code>real</code>、<code>arrangement</code> 是各维的名字、示例个数、真实尺寸下的个数和排法（没有 <code>grid</code> 的 kernel 这几项是空列表），<code>copyOf</code> 把副本里创建的节点映射到副本编号（每维一个整数），<code>shared</code> 是 <code>shared</code> 列出的张量，<code>registers</code> 是 kernel 里其余不是输出的张量。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。<code>steps.functions</code> 是 <code>backward_steps</code> 编译出的反向步骤，见 <a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。</li>
+  <li><code>levels</code> 是由 <code>forward</code> 与 <code>layout</code> 算出的层，场景按它排张量。<code>slots</code> 是共用一个位置的节点组，每组至少两个节点：同一个调用的同一个循环体里同名的各轮节点，以及 <code>stack</code> 维度上 <code>expand</code> 编号相同的各副本里的同名节点，组内先按副本编号、再按轮次排列；<code>lines</code> 只放每组的第一个节点。<code>expand</code> 维度上编号不同的副本在 <code>lines</code> 里逐层并排，第 $k$ 层是各副本第 $k$ 层的节点按编号顺序拼接，场景用 <code>copyOf</code> 区分它们。<code>grids</code> 对每个 <code>grid</code> 调用和每个 <code>kernel: true</code> 的调用各有一项：<code>module</code> 是调用路径，<code>names</code>、<code>counts</code>、<code>real</code>、<code>arrangement</code> 是各维的名字、示例个数、真实尺寸下的个数和排法（没有 <code>grid</code> 的 kernel 这几项是空列表），<code>copyOf</code> 把副本里创建的节点映射到副本编号（每维一个整数），<code>shared</code> 是 <code>shared</code> 列出的张量，<code>registers</code> 是 kernel 里其余不是输出的张量，<code>inputs</code>、<code>outputs</code> 是这次调用的输入和输出张量（场景据此排 HBM 卡片），<code>rows</code> 是 <code>layout.rows</code> 每行的名字解析成的节点，没写 <code>rows</code> 时是空列表。<code>steps.groups</code> 是步骤条的分组标题，<code>steps.braces</code> 是括号，各带嵌套深度。<code>steps.functions</code> 是 <code>backward_steps</code> 编译出的反向步骤，见 <a href="vizflow.html">vizflow 设计</a>的「折叠与反向步骤」。</li>
   <li><code>nodes</code> 按路径查节点：根模块的名字没有前缀，子模块里是 <code>实例路径.名字</code>，参数是 <code>state_dict</code> 的键。</li>
   <li>错误信息的格式是 <code>文件:行:列 路径: 说明</code>。</li>
 </ul>

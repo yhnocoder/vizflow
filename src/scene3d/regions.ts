@@ -7,7 +7,7 @@ import type { SceneController } from './controller';
 import type { Block, Element } from './layout';
 import { FRAME_HALF } from './levels';
 import { LineBatch, type Polyline } from './lines';
-import { type Renderable, elementOf, renderableOf } from './renderable';
+import { type Renderable, elementOf, renderableIn, renderableOf } from './renderable';
 import { sameStack } from './slots';
 
 export const REGION_LIFT = 0.02;
@@ -119,7 +119,7 @@ export class RegionFrames {
       for (const n of c.stepNodes) {
         if (!c.state.active(n)) continue;
         const taken = this.takenOf(n);
-        const sourceR = taken === undefined ? undefined : renderableOf(c, taken.source);
+        const sourceR = taken === undefined ? undefined : renderableIn(c, taken.source, n);
         if (taken !== undefined && sourceR !== undefined) push(sourceR, taken.source, taken.indices, this.inFront(n));
         const tiles = tileRegions(n);
         const outR = tiles.length === 0 ? undefined : renderableOf(c, n);

@@ -54,6 +54,14 @@ tex:
   softmax_X_y: 'p_y'
   dx_y: '\frac{\partial\ell}{\partial x_y}'
 
+layout:
+  rows:
+    - [y, ori_X_y, m]
+    - [X_block, block_max, m_new, d]
+    - [lse]
+    - [X_load, softmax_X, X_store]
+    - [softmax_X_y, dx_y]
+
 fold:
   label: '$\viz{loss},\ \viz{X}$'
   title: liger_cross_entropy_kernel

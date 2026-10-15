@@ -6,7 +6,7 @@ import type { PageCompiler } from './page';
 import { type Call, Instance, Result } from './types';
 import { checkKeys, record } from './util';
 
-const LAYOUT_KEYS: ReadonlySet<string> = new Set(['place', 'merge', 'grid']);
+const LAYOUT_KEYS: ReadonlySet<string> = new Set(['place', 'merge', 'grid', 'rows']);
 const PLACE_KEYS = ['with', 'left', 'right', 'before', 'after'] as const;
 
 type Placement = (typeof PLACE_KEYS)[number];
@@ -106,6 +106,9 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec, slots: Slots): N
       copyOf: grid?.copyOf ?? new Map(),
       shared: call.shared,
       registers: new Set(call.created.filter((node) => node.kind === 'op' && c.g.onChip(node) && !call.shared.has(node))),
+      inputs: [...call.inputs.values()],
+      outputs: [...call.outputs.values()],
+      rows: chipRows(call),
     });
   }
   if (c.inBackward(call)) return arranged(call, slots, (inner) => levelsOf(c, inner, spec, slots));
@@ -116,6 +119,7 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec, slots: Slots): N
   const mergeWhere = child(where, layout, 'merge');
   const mergeList = layout.merge ?? [];
   if (!Array.isArray(mergeList)) fail(mergeWhere, 'merge must be a list of [a, b] pairs of module calls');
+  if (layout.rows !== undefined && def.decl.kernel !== true) fail(child(where, layout, 'rows'), `rows places tensors on the on-chip card of a kernel, so it needs kernel: true; ${def.name} is not a kernel`);
   const pairs = mergeList.map((pair, i) => {
     const at = child(mergeWhere, mergeList, i);
     if (!Array.isArray(pair) || pair.length !== 2) fail(at, 'each merge entry is a pair of module calls, such as [q_norm, k_norm]');
@@ -172,6 +176,45 @@ function levelsOf(c: PageCompiler, call: Call, spec: LevelSpec, slots: Slots): N
     }
   }
   return levels.filter((level) => level.length > 0);
+}
+
+function chipRows(call: Call): Node[][] {
+  const def = call.instance.def;
+  const where = child(def.where, def.decl, 'layout');
+  const layout = record(def.decl.layout, where, 'layout');
+  if (layout.rows === undefined) return [];
+  const rowsWhere = child(where, layout, 'rows');
+  const rows = layout.rows;
+  if (!Array.isArray(rows) || !rows.every((row) => Array.isArray(row) && row.every((name) => typeof name === 'string'))) fail(rowsWhere, 'rows must be a list of rows, each a list of forward names, such as [[q_tile, k_tile], [acc_s, p]]');
+  const outputs = new Set(call.outputs.keys());
+  return (rows as string[][]).map((row, r) => {
+    const rowWhere = child(rowsWhere, rows, r);
+    return row.flatMap((name, k) => {
+      const at = child(rowWhere, row, k);
+      if (outputs.has(name)) fail(at, `'${name}' is an output of ${def.name}; outputs stay in device memory and are drawn on the HBM card`);
+      const values = call.resultValues.filter((entry) => entry.name === name && entry.value instanceof Node).map((entry) => entry.value as Node);
+      if (values.length === 0 && !forwardNames(def.decl.forward).has(name)) fail(at, `'${name}' is not a tensor computed in the forward of ${def.name}`);
+      return values.flatMap((value) => [...(call.anon.get(value) ?? []), value]);
+    });
+  });
+}
+
+function forwardNames(items: unknown): Set<string> {
+  const names = new Set<string>();
+  const visit = (list: unknown) => {
+    if (!Array.isArray(list)) return;
+    for (const item of list) {
+      if (item === null || typeof item !== 'object') continue;
+      const entry = item as Record<string, unknown>;
+      if ('for' in entry || 'if' in entry) {
+        for (const key of ['do', 'then', 'else']) visit(entry[key]);
+        continue;
+      }
+      for (const key of Object.keys(entry)) names.add(key);
+    }
+  };
+  visit(items);
+  return names;
 }
 
 function arranged(call: Call, slots: Slots, inner: (call: Call) => Node[][]): Node[][] {

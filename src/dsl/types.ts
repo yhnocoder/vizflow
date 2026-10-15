@@ -135,6 +135,7 @@ export interface Layout {
   place?: Record<Reference, Placement>;
   merge?: Reference[][];
   grid?: Record<string, GridArrangement>;
+  rows?: Reference[][];
 }
 
 export interface Placement {

@@ -105,6 +105,9 @@ interface Entry {
   title: TitleKind;
   quiet: boolean;
   table: Node | undefined;
+  dz: number;
+  original?: Entry;
+  ground?: Ground;
 }
 
 interface Level {
@@ -128,18 +131,24 @@ export interface FoldBox {
   y: [number, number];
 }
 
-export interface ChipBox {
+export interface CardBox {
   x: [number, number];
-  y: [number, number];
   z: [number, number];
 }
 
-export interface KernelRegion {
-  grids: readonly LevelGrid[];
+export interface ChipCard {
   expand: readonly number[];
-  shared?: ChipBox;
-  registers?: ChipBox;
-  frame: ChipBox;
+  card: CardBox;
+  shared?: CardBox;
+  registers?: CardBox;
+}
+
+export interface KernelGround {
+  grids: readonly LevelGrid[];
+  y: number;
+  hbm?: CardBox;
+  chips: ChipCard[];
+  blocks: Block[];
 }
 
 interface KernelGroup {
@@ -148,6 +157,25 @@ interface KernelGroup {
   shared: Entry[];
   registers: Entry[];
   fixed: Entry[];
+  card?: CardBox;
+  sharedBox?: CardBox;
+  registersBox?: CardBox;
+}
+
+interface Ground {
+  grids: LevelGrid[];
+  chips: KernelGroup[];
+  reads: Entry[];
+  writes: Entry[];
+  copies: Map<Entry, Entry>;
+  level: Level;
+  hbm?: CardBox;
+}
+
+interface Unit {
+  members: Entry[];
+  x: [number, number];
+  z: [number, number];
 }
 
 export interface ModuleIO {
@@ -165,7 +193,9 @@ export interface LevelLayout {
   ranges: Map<string, [number, number]>;
   io: ModuleIO[];
   chips: Chip[];
-  kernels: KernelRegion[];
+  kernels: KernelGround[];
+  links: { original: Block; copy: Block }[];
+  copyFor(node: Node, consumer: Node): Block | undefined;
   braces: { z: number; cx: number; cz: number };
   lo: number;
   top: number;
@@ -247,13 +277,20 @@ export interface LevelGrid {
   copyOf: ReadonlyMap<Node, number[]>;
   shared: ReadonlySet<Node>;
   registers: ReadonlySet<Node>;
+  inputs: readonly Node[];
+  outputs: readonly Node[];
+  rows: readonly (readonly Node[])[];
 }
 
 const ROUND_SUFFIX = /\[\d+\]$/;
 
 export const PLACE_GAP = 1.6;
 export const COPY_GAP = 3.0;
-export const CHIP_GAP = 1.6;
+export const CARD_GAP = 5.0;
+export const CARD_MARGIN = 0.8;
+export const CARD_ROW_GAP = 6.0;
+export const CARD_COL_GAP = 2.4;
+export const CARD_STAGGER = 1.8;
 export const PLACE_TITLE_ROOM = 1.2;
 
 export function levelPlan(spec: StepsSpec, layout: LevelSpec): LevelPlan {
@@ -285,8 +322,13 @@ class Plan implements LevelPlan {
   private readonly lanes: Lane[] = [];
   private readonly braces: StepBrace[];
   private readonly braceNodes = new Map<StepBrace, Node[]>();
-  private kernelGroups: KernelGroup[] = [];
+  private grounds: Ground[] = [];
+  private readonly groundOf = new Map<Node, Ground>();
   private readonly chainAt = new Map<Entry, number>();
+  private readonly chainHost = new Map<Entry, Entry>();
+  private readonly chains = new Map<Entry, Entry[]>();
+  private readonly stepOf = new Map<Node, number>();
+  private readonly roundOf = new Map<Node, string>();
   private readonly stream: Lane;
 
   constructor(
@@ -309,11 +351,11 @@ class Plan implements LevelPlan {
     this.assignTitles();
     this.makeTitleRoom();
     this.placeApart();
+    this.findRounds();
     this.attachChains();
-    this.kernelGroups = this.findKernels();
-    this.placeChips();
-    this.placeCopies();
+    this.grounds = this.buildGrounds();
     this.assignTitles();
+    this.layoutGrounds();
     this.buildModules();
   }
 
@@ -351,33 +393,272 @@ class Plan implements LevelPlan {
     return [...groups.values()];
   }
 
-  private placeChips(): void {
-    for (const group of this.kernelGroups) {
-      const right = group.registers.flatMap((e) => e.xs ?? []);
-      if (right.length === 0 || group.shared.length === 0) continue;
-      const edge = Math.min(...right) - CHIP_GAP;
-      for (const e of group.shared) {
-        if (e.kind === 'tile' || e.xs === undefined) continue;
-        const dx = edge - Math.max(...e.xs);
-        e.xs = e.xs.map((x) => x + dx);
+  private buildGrounds(): Ground[] {
+    const grounds: Ground[] = [];
+    for (const group of this.findKernels()) {
+      const known = grounds.find((g) => g.grids.length === group.grids.length && g.grids.every((grid, i) => grid === group.grids[i]));
+      if (known !== undefined) known.chips.push(group);
+      else grounds.push({ grids: group.grids, chips: [group], reads: [], writes: [], copies: new Map(), level: { entries: [], module: null, y: 0 } });
+    }
+    grounds.forEach((ground, i) => {
+      ground.chips.sort((a, b) => compareIndex(a.expand, b.expand));
+      for (const grid of ground.grids) for (const n of [...grid.registers, ...grid.shared, ...grid.outputs, ...grid.copyOf.keys()]) this.groundOf.set(n, ground);
+      const chipEntries = new Set(ground.chips.flatMap((c) => [...c.shared, ...c.registers, ...c.fixed]));
+      const absorbed = new Set([...chipEntries].map((e) => e.level));
+      for (const grid of ground.grids) {
+        for (const output of grid.outputs) {
+          const e = this.entryOf.get(output);
+          if (e !== undefined && !chipEntries.has(e) && !ground.writes.includes(e)) ground.writes.push(e);
+        }
       }
+      for (const grid of ground.grids) {
+        for (const input of grid.inputs) {
+          const e = this.drawnEntry(input);
+          if (e === undefined || this.writtenOnly(grid, input) || chipEntries.has(e) || ground.writes.includes(e) || ground.reads.includes(e) || ground.copies.has(e)) continue;
+          if (absorbed.has(e.level) && e.node.kind !== 'op' && e.ground === undefined && e.original === undefined) {
+            ground.reads.push(e);
+            continue;
+          }
+          const copy = this.entry(e.node, ground.level, `hbm:${i}:${e.key}`);
+          Object.assign(copy, { kind: e.kind, rows: e.rows, cols: e.cols, lane: e.lane, offsets: e.offsets, xs: e.xs === undefined ? undefined : [...e.xs], original: e });
+          ground.copies.set(e, copy);
+          ground.reads.push(copy);
+        }
+      }
+      const first = Math.min(...[...absorbed].map((l) => this.levels.indexOf(l)));
+      this.levels.splice(first, 0, ground.level);
+      for (const e of [...chipEntries, ...ground.writes, ...ground.reads]) {
+        e.ground = ground;
+        if (e.level === ground.level) continue;
+        e.level.entries.splice(e.level.entries.indexOf(e), 1);
+        ground.level.entries.push(e);
+        e.level = ground.level;
+      }
+    });
+    this.levels.splice(0, this.levels.length, ...this.levels.filter((level) => level.entries.length > 0));
+    for (const ground of grounds) ground.level.module = this.levelModule(ground.level);
+    return grounds;
+  }
+
+  private writtenOnly(grid: LevelGrid, input: Node): boolean {
+    const outputs = new Set(grid.outputs);
+    const users = [...grid.registers, ...grid.shared, ...grid.outputs].filter((u) => u.inputs.includes(input));
+    return users.length > 0 && users.every((u) => u.kind === 'op' && u.op === 'scatter_tiles' && u.inputs[0] === input && outputs.has(u) && (u.attrs as { accumulate?: boolean }).accumulate !== true);
+  }
+
+  private copyEntry(node: Node, consumer: Node): Entry | undefined {
+    const ground = this.groundOf.get(consumer);
+    const e = this.drawnEntry(node);
+    return ground === undefined || e === undefined ? undefined : ground.copies.get(e);
+  }
+
+  private drawnEntry(node: Node): Entry | undefined {
+    let n = node;
+    while (!this.entryOf.has(n) && n.kind === 'op' && n.op === 'saved') n = n.inputs[0];
+    return this.entryOf.get(n);
+  }
+
+  private layoutGrounds(): void {
+    const main = this.entries.filter((e) => e.ground === undefined && e.xs !== undefined);
+    const x0 = main.length === 0 ? STREAM_X : Math.min(...main.flatMap((e) => e.xs!)) - BOX_MARGIN.left;
+    const front = main.length === 0 ? LEVEL_FRONT : Math.max(...main.flatMap((e) => this.zs(e))) + BOX_MARGIN.front;
+    for (const ground of this.grounds) this.layoutGround(ground, x0, front);
+  }
+
+  private layoutGround(ground: Ground, x0: number, front: number): void {
+    const boxes: CardBox[] = [];
+    for (const e of [...ground.reads, ...ground.writes]) {
+      const spacing = e.lane?.spacing ?? STREAM_SPACING;
+      if (spacing <= STREAM_SPACING || e.xs === undefined) continue;
+      const x0 = e.xs[0];
+      e.xs = e.xs.map((x) => x0 + ((x - x0) * STREAM_SPACING) / spacing);
+    }
+    let left = 0;
+    let depth = 0;
+    const placed: Entry[][] = [];
+    for (const chip of ground.chips) {
+      const { shared, registers } = this.chipUnits(chip, ground.grids[0].rows);
+      placed.push([...shared, ...registers].flat().flatMap((u) => u.members));
+      const top = shared.length === 0 ? undefined : this.placeRows(shared, left, 0, CARD_STAGGER);
+      const bottom = registers.length === 0 ? undefined : this.placeRows(registers, left, top === undefined ? 0 : top.z[1] + CARD_ROW_GAP, CARD_STAGGER);
+      const right = Math.max(top?.x[1] ?? left, bottom?.x[1] ?? left) + CARD_MARGIN;
+      const pad = (z: [number, number]): CardBox => ({ x: [left - CARD_MARGIN, right], z: [z[0] - CARD_MARGIN, z[1] + CARD_MARGIN] });
+      if (top !== undefined) chip.sharedBox = pad(top.z);
+      if (bottom !== undefined) chip.registersBox = pad(bottom.z);
+      const parts = [chip.sharedBox, chip.registersBox].filter((b): b is CardBox => b !== undefined);
+      chip.card = { x: [left - 2 * CARD_MARGIN, right + CARD_MARGIN], z: [Math.min(0, ...parts.map((b) => b.z[0])) - CARD_MARGIN, Math.max(0, ...parts.map((b) => b.z[1])) + CARD_MARGIN] };
+      boxes.push(chip.card, ...parts);
+      depth = Math.max(depth, chip.card.z[1] - CARD_MARGIN);
+      left = chip.card.x[1] + COPY_GAP + 2 * CARD_MARGIN;
+    }
+    const first = ground.chips[0]?.card;
+    const limit = first === undefined ? Infinity : first.x[1] - first.x[0];
+    const hbmRows = [ground.reads, ground.writes].flatMap((row) => this.packRow(row.map((e) => this.unit([e])), limit));
+    const hbm = hbmRows.length === 0 ? undefined : this.placeRows(hbmRows, 0, 0);
+    depth = Math.max(depth, hbm?.z[1] ?? 0);
+    if (hbm !== undefined) {
+      const shift = hbm.x[1] + CARD_MARGIN + CARD_GAP - Math.min(...boxes.map((b) => b.x[0]));
+      for (const box of boxes) box.x = [box.x[0] + shift, box.x[1] + shift];
+      for (const e of placed.flat()) e.xs = e.xs?.map((x) => x + shift);
+    }
+    const writeRows = hbmRows.filter((row) => row.some((u) => ground.writes.includes(u.members[0])));
+    if (hbm !== undefined && hbm.z[1] < depth && writeRows.length < hbmRows.length) {
+      const lift = depth - hbm.z[1];
+      for (const row of writeRows) for (const unit of row) for (const e of unit.members) e.dz += lift;
+      hbm.z[1] = depth;
+    }
+    if (hbm !== undefined) {
+      ground.hbm = { x: [hbm.x[0] - CARD_MARGIN, hbm.x[1] + CARD_MARGIN], z: [-CARD_MARGIN, depth + CARD_MARGIN] };
+      boxes.push(ground.hbm);
+    }
+    const back = Math.min(...boxes.map((b) => b.z[0]));
+    const near = Math.max(...boxes.map((b) => b.z[1]));
+    if (ground.hbm !== undefined) ground.hbm.z = [back, near];
+    for (const chip of ground.chips) if (chip.card !== undefined) chip.card.z = [back, near];
+    const dx = x0 - Math.min(...boxes.map((b) => b.x[0]));
+    const dz = front - near;
+    for (const box of boxes) {
+      box.x = [box.x[0] + dx, box.x[1] + dx];
+      box.z = [box.z[0] + dz, box.z[1] + dz];
+    }
+    for (const e of ground.level.entries) {
+      if (e.ground !== ground) continue;
+      e.xs = e.xs?.map((x) => x + dx);
+      e.dz += dz;
     }
   }
 
-  private placeCopies(): void {
-    const frameX = (group: KernelGroup) => {
-      const xs = [...group.shared, ...group.registers, ...group.fixed].flatMap((e) => e.xs ?? []);
-      return [Math.min(...xs) - BOX_MARGIN.left, Math.max(...xs) + BOX_MARGIN.right];
-    };
-    for (const grid of this.layout.grids) {
-      if (!grid.arrangement.includes('expand')) continue;
-      const copies = this.kernelGroups.filter((g) => g.grids[0] === grid).sort((a, b) => compareIndex(a.expand, b.expand));
-      copies.forEach((group, k) => {
-        if (k === 0) return;
-        const dx = frameX(copies[k - 1])[1] + COPY_GAP - frameX(group)[0];
-        for (const e of [...group.shared, ...group.registers, ...group.fixed]) e.xs = e.xs?.map((x) => x + dx);
-      });
+  private unit(members: Entry[]): Unit {
+    const x: [number, number] = [Infinity, -Infinity];
+    const z: [number, number] = [Infinity, -Infinity];
+    for (const e of members) {
+      const [w, d] = this.footprintOf(e);
+      const xs = e.xs ?? [0];
+      const zs = this.zs(e);
+      x[0] = Math.min(x[0], Math.min(...xs) - w / 2 - (e.title === 'left' ? TITLE_ROOM : 0));
+      x[1] = Math.max(x[1], Math.max(...xs) + w / 2);
+      z[0] = Math.min(z[0], Math.min(...zs) - d / 2);
+      z[1] = Math.max(z[1], Math.max(...zs) + d / 2 + (e.title === 'below' ? TITLE.below[1] : 0));
     }
+    return { members, x, z };
+  }
+
+  private packRow(units: Unit[], limit: number): Unit[][] {
+    const rows: Unit[][] = [];
+    let width = Infinity;
+    for (const unit of units) {
+      const w = unit.x[1] - unit.x[0];
+      if (width + CARD_COL_GAP + w > limit) {
+        rows.push([unit]);
+        width = w;
+      } else {
+        rows[rows.length - 1].push(unit);
+        width += CARD_COL_GAP + w;
+      }
+    }
+    return rows;
+  }
+
+  private placeRows(rows: Unit[][], x0: number, z0: number, stagger = 0): { x: [number, number]; z: [number, number] } {
+    let z = z0;
+    let right = x0;
+    for (const row of rows) {
+      const lo = Math.min(...row.map((u) => u.z[0]));
+      const shift = row.length > 1 ? stagger : 0;
+      const hi = Math.max(...row.map((u) => u.z[1])) + shift;
+      let x = x0;
+      for (const [k, unit] of row.entries()) {
+        const dx = x - unit.x[0];
+        for (const e of unit.members) {
+          e.xs = e.xs?.map((v) => v + dx);
+          e.dz += z - lo + (k % 2) * shift;
+        }
+        x += unit.x[1] - unit.x[0] + CARD_COL_GAP;
+      }
+      right = Math.max(right, x - CARD_COL_GAP);
+      z += hi - lo + CARD_ROW_GAP;
+    }
+    return { x: [x0, right], z: [z0, z - CARD_ROW_GAP] };
+  }
+
+  private chipUnits(chip: KernelGroup, rows: readonly (readonly Node[])[]): { shared: Unit[][]; registers: Unit[][] } {
+    const own = new Set([...chip.shared, ...chip.registers, ...chip.fixed]);
+    const listed = rows.map((row) => [...new Set(row.flatMap((n) => (this.sourceOf.has(n) ? [] : (this.entryOf.get(n) ?? []))))].filter((e) => own.has(e) && e.kind !== 'tile'));
+    const sharedSet = new Set(chip.shared);
+    const sharedRows = listed.map((row) => row.filter((e) => sharedSet.has(e))).filter((row) => row.length > 0);
+    const registerRows = listed.map((row) => row.filter((e) => !sharedSet.has(e))).filter((row) => row.length > 0);
+    const pinned = new Map<Entry, number>();
+    registerRows.forEach((row, r) => row.forEach((e) => pinned.set(e, r)));
+    const sharedPlaced = new Set(sharedRows.flat());
+    const sharedLeft = chip.shared.filter((e) => e.kind !== 'tile' && !sharedPlaced.has(e)).sort((a, b) => a.node.id - b.node.id);
+    if (sharedLeft.length > 0) {
+      if (sharedRows.length === 0) sharedRows.push([]);
+      sharedRows[0].push(...sharedLeft);
+    }
+    const registers = new Set([...chip.registers, ...chip.fixed]);
+    const boardOf = new Map<Entry, Entry>();
+    for (const [op, tile] of this.tiles) {
+      const out = this.entryOf.get(op);
+      if (out !== undefined && registers.has(tile) && registers.has(out)) boardOf.set(tile, out);
+    }
+    const hostOf = (e: Entry): Entry | undefined => {
+      const host = this.chainHost.get(e);
+      return host !== undefined && !pinned.has(e) && registers.has(host) && !sharedSet.has(host) ? host : undefined;
+    };
+    const attachedTo = (e: Entry) => boardOf.get(e) ?? hostOf(e);
+    const roots = [...registers].filter((e) => attachedTo(e) === undefined);
+    const inChip = (n: Node) => this.groundOf.has(n);
+    const deps = (e: Entry): Entry[] => {
+      const found = new Set<Entry>();
+      for (const m of this.slotOf.get(e.node) ?? [e.node]) {
+        const round = this.roundOf.get(m);
+        const seen = new Set<Node>();
+        const visit = (n: Node) => {
+          for (const i of n.inputs) {
+            if (seen.has(i)) continue;
+            seen.add(i);
+            const r = this.roundOf.get(i);
+            if (round !== undefined && r !== undefined && r !== round) continue;
+            const f = this.entryOf.get(i);
+            if (f === e) continue;
+            if (f !== undefined && registers.has(f) && f.kind !== 'tile') found.add(f);
+            else if ((f === undefined || (registers.has(f) && f.kind === 'tile')) && inChip(i)) visit(i);
+          }
+        };
+        visit(m);
+      }
+      return [...found];
+    };
+    const rowOf = new Map<Entry, number>();
+    const visiting = new Set<Entry>();
+    const row = (e: Entry): number => {
+      const attached = attachedTo(e);
+      if (attached !== undefined) return row(attached);
+      const known = rowOf.get(e) ?? pinned.get(e);
+      if (known !== undefined) return known;
+      if (visiting.has(e)) return 0;
+      visiting.add(e);
+      const value = Math.max(0, ...deps(e).map((d) => row(d) + (pinned.size > 0 ? 0 : 1)));
+      visiting.delete(e);
+      rowOf.set(e, value);
+      return value;
+    };
+    const unitOf = (root: Entry): Unit => {
+      const members = [root, ...[...registers].filter((e) => e !== root && boardOf.get(e) === root)];
+      const chain = (this.chains.get(root) ?? []).filter((e) => hostOf(e) === root);
+      return this.unit([...members, ...chain]);
+    };
+    const numbers = [...new Set(roots.map(row))].sort((a, b) => a - b);
+    const registerUnits = numbers.map((r) => {
+      const inRow = roots.filter((e) => row(e) === r);
+      const order = (e: Entry) => {
+        const at = registerRows[r]?.indexOf(e) ?? -1;
+        return at >= 0 ? at : Infinity;
+      };
+      inRow.sort((a, b) => order(a) - order(b) || a.node.id - b.node.id);
+      return inRow.map(unitOf);
+    });
+    return { shared: sharedRows.map((r) => r.map((e) => this.unit([e]))), registers: registerUnits };
   }
 
   private lane(x0: number, spacing: number, stream = false): Lane {
@@ -622,7 +903,7 @@ class Plan implements LevelPlan {
     if (node.shape.length === 0) kind = 'box';
     else if (leaf && node.shape.length === 1) kind = 'vector';
     else if (this.isDisc(node)) kind = 'disc';
-    const e: Entry = { key, node, shape, kind, level, rows, cols, lane: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined };
+    const e: Entry = { key, node, shape, kind, level, rows, cols, lane: undefined, offsets: [], xs: undefined, title: 'none', quiet: false, table: undefined, dz: 0 };
     level.entries.push(e);
     this.entries.push(e);
     if (!this.entryOf.has(node) || key === `node:${node.id}`) this.entryOf.set(node, e);
@@ -686,7 +967,7 @@ class Plan implements LevelPlan {
   }
 
   private levelModule(level: Level): string | null {
-    const own = level.entries.filter((e) => this.computed.has(e.node)).map((e) => e.node);
+    const own = level.entries.filter((e) => e.original === undefined && this.computed.has(e.node)).map((e) => e.node);
     if (own.length === 0) return null;
     const chains = own.map((n) => this.chain(this.innermost(n)?.id));
     let common: StepModule | undefined;
@@ -927,21 +1208,24 @@ class Plan implements LevelPlan {
     }
   }
 
-  private attachChains(): void {
-    const stepOf = new Map<Node, number>();
-    const roundOf = new Map<Node, string>();
+  private findRounds(): void {
     const sizeOf = new Map<Node, number>();
     [...this.spec.forward, ...(this.spec.functions ?? []).flatMap((f) => f.steps)].forEach((step, k) => {
       const shown = list(step.show);
       const group = step.groups?.[step.groups.length - 1] ?? '';
       for (const n of shown) {
         if ((sizeOf.get(n) ?? Infinity) <= shown.length) continue;
-        stepOf.set(n, k);
+        this.stepOf.set(n, k);
         sizeOf.set(n, shown.length);
-        if (ROUND_SUFFIX.test(group)) roundOf.set(n, group);
-        else roundOf.delete(n);
+        if (ROUND_SUFFIX.test(group)) this.roundOf.set(n, group);
+        else this.roundOf.delete(n);
       }
     });
+  }
+
+  private attachChains(): void {
+    const stepOf = this.stepOf;
+    const roundOf = this.roundOf;
     const together = (a: Node, b: Node) => (stepOf.has(a) && stepOf.get(a) === stepOf.get(b)) || (roundOf.has(a) && roundOf.get(a) === roundOf.get(b));
     const chipOf = (e: Entry) => this.layout.grids.find((g) => (this.slotOf.get(e.node) ?? [e.node]).some((m) => g.shared.has(m) || g.registers.has(m)));
     const members = (e: Entry) => this.slotOf.get(e.node) ?? [e.node];
@@ -995,7 +1279,9 @@ class Plan implements LevelPlan {
         x += SCALAR_ROW_GAP;
         e.xs = e.xs!.map(() => x);
         this.chainAt.set(e, placed.indexOf(e));
+        this.chainHost.set(e, host);
       }
+      this.chains.set(host, placed);
       const right = target.entries.filter((o) => o !== host && !placed.includes(o) && o.xs !== undefined && Math.min(...o.xs) > Math.max(...host.xs!));
       const need = x + SCALAR_ROW_GAP - Math.min(...right.flatMap((o) => o.xs!));
       if (right.length > 0 && need > 0) for (const o of right) o.xs = o.xs!.map((v) => v + need);
@@ -1167,10 +1453,14 @@ class Plan implements LevelPlan {
     for (const level of this.levels) {
       for (const e of level.entries) {
         if (e.kind === 'disc' || e.kind === 'box') {
-          e.title = (this.chainAt.get(e) ?? 0) % 2 === 1 ? 'below' : 'left';
+          e.title = (this.chainAt.get(e) ?? (e.ground === undefined ? 0 : 1)) % 2 === 1 ? 'below' : 'left';
           continue;
         }
         if (e.kind === 'vector') continue;
+        if (e.ground !== undefined && e.kind === 'plate') {
+          e.title = 'below';
+          continue;
+        }
         if (e.kind === 'tile') {
           if (e.table !== undefined || !level.entries.some((o) => o.kind === 'tile' && o !== e && o.lane === e.lane && (o.xs?.[0] ?? 0) < (e.xs?.[0] ?? 0))) e.title = 'left';
           continue;
@@ -1233,7 +1523,7 @@ class Plan implements LevelPlan {
       if (levels.length === 0) continue;
       const first = this.levels.indexOf(levels[0]);
       const last = this.levels.indexOf(levels[levels.length - 1]);
-      const gap = this.levels.slice(first, last + 1).find((l) => !levels.includes(l) && l.entries.some((e) => e.node.phase !== 'backward'));
+      const gap = this.levels.slice(first, last + 1).find((l) => !levels.includes(l) && l.entries.some((e) => e.node.phase !== 'backward' && e.original === undefined));
       if (gap !== undefined) {
         const between = gap.entries.map((e) => e.node.name).join(', ');
         throw new Error(`steps: the brace of '${brace.id}' (${brace.title}) frames tensors that are not next to each other; ${between} lies between them`);
@@ -1258,7 +1548,8 @@ class Plan implements LevelPlan {
       const known = hidden.get(e);
       if (known !== undefined) return known;
       let value: boolean;
-      if (this.computed.has(e.node)) value = hiddenNode(e.node);
+      if (e.original !== undefined) value = e.ground!.chips.every((chip) => [...chip.shared, ...chip.registers].every((m) => hiddenNode(m.node)));
+      else if (this.computed.has(e.node)) value = hiddenNode(e.node);
       else if (e.node.kind === 'buffer') {
         const fold = outerFold(e.level.module);
         const leaf = fold !== undefined && !this.stepModules.some((m) => m.parent === fold.id);
@@ -1359,11 +1650,12 @@ class Plan implements LevelPlan {
     for (const board of this.boards.values()) {
       const out = this.entryOf.get(board.op)!;
       const tile = this.tiles.get(board.op)!;
-      const a = this.drawnA(board);
-      const siblings = [...this.boards.values()].filter((b) => this.entryOf.get(b.op)?.level === out.level && this.drawnA(b) === a && a.level === out.level).sort((p, q) => p.op.id - q.op.id);
+      const a = this.copyEntry(board.a, board.op) ?? this.drawnA(board);
+      const beside = (b: BoardRef, other: Entry) => other.level === out.level && other.dz === out.dz && (this.copyEntry(b.a, b.op) ?? this.drawnA(b)) === other;
+      const siblings = [...this.boards.values()].filter((b) => this.entryOf.get(b.op)?.level === out.level && beside(b, a)).sort((p, q) => p.op.id - q.op.id);
       const at = siblings.findIndex((b) => b === board);
       const previous = at > 0 ? this.tiles.get(siblings[at - 1].op) : undefined;
-      boards.push({ op: board.op, a: blockOf.get(a)!, sharedA: a.level !== out.level, b: blockOf.get(tile)!, out: blockOf.get(out)!, y: out.level.y, previous: previous === undefined ? undefined : blockOf.get(previous) });
+      boards.push({ op: board.op, a: blockOf.get(a)!, sharedA: a.level !== out.level || a.dz !== out.dz, b: blockOf.get(tile)!, out: blockOf.get(out)!, y: out.level.y, previous: previous === undefined ? undefined : blockOf.get(previous) });
     }
 
     const boxes: FoldBox[] = [];
@@ -1378,28 +1670,19 @@ class Plan implements LevelPlan {
       boxes.push({ module: m, ...this.around(keys), y: range });
     }
 
-    const kernels: KernelRegion[] = [];
-    for (const group of this.kernelGroups) {
-      const chip = (entries: Entry[]): ChipBox | undefined => {
-        const shownEntries = entries.filter((e) => !hiddenOf(e));
-        if (shownEntries.length === 0) return undefined;
-        const ys = shownEntries.map((e) => e.level.y);
-        return { ...this.around(shownEntries), y: [Math.min(...ys) - BRACE_PAD.below, Math.max(...ys) + BRACE_PAD.above] };
-      };
-      const shared = chip(group.shared);
-      const registers = chip(group.registers);
-      if (shared !== undefined && registers !== undefined) {
-        const y: [number, number] = [Math.min(shared.y[0], registers.y[0]), Math.max(shared.y[1], registers.y[1])];
-        shared.y = y;
-        registers.y = [...y];
-      }
-      const parts = [shared, registers, chip(group.fixed)].filter((b): b is ChipBox => b !== undefined);
-      if (parts.length === 0) continue;
-      const span = (axis: 'x' | 'y' | 'z'): [number, number] => [Math.min(...parts.map((b) => b[axis][0])), Math.max(...parts.map((b) => b[axis][1]))];
-      const region: KernelRegion = { grids: group.grids, expand: group.expand, frame: { x: span('x'), y: span('y'), z: span('z') } };
-      if (shared !== undefined) region.shared = shared;
-      if (registers !== undefined) region.registers = registers;
-      kernels.push(region);
+    const kernels: KernelGround[] = [];
+    const links: { original: Block; copy: Block }[] = [];
+    for (const ground of this.grounds) {
+      const own = ground.level.entries.filter((e) => e.ground === ground);
+      if (own.every((e) => hiddenOf(e))) continue;
+      kernels.push({
+        grids: ground.grids,
+        y: ground.level.y,
+        ...(ground.hbm === undefined ? {} : { hbm: ground.hbm }),
+        chips: ground.chips.flatMap((chip) => (chip.card === undefined ? [] : [{ expand: chip.expand, card: chip.card, ...(chip.sharedBox === undefined ? {} : { shared: chip.sharedBox }), ...(chip.registersBox === undefined ? {} : { registers: chip.registersBox }) }])),
+        blocks: own.map((e) => blockOf.get(e)!),
+      });
+      for (const [original, copy] of ground.copies) if (!hiddenOf(original) && !hiddenOf(copy)) links.push({ original: blockOf.get(original)!, copy: blockOf.get(copy)! });
     }
 
     const ranges = new Map<string, [number, number]>();
@@ -1453,6 +1736,11 @@ class Plan implements LevelPlan {
       io,
       chips,
       kernels,
+      links,
+      copyFor: (node, consumer) => {
+        const copy = this.copyEntry(node, consumer);
+        return copy === undefined ? undefined : blockOf.get(copy);
+      },
       braces: { z: Math.max(zPlate(rows - 1), ...this.entries.filter((en) => en.kind === 'plate').flatMap((en) => this.zs(en))) + BRACE_FRONT, cx: position(this.stream, (streamWidth - 1) / 2), cz: zPlate((rows - 1) / 2) },
       lo: 0,
       top,
@@ -1497,11 +1785,25 @@ class Plan implements LevelPlan {
   }
 
   private zs(e: Entry): number[] {
+    return this.baseZs(e).map((z) => z + e.dz);
+  }
+
+  private baseZs(e: Entry): number[] {
     if (e.kind === 'tile') return Array.from({ length: e.rows }, (_, r) => zTile(r, e.rows));
     if (e.kind === 'vector') return [zVector];
     if (e.kind === 'box') return [zPlate((this.rowsOf() - 1) / 2)];
     if (this.slabbed.has(e.node)) return Array.from({ length: e.node.shape[0] * e.rows }, (_, i) => this.slabZ(e.node, Math.floor(i / e.rows), i % e.rows));
     return this.rowZs(e.node, e.rows);
+  }
+
+  private footprintOf(e: Entry): [number, number] {
+    const spacing = e.lane?.spacing ?? STREAM_SPACING;
+    if (e.kind === 'tile') return [spacing >= STREAM_SPACING ? TILE_WIDTH : TILE_WIDTH_NARROW, e.rows > TILE_DENSE_ROWS ? TILE_DEPTH_DENSE : TILE_DEPTH];
+    if (e.kind === 'disc') return DISC_FOOTPRINT;
+    if (e.kind === 'box') return BOX_FOOTPRINT;
+    if (this.slabbed.has(e.node)) return [STREAM_FOOTPRINT, TILE_DEPTH_DENSE];
+    if (e.lane?.stream === true) return [STREAM_FOOTPRINT, STREAM_FOOTPRINT];
+    return [Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE), Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE)];
   }
 
   private rowsOf(): number {
@@ -1525,22 +1827,10 @@ class Plan implements LevelPlan {
       const index = indexOf(e.shape, offset);
       const slab = this.slabbed.has(n);
       const [row, col] = slab ? [index[1], index[2]] : e.rows > 1 && e.cols === 1 ? [offset, 0] : e.shape.length >= 2 ? rowCol(n, index, e.shape) : [0, offset];
-      const z = slab ? this.slabZ(n, index[0], row) : zs[Math.min(row, zs.length - 1)];
+      const z = slab ? this.slabZ(n, index[0], row) + e.dz : zs[Math.min(row, zs.length - 1)];
       elements.push({ index, row, col, x: xs[Math.min(col, xs.length - 1)], y, z });
     }
-    const spacing = e.lane?.spacing ?? STREAM_SPACING;
-    const footprint: [number, number] =
-      e.kind === 'tile'
-        ? [spacing >= STREAM_SPACING ? TILE_WIDTH : TILE_WIDTH_NARROW, e.rows > TILE_DENSE_ROWS ? TILE_DEPTH_DENSE : TILE_DEPTH]
-        : e.kind === 'disc'
-          ? DISC_FOOTPRINT
-          : e.kind === 'box'
-            ? BOX_FOOTPRINT
-            : this.slabbed.has(n)
-              ? [STREAM_FOOTPRINT, TILE_DEPTH_DENSE]
-              : e.lane?.stream === true
-                ? [STREAM_FOOTPRINT, STREAM_FOOTPRINT]
-                : [Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE), Math.min(BAR_FOOTPRINT, spacing - BAR_CLEARANCE)];
+    const footprint = this.footprintOf(e);
     const ex = elements.map((el) => el.x);
     const ez = elements.map((el) => el.z);
     const x0 = Math.min(...ex);
@@ -1553,7 +1843,7 @@ class Plan implements LevelPlan {
     const rowStep = label?.tokens !== undefined && zs.length > 1 ? Math.abs(zs[1] - zs[0]) : 0;
     let title: Anchor;
     if (e.kind === 'tile') title = { x: x0 + TITLE.board[0], y, z: Math.min(...zs) + TITLE.board[1] - rowStep, anchor: 'left' };
-    else if (e.kind === 'vector') title = { x: x1 + TITLE.vector[0], y: y + TITLE.vector[1], z: zVector, anchor: 'right' };
+    else if (e.kind === 'vector') title = { x: x1 + TITLE.vector[0], y: y + TITLE.vector[1], z: zs[0], anchor: 'right' };
     else if (e.title === 'below' || (e.title === 'left' && this.hasGroupLabels(e))) title = { x: (x0 + x1) / 2, y: y + TITLE.below[0], z: front + TITLE.below[1], anchor: 'below' };
     else if (e.title === 'right') title = { x: x1 + TITLE.right[0], y: y + TITLE.right[1], z: front, anchor: 'right' };
     else title = { x: x0 + TITLE.left[0], y: y + TITLE.left[1], z: front, anchor: 'left' };
@@ -1575,6 +1865,7 @@ class Plan implements LevelPlan {
     return {
       node: n,
       key: e.key,
+      ...(e.original === undefined ? {} : { copyOf: n }),
       ...(slot === undefined ? {} : { slot }),
       hidden,
       quiet: e.quiet,

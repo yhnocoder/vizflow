@@ -90,6 +90,14 @@ tex:
   lse: 'L'
   o_tile: 'O'
 
+layout:
+  rows:
+    - [acc_s, rows, cols, future, acc_s_masked]
+    - [prev_max, row_max, cur_max, scores_scale, max_scaled]
+    - [p, row_sum_scaled, row_sum, rp]
+    - [acc_o_scaled, acc_o]
+    - [lse, o_tile]
+
 fold:
   label: '$\viz{out},\ \viz{softmax_lse}$'
   title: flash_fwd_kernel

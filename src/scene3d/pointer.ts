@@ -29,7 +29,7 @@ export function blockAt(c: SceneController, clientX: number, clientY: number): {
 
 function hit(c: SceneController, ev: PointerEvent): { renderable: Renderable; index: number } | undefined {
   aim(c, ev.clientX, ev.clientY);
-  const pickables = c.renderables.filter((r) => revealedOf(c, r) && shown(r.block)).flatMap((r) => r.pickables);
+  const pickables = c.renderables.filter((r) => revealedOf(c, r) && shown(r.block) && !r.away).flatMap((r) => r.pickables);
   const hits = raycaster.intersectObjects(pickables, false);
   if (hits.length === 0) return undefined;
   const object = hits[0].object;

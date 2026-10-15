@@ -8,7 +8,7 @@ import { tokenAxes } from './hover';
 import { indexOf } from '../tensor';
 import type { LevelLayout } from './levels';
 import { type Block, type BoardGeometry, type Element, LINE_HEIGHT, type Vec3, elementAt, elementInCell } from './layout';
-import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableOf, shown } from './renderable';
+import { type Renderable, anchorIn, anchorOut, elementOf, renderableFor, renderableIn, renderableOf, shown } from './renderable';
 import { type EdgeStyle, edgeStyle } from './style';
 
 export const BOARD_BOW = -2.6;
@@ -127,7 +127,7 @@ export function buildEdges(c: SceneController): DrawnEdge[] {
   const overview = c.state.dir === 'forward' && c.state.kind === 'overview';
   for (const { entry, from, to, fromMember, toMember, rows, zeroGrad, constant, jacobian } of candidatesOf(c)) {
     if (backward && constant) continue;
-    if (jacobian && from.far && to.far) continue;
+    if ((jacobian && from.far && to.far) || from.away || to.away) continue;
     const round = edgeRound({ node: from.node, slot: from.block.slot }, fromMember, to, toMember);
     if (round === undefined || (entry.loop === true && round !== 'previous')) continue;
     const dir = entry.toNode.phase === 'backward' ? 'forward' : c.state.dir;
@@ -211,8 +211,8 @@ function collectCandidates(c: SceneController): Candidate[] {
     }
     const from = edge.from;
     const to = edge.to;
-    const fromR = renderableOf(c, from.node);
-    const toR = renderableOf(c, to.node);
+    const fromR = renderableIn(c, from.node, to.node);
+    const toR = renderableIn(c, to.node, to.node);
     if (fromR === undefined || toR === undefined || !shown(fromR.block) || !shown(toR.block)) continue;
     const fromElement = elementOf(fromR.block, from.node, from.index);
     const toElement = elementOf(toR.block, to.node, to.index);

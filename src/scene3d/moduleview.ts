@@ -108,9 +108,12 @@ export class ModuleBraces {
     const direction: Vec3 = [view.x, view.y, view.z];
     const modules = this.c.options.modules ?? [];
     const scale = braceScale(this.c.camera.zoom);
+    const ground = this.c.follow ? this.c.focusGround : undefined;
     const polylines = this.braces.flatMap((brace) => {
       const offset = braceOffset(brace, direction);
       const label = this.labels[modules.indexOf(brace.module)];
+      label.visible = ground === undefined || (brace.y0 <= ground.y && ground.y <= brace.y1);
+      if (!label.visible) return [];
       label.pos = braceTip(brace, offset, scale);
       label.lane = brace.side;
       const points = bracePoints(brace, offset, scale);

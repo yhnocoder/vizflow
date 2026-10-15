@@ -47,7 +47,7 @@ export function curveAt(c: readonly Vec3[], t: number): Vec3 {
   return [0, 1, 2].map((axis) => w[0] * c[0][axis] + w[1] * c[1][axis] + w[2] * c[2][axis] + w[3] * c[3][axis]) as Vec3;
 }
 
-function sampleCurve(a: Vec3, b: Vec3, flat: boolean, bow?: number, loop = false): number[] {
+export function sampleCurve(a: Vec3, b: Vec3, flat: boolean, bow?: number, loop = false): number[] {
   const c = controlPoints(a, b, flat, bow, loop);
   const points: number[] = [];
   for (let s = 0; s <= CURVE_SEGMENTS; s++) {

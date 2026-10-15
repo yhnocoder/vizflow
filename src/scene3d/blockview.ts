@@ -42,9 +42,11 @@ export function markFar(c: SceneController): void {
   const levelOf = (r: Renderable) => levels.indexOf(levelKey(r.block.elements[0].y));
   const stepLevels = c.renderables.filter((r) => r.block.copyOf === undefined && !isLeafLike(r.node) && activeOf(c, r)).map(levelOf);
   const enabled = c.follow && c.farOn && !c.lod && stepLevels.length > 0;
+  const ground = c.follow ? c.focusGround : undefined;
   for (const r of c.renderables) {
     const level = levelOf(r);
-    r.far = enabled && !activeOf(c, r) && Math.min(...stepLevels.map((s) => Math.abs(s - level))) > FAR_LEVELS;
+    r.away = ground !== undefined && !ground.blocks.includes(r.block);
+    r.far = r.away || (enabled && !activeOf(c, r) && Math.min(...stepLevels.map((s) => Math.abs(s - level))) > FAR_LEVELS);
   }
 }
 
@@ -158,7 +160,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const values = valuesOf(c, node);
   const integer = !backward && isIntegerDtype(node.dtype);
   const scale = renderable.scale[dir];
-  for (const group of [renderable.bars?.group, renderable.nodes?.group]) if (group !== undefined) group.visible = !hidden;
+  for (const group of [renderable.bars?.group, renderable.nodes?.group]) if (group !== undefined) group.visible = !hidden && !renderable.away;
   const heights = new Float64Array(block.elements.length);
   for (let i = 0; i < heights.length; i++) {
     const value = elementValue(values, renderable, i);
@@ -170,7 +172,7 @@ export function refreshBlock(c: SceneController, renderable: Renderable, now: nu
   const focusedRow = (row: number) => !block.batched || row === c.state.focus;
   const front = Math.max(...block.elements.map((e) => e.z));
   const stepped = block.copyOf === undefined || backward ? c.stepNodes.has(node) : active && !c.stepNodes.has(node);
-  const showValues = revealed && clear && stepped && block.quiet !== true && !c.lod && (!c.follow || zoom >= VALUE_MIN_ZOOM);
+  const showValues = revealed && clear && stepped && !renderable.away && block.quiet !== true && !c.lod && (!c.follow || zoom >= VALUE_MIN_ZOOM);
   const named = revealed && clear && !c.lod && !far;
   const title = renderable.title!;
   title.setData('node', node.name);
